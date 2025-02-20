@@ -1,175 +1,156 @@
 {% load static %}
 <!doctype html>
-<html lang="en" data-bs-theme="light">
+<html lang="en" data-bs-theme="{{appTheme}}">
+
 <head>
-  <meta charset="utf-8" />
-  <title>{% block title %}Dispatcharr{% endblock %}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="utf-8" />
+    <title>{% block title %}Dispatcharr{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Fonts -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/source-sans-3@5.0.12/index.css" crossorigin="anonymous" />
+    <!-- Third Party Plugins -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/overlayscrollbars@2.10.1/styles/overlayscrollbars.min.css" crossorigin="anonymous" />
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" crossorigin="anonymous" />
+    <!-- Font Awesome 6 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdn.jsdelivr.net/npm/iconify-icon@2.3.0/dist/iconify-icon.min.js" integrity="sha256-MPaPGgzX+tFJErHgAS6r8oOgAke66FpyFMgFdD7UGOs=" crossorigin="anonymous"></script>
+    <!-- AdminLTE CSS -->
+    <!-- <link rel="stylesheet" href="{% static 'admin-lte/dist/css/adminlte.css' %}" /> -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <!-- ApexCharts and jsVectorMap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/apexcharts@3.37.1/dist/apexcharts.css" crossorigin="anonymous" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsvectormap@1.5.3/dist/css/jsvectormap.min.css" crossorigin="anonymous" />
+    <style>
+        body {
+    		width: 100vw;
+    		height: 100vh;
+    		overflow: hidden;
+    		display: flex;
+    	}
+    	body>.app-wrapper {
+    		flex: 1;
+    		display: flex;
+    		flex-wrap: nowrap;
+    	}
+    	aside {
+    		--base: 56px;
+    		--pad: 0.5rem;
+    		overflow: hidden;
+    		min-width: var(--base);
+    		max-width: var(--base);
+            transition: 0.2s max-width;
+    	}
+        aside.is-open {
+            max-width: 200px;
+        }
+    	aside a {
+    		font-size: 1.1em;
+    		text-decoration: none;
+    		padding: 0.25rem;
+    		width: 100%;
+    		height: var(--base);
+    		display: flex;
+    		align-items:  center;
+    		cursor: pointer;
+    	}
+    	aside a iconify-icon {
+    		display: flex;
+    		align-items: center;
+    		justify-content: center;
+    		aspect-ratio: 1;
+    		font-size: calc(var(--base) * .4);
+    		height: calc(var(--base) - (var(--pad)*2));
+    		border-radius: 50%;
+            background-color: transparent;
+            transition: 0.2s all;
+    	}
+        aside a:hover iconify-icon {
+            background-color: rgba(var(--bs-link-color-rgb),0.6);
+        }
 
-  <!-- Fonts -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/source-sans-3@5.0.12/index.css" crossorigin="anonymous" />
-  <!-- Third Party Plugins -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/overlayscrollbars@2.10.1/styles/overlayscrollbars.min.css" crossorigin="anonymous" />
-  <!-- Bootstrap Icons -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" crossorigin="anonymous" />
-  <!-- Font Awesome 6 -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
-
-  <!-- AdminLTE CSS -->
-  <link rel="stylesheet" href="{% static 'admin-lte/dist/css/adminlte.css' %}" />
-  <!-- ApexCharts and jsVectorMap CSS -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/apexcharts@3.37.1/dist/apexcharts.css" crossorigin="anonymous" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsvectormap@1.5.3/dist/css/jsvectormap.min.css" crossorigin="anonymous" />
-  {% block extra_css %}{% endblock %}
+    	aside a span {
+    		padding: 0 calc(var(--pad)*2);
+    		display: inline-block;
+            white-space: nowrap;
+    	}
+        [data-bs-theme=dark] [data-action="#toggle-theme"] [icon="bi:sun"], [data-bs-theme=light] [data-action="#toggle-theme"] [icon="bi:moon"] {display: none;}
+    </style>
+    {% block extra_css %}{% endblock %}
 </head>
 
-<body class="layout-fixed sidebar-expand-lg bg-body-tertiary">
+<body class="bg-body-tertiary">
     <div class="app-wrapper">
-      <!-- Header / Navbar -->
-      <nav class="app-header navbar navbar-expand bg-body">
-        <div class="container-fluid">
-          <ul class="navbar-nav">
-            <li class="nav-item">
-              <a class="nav-link" data-lte-toggle="sidebar" href="#" role="button">
-                <i class="bi bi-list"></i>
-              </a>
-            </li>
-            <li class="nav-item d-none d-md-block">
-              <a href="{% url 'dashboard:dashboard' %}" class="nav-link">Home</a>
-            </li>
-          </ul>
-          <ul class="navbar-nav ms-auto">
-            <li class="nav-item">
-              <a class="nav-link" href="/accounts/login/">Login</a>
-            </li>
-
-            <!-- Theme Switcher Dropdown -->
-            <li class="nav-item dropdown">
-              <button class="btn btn-link nav-link py-2 px-0 px-lg-2 dropdown-toggle d-flex align-items-center"
-                id="themeToggleBtn" type="button" aria-expanded="false"
-                data-bs-toggle="dropdown" data-bs-display="static">
-                <span class="theme-icon-active"><i class="bi bi-sun-fill my-1"></i></span>
-                <span class="d-lg-none ms-2" id="theme-toggle-text">Toggle theme</span>
-              </button>
-              <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="themeToggleBtn" style="--bs-dropdown-min-width: 8rem;">
-                <li>
-                  <button type="button" class="dropdown-item d-flex align-items-center active" data-bs-theme-value="light">
-                    <i class="bi bi-sun-fill me-2"></i> Light
-                    <i class="bi bi-check-lg ms-auto d-none"></i>
-                  </button>
-                </li>
-                <li>
-                  <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="dark">
-                    <i class="bi bi-moon-fill me-2"></i> Dark
-                    <i class="bi bi-check-lg ms-auto d-none"></i>
-                  </button>
-                </li>
-                <li>
-                  <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="auto">
-                    <i class="bi bi-circle-half me-2"></i> Auto
-                    <i class="bi bi-check-lg ms-auto d-none"></i>
-                  </button>
-                </li>
-              </ul>
-            </li>
-          </ul>
-        </div>
-      </nav>
-
-<!-- Sidebar -->
-<aside class="app-sidebar bg-body-secondary shadow" data-bs-theme="dark">
-  <div class="sidebar-brand">
-    <a href="{% url 'dashboard:dashboard' %}" class="brand-link">
-      <img src="{% static 'admin-lte/dist/assets/img/logo.png' %}" alt="Dispatcharr Logo" class="brand-image opacity-75 shadow" />
-      <span class="brand-text fw-light">Dispatcharr</span>
-    </a>
-  </div>
-  <div class="sidebar-wrapper">
-    <nav class="mt-2">
-      <ul class="nav sidebar-menu flex-column" data-lte-toggle="treeview" role="menu" data-accordion="false">
-        <li class="nav-item">
-          <a href="{% url 'dashboard:dashboard' %}" class="nav-link">
-            <i class="nav-icon bi bi-speedometer"></i>
-            <p>Dashboard</p>
-          </a>
-        </li>
-        <li class="nav-item">
-          <a href="{% url 'channels:channels_dashboard' %}" class="nav-link">
-            <i class="nav-icon bi bi-tv"></i>
-            <p>Channels</p>
-          </a>
-        </li>
-        <li class="nav-item">
-          <a href="{% url 'm3u:m3u_dashboard' %}" class="nav-link">
-            <i class="nav-icon bi bi-file-earmark-text"></i>
-            <p>M3U</p>
-          </a>
-        </li>
-        <li class="nav-item">
-          <a href="{% url 'epg:epg_dashboard' %}" class="nav-link">
-            <i class="nav-icon bi bi-calendar3"></i>
-            <p>EPG</p>
-          </a>
-        </li>
-        <li class="nav-item">
-          <a href="{% url 'dashboard:settings' %}" class="nav-link">
-            <i class="nav-icon bi bi-gear"></i>
-            <p>Settings</p>
-          </a>
-        </li>
-      </ul>
-    </nav>
-  </div>
-</aside>
-
-
-      <!-- Main Content -->
-      <main class="app-main">
-        <div class="app-content">
-          <div class="container-fluid">
-            {% block content %}{% endblock %}
-          </div>
-        </div>
-      </main>
-
-      <!-- Footer -->
-      <footer class="app-footer">
-        <div class="float-end d-none d-sm-inline">Anything you want</div>
-        <strong>&copy; {{ current_year|default:"2025" }} Dispatcharr.</strong> All rights reserved.
-      </footer>
+        <aside class="bg-body d-flex {% if appNavOpen == 'true' %}is-open{% endif %}">
+            <nav class="navbar bg-body flex-column p-0 flex-fill">
+                <a data-action="#nav">
+                	<iconify-icon icon="bi:list"></iconify-icon>
+                	<span>Dispatcharr</span>
+                </a>
+                {% for item in nav_items %}
+                <a href="{% url item.url %}" class="">
+                    <iconify-icon icon="{{item.icon}}"></iconify-icon>
+                    <span>{{item.name}}</span>
+                </a>
+                {% endfor %}
+                <a data-action="#toggle-theme" class="mt-auto">
+                    <iconify-icon icon="bi:sun"></iconify-icon>
+                    <iconify-icon icon="bi:moon"></iconify-icon>
+                    <span>Toggle Theme</span>
+                </a>
+                <a href="">
+                    <iconify-icon icon="bi:question-circle"></iconify-icon>
+                    <span>About</span>
+                </a>
+            </nav>
+        </aside>
+        <main class="app-main flex-fill">
+            <nav class="navbar navbar-expand-lg bg-body">
+                <div class="container-fluid">
+                    <span class="navbar-brand" href="#">Home</span>
+                </div>
+            </nav>
+            <div class="app-content p-md-3">{% block content %}{% endblock %}</div>
+        </main>
     </div>
+    <script type="text/javascript">
+    	class Dispatcharr {
+    		static ready(fn){
+    			return (document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', fn) : fn());
+    		}
 
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/overlayscrollbars@2.10.1/browser/overlayscrollbars.browser.es6.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.8/dist/umd/popper.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.min.js" crossorigin="anonymous"></script>
-    <script src="{% static 'admin-lte/dist/js/adminlte.js' %}"></script>
-    {% block extra_js %}{% endblock %}
+    		constructor(){
+                document.querySelectorAll(`[data-action="#nav"]`).forEach((btn)=>{
+                    btn.addEventListener('click',(ev)=>{
+                        let aside = document.querySelector('aside');
+                        ev.preventDefault();
+                        aside.classList.toggle('is-open');
+                        document.cookie = `nav-open=${aside.classList.contains('is-open')}; path=/`;
+                    })
+                });
 
-    <!-- AdminLTE 4 Theme Toggle -->
-    <script>
-      (() => {
-        "use strict";
+                document.querySelectorAll(`[data-action="#toggle-theme"]`).forEach((btn)=>{
+                    btn.addEventListener('click',(ev)=>{
+                        ev.preventDefault();
+                        this.themeToggle();
+                    })
+                });
+                
+    		}
 
-        const storedTheme = localStorage.getItem("theme");
-        const getPreferredTheme = () => storedTheme || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-        
-        const setTheme = (theme) => {
-          document.documentElement.setAttribute("data-bs-theme", theme);
-        };
-
-        setTheme(getPreferredTheme());
-
-        document.addEventListener("DOMContentLoaded", () => {
-          document.querySelectorAll("[data-bs-theme-value]").forEach(button => {
-            button.addEventListener("click", () => {
-              const theme = button.getAttribute("data-bs-theme-value");
-              localStorage.setItem("theme", theme);
-              setTheme(theme);
-            });
-          });
-        });
-      })();
+            themeToggle(){
+                let attr = `data-bs-theme`,
+                    value = document.documentElement.getAttribute(attr),
+                    updated = (value=='dark')?'light':'dark';
+                document.documentElement.setAttribute(attr,updated);
+                document.cookie = `bs-theme=${updated}; path=/`;
+                
+            }
+    	}
+        Dispatcharr.ready(()=>new Dispatcharr);
     </script>
-  </body>
+
+    {% block extra_js %}{% endblock %}
+</body>
+
 </html>
