@@ -36,6 +36,7 @@
     	aside {
     		--base: 56px;
     		--pad: 0.5rem;
+            --ico: calc(var(--base) - (var(--pad)*2));
     		overflow: hidden;
     		min-width: var(--base);
     		max-width: var(--base);
@@ -53,7 +54,9 @@
     		display: flex;
     		align-items:  center;
     		cursor: pointer;
+            user-select: none;
     	}
+        aside a[data-action="#logo"] {pointer-events: none;}
     	aside a iconify-icon {
     		display: flex;
     		align-items: center;
@@ -65,6 +68,9 @@
             background-color: transparent;
             transition: 0.2s all;
     	}
+        aside a img {
+            height:  var(--ico);
+        }
         aside a:hover iconify-icon {
             background-color: rgba(var(--bs-link-color-rgb),0.6);
         }
@@ -83,10 +89,15 @@
     <div class="app-wrapper">
         <aside class="bg-body d-flex {% if appNavOpen == 'true' %}is-open{% endif %}">
             <nav class="navbar bg-body flex-column p-0 flex-fill">
-                <a data-action="#nav">
-                	<iconify-icon icon="bi:list"></iconify-icon>
+                <a data-action="#logo">
+                	<img src="{% static 'admin-lte/dist/assets/img/logo.png' %}" alt="Dispatcharr Logo" />
                 	<span>Dispatcharr</span>
                 </a>
+                <a data-action="#nav">
+                    <iconify-icon icon="bi:list"></iconify-icon>
+                    <span>Menu</span>
+                </a>
+                
                 {% for item in nav_items %}
                 <a href="{% url item.url %}" class="">
                     <iconify-icon icon="{{item.icon}}"></iconify-icon>
@@ -113,6 +124,10 @@
             <div class="app-content p-md-3">{% block content %}{% endblock %}</div>
         </main>
     </div>
+
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/overlayscrollbars@2.10.1/browser/overlayscrollbars.browser.es6.min.js" crossorigin="anonymous"></script>
     <script type="text/javascript">
     	class Dispatcharr {
     		static ready(fn){
@@ -149,7 +164,6 @@
     	}
         Dispatcharr.ready(()=>new Dispatcharr);
     </script>
-
     {% block extra_js %}{% endblock %}
 </body>
 
