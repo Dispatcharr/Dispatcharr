@@ -1,0 +1,24 @@
+services:
+      dispatcharr:
+        build:
+          context: ..
+          dockerfile: docker/DockerfileAIO
+        container_name: dispatcharr-dev
+        restart: unless-stopped
+        ports:
+            - 9191:9191
+            #- 5432:5432
+        environment:
+            - PUID=1000
+            - PGID=1000
+            - POSTGRES_HOST=localhost
+            - POSTGRES_USER=dispatch
+            - POSTGRES_PASSWORD=secret
+            - POSTGRES_PORT=5432
+            - POSTGRES_DB=dispatcharr
+            - DJANGO_SUPERUSER_USERNAME=admin
+            - DJANGO_SUPERUSER_PASSWORD=admin
+            - DJANGO_SUPERUSER_EMAIL=admin@dispatcharr.local
+        volumes:
+            - ./data:/app/data
+
