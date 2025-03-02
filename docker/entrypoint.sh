@@ -131,4 +131,4 @@ su - $POSTGRES_USER -c 'cd /app && celery -A dispatcharr worker --loglevel=info 
 
 # Start Gunicorn
 echo_with_timestamp "Starting Gunicorn..."
-su - $POSTGRES_USER -c 'cd /app && gunicorn --workers=4 --worker-class=gevent --timeout=300 --bind 0.0.0.0:5656 dispatcharr.wsgi:application'
+su - $POSTGRES_USER -c 'cd /app && gunicorn --workers=4 --worker-class=gevent --timeout=300 --bind 0.0.0.0:9191 dispatcharr.wsgi:application'
