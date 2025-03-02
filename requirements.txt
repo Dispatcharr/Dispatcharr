@@ -14,3 +14,4 @@ yt-dlp
 gevent==24.11.1
 django-cors-headers
 djangorestframework-simplejwt
+m3u8
