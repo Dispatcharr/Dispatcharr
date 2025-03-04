@@ -1,19 +1,18 @@
 services:
   dispatcharr:
     # build:
-    #   context: ..
-    #   dockerfile: docker/Dockerfile.alpine
-    image: dispatcharr/dispatcharr
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: dekzter/dispactharr
     container_name: dispatcharr
     ports:
       - 9191:9191
     volumes:
-      - dispatcharr:/data
+      - dispatcharr_db:/app/data/db
     environment:
-      - DISPATHCARR_ENV=aio
-      - DB_ENGINE=sqlite
+      - DISPATCHARR_ENV=aio
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
 
 volumes:
-  dispatcharr:
+  dispatcharr_db:

@@ -118,12 +118,11 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'  # Directory where static files will be collected
+STATIC_ROOT = BASE_DIR / 'static'  # Directory where static files will be collected
 
 # Adjust STATICFILES_DIRS to include the paths to the directories that contain your static files.
 STATICFILES_DIRS = [
     os.path.join(BASE_DIR, 'frontend/build/static'),  # React build static files
-    BASE_DIR / 'static',  # Django custom static files (if any)
 ]
 
 
@@ -141,6 +140,7 @@ SERVER_IP = "127.0.0.1"
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = ['*']
 APPEND_SLASH = True
 
 REST_FRAMEWORK = {

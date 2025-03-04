@@ -24,7 +24,7 @@ import {
   SwapVert as SwapVertIcon,
   LiveTv as LiveTvIcon,
   ContentCopy,
-  Tv as TvIcon,            // <-- ADD THIS IMPORT
+  Tv as TvIcon, // <-- ADD THIS IMPORT
 } from '@mui/icons-material';
 import API from '../../api';
 import ChannelForm from '../forms/Channel';
@@ -104,7 +104,7 @@ const ChannelsTable = () => {
   };
 
   function handleWatchStream(channelNumber) {
-    showVideo(`/output/stream/${channelNumber}/`);
+    showVideo(`http://192.168.1.151:5656/output/stream/${channelNumber}/`);
   }
 
   // (Optional) bulk delete, but your endpoint is @TODO
