@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     'apps.hdhr',
     'apps.m3u',
     'apps.output',
+    'apps.proxy.apps.ProxyConfig', 
     'core',
     'drf_yasg',
     'daphne',
@@ -169,4 +170,26 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': False,  # Optional: Whether to rotate refresh tokens
     'BLACKLIST_AFTER_ROTATION': True,  # Optional: Whether to blacklist refresh tokens
+}
+
+# Proxy Settings
+PROXY_SETTINGS = {
+    'HLS': {
+        'DEFAULT_URL': '',  # Default HLS stream URL if needed
+        'BUFFER_SIZE': 1000,
+        'USER_AGENT': 'VLC/3.0.20 LibVLC/3.0.20',
+        'CHUNK_SIZE': 8192,
+        'CLIENT_POLL_INTERVAL': 0.1,
+        'MAX_RETRIES': 3,
+        'MIN_SEGMENTS': 12,
+        'MAX_SEGMENTS': 16,
+        'WINDOW_SIZE': 12,
+        'INITIAL_SEGMENTS': 3,
+    },
+    'TS': {
+        'DEFAULT_URL': '',  # Default TS stream URL if needed
+        'BUFFER_SIZE': 1000,
+        'RECONNECT_DELAY': 5,
+        'USER_AGENT': 'VLC/3.0.20 LibVLC/3.0.20',
+    }
 }

@@ -7,23 +7,13 @@ Handles live TS stream proxying with support for:
 - Connection state tracking
 """
 
-from flask import Flask, Response, request, jsonify
 import requests
 import threading
 import logging
 from collections import deque
 import time
-import os
 from typing import Optional, Set, Deque, Dict
-
-# Configuration
-class Config:
-    CHUNK_SIZE: int = 8192        # Buffer chunk size (bytes)
-    BUFFER_SIZE: int = 1000       # Number of chunks to keep in memory
-    RECONNECT_DELAY: int = 5      # Seconds between reconnection attempts
-    CLIENT_POLL_INTERVAL: float = 0.1  # Seconds between client buffer checks
-    MAX_RETRIES: int = 3          # Maximum connection retry attempts
-    DEFAULT_USER_AGENT: str = 'VLC/3.0.20 LibVLC/3.0.20'  # Default user agent
+from apps.proxy.config import TSConfig as Config
 
 class StreamManager:
     """Manages TS stream state and connection handling"""
@@ -82,11 +72,40 @@ class ClientManager:
     def __init__(self):
         self.active_clients: Set[int] = set()
         self.lock: threading.Lock = threading.Lock()
+        self.last_client_time: float = time.time()
+        self.cleanup_timer: Optional[threading.Timer] = None
+        self._proxy_server = None
+        self._channel_id = None
+        
+    def start_cleanup_timer(self, proxy_server, channel_id):
+        """Start timer to cleanup idle channels"""
+        self._proxy_server = proxy_server
+        self._channel_id = channel_id
+        if self.cleanup_timer:
+            self.cleanup_timer.cancel()
+        self.cleanup_timer = threading.Timer(
+            Config.CLIENT_TIMEOUT, 
+            self._cleanup_idle_channel,
+            args=[proxy_server, channel_id]
+        )
+        self.cleanup_timer.daemon = True
+        self.cleanup_timer.start()
+        
+    def _cleanup_idle_channel(self, proxy_server, channel_id):
+        """Stop channel if no clients connected"""
+        with self.lock:
+            if not self.active_clients:
+                logging.info(f"No clients connected for {Config.CLIENT_TIMEOUT}s, stopping channel {channel_id}")
+                proxy_server.stop_channel(channel_id)
 
     def add_client(self, client_id: int) -> None:
         """Add new client connection"""
         with self.lock:
             self.active_clients.add(client_id)
+            self.last_client_time = time.time()  # Reset the timer
+            if self.cleanup_timer:
+                self.cleanup_timer.cancel()  # Cancel existing timer
+                self.start_cleanup_timer(self._proxy_server, self._channel_id)  # Restart timer
             logging.info(f"New client connected: {client_id} (total: {len(self.active_clients)})")
 
     def remove_client(self, client_id: int) -> int:
@@ -183,19 +202,12 @@ class ProxyServer:
     """Manages TS proxy server instance"""
     
     def __init__(self, user_agent: Optional[str] = None):
-        self.app = Flask(__name__)
         self.stream_managers: Dict[str, StreamManager] = {}
         self.stream_buffers: Dict[str, StreamBuffer] = {}
         self.client_managers: Dict[str, ClientManager] = {}
         self.fetch_threads: Dict[str, threading.Thread] = {}
         self.user_agent: str = user_agent or Config.DEFAULT_USER_AGENT
-        self._setup_routes()
 
-    def _setup_routes(self) -> None:
-        """Configure Flask routes"""
-        self.app.route('/stream/<channel_id>')(self.stream_endpoint)
-        self.app.route('/change_stream/<channel_id>', methods=['POST'])(self.change_stream)
-        
     def initialize_channel(self, url: str, channel_id: str) -> None:
         """Initialize a new channel stream"""
         if channel_id in self.stream_managers:
@@ -209,6 +221,9 @@ class ProxyServer:
         self.stream_buffers[channel_id] = StreamBuffer()
         self.client_managers[channel_id] = ClientManager()
         
+        # Start cleanup timer immediately after initialization
+        self.client_managers[channel_id].start_cleanup_timer(self, channel_id)
+        
         fetcher = StreamFetcher(
             self.stream_managers[channel_id], 
             self.stream_buffers[channel_id]
@@ -221,103 +236,29 @@ class ProxyServer:
         )
         self.fetch_threads[channel_id].start()
         logging.info(f"Initialized channel {channel_id} with URL {url}")
-        
+
     def stop_channel(self, channel_id: str) -> None:
         """Stop and cleanup a channel"""
         if channel_id in self.stream_managers:
-            self.stream_managers[channel_id].stop()
-            if channel_id in self.fetch_threads:
-                self.fetch_threads[channel_id].join(timeout=5)
-            self._cleanup_channel(channel_id)
+            logging.info(f"Stopping channel {channel_id}")
+            try:
+                self.stream_managers[channel_id].stop()
+                if channel_id in self.fetch_threads:
+                    self.fetch_threads[channel_id].join(timeout=5)
+                    if self.fetch_threads[channel_id].is_alive():
+                        logging.warning(f"Fetch thread for channel {channel_id} did not stop cleanly")
+            except Exception as e:
+                logging.error(f"Error stopping channel {channel_id}: {e}")
+            finally:
+                self._cleanup_channel(channel_id)
             
     def _cleanup_channel(self, channel_id: str) -> None:
         """Remove channel resources"""
         for collection in [self.stream_managers, self.stream_buffers, 
                          self.client_managers, self.fetch_threads]:
             collection.pop(channel_id, None)
-        
-    def stream_endpoint(self, channel_id: str):
-        """Stream endpoint that serves TS data to clients"""
-        if channel_id not in self.stream_managers:
-            return Response('Channel not found', status=404)
-            
-        def generate():
-            client_id = threading.get_ident()
-            buffer = self.stream_buffers[channel_id]
-            client_manager = self.client_managers[channel_id]
-            
-            client_manager.add_client(client_id)
-            last_index = buffer.index
-            
-            try:
-                while True:
-                    with buffer.lock:
-                        if buffer.index > last_index:
-                            chunks_behind = buffer.index - last_index
-                            start_pos = max(0, len(buffer.buffer) - chunks_behind)
-                            
-                            for i in range(start_pos, len(buffer.buffer)):
-                                yield buffer.buffer[i]
-                            last_index = buffer.index
-                    
-                    threading.Event().wait(Config.CLIENT_POLL_INTERVAL)
-            except GeneratorExit:
-                remaining = client_manager.remove_client(client_id)
-                if remaining == 0:
-                    logging.info(f"No clients remaining for channel {channel_id}")
-                    self.stop_channel(channel_id)
-                
-        return Response(generate(), content_type='video/mp2t')
 
-    def change_stream(self, channel_id: str):
-        """Handle stream URL changes"""
-        if channel_id not in self.stream_managers:
-            return jsonify({'error': 'Channel not found'}), 404
-            
-        new_url = request.json.get('url')
-        if not new_url:
-            return jsonify({'error': 'No URL provided'}), 400
-            
-        manager = self.stream_managers[channel_id]
-        if manager.update_url(new_url):
-            return jsonify({
-                'message': 'Stream URL updated',
-                'channel': channel_id,
-                'url': new_url
-            })
-        return jsonify({
-            'message': 'URL unchanged',
-            'channel': channel_id,
-            'url': new_url
-        })
-
-    def run(self, host: str = '0.0.0.0', port: int = 5000) -> None:
-        """Start the proxy server"""
-        self.app.run(host=host, port=port, threaded=True)
-        
     def shutdown(self) -> None:
         """Stop all channels and cleanup"""
         for channel_id in list(self.stream_managers.keys()):
             self.stop_channel(channel_id)
-
-def main():
-    """Initialize and start the proxy server"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    logging.getLogger('werkzeug').setLevel(logging.DEBUG)
-    
-    proxy_server = ProxyServer()
-    initial_url = os.getenv('STREAM_URL', 'http://example.com/stream.ts')
-    proxy_server.initialize_channel(initial_url, "default_channel")
-    
-    try:
-        proxy_server.run()
-    finally:
-        proxy_server.shutdown()
-
-if __name__ == '__main__':
-    main()
