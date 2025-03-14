@@ -22,7 +22,7 @@ def generate_m3u(request):
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
             f'tvg-chno="{channel_number}" group-title="{group_title}",{channel.channel_name}\n'
         )
-        stream_url = request.build_absolute_uri(reverse('output:stream', args=[channel.id]))
+        stream_url = request.build_absolute_uri(reverse('output:stream', args=[channel_number]))
         m3u_content += extinf_line + stream_url + "\n"
 
     response = HttpResponse(m3u_content, content_type="application/x-mpegURL")
