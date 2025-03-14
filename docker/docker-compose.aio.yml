@@ -8,7 +8,7 @@ services:
     ports:
       - 9191:9191
     volumes:
-      - dispatcharr_db:/app/data/db
+      - dispatcharr_db:/data
     environment:
       - DISPATCHARR_ENV=aio
       - REDIS_HOST=localhost
