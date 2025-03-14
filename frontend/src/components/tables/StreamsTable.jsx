@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useCallback, useState, useRef } from 'react';
 import { MantineReactTable, useMantineReactTable } from 'mantine-react-table';
 import API from '../../api';
+import { useTheme } from '@mui/material/styles';
 import {
   Delete as DeleteIcon,
   Edit as EditIcon,
   Add as AddIcon,
   MoreVert as MoreVertIcon,
   PlaylistAdd as PlaylistAddIcon,
+  IndeterminateCheckBox,
+  AddBox,
 } from '@mui/icons-material';
 import { TableHelper } from '../../helpers';
 import StreamForm from '../forms/Stream';
@@ -46,6 +49,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 
 const StreamsTable = ({}) => {
+  const theme = useTheme();
+
   /**
    * useState
    */
@@ -77,6 +82,7 @@ const StreamsTable = ({}) => {
     m3u_account: '',
   });
   const debouncedFilters = useDebounce(filters, 500);
+  const hasData = data.length > 0;
 
   const navigate = useNavigate();
 
@@ -354,7 +360,7 @@ const StreamsTable = ({}) => {
         typeof updater === 'function' ? updater(prevRowSelection) : updater;
 
       const updatedSelected = new Set([...selectedStreamIds]);
-      table.getRowModel().rows.map((row) => {
+      table.getRowModel().rows.forEach((row) => {
         if (newRowSelection[row.id] === undefined || !newRowSelection[row.id]) {
           updatedSelected.delete(row.original.id);
         } else {
@@ -372,12 +378,9 @@ const StreamsTable = ({}) => {
     if (selectAll) {
       // Get all stream IDs for current view
       const params = new URLSearchParams();
-
-      // Apply debounced filters
       Object.entries(debouncedFilters).forEach(([key, value]) => {
         if (value) params.append(key, value);
       });
-
       const ids = await API.getAllStreamIds(params);
       setSelectedStreamIds(ids);
     } else {
@@ -427,6 +430,8 @@ const StreamsTable = ({}) => {
     manualPagination: true,
     enableTopToolbar: false,
     enableRowVirtualization: true,
+    renderTopToolbar: () => null, // Removes the entire top toolbar
+    renderToolbarInternalActions: () => null, 
     rowVirtualizerInstanceRef,
     rowVirtualizerOptions: { overscan: 5 }, //optionally customize the row virtualizer
     enableBottomToolbar: true,
@@ -462,7 +467,7 @@ const StreamsTable = ({}) => {
     mantineSelectAllCheckboxProps: {
       checked: selectedStreamIds.length == rowCount,
       indeterminate:
-        selectedStreamIds.length > 0 && selectedStreamIds.length != rowCount,
+        selectedStreamIds.length > 0 && selectedStreamIds.length !== rowCount,
       onChange: onSelectAllChange,
       size: 'xs',
     },
@@ -477,13 +482,22 @@ const StreamsTable = ({}) => {
       density: 'compact',
     },
     state: {
-      isLoading: isLoading,
+      isLoading,
       sorting,
       // pagination,
       rowSelection,
     },
     enableRowActions: true,
     positionActionsColumn: 'first',
+
+    enableHiding: false,
+
+    // you can still use the custom toolbar callback if you like
+    renderTopToolbarCustomActions: ({ table }) => {
+      const selectedRowCount = table.getSelectedRowModel().rows.length;
+      // optionally do something with selectedRowCount
+    },
+
     renderRowActions: ({ row }) => (
       <>
         <Tooltip label="Add to Channel">
@@ -493,7 +507,7 @@ const StreamsTable = ({}) => {
             variant="transparent"
             onClick={() => addStreamToChannel(row.original.id)}
             disabled={
-              channelsPageSelection.length != 1 ||
+              channelsPageSelection.length !== 1 ||
               (channelSelectionStreams &&
                 channelSelectionStreams
                   .map((stream) => stream.id)
