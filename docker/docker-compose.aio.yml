@@ -3,7 +3,7 @@ services:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    image: dispatcharr/dispatcharr:alpha-v1
+    image: dispatcharr/dispatcharr:latest
     container_name: dispatcharr
     ports:
       - 9191:9191
