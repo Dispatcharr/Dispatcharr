@@ -110,6 +110,8 @@ def parse_channels_only(file_path):
                     epg_obj.save()
             logger.debug(f"Channel <{tvg_id}> => EPGData.id={epg_obj.id}, created={created}")
 
+            parse_programs_for_tvg_id(file_path, tvg_id)
+
     logger.info("Finished parsing channel info.")
 
 

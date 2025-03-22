@@ -13,13 +13,13 @@ from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings
 from .stream_buffer import StreamBuffer
-from .utils import detect_stream_type
+from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType, TS_PACKET_SIZE
 from .config_helper import ConfigHelper
 from .url_utils import get_alternate_streams, get_stream_info_for_switch
 
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 class StreamManager:
     """Manages a connection to a TS stream without using raw sockets"""

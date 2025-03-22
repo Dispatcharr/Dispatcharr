@@ -119,7 +119,7 @@ const useAuthStore = create((set, get) => ({
     const refreshToken = localStorage.getItem('refreshToken') || null;
 
     if (refreshToken) {
-      const loggedIn = await get().refreshToken();
+      const loggedIn = await get().getRefreshToken();
       if (loggedIn) {
         return true;
       }

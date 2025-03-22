@@ -6,13 +6,16 @@ class StreamAdmin(admin.ModelAdmin):
     list_display = (
         'id',  # Primary Key
         'name',
-        'group_name',
+        'channel_group',
         'url',
         'current_viewers',
         'updated_at',
     )
-    list_filter = ('group_name',)
-    search_fields = ('id', 'name', 'url', 'group_name')  # Added 'id' for searching by ID
+
+    list_filter = ('channel_group',)  # Filter by 'channel_group' (foreign key)
+
+    search_fields = ('id', 'name', 'url', 'channel_group__name')  # Search by 'ChannelGroup' name
+
     ordering = ('-updated_at',)
 
 @admin.register(Channel)

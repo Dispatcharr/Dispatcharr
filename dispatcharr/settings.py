@@ -151,6 +151,19 @@ AUTH_USER_MODEL = 'accounts.User'
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 
+# Configure Redis key prefix
+CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
+    'prefix': 'celery-task:',  # Set the Redis key prefix for Celery
+}
+
+# Set TTL (Time-to-Live) for task results (in seconds)
+CELERY_RESULT_EXPIRES = 3600  # 1 hour TTL for task results
+
+# Optionally, set visibility timeout for task retries (if using Redis)
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': 3600,  # Time in seconds that a task remains invisible during retries
+}
+
 CELERY_BEAT_SCHEDULE = {
     'fetch-channel-statuses': {
         'task': 'apps.proxy.tasks.fetch_channel_stats',
@@ -179,8 +192,15 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,  # Optional: Whether to blacklist refresh tokens
 }
 
-# Redis settings for TS proxy
+# Redis connection settings
 REDIS_URL = 'redis://localhost:6379/0'
+REDIS_SOCKET_TIMEOUT = 60  # Socket timeout in seconds
+REDIS_SOCKET_CONNECT_TIMEOUT = 5  # Connection timeout in seconds
+REDIS_HEALTH_CHECK_INTERVAL = 15  # Health check every 15 seconds
+REDIS_SOCKET_KEEPALIVE = True  # Enable socket keepalive
+REDIS_RETRY_ON_TIMEOUT = True  # Retry on timeout
+REDIS_MAX_RETRIES = 10  # Maximum number of retries
+REDIS_RETRY_INTERVAL = 1  # Initial retry interval in seconds
 
 # Proxy Settings
 PROXY_SETTINGS = {

@@ -295,7 +295,7 @@ const ChannelsTable = ({}) => {
               alignItems: 'center',
             }}
           >
-            <img src={cell.getValue() || logo} width="20" alt="channel logo" />
+            <img src={cell.getValue() || logo} height="20" alt="channel logo" />
           </Grid>
         ),
         meta: {
@@ -383,7 +383,6 @@ const ChannelsTable = ({}) => {
       notifications.show(`Error: ${err.message}`);
     }
   };
-
 
   const closeChannelForm = () => {
     setChannel(null);

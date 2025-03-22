@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Stream, Channel, ChannelGroup, ChannelStream
+from .models import Stream, Channel, ChannelGroup, ChannelStream, ChannelGroupM3UAccount
 from core.models import StreamProfile
 
 #
@@ -26,9 +26,9 @@ class StreamSerializer(serializers.ModelSerializer):
             'local_file',
             'current_viewers',
             'updated_at',
-            'group_name',
             'stream_profile_id',
             'is_custom',
+            'channel_group',
         ]
 
     def get_fields(self):
@@ -41,7 +41,7 @@ class StreamSerializer(serializers.ModelSerializer):
             fields['url'].read_only = True
             fields['m3u_account'].read_only = True
             fields['tvg_id'].read_only = True
-            fields['group_name'].read_only = True
+            fields['channel_group'].read_only = True
 
 
         return fields
@@ -146,3 +146,13 @@ class ChannelSerializer(serializers.ModelSerializer):
                 ChannelStream.objects.create(channel=instance, stream_id=stream.id, order=index)
 
         return instance
+
+class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
+    enabled = serializers.BooleanField()
+
+    class Meta:
+        model = ChannelGroupM3UAccount
+        fields = ['id', 'channel_group', 'enabled']
+
+    # Optionally, if you only need the id of the ChannelGroup, you can customize it like this:
+    # channel_group = serializers.PrimaryKeyRelatedField(queryset=ChannelGroup.objects.all())

@@ -6,11 +6,13 @@ import time
 import json
 from typing import Set, Optional
 from apps.proxy.config import TSConfig as Config
+from redis.exceptions import ConnectionError, TimeoutError
 from .constants import EventType
 from .config_helper import ConfigHelper
 from .redis_keys import RedisKeys
+from .utils import get_logger
 
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 class ClientManager:
     """Manages client connections with no duplicates"""
@@ -120,6 +122,20 @@ class ClientManager:
         thread.start()
         logger.debug(f"Started client heartbeat thread for channel {self.channel_id} (interval: {self.heartbeat_interval}s)")
 
+    def _execute_redis_command(self, command_func):
+        """Execute Redis command with error handling"""
+        if not self.redis_client:
+            return None
+
+        try:
+            return command_func()
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"Redis connection error in ClientManager: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Redis command error in ClientManager: {e}")
+            return None
+
     def _notify_owner_of_activity(self):
         """Notify channel owner that clients are active on this worker"""
         if not self.redis_client or not self.clients:
@@ -130,11 +146,15 @@ class ClientManager:
 
             # STANDARDIZED KEY: Worker info under channel namespace
             worker_key = f"ts_proxy:channel:{self.channel_id}:worker:{worker_id}"
-            self.redis_client.setex(worker_key, self.client_ttl, str(len(self.clients)))
+            self._execute_redis_command(
+                lambda: self.redis_client.setex(worker_key, self.client_ttl, str(len(self.clients)))
+            )
 
             # STANDARDIZED KEY: Activity timestamp under channel namespace
             activity_key = f"ts_proxy:channel:{self.channel_id}:activity"
-            self.redis_client.setex(activity_key, self.client_ttl, str(time.time()))
+            self._execute_redis_command(
+                lambda: self.redis_client.setex(activity_key, self.client_ttl, str(time.time()))
+            )
         except Exception as e:
             logger.error(f"Error notifying owner of client activity: {e}")
 

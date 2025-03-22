@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError
 from core.models import UserAgent
 import re
 from django.dispatch import receiver
+from apps.channels.models import StreamProfile
 
 CUSTOM_M3U_ACCOUNT_NAME="custom"
 
@@ -59,6 +60,13 @@ class M3UAccount(models.Model):
         default=False,
         help_text="Protected - can't be deleted or modified"
     )
+    stream_profile = models.ForeignKey(
+        StreamProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='m3u_accounts'
+    )
 
     def __str__(self):
         return self.name
@@ -86,6 +94,16 @@ class M3UAccount(models.Model):
     def get_custom_account(cls):
         return cls.objects.get(name=CUSTOM_M3U_ACCOUNT_NAME, locked=True)
 
+    # def get_channel_groups(self):
+    #     return ChannelGroup.objects.filter(m3u_account__m3u_account=self)
+
+    # def is_channel_group_enabled(self, channel_group):
+    #     """Check if the specified ChannelGroup is enabled for this M3UAccount."""
+    #     return self.channel_group.filter(channel_group=channel_group, enabled=True).exists()
+
+    # def get_enabled_streams(self):
+    #     """Return all streams linked to this account with enabled ChannelGroups."""
+    #     return self.streams.filter(channel_group__in=ChannelGroup.objects.filter(m3u_account__enabled=True))
 
 class M3UFilter(models.Model):
     """Defines filters for M3U accounts based on stream name or group title."""

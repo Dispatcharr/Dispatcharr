@@ -4,6 +4,7 @@ import api from '../api';
 const usePlaylistsStore = create((set) => ({
   playlists: [],
   profiles: {},
+  refreshProgress: {},
   isLoading: false,
   error: null,
 
@@ -60,6 +61,24 @@ const usePlaylistsStore = create((set) => ({
       ),
       // @TODO: remove playlist profiles here
     })),
+
+  setRefreshProgress: (id, progress) =>
+    set((state) => ({
+      refreshProgress: {
+        ...state.refreshProgress,
+        [id]: progress,
+      },
+    })),
+
+  removeRefreshProgress: (id) =>
+    set((state) => {
+      const updatedProgress = { ...state.refreshProgress };
+      delete updatedProgress[id];
+
+      return {
+        refreshProgress: updatedProgress,
+      };
+    }),
 }));
 
 export default usePlaylistsStore;

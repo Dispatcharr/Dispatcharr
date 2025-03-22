@@ -15,15 +15,18 @@ import {
   Flex,
   Button,
   useMantineTheme,
+  Center,
+  Switch,
 } from '@mantine/core';
 import { IconSquarePlus } from '@tabler/icons-react';
-import { SquareMinus, SquarePen, Check, X } from 'lucide-react';
+import { SquareMinus, SquarePen, Check, X, Eye, EyeOff } from 'lucide-react';
 
 const StreamProfiles = () => {
   const [profile, setProfile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
   const [activeFilterValue, setActiveFilterValue] = useState('all');
+  const [hideInactive, setHideInactive] = useState(false);
 
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
   const { settings } = useSettingsStore();
@@ -36,27 +39,37 @@ const StreamProfiles = () => {
       {
         header: 'Name',
         accessorKey: 'name',
+        size: 50,
       },
       {
         header: 'Command',
         accessorKey: 'command',
+        size: 100,
       },
       {
         header: 'Parameters',
         accessorKey: 'parameters',
+        mantineTableBodyCellProps: {
+          style: {
+            whiteSpace: 'nowrap',
+            // maxWidth: 400,
+            paddingLeft: 10,
+            paddingRight: 10,
+          },
+        },
       },
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 100,
-        sortingFn: 'basic',
-        muiTableBodyCellProps: {
-          align: 'left',
-        },
-        Cell: ({ cell }) => (
-          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-            {cell.getValue() ? <Check color="green" /> : <X color="red" />}
-          </Box>
+        size: 50,
+        Cell: ({ row, cell }) => (
+          <Center>
+            <Switch
+              size="xs"
+              checked={cell.getValue()}
+              onChange={() => toggleProfileIsActive(row.original)}
+            />
+          </Center>
         ),
         Filter: ({ column }) => (
           <Box>
@@ -124,10 +137,26 @@ const StreamProfiles = () => {
     }
   }, [sorting]);
 
+  const toggleHideInactive = () => {
+    setHideInactive(!hideInactive);
+  };
+
+  const toggleProfileIsActive = async (profile) => {
+    await API.updateStreamProfile({
+      id: profile.id,
+      ...profile,
+      is_active: !profile.is_active,
+    });
+  };
+
+  const filteredData = streamProfiles.filter((profile) =>
+    hideInactive && !profile.is_active ? false : true
+  );
+
   const table = useMantineReactTable({
     ...TableHelper.defaultProperties,
     columns,
-    data: streamProfiles,
+    data: filteredData,
     enablePagination: false,
     enableRowVirtualization: true,
     // enableRowSelection: true,
@@ -144,6 +173,11 @@ const StreamProfiles = () => {
     initialState: {
       density: 'compact',
     },
+    displayColumnDefOptions: {
+      'mrt-row-actions': {
+        size: 10,
+      },
+    },
     enableRowActions: true,
     renderRowActions: ({ row }) => (
       <>
@@ -151,6 +185,7 @@ const StreamProfiles = () => {
           variant="transparent"
           color="yellow.5"
           size="sm"
+          disabled={row.original.locked}
           onClick={() => editStreamProfile(row.original)}
         >
           <SquarePen size="18" /> {/* Small icon size */}
@@ -159,6 +194,7 @@ const StreamProfiles = () => {
           variant="transparent"
           size="sm"
           color="red.9"
+          disabled={row.original.locked}
           onClick={() => deleteStreamProfile(row.original.id)}
         >
           <SquareMinus fontSize="small" /> {/* Small icon size */}
@@ -217,6 +253,21 @@ const StreamProfiles = () => {
           }}
         >
           <Flex gap={6}>
+            <Tooltip label={hideInactive ? 'Show All' : 'Hide Inactive'}>
+              <Center>
+                <ActionIcon
+                  onClick={toggleHideInactive}
+                  variant="filled"
+                  color="gray"
+                  style={{
+                    borderWidth: '1px',
+                    borderColor: 'white',
+                  }}
+                >
+                  {hideInactive ? <EyeOff size={18} /> : <Eye size={18} />}
+                </ActionIcon>
+              </Center>
+            </Tooltip>
             <Tooltip label="Assign">
               <Button
                 leftSection={<IconSquarePlus size={18} />}

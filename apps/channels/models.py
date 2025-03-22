@@ -3,14 +3,48 @@ from django.core.exceptions import ValidationError
 from core.models import StreamProfile
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
-from core.utils import redis_client
+from core.utils import redis_client, execute_redis_command
 import logging
 import uuid
+from datetime import datetime
+import hashlib
+import json
 
 logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
+
+# Add fallback functions if Redis isn't available
+def get_total_viewers(channel_id):
+    """Get viewer count from Redis or return 0 if Redis isn't available"""
+    if redis_client is None:
+        return 0
+
+    try:
+        return int(redis_client.get(f"channel:{channel_id}:viewers") or 0)
+    except Exception:
+        return 0
+
+class ChannelGroup(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    def related_channels(self):
+        # local import if needed to avoid cyc. Usually fine in a single file though
+        return Channel.objects.filter(channel_group=self)
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def bulk_create_and_fetch(cls, objects):
+        # Perform the bulk create operation
+        cls.objects.bulk_create(objects)
+
+        # Use a unique field to fetch the created objects (assuming 'name' is unique)
+        created_objects = cls.objects.filter(name__in=[obj.name for obj in objects])
+
+        return created_objects
 
 class Stream(models.Model):
     """
@@ -25,12 +59,18 @@ class Stream(models.Model):
         blank=True,
         related_name="streams",
     )
-    logo_url = models.URLField(max_length=2000, blank=True, null=True)
+    logo_url = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, blank=True, null=True)
     local_file = models.FileField(upload_to='uploads/', blank=True, null=True)
     current_viewers = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
-    group_name = models.CharField(max_length=255, blank=True, null=True)
+    channel_group = models.ForeignKey(
+        ChannelGroup,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='streams'
+    )
     stream_profile = models.ForeignKey(
         StreamProfile,
         null=True,
@@ -42,6 +82,14 @@ class Stream(models.Model):
         default=False,
         help_text="Whether this is a user-created stream or from an M3U account"
     )
+    stream_hash = models.CharField(
+        max_length=255,
+        null=True,
+        unique=True,
+        help_text="Unique hash for this stream from the M3U account",
+        db_index=True,
+    )
+    last_seen = models.DateTimeField(db_index=True, default=datetime.now)
 
     class Meta:
         # If you use m3u_account, you might do unique_together = ('name','url','m3u_account')
@@ -52,6 +100,37 @@ class Stream(models.Model):
     def __str__(self):
         return self.name or self.url or f"Stream ID {self.id}"
 
+    @classmethod
+    def generate_hash_key(cls, name, url, tvg_id, keys=None):
+        if keys is None:
+            keys = CoreSettings.get_m3u_hash_key().split(",")
+
+        stream_parts = {
+            "name": name, "url": url, "tvg_id": tvg_id
+        }
+
+        hash_parts = {key: stream_parts[key] for key in keys if key in stream_parts}
+
+        # Serialize and hash the dictionary
+        serialized_obj = json.dumps(hash_parts, sort_keys=True)  # sort_keys ensures consistent ordering
+        hash_object = hashlib.sha256(serialized_obj.encode())
+        return hash_object.hexdigest()
+
+    @classmethod
+    def update_or_create_by_hash(cls, hash_value, **fields_to_update):
+        try:
+            # Try to find the Stream object with the given hash
+            stream = cls.objects.get(stream_hash=hash_value)
+            # If it exists, update the fields
+            for field, value in fields_to_update.items():
+                setattr(stream, field, value)
+            stream.save()  # Save the updated object
+            return stream, False  # False means it was updated, not created
+        except cls.DoesNotExist:
+            # If it doesn't exist, create a new object with the given hash
+            fields_to_update['stream_hash'] = hash_value  # Make sure the hash field is set
+            stream = cls.objects.create(**fields_to_update)
+            return stream, True  # True means it was created
 
 class ChannelManager(models.Manager):
     def active(self):
@@ -95,7 +174,7 @@ class Channel(models.Model):
         related_name='channels'
     )
 
-    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
 
     def clean(self):
         # Enforce unique channel_number within a given group
@@ -198,16 +277,6 @@ class Channel(models.Model):
         if current_count > 0:
             redis_client.decr(profile_connections_key)
 
-class ChannelGroup(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-
-    def related_channels(self):
-        # local import if needed to avoid cyc. Usually fine in a single file though
-        return Channel.objects.filter(channel_group=self)
-
-    def __str__(self):
-        return self.name
-
 class ChannelStream(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE)
     stream = models.ForeignKey(Stream, on_delete=models.CASCADE)
@@ -215,3 +284,22 @@ class ChannelStream(models.Model):
 
     class Meta:
         ordering = ['order']  # Ensure streams are retrieved in order
+
+class ChannelGroupM3UAccount(models.Model):
+    channel_group = models.ForeignKey(
+        ChannelGroup,
+        on_delete=models.CASCADE,
+        related_name='m3u_account'
+    )
+    m3u_account = models.ForeignKey(
+        M3UAccount,
+        on_delete=models.CASCADE,
+        related_name='channel_group'
+    )
+    enabled = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ('channel_group', 'm3u_account')
+
+    def __str__(self):
+        return f"{self.channel_group.name} - {self.m3u_account.name} (Enabled: {self.enabled})"

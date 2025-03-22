@@ -1,5 +1,18 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { ActionIcon, Box, Center, Grid, Text } from '@mantine/core';
+import {
+  ActionIcon,
+  Box,
+  Card,
+  Center,
+  Flex,
+  Grid,
+  Group,
+  SimpleGrid,
+  Stack,
+  Text,
+  Title,
+  Tooltip,
+} from '@mantine/core';
 import { MantineReactTable, useMantineReactTable } from 'mantine-react-table';
 import { TableHelper } from '../helpers';
 import API from '../api';
@@ -15,7 +28,32 @@ import {
   Binary,
   ArrowDown01,
   SquareX,
+  Timer,
 } from 'lucide-react';
+import dayjs from 'dayjs';
+import duration from 'dayjs/plugin/duration';
+import relativeTime from 'dayjs/plugin/relativeTime';
+
+dayjs.extend(duration);
+dayjs.extend(relativeTime);
+
+const getStartDate = (uptime) => {
+  // Get the current date and time
+  const currentDate = new Date();
+  // Calculate the start date by subtracting uptime (in milliseconds)
+  const startDate = new Date(currentDate.getTime() - uptime * 1000);
+  // Format the date as a string (you can adjust the format as needed)
+  return startDate.toLocaleString({
+    weekday: 'short', // optional, adds day of the week
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true, // 12-hour format with AM/PM
+  });
+};
 
 const ChannelsPage = () => {
   const { channels, channelsByUUID, stats: channelStats } = useChannelsStore();
@@ -147,32 +185,6 @@ const ChannelsPage = () => {
     columns: useMemo(
       () => [
         {
-          id: 'logo',
-          header: 'Logo',
-          accessorKey: 'channel.logo_url',
-          size: 50,
-          Cell: ({ cell }) => (
-            <Center>
-              <img
-                src={cell.getValue() || logo}
-                width="20"
-                alt="channel logo"
-              />
-            </Center>
-          ),
-        },
-        {
-          header: 'Channel',
-          accessorKey: 'channel.name',
-          size: 100,
-          mantineTableBodyCellProps: {
-            style: {
-              whiteSpace: 'nowrap',
-              maxWidth: 100,
-            },
-          },
-        },
-        {
           header: 'User-Agent',
           accessorKey: 'user_agent',
           size: 250,
@@ -180,6 +192,8 @@ const ChannelsPage = () => {
             style: {
               whiteSpace: 'nowrap',
               maxWidth: 400,
+              paddingLeft: 10,
+              paddingRight: 10,
             },
           },
         },
@@ -243,48 +257,54 @@ const ChannelsPage = () => {
   }, [channelStats]);
 
   return (
-    <Grid style={{ padding: 18 }}>
-      <Grid.Col span={6}>
-        <Text
-          w={88}
-          h={24}
-          style={{
-            fontFamily: 'Inter, sans-serif',
-            fontWeight: 500,
-            fontSize: '20px',
-            lineHeight: 1,
-            letterSpacing: '-0.3px',
-            color: 'gray.6', // Adjust this to match MUI's theme.palette.text.secondary
-            marginBottom: 0,
-          }}
-        >
-          Channels
-        </Text>
-        <Box style={{ paddingTop: 10 }}>
-          <MantineReactTable table={channelsTable} />
-        </Box>
-      </Grid.Col>
-      <Grid.Col span={6}>
-        <Text
-          w={88}
-          h={24}
-          style={{
-            fontFamily: 'Inter, sans-serif',
-            fontWeight: 500,
-            fontSize: '20px',
-            lineHeight: 1,
-            letterSpacing: '-0.3px',
-            color: 'gray.6', // Adjust this to match MUI's theme.palette.text.secondary
-            marginBottom: 0,
-          }}
-        >
-          Clients
-        </Text>
-        <Box style={{ paddingTop: 10 }}>
-          <MantineReactTable table={clientsTable} />
-        </Box>
-      </Grid.Col>
-    </Grid>
+    <SimpleGrid cols={2} spacing="md" style={{ padding: 10 }}>
+      {activeChannels.map((channel) => (
+        <Card shadow="sm" padding="lg" radius="md" withBorder>
+          <Stack>
+            <Flex justify="space-between" align="center">
+              <Group>
+                <Title order={5}>{channel.name}</Title>
+                <img
+                  src={channel.logo_url || logo}
+                  width="20"
+                  alt="channel logo"
+                />
+              </Group>
+
+              <Group>
+                <Box>
+                  <Tooltip label={getStartDate(channel.uptime)}>
+                    <Center>
+                      <Timer style={{ paddingRight: 5 }} />
+                      {dayjs.duration(channel.uptime, 'seconds').humanize()}
+                    </Center>
+                  </Tooltip>
+                </Box>
+                <Center>
+                  <Tooltip label="Stop Channel">
+                    <ActionIcon variant="transparent" color="red.9">
+                      <SquareX size="24" />
+                    </ActionIcon>
+                  </Tooltip>
+                </Center>
+              </Group>
+            </Flex>
+
+            <Box>
+              <Flex
+                justify="space-between"
+                align="center"
+                style={{ paddingRight: 10, paddingLeft: 10 }}
+              >
+                <Text>Clients</Text>
+                <Text>{channel.client_count}</Text>
+              </Flex>
+              <MantineReactTable table={clientsTable} />
+            </Box>
+          </Stack>
+        </Card>
+      ))}
+    </SimpleGrid>
   );
 };
 

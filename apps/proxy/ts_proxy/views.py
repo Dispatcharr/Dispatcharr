@@ -22,9 +22,9 @@ from .constants import ChannelState, EventType, StreamType
 from .config_helper import ConfigHelper
 from .services.channel_service import ChannelService
 from .url_utils import generate_stream_url, transform_url, get_stream_info_for_switch
+from .utils import get_logger
 
-# Configure logging properly
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 
 @api_view(['GET'])

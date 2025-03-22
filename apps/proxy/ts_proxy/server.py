@@ -18,14 +18,17 @@ import json
 from typing import Dict, Optional, Set
 from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel
+from core.utils import redis_client as global_redis_client, redis_pubsub_client as global_redis_pubsub_client  # Import both global Redis clients
+from redis.exceptions import ConnectionError, TimeoutError
 from .stream_manager import StreamManager
 from .stream_buffer import StreamBuffer
 from .client_manager import ClientManager
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType
 from .config_helper import ConfigHelper
+from .utils import get_logger
 
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 class ProxyServer:
     """Manages TS proxy server instance with worker coordination"""
@@ -43,19 +46,25 @@ class ProxyServer:
         hostname = socket.gethostname()
         self.worker_id = f"{hostname}:{pid}"
 
-        # Connect to Redis
+        # Connect to Redis - try using global client first
         self.redis_client = None
-        try:
-            import redis
-            from django.conf import settings
+        self.redis_connection_attempts = 0
+        self.redis_max_retries = 3
+        self.redis_retry_interval = 5  # seconds
 
-            redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-            self.redis_client = redis.from_url(redis_url)
-            logger.info(f"Connected to Redis at {redis_url}")
-            logger.info(f"Worker ID: {self.worker_id}")
+        try:
+            # First try to use the global client from core.utils
+            if global_redis_client is not None:
+                self.redis_client = global_redis_client
+                logger.info(f"Using global Redis client")
+                logger.info(f"Worker ID: {self.worker_id}")
+            else:
+                # Fall back to direct connection with retry
+                self._setup_redis_connection()
+
         except Exception as e:
+            logger.error(f"Failed to initialize Redis: {e}")
             self.redis_client = None
-            logger.error(f"Failed to connect to Redis: {e}")
 
         # Start cleanup thread
         self.cleanup_interval = getattr(Config, 'CLEANUP_INTERVAL', 60)
@@ -64,179 +73,306 @@ class ProxyServer:
         # Start event listener for Redis pubsub messages
         self._start_event_listener()
 
+    def _setup_redis_connection(self):
+        """Setup Redis connection with retry logic"""
+        import redis
+        from django.conf import settings
+
+        while self.redis_connection_attempts < self.redis_max_retries:
+            try:
+                logger.info(f"Attempting to connect to Redis ({self.redis_connection_attempts+1}/{self.redis_max_retries})")
+
+                # Get connection parameters from settings or environment
+                redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+                redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+
+                # Create Redis client with reasonable timeouts
+                self.redis_client = redis.Redis(
+                    host=redis_host,
+                    port=redis_port,
+                    db=redis_db,
+                    socket_timeout=5,
+                    socket_connect_timeout=5,
+                    retry_on_timeout=True,
+                    health_check_interval=30
+                )
+
+                # Test connection
+                self.redis_client.ping()
+                logger.info(f"Successfully connected to Redis at {redis_host}:{redis_port}/{redis_db}")
+                logger.info(f"Worker ID: {self.worker_id}")
+                break
+
+            except (ConnectionError, TimeoutError) as e:
+                self.redis_connection_attempts += 1
+                if self.redis_connection_attempts >= self.redis_max_retries:
+                    logger.error(f"Failed to connect to Redis after {self.redis_max_retries} attempts: {e}")
+                    self.redis_client = None
+                else:
+                    # Exponential backoff with a maximum of 30 seconds
+                    retry_delay = min(self.redis_retry_interval * (2 ** (self.redis_connection_attempts - 1)), 30)
+                    logger.warning(f"Redis connection failed. Retrying in {retry_delay}s... ({self.redis_connection_attempts}/{self.redis_max_retries})")
+                    time.sleep(retry_delay)
+
+            except Exception as e:
+                logger.error(f"Unexpected error connecting to Redis: {e}", exc_info=True)
+                self.redis_client = None
+                break
+
+    def _execute_redis_command(self, command_func, *args, **kwargs):
+        """Execute Redis command with error handling and reconnection logic"""
+        if not self.redis_client:
+            return None
+
+        try:
+            return command_func(*args, **kwargs)
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"Redis connection lost: {e}. Attempting to reconnect...")
+            try:
+                # Try to reconnect
+                self.redis_connection_attempts = 0
+                self._setup_redis_connection()
+                if self.redis_client:
+                    # Retry the command once
+                    return command_func(*args, **kwargs)
+            except Exception as reconnect_error:
+                logger.error(f"Failed to reconnect to Redis: {reconnect_error}")
+            return None
+        except Exception as e:
+            logger.error(f"Redis command error: {e}")
+            return None
+
     def _start_event_listener(self):
         """Listen for events from other workers"""
         if not self.redis_client:
             return
 
         def event_listener():
-            try:
-                pubsub = self.redis_client.pubsub()
-                pubsub.psubscribe("ts_proxy:events:*")
+            retry_count = 0
+            max_retries = 10
+            base_retry_delay = 1  # Start with 1 second delay
+            max_retry_delay = 30  # Cap at 30 seconds
 
-                logger.info(f"Started Redis event listener for client activity")
+            while True:
+                try:
+                    # Use the global PubSub client if available
+                    if global_redis_pubsub_client:
+                        pubsub_client = global_redis_pubsub_client
+                        logger.info("Using global Redis PubSub client for event listener")
+                    else:
+                        # Fall back to creating a dedicated client if global one is unavailable
+                        from django.conf import settings
+                        import redis
 
-                for message in pubsub.listen():
-                    if message["type"] != "pmessage":
-                        continue
+                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+                        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
 
-                    try:
-                        channel = message["channel"].decode("utf-8")
-                        data = json.loads(message["data"].decode("utf-8"))
+                        pubsub_client = redis.Redis(
+                            host=redis_host,
+                            port=redis_port,
+                            db=redis_db,
+                            socket_timeout=60,
+                            socket_connect_timeout=10,
+                            socket_keepalive=True,
+                            health_check_interval=30
+                        )
+                        logger.info("Created dedicated Redis PubSub client for event listener")
 
-                        event_type = data.get("event")
-                        channel_id = data.get("channel_id")
+                    # Test connection before subscribing
+                    pubsub_client.ping()
 
-                        if channel_id and event_type:
-                            # For owner, update client status immediately
-                            if self.am_i_owner(channel_id):
-                                if event_type == EventType.CLIENT_CONNECTED:
-                                    logger.debug(f"Owner received {EventType.CLIENT_CONNECTED} event for channel {channel_id}")
-                                    # Reset any disconnect timer
-                                    disconnect_key = RedisKeys.last_client_disconnect(channel_id)
-                                    self.redis_client.delete(disconnect_key)
+                    # Create a pubsub instance from the client
+                    pubsub = pubsub_client.pubsub()
+                    pubsub.psubscribe("ts_proxy:events:*")
 
-                                elif event_type == EventType.CLIENT_DISCONNECTED:
-                                    logger.debug(f"Owner received {EventType.CLIENT_DISCONNECTED} event for channel {channel_id}")
-                                    # Check if any clients remain
-                                    if channel_id in self.client_managers:
-                                        # VERIFY REDIS CLIENT COUNT DIRECTLY
-                                        client_set_key = RedisKeys.clients(channel_id)
-                                        total = self.redis_client.scard(client_set_key) or 0
+                    logger.info(f"Started Redis event listener for client activity")
 
-                                        if total == 0:
-                                            logger.debug(f"No clients left after disconnect event - stopping channel {channel_id}")
-                                            # Set the disconnect timer for other workers to see
-                                            disconnect_key = RedisKeys.last_client_disconnect(channel_id)
-                                            self.redis_client.setex(disconnect_key, 60, str(time.time()))
+                    # Reset retry count on successful connection
+                    retry_count = 0
 
-                                            # Get configured shutdown delay or default
-                                            shutdown_delay = getattr(Config, 'CHANNEL_SHUTDOWN_DELAY', 0)
+                    for message in pubsub.listen():
+                        if message["type"] != "pmessage":
+                            continue
 
-                                            if shutdown_delay > 0:
-                                                logger.info(f"Waiting {shutdown_delay}s before stopping channel...")
-                                                time.sleep(shutdown_delay)
+                        try:
+                            channel = message["channel"].decode("utf-8")
+                            data = json.loads(message["data"].decode("utf-8"))
 
-                                                # Re-check client count before stopping
-                                                total = self.redis_client.scard(client_set_key) or 0
-                                                if total > 0:
-                                                    logger.info(f"New clients connected during shutdown delay - aborting shutdown")
-                                                    self.redis_client.delete(disconnect_key)
-                                                    return
+                            event_type = data.get("event")
+                            channel_id = data.get("channel_id")
 
-                                            # Stop the channel directly
+                            if channel_id and event_type:
+                                # For owner, update client status immediately
+                                if self.am_i_owner(channel_id):
+                                    if event_type == EventType.CLIENT_CONNECTED:
+                                        logger.debug(f"Owner received {EventType.CLIENT_CONNECTED} event for channel {channel_id}")
+                                        # Reset any disconnect timer
+                                        disconnect_key = RedisKeys.last_client_disconnect(channel_id)
+                                        self.redis_client.delete(disconnect_key)
+
+                                    elif event_type == EventType.CLIENT_DISCONNECTED:
+                                        logger.debug(f"Owner received {EventType.CLIENT_DISCONNECTED} event for channel {channel_id}")
+                                        # Check if any clients remain
+                                        if channel_id in self.client_managers:
+                                            # VERIFY REDIS CLIENT COUNT DIRECTLY
+                                            client_set_key = RedisKeys.clients(channel_id)
+                                            total = self.redis_client.scard(client_set_key) or 0
+
+                                            if total == 0:
+                                                logger.debug(f"No clients left after disconnect event - stopping channel {channel_id}")
+                                                # Set the disconnect timer for other workers to see
+                                                disconnect_key = RedisKeys.last_client_disconnect(channel_id)
+                                                self.redis_client.setex(disconnect_key, 60, str(time.time()))
+
+                                                # Get configured shutdown delay or default
+                                                shutdown_delay = getattr(Config, 'CHANNEL_SHUTDOWN_DELAY', 0)
+
+                                                if shutdown_delay > 0:
+                                                    logger.info(f"Waiting {shutdown_delay}s before stopping channel...")
+                                                    time.sleep(shutdown_delay)
+
+                                                    # Re-check client count before stopping
+                                                    total = self.redis_client.scard(client_set_key) or 0
+                                                    if total > 0:
+                                                        logger.info(f"New clients connected during shutdown delay - aborting shutdown")
+                                                        self.redis_client.delete(disconnect_key)
+                                                        return
+
+                                                # Stop the channel directly
+                                                self.stop_channel(channel_id)
+
+
+                                    elif event_type == EventType.STREAM_SWITCH:
+                                        logger.info(f"Owner received {EventType.STREAM_SWITCH} request for channel {channel_id}")
+                                        # Handle stream switch request
+                                        new_url = data.get("url")
+                                        user_agent = data.get("user_agent")
+
+                                        if new_url and channel_id in self.stream_managers:
+                                            # Update metadata in Redis
+                                            if self.redis_client:
+                                                metadata_key = RedisKeys.channel_metadata(channel_id)
+                                                self.redis_client.hset(metadata_key, "url", new_url)
+                                                if user_agent:
+                                                    self.redis_client.hset(metadata_key, "user_agent", user_agent)
+
+                                                # Set switch status
+                                                status_key = RedisKeys.switch_status(channel_id)
+                                                self.redis_client.set(status_key, "switching")
+
+                                            # Perform the stream switch
+                                            stream_manager = self.stream_managers[channel_id]
+                                            success = stream_manager.update_url(new_url)
+
+                                            if success:
+                                                logger.info(f"Stream switch initiated for channel {channel_id}")
+
+                                                # Publish confirmation
+                                                switch_result = {
+                                                    "event": EventType.STREAM_SWITCHED,  # Use constant instead of string
+                                                    "channel_id": channel_id,
+                                                    "success": True,
+                                                    "url": new_url,
+                                                    "timestamp": time.time()
+                                                }
+                                                self.redis_client.publish(
+                                                    f"ts_proxy:events:{channel_id}",
+                                                    json.dumps(switch_result)
+                                                )
+
+                                                # Update status
+                                                if self.redis_client:
+                                                    self.redis_client.set(status_key, "switched")
+                                            else:
+                                                logger.error(f"Failed to switch stream for channel {channel_id}")
+
+                                                # Publish failure
+                                                switch_result = {
+                                                    "event": EventType.STREAM_SWITCHED,
+                                                    "channel_id": channel_id,
+                                                    "success": False,
+                                                    "url": new_url,
+                                                    "timestamp": time.time()
+                                                }
+                                                self.redis_client.publish(
+                                                    f"ts_proxy:events:{channel_id}",
+                                                    json.dumps(switch_result)
+                                                )
+                                    elif event_type == EventType.CHANNEL_STOP:
+                                        logger.info(f"Received {EventType.CHANNEL_STOP} event for channel {channel_id}")
+                                        # First mark channel as stopping in Redis
+                                        if self.redis_client:
+                                            # Set stopping state in metadata
+                                            metadata_key = RedisKeys.channel_metadata(channel_id)
+                                            if self.redis_client.exists(metadata_key):
+                                                self.redis_client.hset(metadata_key, mapping={
+                                                    "state": ChannelState.STOPPING,
+                                                    "state_changed_at": str(time.time())
+                                                })
+
+                                        # If we have local resources for this channel, clean them up
+                                        if channel_id in self.stream_buffers or channel_id in self.client_managers:
+                                            # Use existing stop_channel method
+                                            logger.info(f"Stopping local resources for channel {channel_id}")
                                             self.stop_channel(channel_id)
 
+                                        # Acknowledge stop by publishing a response
+                                        stop_response = {
+                                            "event": EventType.CHANNEL_STOPPED,
+                                            "channel_id": channel_id,
+                                            "worker_id": self.worker_id,
+                                            "timestamp": time.time()
+                                        }
+                                        self.redis_client.publish(
+                                            f"ts_proxy:events:{channel_id}",
+                                            json.dumps(stop_response)
+                                        )
+                                    elif event_type == EventType.CLIENT_STOP:
+                                        client_id = data.get("client_id")
+                                        if client_id and channel_id:
+                                            logger.info(f"Received request to stop client {client_id} on channel {channel_id}")
 
-                                elif event_type == EventType.STREAM_SWITCH:
-                                    logger.info(f"Owner received {EventType.STREAM_SWITCH} request for channel {channel_id}")
-                                    # Handle stream switch request
-                                    new_url = data.get("url")
-                                    user_agent = data.get("user_agent")
+                                            # Both remove from client manager AND set a key for the generator to detect
+                                            if channel_id in self.client_managers:
+                                                client_manager = self.client_managers[channel_id]
+                                                if client_id in client_manager.clients:
+                                                    client_manager.remove_client(client_id)
+                                                    logger.info(f"Removed client {client_id} from client manager")
 
-                                    if new_url and channel_id in self.stream_managers:
-                                        # Update metadata in Redis
-                                        if self.redis_client:
-                                            metadata_key = RedisKeys.channel_metadata(channel_id)
-                                            self.redis_client.hset(metadata_key, "url", new_url)
-                                            if user_agent:
-                                                self.redis_client.hset(metadata_key, "user_agent", user_agent)
-
-                                            # Set switch status
-                                            status_key = RedisKeys.switch_status(channel_id)
-                                            self.redis_client.set(status_key, "switching")
-
-                                        # Perform the stream switch
-                                        stream_manager = self.stream_managers[channel_id]
-                                        success = stream_manager.update_url(new_url)
-
-                                        if success:
-                                            logger.info(f"Stream switch initiated for channel {channel_id}")
-
-                                            # Publish confirmation
-                                            switch_result = {
-                                                "event": EventType.STREAM_SWITCHED,  # Use constant instead of string
-                                                "channel_id": channel_id,
-                                                "success": True,
-                                                "url": new_url,
-                                                "timestamp": time.time()
-                                            }
-                                            self.redis_client.publish(
-                                                f"ts_proxy:events:{channel_id}",
-                                                json.dumps(switch_result)
-                                            )
-
-                                            # Update status
+                                            # Set a Redis key for the generator to detect
                                             if self.redis_client:
-                                                self.redis_client.set(status_key, "switched")
-                                        else:
-                                            logger.error(f"Failed to switch stream for channel {channel_id}")
+                                                stop_key = RedisKeys.client_stop(channel_id, client_id)
+                                                self.redis_client.setex(stop_key, 30, "true")  # 30 second TTL
+                                                logger.info(f"Set stop key for client {client_id}")
+                        except Exception as e:
+                            logger.error(f"Error processing event message: {e}")
 
-                                            # Publish failure
-                                            switch_result = {
-                                                "event": EventType.STREAM_SWITCHED,
-                                                "channel_id": channel_id,
-                                                "success": False,
-                                                "url": new_url,
-                                                "timestamp": time.time()
-                                            }
-                                            self.redis_client.publish(
-                                                f"ts_proxy:events:{channel_id}",
-                                                json.dumps(switch_result)
-                                            )
-                                elif event_type == EventType.CHANNEL_STOP:
-                                    logger.info(f"Received {EventType.CHANNEL_STOP} event for channel {channel_id}")
-                                    # First mark channel as stopping in Redis
-                                    if self.redis_client:
-                                        # Set stopping state in metadata
-                                        metadata_key = RedisKeys.channel_metadata(channel_id)
-                                        if self.redis_client.exists(metadata_key):
-                                            self.redis_client.hset(metadata_key, mapping={
-                                                "state": ChannelState.STOPPING,
-                                                "state_changed_at": str(time.time())
-                                            })
+                except (ConnectionError, TimeoutError) as e:
+                    # Calculate exponential backoff with jitter
+                    retry_count += 1
+                    delay = min(base_retry_delay * (2 ** (retry_count - 1)), max_retry_delay)
+                    # Add some randomness to prevent thundering herd
+                    jitter = random.uniform(0, 0.5 * delay)
+                    final_delay = delay + jitter
 
-                                    # If we have local resources for this channel, clean them up
-                                    if channel_id in self.stream_buffers or channel_id in self.client_managers:
-                                        # Use existing stop_channel method
-                                        logger.info(f"Stopping local resources for channel {channel_id}")
-                                        self.stop_channel(channel_id)
+                    logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
+                    time.sleep(final_delay)
 
-                                    # Acknowledge stop by publishing a response
-                                    stop_response = {
-                                        "event": EventType.CHANNEL_STOPPED,
-                                        "channel_id": channel_id,
-                                        "worker_id": self.worker_id,
-                                        "timestamp": time.time()
-                                    }
-                                    self.redis_client.publish(
-                                        f"ts_proxy:events:{channel_id}",
-                                        json.dumps(stop_response)
-                                    )
-                                elif event_type == EventType.CLIENT_STOP:
-                                    client_id = data.get("client_id")
-                                    if client_id and channel_id:
-                                        logger.info(f"Received request to stop client {client_id} on channel {channel_id}")
+                    # Try to clean up the old connection
+                    try:
+                        if 'pubsub' in locals():
+                            pubsub.close()
+                        if 'pubsub_client' in locals():
+                            pubsub_client.close()
+                    except:
+                        pass
 
-                                        # Both remove from client manager AND set a key for the generator to detect
-                                        if channel_id in self.client_managers:
-                                            client_manager = self.client_managers[channel_id]
-                                            if client_id in client_manager.clients:
-                                                client_manager.remove_client(client_id)
-                                                logger.info(f"Removed client {client_id} from client manager")
-
-                                        # Set a Redis key for the generator to detect
-                                        if self.redis_client:
-                                            stop_key = RedisKeys.client_stop(channel_id, client_id)
-                                            self.redis_client.setex(stop_key, 30, "true")  # 30 second TTL
-                                            logger.info(f"Set stop key for client {client_id}")
-                    except Exception as e:
-                        logger.error(f"Error processing event message: {e}")
-            except Exception as e:
-                logger.error(f"Error in event listener: {e}")
-                time.sleep(5)  # Wait before reconnecting
-                # Try to restart the listener
-                self._start_event_listener()
+                except Exception as e:
+                    logger.error(f"Error in event listener: {e}")
+                    # Add a short delay to prevent rapid retries on persistent errors
+                    time.sleep(5)
 
         thread = threading.Thread(target=event_listener, daemon=True)
         thread.name = "redis-event-listener"
@@ -249,10 +385,9 @@ class ProxyServer:
 
         try:
             lock_key = RedisKeys.channel_owner(channel_id)
-            owner = self.redis_client.get(lock_key)
-            if owner:
-                return owner.decode('utf-8')
-            return None
+            return self._execute_redis_command(
+                lambda: self.redis_client.get(lock_key).decode('utf-8') if self.redis_client.get(lock_key) else None
+            )
         except Exception as e:
             logger.error(f"Error getting channel owner: {e}")
             return None
@@ -271,20 +406,32 @@ class ProxyServer:
             # Create a lock key with proper namespace
             lock_key = RedisKeys.channel_owner(channel_id)
 
-            # Use Redis SETNX for atomic locking - only succeeds if the key doesn't exist
-            acquired = self.redis_client.setnx(lock_key, self.worker_id)
+            # Use Redis SETNX for atomic locking with error handling
+            acquired = self._execute_redis_command(
+                lambda: self.redis_client.setnx(lock_key, self.worker_id)
+            )
+
+            if acquired is None:  # Redis command failed
+                logger.warning(f"Redis command failed during ownership acquisition - assuming ownership")
+                return True
 
             # If acquired, set expiry to prevent orphaned locks
             if acquired:
-                self.redis_client.expire(lock_key, ttl)
+                self._execute_redis_command(
+                    lambda: self.redis_client.expire(lock_key, ttl)
+                )
                 logger.info(f"Worker {self.worker_id} acquired ownership of channel {channel_id}")
                 return True
 
             # If not acquired, check if we already own it (might be a retry)
-            current_owner = self.redis_client.get(lock_key)
+            current_owner = self._execute_redis_command(
+                lambda: self.redis_client.get(lock_key)
+            )
             if current_owner and current_owner.decode('utf-8') == self.worker_id:
                 # Refresh TTL
-                self.redis_client.expire(lock_key, ttl)
+                self._execute_redis_command(
+                    lambda: self.redis_client.expire(lock_key, ttl)
+                )
                 logger.info(f"Worker {self.worker_id} refreshed ownership of channel {channel_id}")
                 return True
 
@@ -689,7 +836,7 @@ class ProxyServer:
 
             return True
         except Exception as e:
-            logger.error(f"Error stopping channel {channel_id}: {e}", exc_info=True)
+            logger.error(f"Error stopping channel {channel_id}: {e}")
             return False
 
     def check_inactive_channels(self):
@@ -723,7 +870,9 @@ class ProxyServer:
                     # Send worker heartbeat first
                     if self.redis_client:
                         worker_heartbeat_key = f"ts_proxy:worker:{self.worker_id}:heartbeat"
-                        self.redis_client.setex(worker_heartbeat_key, 30, str(time.time()))
+                        self._execute_redis_command(
+                            lambda: self.redis_client.setex(worker_heartbeat_key, 30, str(time.time()))
+                        )
 
                     # Refresh channel registry
                     self.refresh_channel_registry()

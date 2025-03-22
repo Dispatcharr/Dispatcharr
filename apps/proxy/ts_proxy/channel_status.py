@@ -4,8 +4,10 @@ import re
 from . import proxy_server
 from .redis_keys import RedisKeys
 from .constants import TS_PACKET_SIZE
+from redis.exceptions import ConnectionError, TimeoutError
+from .utils import get_logger
 
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 class ChannelStatus:
 
@@ -172,76 +174,98 @@ class ChannelStatus:
 
         return info
 
-    # Function for basic channel info (used for all channels summary)
-    def get_basic_channel_info(channel_id):
-        # Get channel metadata
-        metadata_key = RedisKeys.channel_metadata(channel_id)
-        metadata = proxy_server.redis_client.hgetall(metadata_key)
-
-        if not metadata:
+    @staticmethod
+    def _execute_redis_command(command_func):
+        """Execute Redis command with error handling"""
+        if not proxy_server.redis_client:
             return None
 
-        # Basic channel info only - omit diagnostics and details
-        buffer_index_key = RedisKeys.buffer_index(channel_id)
-        buffer_index_value = proxy_server.redis_client.get(buffer_index_key)
+        try:
+            return command_func()
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning(f"Redis connection error in ChannelStatus: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Redis command error in ChannelStatus: {e}")
+            return None
 
-        # Count clients (using efficient count method)
-        client_set_key = RedisKeys.clients(channel_id)
-        client_count = proxy_server.redis_client.scard(client_set_key) or 0
+    @staticmethod
+    def get_basic_channel_info(channel_id):
+        """Get basic channel information with Redis error handling"""
+        try:
+            # Use _execute_redis_command for Redis operations
+            metadata_key = RedisKeys.channel_metadata(channel_id)
+            metadata = ChannelStatus._execute_redis_command(
+                lambda: proxy_server.redis_client.hgetall(metadata_key)
+            )
 
-        # Calculate uptime
-        created_at = float(metadata.get(b'init_time', b'0').decode('utf-8'))
-        uptime = time.time() - created_at if created_at > 0 else 0
+            if not metadata:
+                return None
 
-        # Simplified info
-        info = {
-            'channel_id': channel_id,
-            'state': metadata.get(b'state', b'unknown').decode('utf-8'),
-            'url': metadata.get(b'url', b'').decode('utf-8'),
-            'profile': metadata.get(b'profile', b'unknown').decode('utf-8'),
-            'owner': metadata.get(b'owner', b'unknown').decode('utf-8'),
-            'buffer_index': int(buffer_index_value.decode('utf-8')) if buffer_index_value else 0,
-            'client_count': client_count,
-            'uptime': uptime
-        }
+            # Basic channel info only - omit diagnostics and details
+            buffer_index_key = RedisKeys.buffer_index(channel_id)
+            buffer_index_value = proxy_server.redis_client.get(buffer_index_key)
 
-        # Quick health check if available locally
-        if channel_id in proxy_server.stream_managers:
-            manager = proxy_server.stream_managers[channel_id]
-            info['healthy'] = manager.healthy
+            # Count clients (using efficient count method)
+            client_set_key = RedisKeys.clients(channel_id)
+            client_count = proxy_server.redis_client.scard(client_set_key) or 0
 
-        # Get concise client information
-        clients = []
-        client_ids = proxy_server.redis_client.smembers(client_set_key)
+            # Calculate uptime
+            created_at = float(metadata.get(b'init_time', b'0').decode('utf-8'))
+            uptime = time.time() - created_at if created_at > 0 else 0
 
-        # Process only if we have clients and keep it limited
-        if client_ids:
-            # Get up to 10 clients for the basic view
-            for client_id in list(client_ids)[:10]:
-                client_id_str = client_id.decode('utf-8')
-                client_key = f"ts_proxy:channel:{channel_id}:clients:{client_id_str}"
+            # Simplified info
+            info = {
+                'channel_id': channel_id,
+                'state': metadata.get(b'state', b'unknown').decode('utf-8'),
+                'url': metadata.get(b'url', b'').decode('utf-8'),
+                'profile': metadata.get(b'profile', b'unknown').decode('utf-8'),
+                'owner': metadata.get(b'owner', b'unknown').decode('utf-8'),
+                'buffer_index': int(buffer_index_value.decode('utf-8')) if buffer_index_value else 0,
+                'client_count': client_count,
+                'uptime': uptime
+            }
 
-                # Efficient way - just retrieve the essentials
-                client_info = {
-                    'client_id': client_id_str,
-                    'user_agent': proxy_server.redis_client.hget(client_key, 'user_agent'),
-                    'ip_address': proxy_server.redis_client.hget(client_key, 'ip_address').decode('utf-8'),
-                }
+            # Quick health check if available locally
+            if channel_id in proxy_server.stream_managers:
+                manager = proxy_server.stream_managers[channel_id]
+                info['healthy'] = manager.healthy
 
-                if client_info['user_agent']:
-                    client_info['user_agent'] = client_info['user_agent'].decode('utf-8')
-                else:
-                    client_info['user_agent'] = 'unknown'
+            # Get concise client information
+            clients = []
+            client_ids = proxy_server.redis_client.smembers(client_set_key)
 
-                # Just get connected_at for client age
-                connected_at_bytes = proxy_server.redis_client.hget(client_key, 'connected_at')
-                if connected_at_bytes:
-                    connected_at = float(connected_at_bytes.decode('utf-8'))
-                    client_info['connected_since'] = time.time() - connected_at
+            # Process only if we have clients and keep it limited
+            if client_ids:
+                # Get up to 10 clients for the basic view
+                for client_id in list(client_ids)[:10]:
+                    client_id_str = client_id.decode('utf-8')
+                    client_key = f"ts_proxy:channel:{channel_id}:clients:{client_id_str}"
 
-                clients.append(client_info)
+                    # Efficient way - just retrieve the essentials
+                    client_info = {
+                        'client_id': client_id_str,
+                        'user_agent': proxy_server.redis_client.hget(client_key, 'user_agent'),
+                        'ip_address': proxy_server.redis_client.hget(client_key, 'ip_address').decode('utf-8'),
+                    }
 
-        # Add clients to info
-        info['clients'] = clients
+                    if client_info['user_agent']:
+                        client_info['user_agent'] = client_info['user_agent'].decode('utf-8')
+                    else:
+                        client_info['user_agent'] = 'unknown'
 
-        return info
+                    # Just get connected_at for client age
+                    connected_at_bytes = proxy_server.redis_client.hget(client_key, 'connected_at')
+                    if connected_at_bytes:
+                        connected_at = float(connected_at_bytes.decode('utf-8'))
+                        client_info['connected_since'] = time.time() - connected_at
+
+                    clients.append(client_info)
+
+            # Add clients to info
+            info['clients'] = clients
+
+            return info
+        except Exception as e:
+            logger.error(f"Error getting channel info: {e}")
+            return None

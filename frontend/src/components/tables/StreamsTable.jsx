@@ -32,6 +32,7 @@ import {
   Group,
   NumberInput,
   NativeSelect,
+  MultiSelect,
 } from '@mantine/core';
 import {
   IconArrowDown,
@@ -71,7 +72,7 @@ const StreamsTable = ({}) => {
   });
   const [filters, setFilters] = useState({
     name: '',
-    group_name: '',
+    channel_group: '',
     m3u_account: '',
   });
   const debouncedFilters = useDebounce(filters, 500);
@@ -83,7 +84,7 @@ const StreamsTable = ({}) => {
    * Stores
    */
   const { playlists } = usePlaylistsStore();
-  const { channelsPageSelection } = useChannelsStore();
+  const { channelGroups, channelsPageSelection } = useChannelsStore();
   const channelSelectionStreams = useChannelsStore(
     (state) => state.channels[state.channelsPageSelection[0]?.id]?.streams
   );
@@ -133,11 +134,11 @@ const StreamsTable = ({}) => {
       },
       {
         header: 'Group',
-        accessorKey: 'group_name',
+        accessorFn: (row) => channelGroups[row.channel_group].name,
         size: 100,
         Header: ({ column }) => (
           <Box onClick={handleSelectClick}>
-            <Select
+            <MultiSelect
               placeholder="Group"
               searchable
               size="xs"
@@ -200,7 +201,7 @@ const StreamsTable = ({}) => {
   const handleGroupChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      group_name: value ? value : '',
+      channel_group: value ? value : '',
     }));
   };
 

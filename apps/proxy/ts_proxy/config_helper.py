@@ -2,10 +2,7 @@
 Helper module to access configuration values with proper defaults.
 """
 
-import logging
 from apps.proxy.config import TSConfig as Config
-
-logger = logging.getLogger("ts_proxy")
 
 class ConfigHelper:
     """

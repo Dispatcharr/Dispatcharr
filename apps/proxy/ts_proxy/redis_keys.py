@@ -83,3 +83,8 @@ class RedisKeys:
     def transcode_active(channel_id):
         """Key indicating active transcode process"""
         return f"ts_proxy:channel:{channel_id}:transcode_active"
+
+    @staticmethod
+    def client_metadata(channel_id, client_id):
+        """Key for client metadata hash"""
+        return f"ts_proxy:channel:{channel_id}:clients:{client_id}"

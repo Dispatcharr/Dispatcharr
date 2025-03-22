@@ -1,6 +1,7 @@
 import logging
 import re
 from urllib.parse import urlparse
+import inspect
 
 logger = logging.getLogger("ts_proxy")
 
@@ -78,3 +79,30 @@ def create_ts_packet(packet_type='null', message=None):
         packet[4:4+min(len(msg_bytes), 180)] = msg_bytes[:180]
 
     return bytes(packet)
+
+def get_logger(component_name=None):
+    """
+    Get a standardized logger with ts_proxy prefix and optional component name.
+
+    Args:
+        component_name (str, optional): Name of the component. If not provided,
+                                      will try to detect from the calling module.
+
+    Returns:
+        logging.Logger: A configured logger with standardized naming.
+    """
+    if component_name:
+        logger_name = f"ts_proxy.{component_name}"
+    else:
+        # Try to get the calling module name if not explicitly specified
+        frame = inspect.currentframe().f_back
+        module = inspect.getmodule(frame)
+        if module:
+            # Extract just the filename without extension
+            module_name = module.__name__.split('.')[-1]
+            logger_name = f"ts_proxy.{module_name}"
+        else:
+            # Default if detection fails
+            logger_name = "ts_proxy"
+
+    return logging.getLogger(logger_name)

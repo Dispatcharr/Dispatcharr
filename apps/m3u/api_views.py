@@ -11,6 +11,7 @@ from django.core.cache import cache
 # Import all models, including UserAgent.
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
+from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
 # Import all serializers, including the UserAgentSerializer.
 from .serializers import (
@@ -24,9 +25,42 @@ from .tasks import refresh_single_m3u_account, refresh_m3u_accounts
 
 class M3UAccountViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U accounts"""
-    queryset = M3UAccount.objects.all()
+    queryset = M3UAccount.objects.prefetch_related('channel_group')
     serializer_class = M3UAccountSerializer
     permission_classes = [IsAuthenticated]
+
+    def update(self, request, *args, **kwargs):
+        # Get the M3UAccount instance we're updating
+        instance = self.get_object()
+
+        # Handle updates to the 'enabled' flag of the related ChannelGroupM3UAccount instances
+        updates = request.data.get('channel_groups', [])
+
+        for update_data in updates:
+            channel_group_id = update_data.get('channel_group')
+            enabled = update_data.get('enabled')
+
+            try:
+                # Get the specific relationship to update
+                relationship = ChannelGroupM3UAccount.objects.get(
+                    m3u_account=instance, channel_group_id=channel_group_id
+                )
+                relationship.enabled = enabled
+                relationship.save()
+            except ChannelGroupM3UAccount.DoesNotExist:
+                return Response(
+                    {"error": "ChannelGroupM3UAccount not found for the given M3UAccount and ChannelGroup."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # After updating the ChannelGroupM3UAccount relationships, reload the M3UAccount instance
+        instance.refresh_from_db()
+
+        refresh_single_m3u_account.delay(instance.id)
+
+        # Serialize and return the updated M3UAccount data
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
 class M3UFilterViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U filters"""

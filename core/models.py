@@ -67,7 +67,7 @@ class StreamProfile(models.Model):
     def save(self, *args, **kwargs):
         if self.pk:  # Only check existing records
             orig = StreamProfile.objects.get(pk=self.pk)
-            if orig.is_protected:
+            if orig.locked:
                 allowed_fields = {"user_agent_id"}  # Only allow this field to change
                 for field in self._meta.fields:
                     field_name = field.name
@@ -91,7 +91,7 @@ class StreamProfile(models.Model):
     def update(cls, pk, **kwargs):
         instance = cls.objects.get(pk=pk)
 
-        if instance.is_protected:
+        if instance.locked:
             allowed_fields = {"user_agent_id"}  # Only allow updating this field
 
             for field_name, new_value in kwargs.items():
@@ -142,8 +142,8 @@ class StreamProfile(models.Model):
 
 DEFAULT_USER_AGENT_KEY= slugify("Default User-Agent")
 DEFAULT_STREAM_PROFILE_KEY = slugify("Default Stream Profile")
+STREAM_HASH_KEY = slugify("M3U Hash Key")
 PREFERRED_REGION_KEY = slugify("Preferred Region")
-
 
 class CoreSettings(models.Model):
     key = models.CharField(
@@ -170,10 +170,12 @@ class CoreSettings(models.Model):
         return cls.objects.get(key=DEFAULT_STREAM_PROFILE_KEY).value
 
     @classmethod
+    def get_m3u_hash_key(cls):
+        return cls.objects.get(key=STREAM_HASH_KEY).value
+
     def get_preferred_region(cls):
         """Retrieve the preferred region setting (or return None if not found)."""
         try:
             return cls.objects.get(key=PREFERRED_REGION_KEY).value
         except cls.DoesNotExist:
             return None
-

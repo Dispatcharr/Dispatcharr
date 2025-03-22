@@ -10,4 +10,10 @@ if [ "$(id -u)" = "0" ]; then
     chown -R $PUID:$PGID /app
     chown $PUID:www-data /app/uwsgi.sock
     chmod 777 /app/uwsgi.sock
+
+    # Create and set permissions for the cached_m3u directory
+    mkdir -p /app/media/cached_m3u
+    chown -R $PUID:$PGID /app/media/cached_m3u
+    chmod 777 /app/media/cached_m3u
+    echo "Created and set permissions for cached_m3u directory"
 fi

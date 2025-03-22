@@ -10,8 +10,9 @@ from apps.proxy.config import TSConfig as Config
 from .redis_keys import RedisKeys
 from .config_helper import ConfigHelper
 from .constants import TS_PACKET_SIZE
+from .utils import get_logger
 
-logger = logging.getLogger("ts_proxy")
+logger = get_logger()
 
 class StreamBuffer:
     """Manages stream data buffering with optimized chunk storage"""

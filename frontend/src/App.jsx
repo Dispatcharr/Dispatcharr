@@ -26,6 +26,7 @@ import './index.css';
 import mantineTheme from './mantineTheme';
 import API from './api';
 import { Notifications } from '@mantine/notifications';
+import M3URefreshNotification from './components/M3URefreshNotification';
 
 const drawerWidth = 240;
 const miniDrawerWidth = 60;
@@ -143,6 +144,7 @@ const App = () => {
               </Box>
             </AppShell.Main>
           </AppShell>
+          <M3URefreshNotification />
         </Router>
 
         <FloatingVideo />

@@ -17,11 +17,14 @@ import {
   Select,
   Space,
 } from '@mantine/core';
+import M3UGroupFilter from './M3UGroupFilter';
 
-const M3U = ({ playlist = null, isOpen, onClose }) => {
+const M3U = ({ playlist = null, isOpen, onClose, playlistCreated = false }) => {
   const userAgents = useUserAgentsStore((state) => state.userAgents);
   const [file, setFile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
+  const [loadingText, setLoadingText] = useState('');
 
   const handleFileChange = (file) => {
     if (file) {
@@ -43,6 +46,7 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
       max_streams: Yup.string().required('Max streams is required'),
     }),
     onSubmit: async (values, { setSubmitting, resetForm }) => {
+      let newPlaylist;
       if (playlist?.id) {
         await API.updatePlaylist({
           id: playlist.id,
@@ -50,7 +54,8 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
           uploaded_file: file,
         });
       } else {
-        await API.addPlaylist({
+        setLoadingText('Loading groups...');
+        newPlaylist = await API.addPlaylist({
           ...values,
           uploaded_file: file,
         });
@@ -59,9 +64,18 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
       resetForm();
       setFile(null);
       setSubmitting(false);
-      onClose();
+      onClose(newPlaylist);
     },
   });
+
+  const closeGroupFilter = () => {
+    setGroupFilterModalOpen(false);
+    if (playlistCreated) {
+      formik.resetForm();
+      setFile(null);
+      onClose();
+    }
+  };
 
   useEffect(() => {
     if (playlist) {
@@ -77,15 +91,25 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
     }
   }, [playlist]);
 
+  useEffect(() => {
+    if (playlistCreated) {
+      setGroupFilterModalOpen(true);
+    }
+  }, [playlist, playlistCreated]);
+
   if (!isOpen) {
     return <></>;
   }
 
   return (
     <Modal opened={isOpen} onClose={onClose} title="M3U Account">
-      <div style={{ width: 400, position: 'relative' }}>
-        <LoadingOverlay visible={formik.isSubmitting} overlayBlur={2} />
+      <LoadingOverlay
+        visible={formik.isSubmitting}
+        overlayBlur={2}
+        loaderProps={loadingText ? { children: loadingText } : {}}
+      />
 
+      <div style={{ width: 400, position: 'relative' }}>
         <form onSubmit={formik.handleSubmit}>
           <TextInput
             fullWidth
@@ -156,14 +180,24 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
 
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             {playlist && (
-              <Button
-                variant="contained"
-                color="primary"
-                size="small"
-                onClick={() => setProfileModalOpen(true)}
-              >
-                Profiles
-              </Button>
+              <>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  size="small"
+                  onClick={() => setGroupFilterModalOpen(true)}
+                >
+                  Groups
+                </Button>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  size="small"
+                  onClick={() => setProfileModalOpen(true)}
+                >
+                  Profiles
+                </Button>
+              </>
             )}
             <Button
               type="submit"
@@ -176,11 +210,18 @@ const M3U = ({ playlist = null, isOpen, onClose }) => {
             </Button>
           </Flex>
           {playlist && (
-            <M3UProfiles
-              playlist={playlist}
-              isOpen={profileModalOpen}
-              onClose={() => setProfileModalOpen(false)}
-            />
+            <>
+              <M3UProfiles
+                playlist={playlist}
+                isOpen={profileModalOpen}
+                onClose={() => setProfileModalOpen(false)}
+              />
+              <M3UGroupFilter
+                isOpen={groupFilterModalOpen}
+                playlist={playlist}
+                onClose={closeGroupFilter}
+              />
+            </>
           )}
         </form>
       </div>

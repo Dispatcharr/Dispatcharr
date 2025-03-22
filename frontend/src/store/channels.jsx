@@ -5,7 +5,7 @@ import { notifications } from '@mantine/notifications';
 const useChannelsStore = create((set, get) => ({
   channels: [],
   channelsByUUID: {},
-  channelGroups: [],
+  channelGroups: {},
   channelsPageSelection: [],
   stats: {},
   activeChannels: {},
@@ -38,7 +38,13 @@ const useChannelsStore = create((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const channelGroups = await api.getChannelGroups();
-      set({ channelGroups: channelGroups, isLoading: false });
+      set({
+        channelGroups: channelGroups.reduce((acc, group) => {
+          acc[group.id] = group;
+          return acc;
+        }, {}),
+        isLoading: false,
+      });
     } catch (error) {
       console.error('Failed to fetch channel groups:', error);
       set({ error: 'Failed to load channel groups.', isLoading: false });
@@ -108,14 +114,16 @@ const useChannelsStore = create((set, get) => ({
 
   addChannelGroup: (newChannelGroup) =>
     set((state) => ({
-      channelGroups: [...state.channelGroups, newChannelGroup],
+      channelGroups: {
+        ...state.channelGroups,
+        [newChannelGroup.id]: newChannelGroup,
+      },
     })),
 
   updateChannelGroup: (channelGroup) =>
     set((state) => ({
-      channelGroups: state.channelGroups.map((group) =>
-        group.id === channelGroup.id ? channelGroup : group
-      ),
+      ...state.channelGroups,
+      [channelGroup.id]: channelGroup,
     })),
 
   setChannelsPageSelection: (channelsPageSelection) =>

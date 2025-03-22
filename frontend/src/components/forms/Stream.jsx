@@ -5,16 +5,18 @@ import * as Yup from 'yup';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import { Modal, TextInput, Select, Button, Flex } from '@mantine/core';
+import useChannelsStore from '../../store/channels';
 
 const Stream = ({ stream = null, isOpen, onClose }) => {
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
+  const { channelGroups } = useChannelsStore();
   const [selectedStreamProfile, setSelectedStreamProfile] = useState('');
 
   const formik = useFormik({
     initialValues: {
       name: '',
       url: '',
-      group_name: '',
+      channel_group: null,
       stream_profile_id: '',
     },
     validationSchema: Yup.object({
@@ -23,6 +25,7 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
       // stream_profile_id: Yup.string().required('Stream profile is required'),
     }),
     onSubmit: async (values, { setSubmitting, resetForm }) => {
+      console.log(values);
       if (stream?.id) {
         await API.updateStream({ id: stream.id, ...values });
       } else {
@@ -40,7 +43,7 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
       formik.setValues({
         name: stream.name,
         url: stream.url,
-        group_name: stream.group_name,
+        channel_group: stream.channel_group,
         stream_profile_id: stream.stream_profile_id,
       });
     } else {
@@ -73,13 +76,19 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
           error={formik.errors.url}
         />
 
-        <TextInput
-          id="group_name"
-          name="group_name"
+        <Select
+          id="channel_group"
+          name="channel_group"
           label="Group"
-          value={formik.values.group_name}
-          onChange={formik.handleChange}
-          error={formik.errors.group_name}
+          value={formik.values.channel_group}
+          onChange={(value) => {
+            formik.setFieldValue('channel_group', value); // Update Formik's state with the new value
+          }}
+          error={formik.errors.channel_group}
+          data={channelGroups.map((group) => ({
+            label: group.name,
+            value: `${group.id}`,
+          }))}
         />
 
         <Select
@@ -87,8 +96,10 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
           name="stream_profile_id"
           label="Stream Profile"
           placeholder="Optional"
-          value={selectedStreamProfile}
-          onChange={setSelectedStreamProfile}
+          value={formik.values.stream_profile_id}
+          onChange={(value) => {
+            formik.setFieldValue('stream_profile_id', value); // Update Formik's state with the new value
+          }}
           error={formik.errors.stream_profile_id}
           data={streamProfiles.map((profile) => ({
             label: profile.name,

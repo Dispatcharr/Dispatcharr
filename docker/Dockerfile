@@ -3,7 +3,8 @@ FROM python:3.13-slim AS builder
 ENV PATH="/dispatcharrpy/bin:$PATH" \
     VIRTUAL_ENV=/dispatcharrpy \
     DJANGO_SETTINGS_MODULE=dispatcharr.settings \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DISPATCHARR_BUILD=1
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

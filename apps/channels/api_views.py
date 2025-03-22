@@ -23,14 +23,14 @@ class StreamPagination(PageNumberPagination):
 
 class StreamFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr='icontains')
-    group_name = django_filters.CharFilter(lookup_expr='icontains')
+    channel_group_name = django_filters.CharFilter(field_name="channel_group__name", lookup_expr="icontains")
     m3u_account = django_filters.NumberFilter(field_name="m3u_account__id")
     m3u_account_name = django_filters.CharFilter(field_name="m3u_account__name", lookup_expr="icontains")
     m3u_account_is_active = django_filters.BooleanFilter(field_name="m3u_account__is_active")
 
     class Meta:
         model = Stream
-        fields = ['name', 'group_name', 'm3u_account', 'm3u_account_name', 'm3u_account_is_active']
+        fields = ['name', 'channel_group_name', 'm3u_account', 'm3u_account_name', 'm3u_account_is_active']
 
 # ─────────────────────────────────────────────────────────
 # 1) Stream API (CRUD)
@@ -43,20 +43,27 @@ class StreamViewSet(viewsets.ModelViewSet):
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = StreamFilter
-    search_fields = ['name', 'group_name']
-    ordering_fields = ['name', 'group_name']
+    search_fields = ['name', 'channel_group__name']
+    ordering_fields = ['name', 'channel_group__name']
     ordering = ['-name']
 
     def get_queryset(self):
         qs = super().get_queryset()
         # Exclude streams from inactive M3U accounts
         qs = qs.exclude(m3u_account__is_active=False)
+
         assigned = self.request.query_params.get('assigned')
         if assigned is not None:
             qs = qs.filter(channels__id=assigned)
+
         unassigned = self.request.query_params.get('unassigned')
         if unassigned == '1':
             qs = qs.filter(channels__isnull=True)
+
+        channel_group = self.request.query_params.get('channel_group')
+        if channel_group:
+            qs = qs.filter(channel_group__name=channel_group)
+
         return qs
 
     @action(detail=False, methods=['get'], url_path='ids')
@@ -75,7 +82,8 @@ class StreamViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='groups')
     def get_groups(self, request, *args, **kwargs):
-        group_names = Stream.objects.exclude(group_name__isnull=True).exclude(group_name="").order_by().values_list('group_name', flat=True).distinct()
+        # Get unique ChannelGroup names that are linked to streams
+        group_names = ChannelGroup.objects.filter(streams__isnull=False).order_by('name').values_list('name', flat=True).distinct()
 
         # Return the response with the list of unique group names
         return Response(list(group_names))
@@ -158,7 +166,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if not stream_id:
             return Response({"error": "Missing stream_id"}, status=status.HTTP_400_BAD_REQUEST)
         stream = get_object_or_404(Stream, pk=stream_id)
-        channel_group, _ = ChannelGroup.objects.get_or_create(name=stream.group_name)
+        channel_group = stream.channel_group
 
         # Check if client provided a channel_number; if not, auto-assign one.
         provided_number = request.data.get('channel_number')
@@ -254,7 +262,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 errors.append({"item": item, "error": str(e)})
                 continue
 
-            channel_group, _ = ChannelGroup.objects.get_or_create(name=stream.group_name)
+            channel_group = stream.channel_group
 
             # Determine channel number: if provided, use it (if free); else auto assign.
             provided_number = item.get('channel_number')
