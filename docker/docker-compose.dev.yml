@@ -15,3 +15,5 @@ services:
       - DISPATCHARR_ENV=dev
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
+      - PUID=${PUID}
+      - PGID=${PGID}

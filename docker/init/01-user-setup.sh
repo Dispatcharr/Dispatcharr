@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# Set up user details
-export PUID=${PUID:-1000}
-export PGID=${PGID:-1000}
-
 # Create group if it doesn't exist
 if ! getent group "$PGID" >/dev/null 2>&1; then
     groupadd -g "$PGID" dispatch
