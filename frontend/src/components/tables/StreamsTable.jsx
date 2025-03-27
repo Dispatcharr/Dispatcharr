@@ -35,15 +35,10 @@ import {
   MultiSelect,
   useMantineTheme,
 } from '@mantine/core';
-import {
-  IconArrowDown,
-  IconArrowUp,
-  IconDeviceDesktopSearch,
-  IconSelector,
-  IconSortAscendingNumbers,
-  IconSquarePlus,
-} from '@tabler/icons-react';
+import { IconSquarePlus } from '@tabler/icons-react';
 import { useNavigate } from 'react-router-dom';
+import useSettingsStore from '../../store/settings';
+import useVideoStore from '../../store/useVideoStore';
 
 const StreamsTable = ({}) => {
   const theme = useMantineTheme();
@@ -91,6 +86,10 @@ const StreamsTable = ({}) => {
   const channelSelectionStreams = useChannelsStore(
     (state) => state.channels[state.channelsPageSelection[0]?.id]?.streams
   );
+  const {
+    environment: { env_mode },
+  } = useSettingsStore();
+  const { showVideo } = useVideoStore();
 
   const isMoreActionsOpen = Boolean(moreActionsAnchorEl);
 
@@ -110,9 +109,6 @@ const StreamsTable = ({}) => {
       {
         header: 'Name',
         accessorKey: 'name',
-        mantineTableHeadCellProps: {
-          style: { textAlign: 'center', backgroundColor: 'rgb(56, 58, 63)' }, // Center-align the header
-        },
         Header: ({ column }) => (
           <TextInput
             name="name"
@@ -123,9 +119,6 @@ const StreamsTable = ({}) => {
             size="xs"
             variant="unstyled"
             className="table-input-header"
-            style={{
-              paddingLeft: 10,
-            }}
           />
         ),
         Cell: ({ cell }) => (
@@ -142,10 +135,13 @@ const StreamsTable = ({}) => {
       },
       {
         header: 'Group',
-        accessorFn: (row) => channelGroups[row.channel_group].name,
+        accessorFn: (row) =>
+          channelGroups[row.channel_group]
+            ? channelGroups[row.channel_group].name
+            : '',
         size: 100,
         Header: ({ column }) => (
-          <Box onClick={handleSelectClick}>
+          <Box onClick={handleSelectClick} style={{ width: '100%' }}>
             <MultiSelect
               placeholder="Group"
               searchable
@@ -155,7 +151,11 @@ const StreamsTable = ({}) => {
               onChange={handleGroupChange}
               data={groupOptions}
               variant="unstyled"
-              className="table-input-header"
+              className="table-input-header custom-multiselect"
+              clearable
+              valueComponent={({ value }) => {
+                return <div>foo</div>; // Override to display custom text
+              }}
             />
           </Box>
         ),
@@ -429,6 +429,14 @@ const StreamsTable = ({}) => {
     setPagination(updater);
   };
 
+  function handleWatchStream(streamHash) {
+    let vidUrl = `/proxy/ts/stream/${streamHash}`;
+    if (env_mode == 'dev') {
+      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
+    }
+    showVideo(vidUrl);
+  }
+
   const table = useMantineReactTable({
     ...TableHelper.defaultProperties,
     columns,
@@ -510,9 +518,10 @@ const StreamsTable = ({}) => {
         <Tooltip label="Add to Channel">
           <ActionIcon
             size="sm"
-            color={theme.tailwind.blue[4]}
+            color={theme.tailwind.blue[6]}
             variant="transparent"
             onClick={() => addStreamToChannel(row.original.id)}
+            style={{ background: 'none' }}
             disabled={
               channelsPageSelection.length !== 1 ||
               (channelSelectionStreams &&
@@ -562,13 +571,18 @@ const StreamsTable = ({}) => {
             >
               Delete Stream
             </Menu.Item>
+            <Menu.Item
+              onClick={() => handleWatchStream(row.original.stream_hash)}
+            >
+              Preview Stream
+            </Menu.Item>
           </Menu.Dropdown>
         </Menu>
       </>
     ),
     mantineTableContainerProps: {
       style: {
-        height: 'calc(100vh - 167px)',
+        height: 'calc(100vh - 150px)',
         overflowY: 'auto',
       },
     },

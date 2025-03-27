@@ -18,11 +18,12 @@ from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
-from .constants import ChannelState, EventType, StreamType
+from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
 from .config_helper import ConfigHelper
 from .services.channel_service import ChannelService
-from .url_utils import generate_stream_url, transform_url, get_stream_info_for_switch
+from .url_utils import generate_stream_url, transform_url, get_stream_info_for_switch, get_stream_object
 from .utils import get_logger
+from uuid import UUID
 
 logger = get_logger()
 
@@ -30,9 +31,9 @@ logger = get_logger()
 @api_view(['GET'])
 def stream_ts(request, channel_id):
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
+    channel = get_stream_object(channel_id)
+
     client_user_agent = None
-    logger.info(f"Fetching channel ID {channel_id}")
-    channel = get_object_or_404(Channel, uuid=channel_id)
 
     try:
         # Generate a unique client ID
@@ -56,15 +57,17 @@ def stream_ts(request, channel_id):
             metadata_key = RedisKeys.channel_metadata(channel_id)
             if proxy_server.redis_client.exists(metadata_key):
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
-                if b'state' in metadata:
-                    channel_state = metadata[b'state'].decode('utf-8')
+                state_field = ChannelMetadataField.STATE.encode('utf-8')
+                if state_field in metadata:
+                    channel_state = metadata[state_field].decode('utf-8')
 
                     # Only skip initialization if channel is in a healthy state
                     valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS]
                     if channel_state in valid_states:
                         # Verify the owner is still active
-                        if b'owner' in metadata:
-                            owner = metadata[b'owner'].decode('utf-8')
+                        owner_field = ChannelMetadataField.OWNER.encode('utf-8')
+                        if owner_field in metadata:
+                            owner = metadata[owner_field].decode('utf-8')
                             owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
                             if proxy_server.redis_client.exists(owner_heartbeat_key):
                                 # Owner is active and channel is in good state
@@ -134,9 +137,9 @@ def stream_ts(request, channel_id):
 
             if proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(channel_id)
-                url_bytes = proxy_server.redis_client.hget(metadata_key, "url")
-                ua_bytes = proxy_server.redis_client.hget(metadata_key, "user_agent")
-                profile_bytes = proxy_server.redis_client.hget(metadata_key, "profile")
+                url_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.URL)
+                ua_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.USER_AGENT)
+                profile_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_PROFILE)
 
                 if url_bytes:
                     url = url_bytes.decode('utf-8')

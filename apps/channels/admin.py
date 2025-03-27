@@ -26,10 +26,10 @@ class ChannelAdmin(admin.ModelAdmin):
         'uuid',
         'name',
         'channel_group',
-        'tvg_name'
+        'epg_data'
     )
     list_filter = ('channel_group',)
-    search_fields = ('id', 'name', 'channel_group__name', 'tvg_name')  # Added 'id'
+    search_fields = ('id', 'name', 'channel_group__name', 'epg_data')  # Added 'id'
     ordering = ('channel_number',)
 
 @admin.register(ChannelGroup)

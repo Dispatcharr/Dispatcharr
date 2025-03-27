@@ -3,7 +3,7 @@ import time
 import re
 from . import proxy_server
 from .redis_keys import RedisKeys
-from .constants import TS_PACKET_SIZE
+from .constants import TS_PACKET_SIZE, ChannelMetadataField
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
 
@@ -35,28 +35,32 @@ class ChannelStatus:
 
         info = {
             'channel_id': channel_id,
-            'state': metadata.get(b'state', b'unknown').decode('utf-8'),
-            'url': metadata.get(b'url', b'').decode('utf-8'),
-            'profile': metadata.get(b'profile', b'unknown').decode('utf-8'),
-            'started_at': metadata.get(b'init_time', b'0').decode('utf-8'),
-            'owner': metadata.get(b'owner', b'unknown').decode('utf-8'),
+            'state': metadata.get(ChannelMetadataField.STATE.encode('utf-8'), b'unknown').decode('utf-8'),
+            'url': metadata.get(ChannelMetadataField.URL.encode('utf-8'), b'').decode('utf-8'),
+            'profile': metadata.get(ChannelMetadataField.STREAM_PROFILE.encode('utf-8'),
+                                  metadata.get(ChannelMetadataField.PROFILE.encode('utf-8'), b'unknown')).decode('utf-8'),
+            'started_at': metadata.get(ChannelMetadataField.INIT_TIME.encode('utf-8'), b'0').decode('utf-8'),
+            'owner': metadata.get(ChannelMetadataField.OWNER.encode('utf-8'), b'unknown').decode('utf-8'),
             'buffer_index': int(buffer_index_value.decode('utf-8')) if buffer_index_value else 0,
         }
 
         # Add timing information
-        if b'state_changed_at' in metadata:
-            state_changed_at = float(metadata[b'state_changed_at'].decode('utf-8'))
+        state_changed_field = ChannelMetadataField.STATE_CHANGED_AT.encode('utf-8')
+        if state_changed_field in metadata:
+            state_changed_at = float(metadata[state_changed_field].decode('utf-8'))
             info['state_changed_at'] = state_changed_at
             info['state_duration'] = time.time() - state_changed_at
 
-        if b'init_time' in metadata:
-            created_at = float(metadata[b'init_time'].decode('utf-8'))
+        init_time_field = ChannelMetadataField.INIT_TIME.encode('utf-8')
+        if init_time_field in metadata:
+            created_at = float(metadata[init_time_field].decode('utf-8'))
             info['started_at'] = created_at
             info['uptime'] = time.time() - created_at
 
         # Add data throughput information
-        if b'total_bytes' in metadata:
-            total_bytes = int(metadata[b'total_bytes'].decode('utf-8'))
+        total_bytes_field = ChannelMetadataField.TOTAL_BYTES.encode('utf-8')
+        if total_bytes_field in metadata:
+            total_bytes = int(metadata[total_bytes_field].decode('utf-8'))
             info['total_bytes'] = total_bytes
 
             # Format total bytes in human-readable form
@@ -87,7 +91,7 @@ class ChannelStatus:
 
         for client_id in client_ids:
             client_id_str = client_id.decode('utf-8')
-            client_key = f"ts_proxy:channel:{channel_id}:clients:{client_id_str}"
+            client_key = RedisKeys.client_metadata(channel_id, client_id_str)
             client_data = proxy_server.redis_client.hgetall(client_key)
 
             if client_data:
@@ -261,23 +265,23 @@ class ChannelStatus:
             client_count = proxy_server.redis_client.scard(client_set_key) or 0
 
             # Calculate uptime
-            created_at = float(metadata.get(b'init_time', b'0').decode('utf-8'))
+            created_at = float(metadata.get(ChannelMetadataField.INIT_TIME.encode('utf-8'), b'0').decode('utf-8'))
             uptime = time.time() - created_at if created_at > 0 else 0
 
             # Simplified info
             info = {
                 'channel_id': channel_id,
-                'state': metadata.get(b'state', b'unknown').decode('utf-8'),
-                'url': metadata.get(b'url', b'').decode('utf-8'),
-                'profile': metadata.get(b'profile', b'unknown').decode('utf-8'),
-                'owner': metadata.get(b'owner', b'unknown').decode('utf-8'),
+                'state': metadata.get(ChannelMetadataField.STATE.encode('utf-8'), b'unknown').decode('utf-8'),
+                'url': metadata.get(ChannelMetadataField.URL.encode('utf-8'), b'').decode('utf-8'),
+                'profile': metadata.get(ChannelMetadataField.PROFILE.encode('utf-8'), b'unknown').decode('utf-8'),
+                'owner': metadata.get(ChannelMetadataField.OWNER.encode('utf-8'), b'unknown').decode('utf-8'),
                 'buffer_index': int(buffer_index_value.decode('utf-8')) if buffer_index_value else 0,
                 'client_count': client_count,
                 'uptime': uptime
             }
 
             # Add data throughput information to basic info
-            total_bytes_bytes = proxy_server.redis_client.hget(metadata_key, 'total_bytes')
+            total_bytes_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.TOTAL_BYTES.encode('utf-8'))
             if total_bytes_bytes:
                 total_bytes = int(total_bytes_bytes.decode('utf-8'))
                 info['total_bytes'] = total_bytes
@@ -307,7 +311,7 @@ class ChannelStatus:
                 # Get up to 10 clients for the basic view
                 for client_id in list(client_ids)[:10]:
                     client_id_str = client_id.decode('utf-8')
-                    client_key = f"ts_proxy:channel:{channel_id}:clients:{client_id_str}"
+                    client_key = RedisKeys.client_metadata(channel_id, client_id_str)
 
                     # Efficient way - just retrieve the essentials
                     client_info = {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
@@ -25,24 +25,32 @@ import {
   Divider,
   Stack,
   useMantineTheme,
+  Popover,
+  ScrollArea,
 } from '@mantine/core';
 import { ListOrdered, SquarePlus, SquareX } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
 import { Dropzone } from '@mantine/dropzone';
+import { FixedSizeList as List } from 'react-window';
 
 const Channel = ({ channel = null, isOpen, onClose }) => {
   const theme = useMantineTheme();
+
+  const listRef = useRef(null);
 
   const channelGroups = useChannelsStore((state) => state.channelGroups);
   const streams = useStreamsStore((state) => state.streams);
   const { profiles: streamProfiles } = useStreamProfilesStore();
   const { playlists } = usePlaylistsStore();
-  const { tvgs } = useEPGsStore();
+  const { epgs, tvgs, tvgsById } = useEPGsStore();
 
   const [logoFile, setLogoFile] = useState(null);
   const [logoPreview, setLogoPreview] = useState(null);
   const [channelStreams, setChannelStreams] = useState([]);
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
+  const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
+  const [selectedEPG, setSelectedEPG] = useState({});
+  const [tvgFilter, setTvgFilter] = useState('');
 
   const addStream = (stream) => {
     const streamSet = new Set(channelStreams);
@@ -74,7 +82,7 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
       channel_group_id: '',
       stream_profile_id: '0',
       tvg_id: '',
-      tvg_name: '',
+      epg_data_id: '',
     },
     validationSchema: Yup.object({
       name: Yup.string().required('Name is required'),
@@ -109,27 +117,36 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
       setLogoFile(null);
       setLogoPreview(null);
       setSubmitting(false);
+      setTvgFilter('');
       onClose();
     },
   });
 
   useEffect(() => {
     if (channel) {
+      if (channel.epg_data) {
+        const epgSource = epgs[channel.epg_data.epg_source];
+        setSelectedEPG(`${epgSource.id}`);
+      }
+
       formik.setValues({
         name: channel.name,
         channel_number: channel.channel_number,
-        channel_group_id: channel.channel_group?.id,
-        stream_profile_id: channel.stream_profile_id || '0',
+        channel_group_id: `${channel.channel_group?.id}`,
+        stream_profile_id: channel.stream_profile_id
+          ? `${channel.stream_profile_id}`
+          : '0',
         tvg_id: channel.tvg_id,
-        tvg_name: channel.tvg_name,
+        epg_data_id: channel.epg_data ? `${channel.epg_data?.id}` : '',
       });
 
       console.log(channel);
       setChannelStreams(channel.streams);
     } else {
       formik.resetForm();
+      setTvgFilter('');
     }
-  }, [channel]);
+  }, [channel, tvgsById]);
 
   // const activeStreamsTable = useMantineReactTable({
   //   data: channelStreams,
@@ -263,6 +280,10 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
     return <></>;
   }
 
+  const filteredTvgs = tvgs
+    .filter((tvg) => tvg.epg_source == selectedEPG)
+    .filter((tvg) => tvg.name.toLowerCase().includes(tvgFilter));
+
   return (
     <>
       <Modal
@@ -296,6 +317,7 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
                   name="channel_group_id"
                   label="Channel Group"
                   value={formik.values.channel_group_id}
+                  searchable
                   onChange={(value) => {
                     formik.setFieldValue('channel_group_id', value); // Update Formik's state with the new value
                   }}
@@ -434,31 +456,96 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
 
             <Stack gap="5" style={{ flex: 1 }} justify="flex-start">
               <TextInput
-                id="tvg_name"
-                name="tvg_name"
-                label="TVG Name"
-                value={formik.values.tvg_name}
+                id="tvg_id"
+                name="tvg_id"
+                label="TVG-ID"
+                value={formik.values.tvg_id}
                 onChange={formik.handleChange}
-                error={formik.errors.tvg_name ? formik.touched.tvg_name : ''}
+                error={formik.errors.tvg_id ? formik.touched.tvg_id : ''}
                 size="xs"
               />
 
-              <Select
-                id="tvg_id"
-                name="tvg_id"
-                label="TVG ID"
-                searchable
-                value={formik.values.tvg_id}
-                onChange={(value) => {
-                  formik.setFieldValue('tvg_id', value); // Update Formik's state with the new value
-                }}
-                error={formik.errors.tvg_id}
-                data={tvgs.map((tvg) => ({
-                  value: tvg.name,
-                  label: tvg.tvg_id,
-                }))}
-                size="xs"
-              />
+              <Popover
+                opened={epgPopoverOpened}
+                onChange={setEpgPopoverOpened}
+                // position="bottom-start"
+                withArrow
+              >
+                <Popover.Target>
+                  <TextInput
+                    id="epg_data_id"
+                    name="epg_data_id"
+                    label="EPG"
+                    readOnly
+                    value={
+                      formik.values.epg_data_id
+                        ? tvgsById[formik.values.epg_data_id].name
+                        : ''
+                    }
+                    onClick={() => setEpgPopoverOpened(true)}
+                    size="xs"
+                  />
+                </Popover.Target>
+
+                <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  <Group>
+                    <Select
+                      label="Source"
+                      value={selectedEPG}
+                      onChange={setSelectedEPG}
+                      data={Object.values(epgs).map((epg) => ({
+                        value: `${epg.id}`,
+                        label: epg.name,
+                      }))}
+                      size="xs"
+                      mb="xs"
+                    />
+
+                    {/* Filter Input */}
+                    <TextInput
+                      label="Filter"
+                      value={tvgFilter}
+                      onChange={(event) =>
+                        setTvgFilter(event.currentTarget.value)
+                      }
+                      mb="xs"
+                      size="xs"
+                    />
+                  </Group>
+
+                  <ScrollArea style={{ height: 200 }}>
+                    <List
+                      height={200} // Set max height for visible items
+                      itemCount={filteredTvgs.length}
+                      itemSize={40} // Adjust row height for each item
+                      width="100%"
+                      ref={listRef}
+                    >
+                      {({ index, style }) => (
+                        <div style={style}>
+                          <Button
+                            key={filteredTvgs[index].id}
+                            variant="subtle"
+                            color="gray"
+                            fullWidth
+                            justify="left"
+                            size="xs"
+                            onClick={() => {
+                              formik.setFieldValue(
+                                'epg_data_id',
+                                filteredTvgs[index].id
+                              );
+                              setEpgPopoverOpened(false);
+                            }}
+                          >
+                            {filteredTvgs[index].tvg_id}
+                          </Button>
+                        </div>
+                      )}
+                    </List>
+                  </ScrollArea>
+                </Popover.Dropdown>
+              </Popover>
 
               <TextInput
                 id="logo_url"
@@ -495,6 +582,7 @@ const Channel = ({ channel = null, isOpen, onClose }) => {
           </Flex>
         </form>
       </Modal>
+
       <ChannelGroupForm
         isOpen={channelGroupModelOpen}
         onClose={() => setChannelGroupModalOpen(false)}

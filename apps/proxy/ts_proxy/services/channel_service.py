@@ -11,7 +11,7 @@ from apps.channels.models import Channel
 from apps.proxy.config import TSConfig as Config
 from .. import proxy_server
 from ..redis_keys import RedisKeys
-from ..constants import EventType, ChannelState
+from ..constants import EventType, ChannelState, ChannelMetadataField
 from ..url_utils import get_stream_info_for_switch
 
 logger = logging.getLogger("ts_proxy")
@@ -42,19 +42,19 @@ class ChannelService:
             # Check if metadata already exists
             if proxy_server.redis_client.exists(metadata_key):
                 # Just update the existing metadata with stream_id
-                proxy_server.redis_client.hset(metadata_key, "stream_id", str(stream_id))
+                proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
                 logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
             else:
                 # Create initial metadata with essential values
                 initial_metadata = {
-                    "stream_id": str(stream_id),
+                    ChannelMetadataField.STREAM_ID: str(stream_id),
                     "temp_init": str(time.time())
                 }
                 proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
                 logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
 
             # Verify the stream_id was set
-            stream_id_value = proxy_server.redis_client.hget(metadata_key, "stream_id")
+            stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
             if stream_id_value:
                 logger.info(f"Verified stream_id {stream_id_value.decode('utf-8')} is now set in Redis")
             else:
@@ -68,9 +68,9 @@ class ChannelService:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             update_data = {}
             if profile_value:
-                update_data["profile"] = profile_value
+                update_data[ChannelMetadataField.STREAM_PROFILE] = profile_value
             if stream_id:
-                update_data["stream_id"] = str(stream_id)
+                update_data[ChannelMetadataField.STREAM_ID] = str(stream_id)
 
             if update_data:
                 proxy_server.redis_client.hset(metadata_key, mapping=update_data)
@@ -220,8 +220,8 @@ class ChannelService:
                     channel_info = {"state": state}
 
                     # Immediately mark as stopping in metadata so clients detect it faster
-                    proxy_server.redis_client.hset(metadata_key, "state", ChannelState.STOPPING)
-                    proxy_server.redis_client.hset(metadata_key, "state_changed_at", str(time.time()))
+                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE, ChannelState.STOPPING)
+                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STATE_CHANGED_AT, str(time.time()))
             except Exception as e:
                 logger.error(f"Error fetching channel state: {e}")
 
@@ -248,8 +248,11 @@ class ChannelService:
             logger.info(f"Released channel {channel_id} stream allocation")
             model_released = True
         except Channel.DoesNotExist:
-            logger.warning(f"Could not find Channel model for UUID {channel_id}")
-            model_released = False
+            logger.warning(f"Could not find Channel model for UUID {channel_id}, attempting stream hash")
+            stream = Stream.objects.get(stream_hash=channel_id)
+            stream.release_stream()
+            logger.info(f"Released stream {channel_id} stream allocation")
+            model_released = True
         except Exception as e:
             logger.error(f"Error releasing channel stream: {e}")
             model_released = False
@@ -350,8 +353,8 @@ class ChannelService:
             metadata = proxy_server.redis_client.hgetall(metadata_key)
 
             # Extract state and owner
-            state = metadata.get(b'state', b'unknown').decode('utf-8')
-            owner = metadata.get(b'owner', b'unknown').decode('utf-8')
+            state = metadata.get(ChannelMetadataField.STATE.encode(), b'unknown').decode('utf-8')
+            owner = metadata.get(ChannelMetadataField.OWNER.encode(), b'unknown').decode('utf-8')
 
             # Valid states indicate channel is running properly
             valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS, ChannelState.CONNECTING]
@@ -360,7 +363,7 @@ class ChannelService:
                 return False, state, owner, {"error": f"Invalid state: {state}"}
 
             # Check if owner is still active
-            owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
+            owner_heartbeat_key = RedisKeys.worker_heartbeat(owner)
             owner_alive = proxy_server.redis_client.exists(owner_heartbeat_key)
 
             if not owner_alive:
@@ -407,21 +410,21 @@ class ChannelService:
 
         # Use the appropriate method based on the key type
         if key_type == 'hash':
-            proxy_server.redis_client.hset(metadata_key, "url", url)
+            proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.URL, url)
             if user_agent:
-                proxy_server.redis_client.hset(metadata_key, "user_agent", user_agent)
+                proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.USER_AGENT, user_agent)
         elif key_type == 'none':  # Key doesn't exist yet
             # Create new hash with all required fields
-            metadata = {"url": url}
+            metadata = {ChannelMetadataField.URL: url}
             if user_agent:
-                metadata["user_agent"] = user_agent
+                metadata[ChannelMetadataField.USER_AGENT] = user_agent
             proxy_server.redis_client.hset(metadata_key, mapping=metadata)
         else:
             # If key exists with wrong type, delete it and recreate
             proxy_server.redis_client.delete(metadata_key)
-            metadata = {"url": url}
+            metadata = {ChannelMetadataField.URL: url}
             if user_agent:
-                metadata["user_agent"] = user_agent
+                metadata[ChannelMetadataField.USER_AGENT] = user_agent
             proxy_server.redis_client.hset(metadata_key, mapping=metadata)
 
         # Set switch request flag to ensure all workers see it
@@ -438,7 +441,7 @@ class ChannelService:
             return False
 
         switch_request = {
-            "event": EventType.STREAM_SWITCH,  # Use constant instead of string
+            "event": EventType.STREAM_SWITCH,
             "channel_id": channel_id,
             "url": new_url,
             "user_agent": user_agent,
@@ -459,7 +462,7 @@ class ChannelService:
             return False
 
         stop_request = {
-            "event": EventType.CHANNEL_STOP,  # Use constant instead of string
+            "event": EventType.CHANNEL_STOP,
             "channel_id": channel_id,
             "requester_worker_id": proxy_server.worker_id,
             "timestamp": time.time()
@@ -480,7 +483,7 @@ class ChannelService:
             return False
 
         stop_request = {
-            "event": EventType.CLIENT_STOP,  # Use constant instead of string
+            "event": EventType.CLIENT_STOP,
             "channel_id": channel_id,
             "client_id": client_id,
             "requester_worker_id": proxy_server.worker_id,

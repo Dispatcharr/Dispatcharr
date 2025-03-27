@@ -39,6 +39,7 @@ const UserAgentsTable = () => {
       {
         header: 'User-Agent',
         accessorKey: 'user_agent',
+        enableSorting: false,
         Cell: ({ cell }) => (
           <div
             style={{
@@ -54,6 +55,7 @@ const UserAgentsTable = () => {
       {
         header: 'Desecription',
         accessorKey: 'description',
+        enableSorting: false,
         Cell: ({ cell }) => (
           <div
             style={{
@@ -69,10 +71,14 @@ const UserAgentsTable = () => {
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 100,
+        size: 10,
         sortingFn: 'basic',
+        enableSorting: false,
+        mantineTableHeadCellProps: {
+          align: 'right',
+        },
         mantineTableBodyCellProps: {
-          align: 'left',
+          align: 'right',
         },
         Cell: ({ cell }) => (
           <Center>
@@ -214,6 +220,11 @@ const UserAgentsTable = () => {
     mantineTableContainerProps: {
       style: {
         height: 'calc(43vh - 55px)',
+      },
+    },
+    displayColumnDefOptions: {
+      'mrt-row-actions': {
+        size: 10,
       },
     },
   });

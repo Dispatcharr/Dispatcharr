@@ -15,9 +15,9 @@ from core.models import UserAgent, CoreSettings
 from .stream_buffer import StreamBuffer
 from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
-from .constants import ChannelState, EventType, StreamType, TS_PACKET_SIZE
+from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from .config_helper import ConfigHelper
-from .url_utils import get_alternate_streams, get_stream_info_for_switch
+from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
 
 logger = get_logger()
 
@@ -284,10 +284,10 @@ class StreamManager:
 
                         # Update metadata to indicate error state
                         update_data = {
-                            "state": ChannelState.ERROR,
-                            "state_changed_at": str(time.time()),
-                            "error_message": error_message,
-                            "error_time": str(time.time())
+                            ChannelMetadataField.STATE: ChannelState.ERROR,
+                            ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
+                            ChannelMetadataField.ERROR_MESSAGE: error_message,
+                            ChannelMetadataField.ERROR_TIME: str(time.time())
                         }
                         self.buffer.redis_client.hset(metadata_key, mapping=update_data)
                         logger.info(f"Updated channel {self.channel_id} state to ERROR in Redis after stream failure")
@@ -304,7 +304,7 @@ class StreamManager:
         """Establish a connection using transcoding"""
         try:
             logger.debug(f"Building transcode command for channel {self.channel_id}")
-            channel = get_object_or_404(Channel, uuid=self.channel_id)
+            channel = get_stream_object(self.channel_id)
 
             # Use FFmpeg specifically for HLS streams
             if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
@@ -398,13 +398,13 @@ class StreamManager:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
 
                     # Use hincrby to atomically increment the total_bytes field
-                    self.buffer.redis_client.hincrby(metadata_key, "total_bytes", self.bytes_processed)
+                    self.buffer.redis_client.hincrby(metadata_key, ChannelMetadataField.TOTAL_BYTES, self.bytes_processed)
 
                     # Reset local counter after updating Redis
                     self.bytes_processed = 0
                     self.last_bytes_update = now
 
-                    logger.debug(f"Updated total_bytes in Redis for channel {self.channel_id}")
+                    logger.debug(f"Updated {ChannelMetadataField.TOTAL_BYTES} in Redis for channel {self.channel_id}")
         except Exception as e:
             logger.error(f"Error updating bytes processed: {e}")
 
@@ -743,8 +743,9 @@ class StreamManager:
                     current_state = None
                     try:
                         metadata = redis_client.hgetall(metadata_key)
-                        if metadata and b'state' in metadata:
-                            current_state = metadata[b'state'].decode('utf-8')
+                        state_field = ChannelMetadataField.STATE.encode('utf-8')
+                        if metadata and state_field in metadata:
+                            current_state = metadata[state_field].decode('utf-8')
                     except Exception as e:
                         logger.error(f"Error checking current state: {e}")
 
@@ -758,8 +759,8 @@ class StreamManager:
                             # Not enough buffer yet - set to connecting state if not already
                             if current_state != ChannelState.CONNECTING:
                                 update_data = {
-                                    "state": ChannelState.CONNECTING,
-                                    "state_changed_at": current_time
+                                    ChannelMetadataField.STATE: ChannelState.CONNECTING,
+                                    ChannelMetadataField.STATE_CHANGED_AT: current_time
                                 }
                                 redis_client.hset(metadata_key, mapping=update_data)
                                 logger.info(f"Channel {channel_id} connected but waiting for buffer to fill: {current_buffer_index}/{initial_chunks_needed} chunks")
@@ -772,10 +773,10 @@ class StreamManager:
 
                         # We have enough buffer, proceed with state change
                         update_data = {
-                            "state": ChannelState.WAITING_FOR_CLIENTS,
-                            "connection_ready_time": current_time,
-                            "state_changed_at": current_time,
-                            "buffer_chunks": str(current_buffer_index)
+                            ChannelMetadataField.STATE: ChannelState.WAITING_FOR_CLIENTS,
+                            ChannelMetadataField.CONNECTION_READY_TIME: current_time,
+                            ChannelMetadataField.STATE_CHANGED_AT: current_time,
+                            ChannelMetadataField.BUFFER_CHUNKS: str(current_buffer_index)
                         }
                         redis_client.hset(metadata_key, mapping=update_data)
 
@@ -885,12 +886,12 @@ class StreamManager:
             if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 metadata_key = RedisKeys.channel_metadata(self.channel_id)
                 self.buffer.redis_client.hset(metadata_key, mapping={
-                    "url": new_url,
-                    "user_agent": new_user_agent,
-                    "profile": stream_info['profile'],
-                    "stream_id": str(stream_id),
-                    "stream_switch_time": str(time.time()),
-                    "stream_switch_reason": "max_retries_exceeded"
+                    ChannelMetadataField.URL: new_url,
+                    ChannelMetadataField.USER_AGENT: new_user_agent,
+                    ChannelMetadataField.STREAM_PROFILE: stream_info['profile'],
+                    ChannelMetadataField.STREAM_ID: str(stream_id),
+                    ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                    ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
                 })
 
                 # Log the switch
@@ -908,5 +909,3 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Error trying next stream for channel {self.channel_id}: {e}", exc_info=True)
             return False
-
-

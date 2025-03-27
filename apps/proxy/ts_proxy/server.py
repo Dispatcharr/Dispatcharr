@@ -17,7 +17,7 @@ import os
 import json
 from typing import Dict, Optional, Set
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel
+from apps.channels.models import Channel, Stream
 from core.utils import redis_client as global_redis_client, redis_pubsub_client as global_redis_pubsub_client  # Import both global Redis clients
 from redis.exceptions import ConnectionError, TimeoutError
 from .stream_manager import StreamManager
@@ -740,12 +740,16 @@ class ProxyServer:
 
             # Force release resources in the Channel model
             try:
-                from apps.channels.models import Channel
                 channel = Channel.objects.get(uuid=channel_id)
                 channel.release_stream()
                 logger.info(f"Released stream allocation for zombie channel {channel_id}")
             except Exception as e:
-                logger.error(f"Error releasing stream for zombie channel {channel_id}: {e}")
+                try:
+                    stream = Stream.objects.get(stream_hash=channel_id)
+                    stream.release_stream()
+                    logger.info(f"Released stream allocation for zombie channel {channel_id}")
+                except Exception as e:
+                    logger.error(f"Error releasing stream for zombie channel {channel_id}: {e}")
 
             return True
         except Exception as e:
@@ -1067,8 +1071,12 @@ class ProxyServer:
     def _clean_redis_keys(self, channel_id):
         """Clean up all Redis keys for a channel more efficiently"""
         # Release the channel, stream, and profile keys from the channel
-        channel = Channel.objects.get(uuid=channel_id)
-        channel.release_stream()
+        try:
+            channel = Channel.objects.get(uuid=channel_id)
+            channel.release_stream()
+        except:
+            stream = Stream.objects.get(stream_hash=channel_id)
+            stream.release_stream()
 
         if not self.redis_client:
             return 0

@@ -40,7 +40,7 @@ class StreamForm(forms.ModelForm):
             'name',
             'url',
             'logo_url',
-            'tvg_id',
+            'epg_data',
             'local_file',
             'channel_group',
         ]

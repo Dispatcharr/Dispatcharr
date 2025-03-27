@@ -15,13 +15,18 @@ import {
   NativeSelect,
   FileInput,
   Space,
+  useMantineTheme,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
+import usePlaylistsStore from '../../store/playlists';
 
 const M3U = ({ playlist = null, isOpen, onClose, playlistCreated = false }) => {
+  const theme = useMantineTheme();
+
   const { userAgents } = useUserAgentsStore();
   const { fetchChannelGroups } = useChannelsStore();
+  const { setRefreshProgress } = usePlaylistsStore();
 
   const [file, setFile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -190,38 +195,27 @@ const M3U = ({ playlist = null, isOpen, onClose, playlistCreated = false }) => {
             {playlist && (
               <>
                 <Button
-                  variant="contained"
-                  color="primary"
-                  size="small"
+                  variant="filled"
+                  // color={theme.custom.colors.buttonPrimary}
+                  size="sm"
                   onClick={() => setGroupFilterModalOpen(true)}
                 >
                   Groups
                 </Button>
                 <Button
-                  variant="contained"
-                  color="primary"
-                  size="small"
+                  variant="filled"
+                  // color={theme.custom.colors.buttonPrimary}
+                  size="sm"
                   onClick={() => setProfileModalOpen(true)}
                 >
                   Profiles
                 </Button>
               </>
             )}
-            {!playlist && (
-              <Button
-                type="submit"
-                variant="contained"
-                color="primary"
-                disabled={formik.isSubmitting}
-                size="sm"
-              >
-                Save & Select Groups
-              </Button>
-            )}
             <Button
               type="submit"
-              variant="contained"
-              color="primary"
+              variant="filled"
+              // color={theme.custom.colors.buttonPrimary}
               disabled={formik.isSubmitting}
               size="sm"
             >

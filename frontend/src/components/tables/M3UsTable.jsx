@@ -13,34 +13,11 @@ import {
   Box,
   ActionIcon,
   Tooltip,
-  Select,
 } from '@mantine/core';
-import {
-  Tv2,
-  ScreenShare,
-  Scroll,
-  SquareMinus,
-  Pencil,
-  ArrowUp,
-  ArrowDown,
-  ArrowUpDown,
-  TvMinimalPlay,
-  SquarePen,
-  RefreshCcw,
-  Check,
-  X,
-} from 'lucide-react';
-import {
-  IconArrowDown,
-  IconArrowUp,
-  IconDeviceDesktopSearch,
-  IconSelector,
-  IconSortAscendingNumbers,
-  IconSquarePlus,
-} from '@tabler/icons-react'; // Import custom icons
-import M3UGroupFilter from '../forms/M3UGroupFilter';
+import { SquareMinus, SquarePen, RefreshCcw, Check, X } from 'lucide-react';
+import { IconSquarePlus } from '@tabler/icons-react'; // Import custom icons
 
-const Example = () => {
+const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
@@ -116,7 +93,9 @@ const Example = () => {
   };
 
   const deletePlaylist = async (id) => {
+    setIsLoading(true);
     await API.deletePlaylist(id);
+    setIsLoading(false);
   };
 
   const closeModal = (newPlaylist = null) => {
@@ -282,4 +261,4 @@ const Example = () => {
   );
 };
 
-export default Example;
+export default M3UTable;

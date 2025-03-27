@@ -18,7 +18,8 @@ export const WebsocketProvider = ({ children }) => {
   const [val, setVal] = useState(null);
 
   const { fetchStreams } = useStreamsStore();
-  const { setChannelStats, fetchChannelGroups } = useChannelsStore();
+  const { fetchChannels, setChannelStats, fetchChannelGroups } =
+    useChannelsStore();
   const { fetchPlaylists, setRefreshProgress } = usePlaylistsStore();
   const { fetchEPGData } = useEPGsStore();
 
@@ -76,6 +77,23 @@ export const WebsocketProvider = ({ children }) => {
 
         case 'channel_stats':
           setChannelStats(JSON.parse(event.data.stats));
+          break;
+
+        case 'epg_channels':
+          notifications.show({
+            message: 'EPG channels updated!',
+            color: 'green.5',
+          });
+          fetchEPGData();
+          break;
+
+        case 'epg_match':
+          notifications.show({
+            message: 'EPG match is complete!',
+            color: 'green.5',
+          });
+          fetchChannels();
+          fetchEPGData();
           break;
 
         default:

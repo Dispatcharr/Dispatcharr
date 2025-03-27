@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 import hashlib
 import json
+from apps.epg.models import EPGData
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,75 @@ class Stream(models.Model):
             stream = cls.objects.create(**fields_to_update)
             return stream, True  # True means it was created
 
+    # @TODO: honor stream's stream profile
+    def get_stream_profile(self):
+        stream_profile = StreamProfile.objects.get(id=CoreSettings.get_default_stream_profile_id())
+
+        return stream_profile
+
+    def get_stream(self):
+        """
+        Finds an available stream for the requested channel and returns the selected stream and profile.
+        """
+
+        profile_id = redis_client.get(f"stream_profile:{self.id}")
+        if profile_id:
+            profile_id = int(profile_id)
+            return self.id, profile_id
+
+        # Retrieve the M3U account associated with the stream.
+        m3u_account = self.m3u_account
+        m3u_profiles = m3u_account.profiles.all()
+        default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+        profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
+
+        for profile in profiles:
+            logger.info(profile)
+            # Skip inactive profiles
+            if profile.is_active == False:
+                continue
+
+            profile_connections_key = f"profile_connections:{profile.id}"
+            current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+            # Check if profile has available slots (or unlimited connections)
+            if profile.max_streams == 0 or current_connections < profile.max_streams:
+                # Start a new stream
+                redis_client.set(f"channel_stream:{self.id}", self.id)
+                redis_client.set(f"stream_profile:{self.id}", profile.id)  # Store only the matched profile
+
+                # Increment connection count for profiles with limits
+                if profile.max_streams > 0:
+                    redis_client.incr(profile_connections_key)
+
+                return self.id, profile.id  # Return newly assigned stream and matched profile
+
+        # 4. No available streams
+        return None, None
+
+    def release_stream(self):
+        """
+        Called when a stream is finished to release the lock.
+        """
+        stream_id = self.id
+        # Get the matched profile for cleanup
+        profile_id = redis_client.get(f"stream_profile:{stream_id}")
+        if not profile_id:
+            logger.debug("Invalid profile ID pulled from stream index")
+            return
+
+        redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
+
+        profile_id = int(profile_id)
+        logger.debug(f"Found profile ID {profile_id} associated with stream {stream_id}")
+
+        profile_connections_key = f"profile_connections:{profile_id}"
+
+        # Only decrement if the profile had a max_connections limit
+        current_count = int(redis_client.get(profile_connections_key) or 0)
+        if current_count > 0:
+            redis_client.decr(profile_connections_key)
+
 class ChannelManager(models.Manager):
     def active(self):
         return self.all()
@@ -164,7 +234,13 @@ class Channel(models.Model):
         help_text="Channel group this channel belongs to."
     )
     tvg_id = models.CharField(max_length=255, blank=True, null=True)
-    tvg_name = models.CharField(max_length=255, blank=True, null=True)
+    epg_data = models.ForeignKey(
+        EPGData,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='channels'
+    )
 
     stream_profile = models.ForeignKey(
         StreamProfile,
@@ -190,6 +266,7 @@ class Channel(models.Model):
     def __str__(self):
         return f"{self.channel_number} - {self.name}"
 
+    # @TODO: honor stream's stream profile
     def get_stream_profile(self):
         stream_profile = self.stream_profile
         if not stream_profile:
@@ -218,8 +295,6 @@ class Channel(models.Model):
             m3u_profiles = m3u_account.profiles.all()
             default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
             profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
-
-            logger.info('profiles')
 
             for profile in profiles:
                 logger.info(profile)

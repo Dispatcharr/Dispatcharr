@@ -13,6 +13,7 @@ from .tasks import match_epg_channels
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from apps.epg.models import EPGData
 
 from rest_framework.pagination import PageNumberPagination
 
@@ -196,6 +197,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
             'logo_url': stream.logo_url,
             'streams': [stream_id]
         }
+
+        # Attempt to find existing EPGs with the same tvg-id
+        epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
+        if epgs:
+            channel_data["epg_data_id"] = epgs.first().id
+
         serializer = self.get_serializer(data=channel_data)
         serializer.is_valid(raise_exception=True)
         channel = serializer.save()
@@ -291,6 +298,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "logo_url": stream.logo_url,
                 "streams": [stream_id],
             }
+
+            # Attempt to find existing EPGs with the same tvg-id
+            epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
+            if epgs:
+                channel_data["epg_data"] = epgs.first()
+
             serializer = self.get_serializer(data=channel_data)
             if serializer.is_valid():
                 channel = serializer.save()

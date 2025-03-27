@@ -67,6 +67,7 @@ class M3UAccount(models.Model):
         blank=True,
         related_name='m3u_accounts'
     )
+    custom_properties = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return self.name

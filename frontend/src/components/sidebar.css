@@ -6,7 +6,6 @@
   gap: 12px;
   padding: 5px 8px !important;
   border-radius: 6px;
-  color: #D4D4D8; /* Default color when not active */
   background-color: transparent; /* Default background when not active */
   border: 1px solid transparent;
   transition: all 0.3s ease;

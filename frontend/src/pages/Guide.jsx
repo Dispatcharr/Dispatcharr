@@ -136,7 +136,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         MINUTE_BLOCK_WIDTH;
       guideRef.current.scrollLeft = Math.max(scrollPosition, 0);
     }
-  }, [programs, start]);
+  }, [programs]);
 
   // Update “now” every 60s
   useEffect(() => {
@@ -462,7 +462,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
             {now.isAfter(dayjs(selectedProgram.start_time)) &&
               now.isBefore(dayjs(selectedProgram.end_time)) && (
                 <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-                  <Button onClick={() => handleWatchStream(selectedProgram)}>
+                  <Button
+                    variant="transparent"
+                    color="gray"
+                    onClick={() => handleWatchStream(selectedProgram)}
+                  >
                     Watch Now
                   </Button>
                 </Flex>

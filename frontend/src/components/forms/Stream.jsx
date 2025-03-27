@@ -1,5 +1,5 @@
 // Modal.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import API from '../../api';
@@ -79,6 +79,7 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
           id="channel_group"
           name="channel_group"
           label="Group"
+          searchable
           value={formik.values.channel_group}
           onChange={(value) => {
             formik.setFieldValue('channel_group', value); // Update Formik's state with the new value
@@ -95,6 +96,7 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
           name="stream_profile_id"
           label="Stream Profile"
           placeholder="Optional"
+          searchable
           value={formik.values.stream_profile_id}
           onChange={(value) => {
             formik.setFieldValue('stream_profile_id', value); // Update Formik's state with the new value

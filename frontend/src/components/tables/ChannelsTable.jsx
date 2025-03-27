@@ -232,9 +232,6 @@ const ChannelsTable = ({}) => {
       {
         header: 'Name',
         accessorKey: 'name',
-        mantineTableHeadCellProps: {
-          sx: { textAlign: 'center' },
-        },
         Header: ({ column }) => (
           <TextInput
             name="name"
@@ -247,6 +244,7 @@ const ChannelsTable = ({}) => {
             size="xs"
             variant="unstyled"
             className="table-input-header"
+            onClick={(e) => e.stopPropagation()}
           />
         ),
         Cell: ({ cell }) => (
@@ -265,19 +263,21 @@ const ChannelsTable = ({}) => {
         header: 'Group',
         accessorFn: (row) => row.channel_group?.name || '',
         Header: ({ column }) => (
-          <Select
-            placeholder="Group"
-            searchable
-            size="xs"
-            nothingFound="No options"
-            onChange={(e, value) => {
-              e.stopPropagation();
-              handleGroupChange(value);
-            }}
-            data={channelGroupOptions}
-            variant="unstyled"
-            className="table-input-header"
-          />
+          <Box onClick={(e) => e.stopPropagation()}>
+            <Select
+              placeholder="Group"
+              searchable
+              size="xs"
+              nothingFound="No options"
+              onChange={(e, value) => {
+                e.stopPropagation();
+                handleGroupChange(value);
+              }}
+              data={channelGroupOptions}
+              variant="unstyled"
+              className="table-input-header"
+            />
+          </Box>
         ),
       },
       {
@@ -502,7 +502,7 @@ const ChannelsTable = ({}) => {
         },
       },
       'mrt-row-actions': {
-        size: 74,
+        size: 50,
       },
     },
     mantineExpandButtonProps: ({ row, table }) => ({
@@ -520,7 +520,7 @@ const ChannelsTable = ({}) => {
       <ChannelStreams channel={row.original} isExpanded={row.getIsExpanded()} />
     ),
     renderRowActions: ({ row }) => (
-      <Box sx={{ justifyContent: 'right' }}>
+      <Box style={{ width: '100%', justifyContent: 'left' }}>
         <Center>
           <Tooltip label="Edit Channel">
             <ActionIcon
@@ -561,7 +561,7 @@ const ChannelsTable = ({}) => {
     ),
     mantineTableContainerProps: {
       style: {
-        height: 'calc(100vh - 127px)',
+        height: 'calc(100vh - 110px)',
         overflowY: 'auto',
       },
     },
@@ -710,7 +710,7 @@ const ChannelsTable = ({}) => {
       {/* Paper container: contains top toolbar and table (or ghost state) */}
       <Paper
         style={{
-          height: 'calc(100vh - 75px)',
+          height: 'calc(100vh - 60px)',
           backgroundColor: '#27272A',
         }}
       >

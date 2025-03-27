@@ -10,8 +10,19 @@ from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings
 from .utils import get_logger
+from uuid import UUID
 
 logger = get_logger()
+
+def get_stream_object(id: str):
+    try:
+        uuid_obj = UUID(id, version=4)
+        logger.info(f"Fetching channel ID {id}")
+        return get_object_or_404(Channel, uuid=id)
+    except:
+        # UUID check failed, assume stream hash
+        logger.info(f"Fetching stream hash {id}")
+        return get_object_or_404(Stream, stream_hash=id)
 
 def generate_stream_url(channel_id: str) -> Tuple[str, str, bool]:
     """
@@ -24,7 +35,7 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool]:
         Tuple[str, str, bool]: (stream_url, user_agent, transcode_flag)
     """
     # Get channel and related objects
-    channel = get_object_or_404(Channel, uuid=channel_id)
+    channel = get_stream_object(channel_id)
     stream_id, profile_id = channel.get_stream()
 
     if stream_id is None or profile_id is None:
@@ -33,10 +44,10 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool]:
 
     # Get the M3U account profile for URL pattern
     stream = get_object_or_404(Stream, pk=stream_id)
-    profile = get_object_or_404(M3UAccountProfile, pk=profile_id)
+    m3u_profile = get_object_or_404(M3UAccountProfile, pk=profile_id)
 
     # Get the appropriate user agent
-    m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
+    m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
     stream_user_agent = UserAgent.objects.get(id=m3u_account.user_agent.id).user_agent
 
     if stream_user_agent is None:
@@ -45,7 +56,7 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool]:
 
     # Generate stream URL based on the selected profile
     input_url = stream.url
-    stream_url = transform_url(input_url, profile.search_pattern, profile.replace_pattern)
+    stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
     # Check if transcoding is needed
     stream_profile = channel.get_stream_profile()
@@ -54,7 +65,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool]:
     else:
         transcode = True
 
-    # Get profile name as string
+    # Get profile name as string - use id for backward compatibility
+    # but we'll store it in the STREAM_PROFILE field
     profile_value = stream_profile.id
 
     return stream_url, stream_user_agent, transcode, profile_value
@@ -177,7 +189,11 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
     """
     try:
         # Get channel object
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        channel = get_stream_object(channel_id)
+        if isinstance(channel, Stream):
+            logger.error(f"Stream is not a channel")
+            return []
+
         logger.debug(f"Looking for alternate streams for channel {channel_id}, current stream ID: {current_stream_id}")
 
         # Get all assigned streams for this channel

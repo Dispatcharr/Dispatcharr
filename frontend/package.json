@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mantine/charts": "^7.17.2",
     "@mantine/core": "^7.17.2",
     "@mantine/dates": "^7.17.2",
     "@mantine/dropzone": "^7.17.2",
@@ -31,6 +32,8 @@
     "react-draggable": "^4.4.6",
     "react-pro-sidebar": "^1.1.0",
     "react-router-dom": "^7.3.0",
+    "react-window": "^1.8.11",
+    "recharts": "^2.15.1",
     "video.js": "^8.21.0",
     "yup": "^1.6.1",
     "zustand": "^5.0.3"

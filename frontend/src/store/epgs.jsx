@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import api from '../api';
 
 const useEPGsStore = create((set) => ({
-  epgs: [],
+  epgs: {},
   tvgs: [],
+  tvgsById: {},
   isLoading: false,
   error: null,
 
@@ -11,7 +12,13 @@ const useEPGsStore = create((set) => ({
     set({ isLoading: true, error: null });
     try {
       const epgs = await api.getEPGs();
-      set({ epgs: epgs, isLoading: false });
+      set({
+        epgs: epgs.reduce((acc, epg) => {
+          acc[epg.id] = epg;
+          return acc;
+        }, {}),
+        isLoading: false,
+      });
     } catch (error) {
       console.error('Failed to fetch epgs:', error);
       set({ error: 'Failed to load epgs.', isLoading: false });
@@ -22,22 +29,34 @@ const useEPGsStore = create((set) => ({
     set({ isLoading: true, error: null });
     try {
       const tvgs = await api.getEPGData();
-      set({ tvgs: tvgs, isLoading: false });
+      set({
+        tvgs: tvgs,
+        tvgsById: tvgs.reduce((acc, tvg) => {
+          acc[tvg.id] = tvg;
+          return acc;
+        }, {}),
+        isLoading: false,
+      });
     } catch (error) {
       console.error('Failed to fetch tvgs:', error);
       set({ error: 'Failed to load tvgs.', isLoading: false });
     }
   },
 
-  addEPG: (newPlaylist) =>
+  addEPG: (epg) =>
     set((state) => ({
-      epgs: [...state.epgs, newPlaylist],
+      epgs: { ...state.epgs, [epg.id]: epg },
     })),
 
   removeEPGs: (epgIds) =>
-    set((state) => ({
-      epgs: state.epgs.filter((epg) => !epgIds.includes(epg.id)),
-    })),
+    set((state) => {
+      const updatedEPGs = { ...state.epgs };
+      for (const id of epgIds) {
+        delete updatedEPGs[id];
+      }
+
+      return { epgs: updatedEPGs };
+    }),
 }));
 
 export default useEPGsStore;

@@ -11,6 +11,7 @@ from . import proxy_server
 from .utils import create_ts_packet, get_logger
 from .redis_keys import RedisKeys
 from .utils import get_logger
+from .constants import ChannelMetadataField
 
 logger = get_logger()
 
@@ -298,11 +299,11 @@ class StreamGenerator:
                     try:
                         client_key = RedisKeys.client_metadata(self.channel_id, self.client_id)
                         stats = {
-                            "chunks_sent": str(self.chunks_sent),
-                            "bytes_sent": str(self.bytes_sent),
-                            "avg_rate_KBps": str(round(avg_rate, 1)),
-                            "current_rate_KBps": str(round(self.current_rate, 1)),
-                            "stats_updated_at": str(current_time)
+                            ChannelMetadataField.CHUNKS_SENT: str(self.chunks_sent),
+                            ChannelMetadataField.BYTES_SENT: str(self.bytes_sent),
+                            ChannelMetadataField.AVG_RATE_KBPS: str(round(avg_rate, 1)),
+                            ChannelMetadataField.CURRENT_RATE_KBPS: str(round(self.current_rate, 1)),
+                            ChannelMetadataField.STATS_UPDATED_AT: str(current_time)
                         }
                         proxy_server.redis_client.hset(client_key, mapping=stats)
                         # No need to set expiration as client heartbeat will refresh this key

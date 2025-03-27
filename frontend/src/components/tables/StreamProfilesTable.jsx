@@ -49,6 +49,7 @@ const StreamProfiles = () => {
       {
         header: 'Parameters',
         accessorKey: 'parameters',
+        enableSorting: false,
         mantineTableBodyCellProps: {
           style: {
             whiteSpace: 'nowrap',
@@ -61,13 +62,21 @@ const StreamProfiles = () => {
       {
         header: 'Active',
         accessorKey: 'is_active',
-        size: 50,
+        size: 10,
+        enableSorting: false,
+        mantineTableHeadCellProps: {
+          align: 'right',
+        },
+        mantineTableBodyCellProps: {
+          align: 'right',
+        },
         Cell: ({ row, cell }) => (
           <Center>
             <Switch
               size="xs"
               checked={cell.getValue()}
               onChange={() => toggleProfileIsActive(row.original)}
+              disabled={row.original.locked}
             />
           </Center>
         ),

@@ -1,4 +1,8 @@
 /* frontend/src/index.css */
+:root {
+  --separator-border: transparent !important; /* Override Allotment's default border */
+  --sash-hover-size: 3px !important;
+}
 
 body {
   margin: 0;
@@ -32,7 +36,7 @@ code {
 
 @supports (-moz-appearance: none) {
   input[readonly][aria-haspopup] {
-      pointer-events: auto !important;
+    pointer-events: auto !important;
   }
 }
 
@@ -41,7 +45,59 @@ table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Tab
 }
 
 .table-input-header input::placeholder {
-    color: rgb(207,207,207);
-    font-weight: normal;
-    font-size: 14px;
+  color: rgb(207,207,207);
+  font-weight: normal;
+  font-size: 14px;
+}
+
+/* Ensure Allotment uses its default layout */
+.split-view {
+  width: 100%;
+  height: 100%;
+}
+
+/* Styling for the sash (splitter) */
+.sash.sash-vertical {
+  position: relative;
+  width: 4px; /* Thin invisible divider */
+  background: transparent;
+}
+
+/* Create a short vertical bar */
+.sash.sash-vertical::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px; /* Width of the short bar */
+  height: 50px; /* Short bar length */
+  background: rgba(255, 255, 255, 0.2); /* Light color similar to your screenshot */
+  border-radius: 4px;
+}
+
+/* Optional: Highlight when hovering */
+.sash.sash-vertical:hover::before {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Tables should fill available space */
+.split-view-view {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+/* styles.css */
+.custom-multiselect-input {
+  display: flex;
+  flex-wrap: wrap;
+  max-height: 30px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.custom-multiselect .mantine-MultiSelect-input {
+  min-height: 30px;  /* Set a minimum height */
+  max-height: 30px;  /* Set max height */
 }

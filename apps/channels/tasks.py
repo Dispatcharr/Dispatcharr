@@ -14,6 +14,9 @@ from apps.epg.models import EPGData, EPGSource
 from core.models import CoreSettings
 from apps.epg.tasks import parse_programs_for_tvg_id  # <-- we import our new helper
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
 logger = logging.getLogger(__name__)
 
 # Load the sentence-transformers model once at the module level
@@ -84,9 +87,10 @@ def match_epg_channels():
         region_code = None
 
     # Gather EPGData rows so we can do fuzzy matching in memory
-    all_epg = list(EPGData.objects.all())
+    all_epg = {e.id: e for e in EPGData.objects.all()}
+
     epg_rows = []
-    for e in all_epg:
+    for e in list(all_epg.values()):
         epg_rows.append({
             "epg_id": e.id,
             "tvg_id": e.tvg_id or "",
@@ -121,7 +125,7 @@ def match_epg_channels():
                     continue
 
             # C) Perform name-based fuzzy matching
-            fallback_name = chan.tvg_name.strip() if chan.tvg_name else chan.name
+            fallback_name = chan.epg_data.name.strip() if chan.epg_data else chan.name
             norm_chan = normalize_name(fallback_name)
             if not norm_chan:
                 logger.info(f"Channel {chan.id} '{chan.name}' => empty after normalization, skipping")
@@ -165,12 +169,12 @@ def match_epg_channels():
 
             # If best_score is above BEST_FUZZY_THRESHOLD => direct accept
             if best_score >= BEST_FUZZY_THRESHOLD:
-                chan.tvg_id = best_epg["tvg_id"]
+                chan.epg_data = all_epg[best_epg["epg_id"]]
                 chan.save()
 
                 # Attempt to parse program data for this channel
                 if epg_file_path:
-                    parse_programs_for_tvg_id(epg_file_path, best_epg["tvg_id"])
+                    parse_programs_for_tvg_id(epg_file_path, all_epg[best_epg["epg_id"]])
                     logger.info(f"Loaded program data for tvg_id={best_epg['tvg_id']}")
 
                 matched_channels.append((chan.id, fallback_name, best_epg["tvg_id"]))
@@ -187,11 +191,11 @@ def match_epg_channels():
                 top_value = float(sim_scores[top_index])
                 if top_value >= EMBED_SIM_THRESHOLD:
                     matched_epg = epg_rows[top_index]
-                    chan.tvg_id = matched_epg["tvg_id"]
+                    chan.epg_data = all_epg[matched_epg["epg_id"]]
                     chan.save()
 
                     if epg_file_path:
-                        parse_programs_for_tvg_id(epg_file_path, matched_epg["tvg_id"])
+                        parse_programs_for_tvg_id(epg_file_path, all_epg[matched_epg["epg_id"]])
                         logger.info(f"Loaded program data for tvg_id={matched_epg['tvg_id']}")
 
                     matched_channels.append((chan.id, fallback_name, matched_epg["tvg_id"]))
@@ -219,4 +223,14 @@ def match_epg_channels():
         logger.info("No new channels were matched.")
 
     logger.info("Finished EPG matching logic.")
+
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        'updates',
+        {
+            'type': 'update',
+            "data": {"success": True, "type": "epg_match"}
+        }
+    )
+
     return f"Done. Matched {total_matched} channel(s)."

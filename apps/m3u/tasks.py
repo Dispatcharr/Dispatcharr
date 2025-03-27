@@ -15,7 +15,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.utils import timezone
 import time
-from channels.layers import get_channel_layer
 import json
 from core.utils import redis_client
 from core.models import CoreSettings
@@ -235,14 +234,13 @@ def process_m3u_batch(account_id, batch, group_names, hash_keys):
             logger.error(json.dumps(stream_info))
 
     existing_streams = {s.stream_hash: s for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys())}
-    logger.info(f"Hashed {len(stream_hashes.keys())} unique streams")
 
     for stream_hash, stream_props in stream_hashes.items():
         if stream_hash in existing_streams:
             obj = existing_streams[stream_hash]
             changed = False
             for key, value in stream_props.items():
-                if getattr(obj, key) == value:
+                if hasattr(obj, key) and getattr(obj, key) == value:
                     continue
                 changed = True
                 setattr(obj, key, value)

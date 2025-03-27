@@ -23,7 +23,8 @@ const EPGsTable = () => {
   const [epgModalOpen, setEPGModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
 
-  const epgs = useEPGsStore((state) => state.epgs);
+  const { epgs } = useEPGsStore();
+  console.log(epgs);
 
   const theme = useMantineTheme();
 
@@ -41,6 +42,7 @@ const EPGsTable = () => {
       {
         header: 'URL / API Key',
         accessorKey: 'max_streams',
+        enableSorting: false,
       },
     ],
     []
@@ -93,7 +95,7 @@ const EPGsTable = () => {
   const table = useMantineReactTable({
     ...TableHelper.defaultProperties,
     columns,
-    data: epgs,
+    data: Object.values(epgs),
     enablePagination: false,
     enableRowVirtualization: true,
     enableRowSelection: false,
@@ -142,6 +144,11 @@ const EPGsTable = () => {
     mantineTableContainerProps: {
       style: {
         height: 'calc(40vh - 0px)',
+      },
+    },
+    displayColumnDefOptions: {
+      'mrt-row-actions': {
+        size: 10,
       },
     },
   });
