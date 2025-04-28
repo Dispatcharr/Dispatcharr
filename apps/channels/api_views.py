@@ -267,6 +267,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_number = None
         if 'tv-chno' in stream_custom_props:
             channel_number = int(stream_custom_props['tv-chno'])
+        elif 'tvg-chno' in stream_custom_props:
+            channel_number = int(stream_custom_props['tvg-chno'])
         elif 'channel-number' in stream_custom_props:
             channel_number = int(stream_custom_props['channel-number'])
 
