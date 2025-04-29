@@ -380,14 +380,15 @@ class StreamGenerator:
                             client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
                             # Only the last client or owner should release the stream
                             if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
-                                from apps.channels.models import Stream
+                                from apps.channels.models import Channel
                                 try:
-                                    stream = Stream.objects.get(pk=stream_id)
-                                    stream.release_stream()
+                                    # Get the channel by UUID
+                                    channel = Channel.objects.get(uuid=self.channel_id)
+                                    channel.release_stream()
                                     stream_released = True
-                                    logger.debug(f"[{self.client_id}] Released stream {stream_id} for channel {self.channel_id}")
+                                    logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
                                 except Exception as e:
-                                    logger.error(f"[{self.client_id}] Error releasing stream {stream_id}: {e}")
+                                    logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
             except Exception as e:
                 logger.error(f"[{self.client_id}] Error checking stream data for release: {e}")
 

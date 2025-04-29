@@ -407,6 +407,53 @@ class Channel(models.Model):
         if current_count > 0:
             redis_client.decr(profile_connections_key)
 
+    def update_stream_profile(self, new_profile_id):
+        """
+        Updates the profile for the current stream and adjusts connection counts.
+
+        Args:
+            new_profile_id: The ID of the new stream profile to use
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        redis_client = RedisClient.get_client()
+
+        # Get current stream ID
+        stream_id_bytes = redis_client.get(f"channel_stream:{self.id}")
+        if not stream_id_bytes:
+            logger.debug("No active stream found for channel")
+            return False
+
+        stream_id = int(stream_id_bytes)
+
+        # Get current profile ID
+        current_profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+        if not current_profile_id_bytes:
+            logger.debug("No profile found for current stream")
+            return False
+
+        current_profile_id = int(current_profile_id_bytes)
+
+        # Don't do anything if the profile is already set to the requested one
+        if current_profile_id == new_profile_id:
+            return True
+
+        # Decrement connection count for old profile
+        old_profile_connections_key = f"profile_connections:{current_profile_id}"
+        old_count = int(redis_client.get(old_profile_connections_key) or 0)
+        if old_count > 0:
+            redis_client.decr(old_profile_connections_key)
+
+        # Update the profile mapping
+        redis_client.set(f"stream_profile:{stream_id}", new_profile_id)
+
+        # Increment connection count for new profile
+        new_profile_connections_key = f"profile_connections:{new_profile_id}"
+        redis_client.incr(new_profile_connections_key)
+        logger.info(f"Updated stream {stream_id} profile from {current_profile_id} to {new_profile_id}")
+        return True
+
 
 class ChannelProfile(models.Model):
     name = models.CharField(max_length=100, unique=True)

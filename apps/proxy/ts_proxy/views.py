@@ -261,7 +261,6 @@ def stream_ts(request, channel_id):
 
             logger.info(f"[{client_id}] Successfully initialized channel {channel_id}")
             channel_initializing = True
-            logger.info(f"[{client_id}] Channel {channel_id} initialization started")
 
         # Register client - can do this regardless of initialization state
         # Create local resources if needed

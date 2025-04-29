@@ -59,7 +59,6 @@ class ChannelStatus:
                     stream = Stream.objects.filter(id=stream_id).first()
                     if stream:
                         info['stream_name'] = stream.name
-                        logger.debug(f"Added stream name '{stream.name}' for stream ID {stream_id}")
                 except (ImportError, DatabaseError) as e:
                     logger.warning(f"Failed to get stream name for ID {stream_id}: {e}")
             except ValueError:
@@ -78,7 +77,6 @@ class ChannelStatus:
                     m3u_profile = M3UAccountProfile.objects.filter(id=m3u_profile_id).first()
                     if m3u_profile:
                         info['m3u_profile_name'] = m3u_profile.name
-                        logger.debug(f"Added M3U profile name '{m3u_profile.name}' for profile ID {m3u_profile_id}")
                 except (ImportError, DatabaseError) as e:
                     logger.warning(f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}")
             except ValueError:
@@ -337,7 +335,6 @@ class ChannelStatus:
                         stream = Stream.objects.filter(id=stream_id).first()
                         if stream:
                             info['stream_name'] = stream.name
-                            logger.debug(f"Added stream name '{stream.name}' for stream ID {stream_id}")
                     except (ImportError, DatabaseError) as e:
                         logger.warning(f"Failed to get stream name for ID {stream_id}: {e}")
                 except ValueError:
@@ -412,7 +409,6 @@ class ChannelStatus:
                         m3u_profile = M3UAccountProfile.objects.filter(id=m3u_profile_id).first()
                         if m3u_profile:
                             info['m3u_profile_name'] = m3u_profile.name
-                            logger.debug(f"Added M3U profile name '{m3u_profile.name}' for profile ID {m3u_profile_id}")
                     except (ImportError, DatabaseError) as e:
                         logger.warning(f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}")
                 except ValueError:
