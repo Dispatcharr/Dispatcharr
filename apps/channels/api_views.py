@@ -265,8 +265,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         stream_custom_props = json.loads(stream.custom_properties) if stream.custom_properties else {}
 
         channel_number = None
-        if 'tv-chno' in stream_custom_props:
-            channel_number = int(stream_custom_props['tv-chno'])
+        if 'tvg-chno' in stream_custom_props:
+            channel_number = int(stream_custom_props['tvg-chno'])
         elif 'channel-number' in stream_custom_props:
             channel_number = int(stream_custom_props['channel-number'])
 
@@ -386,8 +386,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             stream_custom_props = json.loads(stream.custom_properties) if stream.custom_properties else {}
 
             channel_number = None
-            if 'tv-chno' in stream_custom_props:
-                channel_number = int(stream_custom_props['tv-chno'])
+            if 'tvg-chno' in stream_custom_props:
+                channel_number = int(stream_custom_props['tvg-chno'])
             elif 'channel-number' in stream_custom_props:
                 channel_number = int(stream_custom_props['channel-number'])
 
