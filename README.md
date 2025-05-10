@@ -104,7 +104,7 @@ Here’s how you can join the party:
 ## 📚 Roadmap & Documentation
 
 - 📚  **Roadmap:** Coming soon!
-- 📖 **Wiki:** In progress — tutorials, API references, and advanced setup guides on the way!
+- 📖 **Documentation:** [Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/)
 
 ---
 

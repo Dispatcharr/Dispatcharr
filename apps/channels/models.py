@@ -209,7 +209,7 @@ class ChannelManager(models.Manager):
 
 
 class Channel(models.Model):
-    channel_number = models.IntegerField()
+    channel_number = models.FloatField(db_index=True)
     name = models.CharField(max_length=255)
     logo = models.ForeignKey(
         'Logo',

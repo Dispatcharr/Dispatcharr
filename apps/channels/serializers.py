@@ -115,7 +115,7 @@ class BulkChannelProfileMembershipSerializer(serializers.Serializer):
 #
 class ChannelSerializer(serializers.ModelSerializer):
     # Show nested group data, or ID
-    channel_number = serializers.IntegerField(allow_null=True, required=False)
+    channel_number = serializers.FloatField(allow_null=True, required=False)
     channel_group_id = serializers.PrimaryKeyRelatedField(
         queryset=ChannelGroup.objects.all(),
         source="channel_group",

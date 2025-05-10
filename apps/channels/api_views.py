@@ -266,7 +266,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     type=openapi.TYPE_INTEGER, description="ID of the stream to link"
                 ),
                 "channel_number": openapi.Schema(
-                    type=openapi.TYPE_INTEGER,
+                    type=openapi.TYPE_NUMBER,
                     description="(Optional) Desired channel number. Must not be in use."
                 ),
                 "name": openapi.Schema(
@@ -293,9 +293,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         channel_number = None
         if 'tvg-chno' in stream_custom_props:
-            channel_number = int(stream_custom_props['tvg-chno'])
+            channel_number = float(stream_custom_props['tvg-chno'])
         elif 'channel-number' in stream_custom_props:
-            channel_number = int(stream_custom_props['channel-number'])
+            channel_number = float(stream_custom_props['channel-number'])
 
         if channel_number is None:
             provided_number = request.data.get('channel_number')
@@ -303,7 +303,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 channel_number = Channel.get_next_available_channel_number()
             else:
                 try:
-                    channel_number = int(provided_number)
+                    channel_number = float(provided_number)
                 except ValueError:
                     return Response({"error": "channel_number must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
                 # If the provided number is already used, return an error.
@@ -362,7 +362,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         type=openapi.TYPE_INTEGER, description="ID of the stream to link"
                     ),
                     "channel_number": openapi.Schema(
-                        type=openapi.TYPE_INTEGER,
+                        type=openapi.TYPE_NUMBER,
                         description="(Optional) Desired channel number. Must not be in use."
                     ),
                     "name": openapi.Schema(
@@ -419,9 +419,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
             channel_number = None
             if 'tvg-chno' in stream_custom_props:
-                channel_number = int(stream_custom_props['tvg-chno'])
+                channel_number = float(stream_custom_props['tvg-chno'])
             elif 'channel-number' in stream_custom_props:
-                channel_number = int(stream_custom_props['channel-number'])
+                channel_number = float(stream_custom_props['channel-number'])
 
             # Determine channel number: if provided, use it (if free); else auto assign.
             if channel_number is None:
@@ -430,7 +430,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     channel_number = get_auto_number()
                 else:
                     try:
-                        channel_number = int(provided_number)
+                        channel_number = float(provided_number)
                     except ValueError:
                         errors.append({"item": item, "error": "channel_number must be an integer."})
                         continue
