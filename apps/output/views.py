@@ -3,10 +3,12 @@ from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile
 from apps.epg.models import ProgramData
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from datetime import datetime, timedelta
 import re
 import html  # Add this import for XML escaping
 
+@csrf_exempt
 def generate_m3u(request, profile_name=None):
     """
     Dynamically generate an M3U file from channels.
