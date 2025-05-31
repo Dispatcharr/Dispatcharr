@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     libpcre3 libpcre3-dev libpq-dev procps \
     build-essential gcc pciutils \
     nginx streamlink \
+    git \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Create Python virtual environment ---
