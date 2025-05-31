@@ -1,0 +1,38 @@
+name: Feature request
+description: I want to suggest a new feature for Dispatcharr
+title: "[Feature]: "
+labels: ["Feature Request"]
+projects: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping to make Dispatcharr better!
+  - type: textarea
+    id: describe-problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: Make sure to attach screenshots if possible!
+      placeholder: Tell us what you see!
+      value: "A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]"
+    validations:
+      required: true
+  - type: textarea
+    id: describe-solution
+    attributes:
+      label: Describe the solution you'd like
+      description: A clear and concise description of what you want to happen.
+      placeholder: Tell us what you see!
+      value: "Describe here."
+    validations:
+      required: true
+  - type: textarea
+    id: extras
+    attributes:
+      label: Additional context
+      description: Anything else you want to add?
+      placeholder: Tell us what you see!
+      value: "Nothing Extra"
+    validations:
+      required: true
