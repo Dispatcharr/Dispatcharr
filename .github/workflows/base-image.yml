@@ -1,5 +1,5 @@
 name: Base Image Build
-
+runs-on: self-hosted
 on:
   push:
     branches: [ main, dev ]
