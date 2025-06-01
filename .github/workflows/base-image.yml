@@ -1,5 +1,5 @@
 name: Base Image Build
-
+runs-on: [Slama-Read-Runner01v]
 on:
   push:
     branches: [ main, dev ]
