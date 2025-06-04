@@ -14,6 +14,7 @@ import Guide from './pages/Guide';
 import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
+import Help from './pages/Help';
 import useAuthStore from './store/auth';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
@@ -138,6 +139,7 @@ const App = () => {
                     ) : (
                       <Route path="/login" element={<Login needsSuperuser />} />
                     )}
+                    <Route path="/help" element={<Help />} />
                     <Route
                       path="*"
                       element={

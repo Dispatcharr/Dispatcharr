@@ -114,3 +114,28 @@ def version(request):
         'update_version': update_version,
         'update_url': update_url,
     })
+
+
+@swagger_auto_schema(
+    method='post',
+    operation_description="Manually check for available updates",
+    responses={200: "Version information"},
+)
+@api_view(['POST'])
+def check_update(request):
+    """Trigger an update check and return version info."""
+    from version import __version__, __timestamp__
+    from core.tasks import check_for_update
+
+    # Run the check synchronously to immediately update DB values
+    check_for_update()
+
+    update_version = CoreSettings.get_available_update_version()
+    update_url = CoreSettings.get_available_update_url()
+
+    return Response({
+        'version': __version__,
+        'timestamp': __timestamp__,
+        'update_version': update_version,
+        'update_url': update_url,
+    })

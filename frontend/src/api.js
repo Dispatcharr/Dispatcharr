@@ -1084,6 +1084,19 @@ export default class API {
     }
   }
 
+  static async checkForUpdate() {
+    try {
+      const response = await request(`${host}/api/core/check_update/`, {
+        method: 'POST',
+        auth: false,
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to check for updates', e);
+    }
+  }
+
   static async updateSetting(values) {
     const { id, ...payload } = values;
 

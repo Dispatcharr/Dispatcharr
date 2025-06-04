@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
-import { Paper, Title, TextInput, Button, Center, Stack } from '@mantine/core';
+import API from '../../api';
+import { Paper, Title, TextInput, Button, Center, Stack, Text } from '@mantine/core';
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
@@ -10,12 +11,28 @@ const LoginForm = () => {
 
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
+  const [version, setVersion] = useState('');
+  const [timestamp, setTimestamp] = useState(null);
 
   useEffect(() => {
     if (isAuthenticated) {
       navigate('/channels');
     }
   }, [isAuthenticated, navigate]);
+
+  useEffect(() => {
+    const fetchVersion = async () => {
+      try {
+        const data = await API.getVersion();
+        setVersion(data.version || '');
+        setTimestamp(data.timestamp || null);
+      } catch (e) {
+        console.error('Failed to fetch version info:', e);
+      }
+    };
+
+    fetchVersion();
+  }, []);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -66,6 +83,9 @@ const LoginForm = () => {
             <Button type="submit" mt="sm">
               Login
             </Button>
+            <Text size="xs" ta="right" c="dimmed">
+              v{version || '0.0.0'}{timestamp ? `-${timestamp}` : ''}
+            </Text>
           </Stack>
         </form>
       </Paper>

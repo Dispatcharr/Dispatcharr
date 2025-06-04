@@ -10,6 +10,7 @@ import {
   Copy,
   ChartLine,
   Video,
+  HelpCircle,
 } from 'lucide-react';
 import {
   Avatar,
@@ -115,6 +116,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       label: 'Settings',
       icon: <LucideSettings size={20} />,
       path: '/settings',
+    },
+    {
+      label: 'Help',
+      icon: <HelpCircle size={20} />,
+      path: '/help',
     },
   ];
 

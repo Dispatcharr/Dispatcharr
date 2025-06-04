@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import API from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
@@ -27,6 +27,12 @@ const SettingsPage = () => {
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
+  const [versionInfo, setVersionInfo] = useState({
+    version: '',
+    timestamp: null,
+    update_version: null,
+    update_url: null,
+  });
 
   const regionChoices = [
     { value: 'ad', label: 'AD' },
@@ -279,6 +285,23 @@ const SettingsPage = () => {
     { value: 'zw', label: 'ZW' },
   ];
 
+  useEffect(() => {
+    const fetchVersion = async () => {
+      try {
+        const data = await API.getVersion();
+        setVersionInfo({
+          version: data.version || '',
+          timestamp: data.timestamp || null,
+          update_version: data.update_version,
+          update_url: data.update_url,
+        });
+      } catch (e) {
+        console.error('Failed to fetch version info', e);
+      }
+    };
+    fetchVersion();
+  }, []);
+
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
@@ -355,6 +378,18 @@ const SettingsPage = () => {
       case 'table-size':
         setTableSize(value);
         break;
+    }
+  };
+
+  const checkForUpdates = async () => {
+    const data = await API.checkForUpdate();
+    if (data) {
+      setVersionInfo({
+        version: data.version || '',
+        timestamp: data.timestamp || null,
+        update_version: data.update_version,
+        update_url: data.update_url,
+      });
     }
   };
 
@@ -495,6 +530,35 @@ const SettingsPage = () => {
             <Accordion.Control>Stream Profiles</Accordion.Control>
             <Accordion.Panel>
               <StreamProfilesTable />
+            </Accordion.Panel>
+          </Accordion.Item>
+
+          <Accordion.Item value="updates">
+            <Accordion.Control>Updates</Accordion.Control>
+            <Accordion.Panel>
+              <Text size="sm" mb="xs">
+                Current Version: v{versionInfo.version}
+                {versionInfo.timestamp ? `-${versionInfo.timestamp}` : ''}
+              </Text>
+              {versionInfo.update_version && versionInfo.update_version !== versionInfo.version ? (
+                <Group mb="xs">
+                  <Text size="sm" c="yellow.4">
+                    Update Available: v{versionInfo.update_version}
+                  </Text>
+                  {versionInfo.update_url && (
+                    <Button size="xs" variant="default" onClick={() => window.open(versionInfo.update_url, '_blank')}>
+                      Update
+                    </Button>
+                  )}
+                </Group>
+              ) : (
+                <Text size="sm" mb="xs">
+                  Dispatcharr is up to date.
+                </Text>
+              )}
+              <Button size="xs" variant="default" onClick={checkForUpdates}>
+                Check for updates
+              </Button>
             </Accordion.Panel>
           </Accordion.Item>
         </Accordion>
