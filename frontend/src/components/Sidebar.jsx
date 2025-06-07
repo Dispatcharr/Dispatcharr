@@ -22,7 +22,6 @@ import {
   TextInput,
   ActionIcon,
 } from '@mantine/core';
-import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
@@ -166,21 +165,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {/* <ListOrdered size={24} /> */}
-        <img width={30} src={logo} />
-        {!collapsed && (
-          <Text
-            sx={{
-              opacity: collapsed ? 0 : 1,
-              transition: 'opacity 0.2s ease-in-out',
-              whiteSpace: 'nowrap', // Ensures text never wraps
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              minWidth: collapsed ? 0 : 150, // Prevents reflow
-            }}
-          >
-            Dispatcharr
-          </Text>
-        )}
+        <Logo showText={!collapsed} />
       </Group>
 
       {/* Navigation Links */}
