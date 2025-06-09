@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import API from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
@@ -14,19 +14,24 @@ import {
   Select,
   Switch,
   Text,
+  Alert,
+  Stack,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
 import useLocalStorage from '../hooks/useLocalStorage';
+import { notifications } from '@mantine/notifications';
 
 const SettingsPage = () => {
   const settings = useSettingsStore((s) => s.settings);
   const userAgents = useUserAgentsStore((s) => s.userAgents);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
+  const rehashStreams = useSettingsStore((s) => s.rehashStreams);
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
+  const [isRehashing, setIsRehashing] = useState(false);
 
   const regionChoices = [
     { value: 'ad', label: 'AD' },
@@ -279,6 +284,12 @@ const SettingsPage = () => {
     { value: 'zw', label: 'ZW' },
   ];
 
+  const hashKeyOptions = [
+    { value: 'name', label: 'Stream Name' },
+    { value: 'url', label: 'Stream URL' },
+    { value: 'tvg_id', label: 'TVG ID' },
+  ];
+
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
@@ -358,6 +369,57 @@ const SettingsPage = () => {
     }
   };
 
+  const handleHashKeyChange = async (newKeys) => {
+    const hashKeySetting = Object.values(settings).find(
+      (s) => s.key === 'm3u-hash-key'
+    );
+    if (hashKeySetting) {
+      // Update the setting
+      await API.updateSetting({
+        ...hashKeySetting,
+        value: newKeys.join(','),
+      });
+
+      // Show confirmation dialog for rehashing
+      const shouldRehash = window.confirm(
+        'Hash key settings have been updated. Would you like to rehash all existing streams now? This will update stream identifiers to use the new hash algorithm.'
+      );
+
+      if (shouldRehash) {
+        handleRehashStreams(newKeys);
+      }
+    }
+  };
+
+  const handleRehashStreams = async (keys) => {
+    setIsRehashing(true);
+    try {
+      await rehashStreams(keys);
+      notifications.show({
+        title: 'Stream Rehashing Complete',
+        message: 'All streams have been rehashed with the new key settings.',
+        color: 'green',
+      });
+    } catch (error) {
+      notifications.show({
+        title: 'Rehashing Failed',
+        message: 'Failed to rehash streams. Please try again.',
+        color: 'red',
+      });
+    } finally {
+      setIsRehashing(false);
+    }
+  };
+
+  const getCurrentHashKeys = () => {
+    const hashKeySetting = Object.values(settings).find(
+      (s) => s.key === 'm3u-hash-key'
+    );
+    return hashKeySetting
+      ? hashKeySetting.value.split(',')
+      : ['name', 'url', 'tvg_id'];
+  };
+
   return (
     <Center
       style={{
@@ -399,9 +461,18 @@ const SettingsPage = () => {
                   searchable
                   {...form.getInputProps('default-user-agent')}
                   key={form.key('default-user-agent')}
-                  id={settings['default-user-agent']?.id || 'default-user-agent'}
-                  name={settings['default-user-agent']?.key || 'default-user-agent'}
-                  label={settings['default-user-agent']?.name || 'Default User Agent'}
+                  id={
+                    settings['default-user-agent']?.id ||
+                    'default-user-agent'
+                  }
+                  name={
+                    settings['default-user-agent']?.key ||
+                    'default-user-agent'
+                  }
+                  label={
+                    settings['default-user-agent']?.name ||
+                    'Default User Agent'
+                  }
                   data={userAgents.map((option) => ({
                     value: `${option.id}`,
                     label: option.name,
@@ -412,9 +483,18 @@ const SettingsPage = () => {
                   searchable
                   {...form.getInputProps('default-stream-profile')}
                   key={form.key('default-stream-profile')}
-                  id={settings['default-stream-profile']?.id || 'default-stream-profile'}
-                  name={settings['default-stream-profile']?.key || 'default-stream-profile'}
-                  label={settings['default-stream-profile']?.name || 'Default Stream Profile'}
+                  id={
+                    settings['default-stream-profile']?.id ||
+                    'default-stream-profile'
+                  }
+                  name={
+                    settings['default-stream-profile']?.key ||
+                    'default-stream-profile'
+                  }
+                  label={
+                    settings['default-stream-profile']?.name ||
+                    'Default Stream Profile'
+                  }
                   data={streamProfiles.map((option) => ({
                     value: `${option.id}`,
                     label: option.name,
@@ -498,6 +578,45 @@ const SettingsPage = () => {
             </Accordion.Panel>
           </Accordion.Item>
         </Accordion>
+
+        {/* Stream Hash Configuration */}
+        <Box mt="xl">
+          <Text size="lg" weight={500} mb="md">
+            Stream Hash Configuration
+          </Text>
+          <Alert
+            color="blue"
+            mb="md"
+            title="Stream Identification"
+          >
+            These settings determine how streams are uniquely identified. Changing
+            these settings will affect how duplicate streams are detected and
+            handled.
+          </Alert>
+
+          <MultiSelect
+            label="Hash Key Fields"
+            description="Select which fields to use for generating unique stream identifiers"
+            data={hashKeyOptions}
+            value={getCurrentHashKeys()}
+            onChange={handleHashKeyChange}
+            disabled={isRehashing}
+          />
+
+          <Group mt="md">
+            <Button
+              variant="outline"
+              onClick={() => handleRehashStreams(getCurrentHashKeys())}
+              loading={isRehashing}
+              disabled={isRehashing}
+            >
+              Rehash All Streams
+            </Button>
+            <Text size="sm" color="dimmed">
+              Manually trigger rehashing of all streams with current settings
+            </Text>
+          </Group>
+        </Box>
       </Box>
     </Center>
   );

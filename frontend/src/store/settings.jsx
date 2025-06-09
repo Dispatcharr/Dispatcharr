@@ -40,6 +40,16 @@ const useSettingsStore = create((set) => ({
     set((state) => ({
       settings: { ...state.settings, [setting.key]: setting },
     })),
+
+  rehashStreams: async (keys) => {
+    try {
+      const response = await API.rehashStreams(keys);
+      return response;
+    } catch (error) {
+      console.error('Failed to rehash streams:', error);
+      throw error;
+    }
+  },
 }));
 
 export default useSettingsStore;

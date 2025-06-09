@@ -5,14 +5,18 @@ import subprocess
 import logging
 import re
 import redis
+import json
 
 from django.conf import settings
-from django.http import StreamingHttpResponse, HttpResponseServerError
+from django.http import StreamingHttpResponse, HttpResponseServerError, JsonResponse
 from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccountProfile
 from core.models import StreamProfile, CoreSettings
+from core.tasks import rehash_streams
 
 # Import the persistent lock (the “real” lock)
 from dispatcharr.persistent_lock import PersistentLock
@@ -178,3 +182,37 @@ def stream_view(request, channel_uuid):
         stream_generator(process, stream, persistent_lock),
         content_type="video/MP2T"
     )
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def rehash_streams_view(request):
+    """
+    API endpoint to trigger stream rehashing with new hash keys.
+    """
+    try:
+        data = json.loads(request.body)
+        keys = data.get('keys', [])
+
+        if not keys or not isinstance(keys, list):
+            return JsonResponse({'error': 'Invalid keys provided'}, status=400)
+
+        # Validate that the keys are allowed
+        valid_keys = ['name', 'url', 'tvg_id']
+        if not all(key in valid_keys for key in keys):
+            return JsonResponse({'error': 'Invalid key values'}, status=400)
+
+        # Trigger the rehashing task
+        task = rehash_streams.delay(keys)
+
+        return JsonResponse({
+            'success': True,
+            'message': 'Stream rehashing started',
+            'task_id': task.id
+        })
+
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        logger.error(f"Error starting stream rehash: {e}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)

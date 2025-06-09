@@ -1101,6 +1101,19 @@ export default class API {
     }
   }
 
+  static async rehashStreams(keys) {
+    try {
+      const response = await request(`${host}/api/core/rehash-streams/`, {
+        method: 'POST',
+        body: { keys: keys },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to rehash streams', e);
+    }
+  }
+
   static async getChannelStats(uuid = null) {
     try {
       const response = await request(`${host}/proxy/ts/status`);

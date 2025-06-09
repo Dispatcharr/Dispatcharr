@@ -166,7 +166,26 @@ class CoreSettings(models.Model):
 
     @classmethod
     def get_m3u_hash_key(cls):
-        return cls.objects.get(key=STREAM_HASH_KEY).value
+        try:
+            return cls.objects.get(key=STREAM_HASH_KEY).value
+        except cls.DoesNotExist:
+            # Return default if setting doesn't exist
+            return "name,url,tvg_id"
+
+    @classmethod
+    def set_m3u_hash_key(cls, value):
+        """Set the M3U hash key setting"""
+        obj, created = cls.objects.get_or_create(
+            key=STREAM_HASH_KEY,
+            defaults={
+                'name': 'M3U Hash Key',
+                'value': value
+            }
+        )
+        if not created:
+            obj.value = value
+            obj.save()
+        return obj
 
     @classmethod
     def get_preferred_region(cls):
