@@ -57,13 +57,14 @@ if [ -z "$(ls -A $POSTGRES_DIR)" ]; then
         echo "Creating PostgreSQL database..."
         su - postgres -c "createdb -p ${POSTGRES_PORT} ${POSTGRES_DB}"
 
-        # Create user, set ownership, and grant privileges
+        # Create user, set ownership, and grant privileges, including privileges to create new databases
         echo "Creating PostgreSQL user..."
         su - postgres -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB}" <<EOF
 DO \$\$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$POSTGRES_USER') THEN
         CREATE ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';
+        ALTER ROLE $POSTGRES_USER CREATEDB;
     END IF;
 END
 \$\$;
