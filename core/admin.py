@@ -31,11 +31,12 @@ class StreamProfileAdmin(admin.ModelAdmin):
 @admin.register(CoreSettings)
 class CoreSettingsAdmin(admin.ModelAdmin):
     """
-    Because CoreSettings is typically a single 'singleton' row,
-    you can either allow multiple or restrict it. For now, we
-    just list and allow editing of any instance.
+    CoreSettings Admin configuration.
     """
     list_display = (
         "key",
+        "name",
         "value",
     )
+    search_fields = ("key", "name", "value")
+    # list_filter and readonly_fields for non-existent fields removed.

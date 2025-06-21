@@ -19,6 +19,16 @@ import time
 import json
 from urllib.parse import urlparse
 import base64
+import os # For HLS views
+from django.http import FileResponse # For HLS views
+
+# HLS Specific Imports
+from apps.proxy.hls_output.manager import HLSOutputManager
+from apps.proxy.hls_output.constants import HLSChannelState
+# from apps.proxy.hls_output.redis_keys import HLSRedisKeys # May not be directly needed
+from apps.proxy.hls_output.config import get_hls_setting
+from apps.channels.models import Channel # Already imported
+from core.models import StreamProfile, UserAgent # UserAgent for default
 
 def m3u_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
@@ -85,6 +95,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Check if direct stream URLs should be used instead of proxy
     use_direct_urls = request.GET.get('direct', 'false').lower() == 'true'
+    output_format = request.GET.get('format', 'ts').lower() # New parameter for format
 
     # Get the source to use for tvg-id value
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
@@ -140,25 +151,40 @@ def generate_m3u(request, profile_name=None, user=None):
             f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{channel.name}\n'
         )
 
-        # Determine the stream URL based on the direct parameter
-        if use_direct_urls:
-            # Try to get the first stream's direct URL
-            first_stream = channel.streams.first()
+        # Determine the stream URL based on the direct parameter and format
+        if output_format == 'hls':
+            # HLS format requested
+            # Note: use_direct_urls is ignored for HLS as HLS is always served via Dispatcharr
+            try:
+                stream_url = request.build_absolute_uri(
+                    reverse('output:hls_playlist', kwargs={'channel_uuid': channel.uuid, 'playlist_name': 'master.m3u8'})
+                )
+            except Exception as e:
+                logger.error(f"Error reversing HLS URL for channel {channel.uuid}: {e}", exc_info=True)
+                stream_url = "#ERROR_GENERATING_HLS_URL"
+        elif use_direct_urls: # TS format, direct URL requested
+            first_stream = channel.streams.filter(enabled=True, is_backup=False).order_by('priority').first()
+            if not first_stream or not first_stream.url:
+                 first_stream = channel.streams.filter(enabled=True, is_backup=True).order_by('priority').first()
+
             if first_stream and first_stream.url:
-                # Use the direct stream URL
                 stream_url = first_stream.url
             else:
-                # Fall back to proxy URL if no direct URL available
-                base_url = request.build_absolute_uri('/')[:-1]
-                stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
-        else:
-            # Standard behavior - use proxy URL
-            base_url = request.build_absolute_uri('/')[:-1]
-            stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+                # Fall back to TS proxy URL if no direct URL available
+                base_url = request.build_absolute_uri('/')[:-1] # Remove trailing slash
+                # Assuming the TS proxy URL is still desired as a fallback for direct=true
+                ts_proxy_path = reverse('output:stream', kwargs={'channel_uuid': channel.uuid})
+                stream_url = f"{base_url}{ts_proxy_path}"
+        else: # TS format, proxy URL requested (default behavior)
+            base_url = request.build_absolute_uri('/')[:-1] # Remove trailing slash
+            ts_proxy_path = reverse('output:stream', kwargs={'channel_uuid': channel.uuid})
+            stream_url = f"{base_url}{ts_proxy_path}"
+            # Old way: stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}" - ensure reverse matches this structure if kept
 
         m3u_content += extinf_line + stream_url + "\n"
 
-    response = HttpResponse(m3u_content, content_type="audio/x-mpegurl")
+    content_type = "application/vnd.apple.mpegurl" if output_format == 'hls' else "audio/x-mpegurl"
+    response = HttpResponse(m3u_content, content_type=content_type)
     response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
     return response
 
@@ -863,3 +889,161 @@ def xc_get_epg(request, user, short=False):
         output['epg_listings'].append(program_output)
 
     return output
+
+
+# --- HLS Views ---
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def hls_manifest_view(request, channel_uuid, playlist_name="master.m3u8"): # Default changed to master.m3u8
+    if not network_access_allowed(request, NETWORK_ACCESS.PROXY_STREAMING): # Assuming same access level as other streams
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    try:
+        channel = get_object_or_404(Channel, uuid=channel_uuid)
+    except Http404:
+        return JsonResponse({"error": "Channel not found"}, status=404)
+
+    manager = HLSOutputManager.get_instance()
+    hls_base_path = get_hls_setting('hls_segment_path')
+
+    # Security: Normalize and validate playlist_name path
+    channel_hls_root = os.path.abspath(os.path.join(hls_base_path, str(channel_uuid)))
+    requested_manifest_full_path = os.path.abspath(os.path.join(channel_hls_root, playlist_name))
+
+    if not requested_manifest_full_path.startswith(channel_hls_root):
+        logger.warning(f"Path traversal attempt for HLS manifest: channel_uuid={channel_uuid}, playlist_name='{playlist_name}'")
+        return JsonResponse({"error": "Invalid playlist path"}, status=400)
+
+    # Check if the playlist_name itself contains suspicious parts after join, though abspath should handle most.
+    # This is an additional check on the playlist_name component itself.
+    if ".." in playlist_name.replace("\\", "/").split("/") or playlist_name.startswith("/"):
+         logger.warning(f"Invalid characters in playlist_name component: '{playlist_name}'")
+         return JsonResponse({"error": "Invalid playlist name format"}, status=400)
+
+    manifest_file_path = requested_manifest_full_path # Use the validated, absolute path
+
+    # Check HLS status and auto-start
+    current_state = None
+    metadata = None
+    redis_client = RedisClient().get_client() # Direct Redis client for metadata check
+    metadata_key = f"hls:channel:{str(channel_uuid)}:metadata" # Using f-string as HLSRedisKeys not imported directly
+
+    try:
+        metadata_str = redis_client.get(metadata_key)
+        if metadata_str:
+            metadata = json.loads(metadata_str)
+            current_state = metadata.get("state")
+    except Exception as e:
+        # Log this error, but proceed as if no metadata found
+        # logger.error(f"Error fetching/parsing HLS metadata for {channel_uuid}: {e}")
+        pass # Fall through to auto-start logic
+
+    # Auto-start if not active/generating or no metadata
+    # (Simplified: doesn't check for ERROR state specifically to retry, manager should handle that)
+    if current_state not in [HLSChannelState.ACTIVE, HLSChannelState.GENERATING_HLS] or not metadata:
+        first_stream = channel.streams.filter(enabled=True, is_backup=False).order_by('priority').first()
+        if not first_stream or not first_stream.url:
+             # Check for backup streams if no primary active stream
+            first_stream = channel.streams.filter(enabled=True, is_backup=True).order_by('priority').first()
+            if not first_stream or not first_stream.url:
+                return JsonResponse({"error": "Channel has no active source streams"}, status=500)
+
+        source_stream_url = first_stream.url
+
+        try:
+            # Assuming "HLS Proxy" is the designated profile name for HLS tasks
+            hls_proxy_profile = StreamProfile.objects.get(name="HLS Proxy", command="ffmpeg")
+        except StreamProfile.DoesNotExist:
+            return JsonResponse({"error": "HLS Proxy stream profile not found"}, status=500)
+
+        # Get a default User-Agent string
+        default_ua_string = "Dispatcharr/1.0 HLS" # Fallback
+        try:
+            default_user_agent_obj = UserAgent.objects.filter(is_default=True).first()
+            if default_user_agent_obj:
+                default_ua_string = default_user_agent_obj.user_agent_string
+            else: # Fallback to system setting if no default UserAgent object
+                default_ua_string = CoreSettings.get_setting("default_user_agent", default_ua_string)
+        except Exception:
+            # logger.warning("Could not fetch default UserAgent from DB/CoreSettings for HLS init.")
+            pass
+
+
+        if not manager.initialize_channel_hls(str(channel_uuid), source_stream_url, hls_proxy_profile.id, default_ua_string):
+            # If init fails, manager logs errors. We return a generic failure.
+            # It's possible another worker picked it up, so check manifest existence anyway.
+            # For now, we'll just proceed to check manifest. A better flow might involve manager.get_channel_state()
+            pass # Proceed to check manifest existence
+
+        # Brief pause to allow FFmpeg to start and potentially create the manifest
+        # In a production system, a more robust polling or notification mechanism would be better.
+        time.sleep(2) # Adjust as needed, or remove if client-side retry is preferred
+
+    # Serve Manifest
+    if os.path.exists(manifest_file_path):
+        try:
+            return FileResponse(open(manifest_file_path, 'rb'), content_type='application/vnd.apple.mpegurl')
+        except Exception as e:
+            # logger.error(f"Error serving HLS manifest {manifest_file_path}: {e}")
+            return JsonResponse({"error": "Error serving manifest"}, status=500)
+    else:
+        # Could be starting, or failed.
+        # Check state again after init attempt
+        try:
+            metadata_str_after_init = redis_client.get(metadata_key)
+            if metadata_str_after_init:
+                current_state_after_init = json.loads(metadata_str_after_init).get("state")
+                if current_state_after_init == HLSChannelState.GENERATING_HLS:
+                    return JsonResponse({"status": "starting_hls", "message": "HLS generation in progress, manifest not yet available. Please retry shortly."}, status=202) # Accepted
+                elif current_state_after_init == HLSChannelState.ERROR:
+                     return JsonResponse({"error": "HLS generation failed for this channel."}, status=500)
+        except: # Ignore errors reading state after init, just fall through to 404
+            pass
+        return JsonResponse({"error": "HLS manifest not found or not yet ready."}, status=404)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def hls_segment_view(request, channel_uuid, segment_path_in_channel_dir): # Parameter name changed
+    if not network_access_allowed(request, NETWORK_ACCESS.PROXY_STREAMING): # Assuming same access level
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    hls_base_path = get_hls_setting('hls_segment_path')
+
+    # Security: Normalize and validate segment_path_in_channel_dir
+    channel_hls_root = os.path.abspath(os.path.join(hls_base_path, str(channel_uuid)))
+    requested_segment_full_path = os.path.abspath(os.path.join(channel_hls_root, segment_path_in_channel_dir))
+
+    if not requested_segment_full_path.startswith(channel_hls_root):
+        logger.warning(f"Path traversal attempt for HLS segment: channel_uuid={channel_uuid}, segment_path='{segment_path_in_channel_dir}'")
+        return JsonResponse({"error": "Invalid segment path"}, status=400)
+
+    # Additional check on the segment_path_in_channel_dir component itself
+    # Ensure it doesn't contain '..' and is a .ts file (or other expected segment extension)
+    path_parts = segment_path_in_channel_dir.replace("\\", "/").split("/")
+    segment_filename = path_parts[-1]
+    if ".." in path_parts or not segment_filename.endswith(('.ts', '.aac', '.mp4', '.vtt')): # Common segment/subtitle extensions
+        logger.warning(f"Invalid characters or extension in segment path component: '{segment_path_in_channel_dir}'")
+        return JsonResponse({"error": "Invalid segment name format or extension"}, status=400)
+
+    # Check if rendition part is "safe" - simple alphanumeric check for directory names
+    if len(path_parts) > 1: # Means there's a rendition directory part
+        rendition_name_part = path_parts[0]
+        if not rendition_name_part.isalnum() and '_' not in rendition_name_part and '-' not in rendition_name_part : # Allow alphanumeric, underscore, hyphen
+             logger.warning(f"Invalid rendition name format in segment path: '{rendition_name_part}'")
+             return JsonResponse({"error": "Invalid rendition name in path"}, status=400)
+
+
+    segment_file_path = requested_segment_full_path # Use the validated, absolute path
+
+    if os.path.exists(segment_file_path):
+        try:
+            return FileResponse(open(segment_file_path, 'rb'), content_type='video/MP2T') # MP2T is common for .ts
+        except Exception as e:
+            logger.error(f"Error serving HLS segment {segment_file_path}: {e}", exc_info=True)
+            return JsonResponse({"error": "Error serving segment"}, status=500)
+    else:
+        # Could log that segment was not found if needed for debugging active streams
+        # logger.info(f"HLS segment not found: {segment_file_path}")
+        return JsonResponse({"error": "HLS segment not found"}, status=404)

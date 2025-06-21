@@ -26,6 +26,7 @@ urlpatterns = [
     path('hdhr/', include(('apps.hdhr.api_urls', 'hdhr'), namespace='hdhr')),
     path('m3u/', include(('apps.m3u.api_urls', 'm3u'), namespace='m3u')),
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
+    path('proxy/hls/', include('apps.proxy.hls_output.api_urls')), # Added HLS Output API
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),
     #path('settings/', include(('apps.settings.api_urls', 'settings'), namespace='settings')),

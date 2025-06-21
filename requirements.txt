@@ -1,4 +1,5 @@
 Django==5.1.6
+flask
 psycopg2-binary==2.9.10
 redis==4.5.5
 celery
