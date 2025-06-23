@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev
+      - workflow_dispatch
 
 jobs:
   build-and-push:
@@ -44,8 +45,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: docker
-          file: docker/Dockerfile
+          context: .
+          file: ./docker/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |
