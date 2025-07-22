@@ -1,208 +1,215 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
+IFS=$'\n\t'
+
+# Root check
+if [[ $EUID -ne 0 ]]; then
+  echo "[ERROR] This script must be run as root." >&2
+  exit 1
+fi
+
+trap 'echo -e "\n[ERROR] Line $LINENO failed. Exiting." >&2; exit 1' ERR
 
 ##############################################################################
 # 0) Warning / Disclaimer
 ##############################################################################
 
-echo "**************************************************************"
-echo "WARNING: While we do not anticipate any problems, we disclaim all"
-echo "responsibility for anything that happens to your machine."
-echo ""
-echo "This script is intended for **Debian-based operating systems only**."
-echo "Running it on other distributions WILL cause unexpected issues."
-echo ""
-echo "This script is **NOT RECOMMENDED** for use on your primary machine."
-echo "For safety and best results, we strongly advise running this inside a"
-echo "clean virtual machine (VM) or LXC container environment."
-echo ""
-echo "Additionally, there is NO SUPPORT for this method; Docker is the only"
-echo "officially supported way to run Dispatcharr."
-echo "**************************************************************"
-echo ""
-echo "If you wish to proceed, type \"I understand\" and press Enter."
-read user_input
-
-if [ "$user_input" != "I understand" ]; then
-  echo "Exiting script..."
-  exit 1
-fi
-
+show_disclaimer() {
+  echo "**************************************************************"
+  echo "WARNING: While we do not anticipate any problems, we disclaim all"
+  echo "responsibility for anything that happens to your machine."
+  echo ""
+  echo "This script is intended for **Debian-based operating systems only**."
+  echo "Running it on other distributions WILL cause unexpected issues."
+  echo ""
+  echo "This script is **NOT RECOMMENDED** for use on your primary machine."
+  echo "For safety and best results, we strongly advise running this inside a"
+  echo "clean virtual machine (VM) or LXC container environment."
+  echo ""
+  echo "Additionally, there is NO SUPPORT for this method; Docker is the only"
+  echo "officially supported way to run Dispatcharr."
+  echo "**************************************************************"
+  echo ""
+  echo "If you wish to proceed, type \"I understand\" and press Enter."
+  read user_input
+  if [ "$user_input" != "I understand" ]; then
+    echo "Exiting script..."
+    exit 1
+  fi
+}
 
 ##############################################################################
 # 1) Configuration
 ##############################################################################
 
-# Linux user/group under which Dispatcharr processes will run
-DISPATCH_USER="dispatcharr"
-DISPATCH_GROUP="dispatcharr"
-
-# Where Dispatcharr source code should live
-APP_DIR="/opt/dispatcharr"
-
-# Git branch to clone (e.g., "main" or "dev")
-DISPATCH_BRANCH="dev"
-
-# PostgreSQL settings
-POSTGRES_DB="dispatcharr"
-POSTGRES_USER="dispatch"
-POSTGRES_PASSWORD="secret"
-
-# The port on which Nginx will listen for HTTP
-NGINX_HTTP_PORT="9191"
-
-# The TCP port for Daphné (Django Channels)
-WEBSOCKET_PORT="8001"
-
-# Directory inside /run/ for our socket; full path becomes /run/dispatcharr/dispatcharr.sock
-GUNICORN_RUNTIME_DIR="dispatcharr"
-GUNICORN_SOCKET="/run/${GUNICORN_RUNTIME_DIR}/dispatcharr.sock"
+configure_variables() {
+  DISPATCH_USER="dispatcharr"
+  DISPATCH_GROUP="dispatcharr"
+  APP_DIR="/opt/dispatcharr"
+  DISPATCH_BRANCH="main"
+  POSTGRES_DB="dispatcharr"
+  POSTGRES_USER="dispatch"
+  POSTGRES_PASSWORD="secret"
+  NGINX_HTTP_PORT="9191"
+  WEBSOCKET_PORT="8001"
+  GUNICORN_RUNTIME_DIR="dispatcharr"
+  GUNICORN_SOCKET="/run/${GUNICORN_RUNTIME_DIR}/dispatcharr.sock"
+  PYTHON_BIN=$(command -v python3)
+  SYSTEMD_DIR="/etc/systemd/system"
+  NGINX_SITE="/etc/nginx/sites-available/dispatcharr"
+}
 
 ##############################################################################
 # 2) Install System Packages
 ##############################################################################
 
-echo ">>> Installing system packages..."
-apt-get update
-apt-get install -y \
-    git \
-    curl \
-    wget \
-    build-essential \
-    gcc \
-    libpcre3-dev \
-    libpq-dev \
-    python3-dev \
-    python3-venv \
-    python3-pip \
-    nginx \
-    redis-server \
-    postgresql \
-    postgresql-contrib \
-    ffmpeg \
-    procps \
-    streamlink
+install_packages() {
+  echo ">>> Installing system packages..."
+  apt-get update
+  declare -a packages=(
+    git curl wget build-essential gcc libpcre3-dev libpq-dev
+    python3-dev python3-venv python3-pip nginx redis-server
+    postgresql postgresql-contrib ffmpeg procps streamlink
+  )
+  apt-get install -y --no-install-recommends "${packages[@]}"
 
-# Node.js setup (v23.x from NodeSource) - adjust version if needed
-if ! command -v node >/dev/null 2>&1; then
-  echo ">>> Installing Node.js..."
-  curl -sL https://deb.nodesource.com/setup_23.x | bash -
-  apt-get install -y nodejs
-fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo ">>> Installing Node.js..."
+    curl -sL https://deb.nodesource.com/setup_23.x | bash -
+    apt-get install -y nodejs
+  fi
 
-# Start & enable PostgreSQL and Redis
-systemctl enable postgresql redis-server
-systemctl start postgresql redis-server
+  systemctl enable --now postgresql redis-server
+}
 
 ##############################################################################
-# 3) Create Dispatcharr User/Group
+# 3) Create User/Group
 ##############################################################################
 
-if ! getent group "${DISPATCH_GROUP}" >/dev/null; then
-    echo ">>> Creating group: ${DISPATCH_GROUP}"
-    groupadd "${DISPATCH_GROUP}"
-fi
-
-if ! id -u "${DISPATCH_USER}" >/dev/null; then
-    echo ">>> Creating user: ${DISPATCH_USER}"
-    useradd -m -g "${DISPATCH_GROUP}" -s /bin/bash "${DISPATCH_USER}"
-fi
-
-##############################################################################
-# 4) Configure PostgreSQL Database
-##############################################################################
-
-echo ">>> Configuring PostgreSQL..."
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'\"" | grep -q 1 || \
-  su - postgres -c "psql -c \"CREATE DATABASE ${POSTGRES_DB};\""
-
-su - postgres -c "psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER}'\"" | grep -q 1 || \
-  su - postgres -c "psql -c \"CREATE USER ${POSTGRES_USER} WITH PASSWORD '${POSTGRES_PASSWORD}';\""
-
-su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};\""
-su - postgres -c "psql -c \"ALTER DATABASE ${POSTGRES_DB} OWNER TO ${POSTGRES_USER};\""
-su - postgres -c "psql -d ${POSTGRES_DB} -c \"ALTER SCHEMA public OWNER TO ${POSTGRES_USER};\""
+create_dispatcharr_user() {
+  if ! getent group "$DISPATCH_GROUP" >/dev/null; then
+    groupadd "$DISPATCH_GROUP"
+  fi
+  if ! id -u "$DISPATCH_USER" >/dev/null; then
+    useradd -m -g "$DISPATCH_GROUP" -s /bin/bash "$DISPATCH_USER"
+  fi
+}
 
 ##############################################################################
-# 5) Clone or Update Dispatcharr Code
+# 4) PostgreSQL Setup
 ##############################################################################
 
-echo ">>> Installing or updating Dispatcharr in ${APP_DIR} ..."
+setup_postgresql() {
+  echo ">>> Checking PostgreSQL database and user..."
 
-if [ ! -d "${APP_DIR}" ]; then
-    echo ">>> Cloning repository for the first time..."
-    mkdir -p "${APP_DIR}"
-    chown "${DISPATCH_USER}:${DISPATCH_GROUP}" "${APP_DIR}"
-    su - "${DISPATCH_USER}" -c "git clone -b ${DISPATCH_BRANCH} https://github.com/Dispatcharr/Dispatcharr.git ${APP_DIR}"
-else
-    echo ">>> Updating existing repository..."
-    su - "${DISPATCH_USER}" <<EOSU
-cd "${APP_DIR}"
-if [ -d .git ]; then
-    git fetch origin
-    git checkout ${DISPATCH_BRANCH}
-    git pull origin ${DISPATCH_BRANCH}
-else
-    echo "WARNING: .git directory missing, cannot perform update via git."
-fi
+  db_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$POSTGRES_DB'")
+  if [[ "$db_exists" != "1" ]]; then
+    echo ">>> Creating database '${POSTGRES_DB}'..."
+    sudo -u postgres createdb "$POSTGRES_DB"
+  else
+    echo ">>> Database '${POSTGRES_DB}' already exists, skipping creation."
+  fi
+
+  user_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$POSTGRES_USER'")
+  if [[ "$user_exists" != "1" ]]; then
+    echo ">>> Creating user '${POSTGRES_USER}'..."
+    sudo -u postgres psql -c "CREATE USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';"
+  else
+    echo ">>> User '${POSTGRES_USER}' already exists, skipping creation."
+  fi
+
+  echo ">>> Granting privileges..."
+  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $POSTGRES_DB TO $POSTGRES_USER;"
+  sudo -u postgres psql -c "ALTER DATABASE $POSTGRES_DB OWNER TO $POSTGRES_USER;"
+  sudo -u postgres psql -d "$POSTGRES_DB" -c "ALTER SCHEMA public OWNER TO $POSTGRES_USER;"
+}
+
+##############################################################################
+# 5) Clone Dispatcharr Repository
+##############################################################################
+
+clone_dispatcharr_repo() {
+  echo ">>> Installing or updating Dispatcharr in ${APP_DIR} ..."
+  
+  if [ ! -d "$APP_DIR" ]; then
+    mkdir -p "$APP_DIR"
+    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+  fi
+
+  if [ -d "$APP_DIR/.git" ]; then
+    echo ">>> Updating existing Dispatcharr repo..."
+    su - "$DISPATCH_USER" <<EOSU
+cd "$APP_DIR"
+git fetch origin
+git checkout $DISPATCH_BRANCH
+git pull origin $DISPATCH_BRANCH
 EOSU
-fi
+  else
+    echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
+    rm -rf "$APP_DIR"/*
+    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+  fi
+}
 
 ##############################################################################
-# 6) Create Python Virtual Environment & Install Python Dependencies
+# 6) Setup Python Environment
 ##############################################################################
 
-echo ">>> Setting up Python virtual environment..."
-su - "${DISPATCH_USER}" <<EOSU
-cd "${APP_DIR}"
-python3 -m venv env
+setup_python_env() {
+  echo ">>> Setting up Python virtual environment..."
+  su - "$DISPATCH_USER" <<EOSU
+cd "$APP_DIR"
+$PYTHON_BIN -m venv env
 source env/bin/activate
-
-# Upgrade pip and install dependencies from requirements
 pip install --upgrade pip
 pip install -r requirements.txt
-
-# Explicitly ensure Gunicorn is installed in the virtualenv
 pip install gunicorn
 EOSU
-
-# 6a) Create a symlink for ffmpeg in the virtualenv's bin directory.
-echo ">>> Linking ffmpeg into the virtual environment..."
-ln -sf /usr/bin/ffmpeg ${APP_DIR}/env/bin/ffmpeg
+  ln -sf /usr/bin/ffmpeg "$APP_DIR/env/bin/ffmpeg"
+}
 
 ##############################################################################
-# 7) Build Frontend (React)
+# 7) Build Frontend
 ##############################################################################
 
-echo ">>> Building frontend..."
-su - "${DISPATCH_USER}" <<EOSU
-cd "${APP_DIR}/frontend"
+build_frontend() {
+  echo ">>> Building frontend..."
+  su - "$DISPATCH_USER" <<EOSU
+cd "$APP_DIR/frontend"
 npm install --legacy-peer-deps
 npm run build
 EOSU
+}
 
 ##############################################################################
-# 8) Django Migrate & Collect Static
+# 8) Django Migrations & Static
 ##############################################################################
 
-echo ">>> Running Django migrations & collectstatic..."
-su - "${DISPATCH_USER}" <<EOSU
-cd "${APP_DIR}"
+django_migrate_collectstatic() {
+  echo ">>> Running Django migrations & collectstatic..."
+  su - "$DISPATCH_USER" <<EOSU
+cd "$APP_DIR"
 source env/bin/activate
-export POSTGRES_DB="${POSTGRES_DB}"
-export POSTGRES_USER="${POSTGRES_USER}"
-export POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+export POSTGRES_DB="$POSTGRES_DB"
+export POSTGRES_USER="$POSTGRES_USER"
+export POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 export POSTGRES_HOST="localhost"
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
 EOSU
+}
 
 ##############################################################################
-# 9) Create Systemd Service for Gunicorn
+# 9) Configure Services & Nginx
 ##############################################################################
 
-cat <<EOF >/etc/systemd/system/dispatcharr.service
+configure_services() {
+  echo ">>> Creating systemd service files..."
+
+  # Gunicorn
+  cat <<EOF >${SYSTEMD_DIR}/dispatcharr.service
 [Unit]
 Description=Gunicorn for Dispatcharr
 After=network.target postgresql.service redis-server.service
@@ -211,36 +218,31 @@ After=network.target postgresql.service redis-server.service
 User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
-
 RuntimeDirectory=${GUNICORN_RUNTIME_DIR}
 RuntimeDirectoryMode=0775
-
-# Update PATH to include both the virtualenv and system binaries (for ffmpeg)
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
-
+ExecStartPre=/usr/bin/bash -c 'until pg_isready -h localhost -U ${POSTGRES_USER}; do sleep 1; done'
 ExecStart=${APP_DIR}/env/bin/gunicorn \\
     --workers=4 \\
     --worker-class=gevent \\
     --timeout=300 \\
     --bind unix:${GUNICORN_SOCKET} \\
     dispatcharr.wsgi:application
-
 Restart=always
 KillMode=mixed
-
+SyslogIdentifier=dispatcharr
+StandardOutput=journal
+StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
 
-##############################################################################
-# 10) Create Systemd Service for Celery
-##############################################################################
-
-cat <<EOF >/etc/systemd/system/dispatcharr-celery.service
+  # Celery
+  cat <<EOF >${SYSTEMD_DIR}/dispatcharr-celery.service
 [Unit]
 Description=Celery Worker for Dispatcharr
 After=network.target redis-server.service
@@ -256,21 +258,18 @@ Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
 Environment="CELERY_BROKER_URL=redis://localhost:6379/0"
-
 ExecStart=${APP_DIR}/env/bin/celery -A dispatcharr worker -l info
-
 Restart=always
 KillMode=mixed
-
+SyslogIdentifier=dispatcharr-celery
+StandardOutput=journal
+StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
 
-##############################################################################
-# 11) Create Systemd Service for Celery Beat (Optional)
-##############################################################################
-
-cat <<EOF >/etc/systemd/system/dispatcharr-celerybeat.service
+  # Celery Beat
+  cat <<EOF >${SYSTEMD_DIR}/dispatcharr-celerybeat.service
 [Unit]
 Description=Celery Beat Scheduler for Dispatcharr
 After=network.target redis-server.service
@@ -286,23 +285,20 @@ Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
 Environment="CELERY_BROKER_URL=redis://localhost:6379/0"
-
 ExecStart=${APP_DIR}/env/bin/celery -A dispatcharr beat -l info
-
 Restart=always
 KillMode=mixed
-
+SyslogIdentifier=dispatcharr-celerybeat
+StandardOutput=journal
+StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
 
-##############################################################################
-# 12) Create Systemd Service for Daphné (WebSockets / Channels)
-##############################################################################
-
-cat <<EOF >/etc/systemd/system/dispatcharr-daphne.service
+  # Daphne
+  cat <<EOF >${SYSTEMD_DIR}/dispatcharr-daphne.service
 [Unit]
-Description=Daphne for Dispatcharr (ASGI)
+Description=Daphne for Dispatcharr (ASGI/WebSockets)
 After=network.target
 Requires=dispatcharr.service
 
@@ -315,47 +311,33 @@ Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
-
 ExecStart=${APP_DIR}/env/bin/daphne -b 0.0.0.0 -p ${WEBSOCKET_PORT} dispatcharr.asgi:application
-
 Restart=always
 KillMode=mixed
-
+SyslogIdentifier=dispatcharr-daphne
+StandardOutput=journal
+StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
 
-##############################################################################
-# 13) Configure Nginx
-##############################################################################
-
-echo ">>> Configuring Nginx at /etc/nginx/sites-available/dispatcharr.conf ..."
-cat <<EOF >/etc/nginx/sites-available/dispatcharr.conf
+  echo ">>> Creating Nginx config..."
+  cat <<EOF >/etc/nginx/sites-available/dispatcharr.conf
 server {
     listen ${NGINX_HTTP_PORT};
-
-    # Proxy to Gunicorn socket for main HTTP traffic
     location / {
         include proxy_params;
         proxy_pass http://unix:${GUNICORN_SOCKET};
     }
-
-    # Serve Django static files
     location /static/ {
         alias ${APP_DIR}/static/;
     }
-
-    # Serve React build assets
     location /assets/ {
         alias ${APP_DIR}/frontend/dist/assets/;
     }
-
-    # Serve media files if any
     location /media/ {
         alias ${APP_DIR}/media/;
     }
-
-    # WebSockets for Daphné
     location /ws/ {
         proxy_pass http://127.0.0.1:${WEBSOCKET_PORT};
         proxy_http_version 1.1;
@@ -368,46 +350,67 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/dispatcharr.conf /etc/nginx/sites-enabled/dispatcharr.conf
-
-# Remove default site if it exists
-if [ -f /etc/nginx/sites-enabled/default ]; then
-  rm -f /etc/nginx/sites-enabled/default
-fi
-
-echo ">>> Testing Nginx config..."
-nginx -t
-
-echo ">>> Restarting Nginx..."
-systemctl restart nginx
-systemctl enable nginx
+  ln -sf /etc/nginx/sites-available/dispatcharr.conf /etc/nginx/sites-enabled/dispatcharr.conf
+  [ -f /etc/nginx/sites-enabled/default ] && rm /etc/nginx/sites-enabled/default
+  nginx -t
+  systemctl restart nginx
+  systemctl enable nginx
+}
 
 ##############################################################################
-# 14) Start & Enable Services
+# 10) Start Services
 ##############################################################################
 
-echo ">>> Enabling systemd services..."
-systemctl daemon-reload
-systemctl enable dispatcharr
-systemctl enable dispatcharr-celery
-systemctl enable dispatcharr-celerybeat
-systemctl enable dispatcharr-daphne
-
-echo ">>> Restarting / Starting services..."
-systemctl restart dispatcharr
-systemctl restart dispatcharr-celery
-systemctl restart dispatcharr-celerybeat
-systemctl restart dispatcharr-daphne
+start_services() {
+  echo ">>> Enabling and starting services..."
+  systemctl daemon-reexec
+  systemctl daemon-reload
+  systemctl enable --now dispatcharr dispatcharr-celery dispatcharr-celerybeat dispatcharr-daphne
+}
 
 ##############################################################################
-# Done!
+# 11) Summary
 ##############################################################################
 
-echo "================================================="
-echo "Dispatcharr installation (or update) complete!"
-echo "Nginx is listening on port ${NGINX_HTTP_PORT}."
-echo "Gunicorn socket: ${GUNICORN_SOCKET}."
-echo "WebSockets on port ${WEBSOCKET_PORT} (path /ws/)."
-echo "You can check logs via 'sudo journalctl -u dispatcharr -f', etc."
-echo "Visit http://<server_ip>:${NGINX_HTTP_PORT} in your browser."
-echo "================================================="
+show_summary() {
+  server_ip=$(ip route get 1 | awk '{print $7; exit}')
+  cat <<EOF
+=================================================
+Dispatcharr installation (or update) complete!
+Nginx is listening on port ${NGINX_HTTP_PORT}.
+Gunicorn socket: ${GUNICORN_SOCKET}.
+WebSockets on port ${WEBSOCKET_PORT} (path /ws/).
+
+You can check logs via:
+  sudo journalctl -u dispatcharr -f
+  sudo journalctl -u dispatcharr-celery -f
+  sudo journalctl -u dispatcharr-celerybeat -f
+  sudo journalctl -u dispatcharr-daphne -f
+
+Visit the app at:
+  http://${server_ip}:${NGINX_HTTP_PORT}
+=================================================
+EOF
+}
+
+##############################################################################
+# Run Everything
+##############################################################################
+
+main() {
+  show_disclaimer
+  configure_variables
+  install_packages
+  create_dispatcharr_user
+  setup_postgresql
+  clone_dispatcharr_repo
+  setup_python_env
+  build_frontend
+  django_migrate_collectstatic
+  configure_services
+  start_services
+  show_summary
+}
+
+main "$@"
+
