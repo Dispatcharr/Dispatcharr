@@ -1,8 +1,8 @@
 import ipaddress
-from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
+from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse, FileResponse
 from rest_framework.response import Response
 from django.urls import reverse
-from apps.channels.models import Channel, ChannelProfile, ChannelGroup
+from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Logo
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -18,6 +18,8 @@ import time  # Add this import for keep-alive delays
 from tzlocal import get_localzone
 from urllib.parse import urlparse
 import base64
+import os
+import mimetypes
 
 def m3u_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
@@ -118,8 +120,17 @@ def generate_m3u(request, profile_name=None, user=None):
             if use_cached_logos:
                 tvg_logo = request.build_absolute_uri(reverse('api:channels:logo-cache', args=[channel.logo.id]))
             else:
-                # For direct logos, always use the cache endpoint but with direct=true parameter
-                tvg_logo = request.build_absolute_uri(reverse('api:channels:logo-cache', args=[channel.logo.id])) + "?direct=true"
+                # For direct logos, use our new direct logo endpoint with proper filename
+                if channel.logo.url.startswith(('http://', 'https://')):
+                    # If it's already an HTTP URL, use it directly
+                    tvg_logo = channel.logo.url
+                else:
+                    # Create a proper filename for Plex compatibility
+                    filename = os.path.basename(channel.logo.url)
+                    if not filename or '.' not in filename:
+                        # Fallback to a generic filename if we can't extract one
+                        filename = f"logo_{channel.logo.id}.png"
+                    tvg_logo = request.build_absolute_uri(reverse('output:direct_logo', args=[channel.logo.id, filename]))
 
         # create possible gracenote id insertion
         tvc_guide_stationid = ""
@@ -364,8 +375,17 @@ def generate_epg(request, profile_name=None, user=None):
                 if use_cached_logos:
                     tvg_logo = request.build_absolute_uri(reverse('api:channels:logo-cache', args=[channel.logo.id]))
                 else:
-                    # For direct logos, always use the cache endpoint but with direct=true parameter
-                    tvg_logo = request.build_absolute_uri(reverse('api:channels:logo-cache', args=[channel.logo.id])) + "?direct=true"
+                    # For direct logos, use our new direct logo endpoint with proper filename
+                    if channel.logo.url.startswith(('http://', 'https://')):
+                        # If it's already an HTTP URL, use it directly
+                        tvg_logo = channel.logo.url
+                    else:
+                        # Create a proper filename for Plex compatibility
+                        filename = os.path.basename(channel.logo.url)
+                        if not filename or '.' not in filename:
+                            # Fallback to a generic filename if we can't extract one
+                            filename = f"logo_{channel.logo.id}.png"
+                        tvg_logo = request.build_absolute_uri(reverse('output:direct_logo', args=[channel.logo.id, filename]))
 
             display_name = channel.epg_data.name if channel.epg_data else channel.name
             xml_lines.append(f'  <channel id="{channel_id}">')
@@ -975,3 +995,60 @@ def xc_get_epg(request, user, short=False):
         output['epg_listings'].append(program_output)
 
     return output
+
+
+def direct_logo_view(request, logo_id, filename):
+    """
+    Serve logo files directly with proper filenames for Plex compatibility.
+    This endpoint is used when cachedlogos=false to provide direct logo URLs
+    that Plex can recognize as image files.
+    """
+    try:
+        logo = get_object_or_404(Logo, id=logo_id)
+        
+        # Check if the logo URL is a local file path
+        if logo.url.startswith(('http://', 'https://')):
+            # If it's already an HTTP URL, redirect to it
+            return HttpResponse(status=302, headers={'Location': logo.url})
+        
+        # Handle local file paths
+        file_path = logo.url
+        
+        # If it's a relative path starting with /data/, make it absolute
+        if file_path.startswith('/data/'):
+            # In Docker, /data/ is mounted to the host, use it as-is
+            absolute_path = file_path
+        else:
+            # Handle other relative paths
+            absolute_path = os.path.abspath(file_path)
+        
+        # Check if file exists
+        if not os.path.exists(absolute_path):
+            raise Http404(f"Logo file not found: {absolute_path}")
+        
+        # Determine content type
+        content_type, _ = mimetypes.guess_type(absolute_path)
+        if not content_type:
+            content_type = 'application/octet-stream'
+        
+        # Open and serve the file
+        response = FileResponse(
+            open(absolute_path, 'rb'),
+            content_type=content_type,
+            as_attachment=False  # Serve inline, not as download
+        )
+        
+        # Set proper headers for Plex compatibility
+        response['Content-Disposition'] = f'inline; filename="{filename}"'
+        response['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+        
+        return response
+        
+    except Logo.DoesNotExist:
+        raise Http404("Logo not found")
+    except Exception as e:
+        # Log the error and return 404
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error serving logo {logo_id}: {str(e)}")
+        raise Http404("Logo not available")
