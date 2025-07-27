@@ -263,7 +263,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   }
 
   const filteredTvgs = tvgs
-    .filter((tvg) => tvg.epg_source == selectedEPG)
+    .filter((tvg) => tvg.epg_source === parseInt(selectedEPG))
     .filter(
       (tvg) =>
         tvg.name.toLowerCase().includes(tvgFilter.toLowerCase()) ||
@@ -720,7 +720,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                               setEpgPopoverOpened(false);
                             }}
                           >
-                            {filteredTvgs[index].tvg_id}
+                            {filteredTvgs[index].name}
                           </Button>
                         </div>
                       )}

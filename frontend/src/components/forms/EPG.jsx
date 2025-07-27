@@ -35,6 +35,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       source_type: 'xmltv',
       url: '',
       api_key: '',
+      username: '',
       is_active: true,
       refresh_interval: 24,
     },
@@ -69,6 +70,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         source_type: epg.source_type,
         url: epg.url,
         api_key: epg.api_key,
+        username: epg.username,
         is_active: epg.is_active,
         refresh_interval: epg.refresh_interval,
       };
@@ -82,8 +84,10 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
 
   // Function to handle source type changes
   const handleSourceTypeChange = (value) => {
+    console.log('handleSourceTypeChange called with:', value);
     form.setFieldValue('source_type', value);
     setSourceType(value);
+    console.log('sourceType state updated to:', value);
   };
 
   if (!isOpen) {
@@ -110,7 +114,8 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               name="source_type"
               label="Source Type"
               description="Format of the EPG data source"
-              {...form.getInputProps('source_type')}
+              value={sourceType}
+              error={form.getInputProps('source_type').error}
               key={form.key('source_type')}
               data={[
                 {
@@ -147,17 +152,34 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               description="Direct URL to the XMLTV file or API endpoint"
               {...form.getInputProps('url')}
               key={form.key('url')}
+              disabled={sourceType === 'schedules_direct'}
             />
 
-            <TextInput
-              id="api_key"
-              name="api_key"
-              label="API Key"
-              description="API key for services that require authentication"
-              {...form.getInputProps('api_key')}
-              key={form.key('api_key')}
-              disabled={sourceType !== 'schedules_direct'} // Use the state variable
-            />
+            {/* Debug info */}
+            <Text size="xs" c="dimmed">Debug: sourceType = "{sourceType}"</Text>
+            
+            {sourceType === 'schedules_direct' && (
+              <>
+                <TextInput
+                  id="username"
+                  name="username"
+                  label="Username"
+                  description="Schedules Direct username"
+                  {...form.getInputProps('username')}
+                  key={form.key('username')}
+                />
+
+                <TextInput
+                  id="api_key"
+                  name="api_key"
+                  label="Password"
+                  description="Schedules Direct password"
+                  type="password"
+                  {...form.getInputProps('api_key')}
+                  key={form.key('api_key')}
+                />
+              </>
+            )}
 
             {/* Put checkbox at the same level as Refresh Interval */}
             <Box style={{ marginTop: 0 }}>

@@ -1399,6 +1399,19 @@ export default class API {
     }
   }
 
+  static async downloadLogosFromEPG() {
+    try {
+      const response = await request(`${host}/api/channels/logos/download-from-epg/`, {
+        method: 'POST',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to download logos from Schedules Direct', e);
+      throw e;
+    }
+  }
+
   static async getChannelProfiles() {
     try {
       const response = await request(`${host}/api/channels/profiles/`);

@@ -259,6 +259,35 @@ class ChannelSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         streams = validated_data.pop("streams", None)
+        
+        # Check if EPG data is being updated
+        new_epg_data = validated_data.get('epg_data')
+        if new_epg_data:
+            # Set both tvg_id and tvc_guide_stationid to match the EPG data's tvg_id for full compatibility
+            if new_epg_data.tvg_id:
+                validated_data['tvg_id'] = new_epg_data.tvg_id
+                validated_data['tvc_guide_stationid'] = new_epg_data.tvg_id
+            
+            # Download logo if available and channel doesn't have one
+            if new_epg_data.logo_url and not instance.logo:
+                try:
+                    from apps.epg.tasks import download_logo_from_url
+                    
+                    # Download logo from EPG data
+                    downloaded_logo = download_logo_from_url(new_epg_data.logo_url, new_epg_data.name)
+                    if downloaded_logo:
+                        # Set the downloaded logo on the channel
+                        validated_data['logo'] = downloaded_logo
+                        
+                except Exception as e:
+                    # Don't fail the channel update if logo download fails
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Failed to download logo for channel {instance.name}: {e}")
+        elif 'epg_data' in validated_data and validated_data['epg_data'] is None:
+            # If EPG data is being cleared, also clear tvg_id and tvc_guide_stationid
+            validated_data['tvg_id'] = None
+            validated_data['tvc_guide_stationid'] = None
 
         # Update standard fields
         for attr, value in validated_data.items():

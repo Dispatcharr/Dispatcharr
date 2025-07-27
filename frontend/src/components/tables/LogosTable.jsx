@@ -2,6 +2,7 @@ import React, { useMemo, useCallback, useState, useEffect } from 'react';
 import API from '../../api';
 import LogoForm from '../forms/Logo';
 import useChannelsStore from '../../store/channels';
+import useEPGsStore from '../../store/epgs';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import {
     SquarePlus,
@@ -11,6 +12,7 @@ import {
     Filter,
     Trash2,
     Trash,
+    Download,
 } from 'lucide-react';
 import {
     ActionIcon,
@@ -84,6 +86,7 @@ const LogosTable = () => {
      * STORES
      */
     const { logos, fetchLogos } = useChannelsStore();
+    const { epgs } = useEPGsStore();
 
     /**
      * useState
@@ -97,6 +100,7 @@ const LogosTable = () => {
     const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
     const [isBulkDelete, setIsBulkDelete] = useState(false);
     const [isCleaningUp, setIsCleaningUp] = useState(false);
+    const [isDownloadingFromEPG, setIsDownloadingFromEPG] = useState(false);
     const [filters, setFilters] = useState({
         name: '',
         used: 'all'
@@ -152,6 +156,12 @@ const LogosTable = () => {
         const allLogos = Object.values(logos || {});
         return allLogos.filter(logo => !logo.is_used).length;
     }, [logos]);
+
+    // Check if any Schedules Direct EPG sources exist
+    const hasSchedulesDirectSources = useMemo(() => {
+        const epgSources = Object.values(epgs || {});
+        return epgSources.some(epg => epg.source_type === 'schedules_direct');
+    }, [epgs]);
 
     /**
      * Functions
@@ -284,6 +294,28 @@ const LogosTable = () => {
     const handleCleanupUnused = useCallback(() => {
         setConfirmCleanupOpen(true);
     }, []);
+
+    const downloadLogosFromEPG = useCallback(async () => {
+        setIsDownloadingFromEPG(true);
+        try {
+            const result = await API.downloadLogosFromEPG();
+            await fetchLogos(); // Refresh the logos list
+
+            notifications.show({
+                title: 'Download Complete',
+                message: `Successfully downloaded ${result.downloaded_count || 0} logos from Schedules Direct`,
+                color: 'green',
+            });
+        } catch (error) {
+            notifications.show({
+                title: 'Download Failed',
+                message: 'Failed to download logos from Schedules Direct',
+                color: 'red',
+            });
+        } finally {
+            setIsDownloadingFromEPG(false);
+        }
+    }, [fetchLogos]);
 
     // Clear selections when logos data changes (e.g., after filtering)
     useEffect(() => {
@@ -623,6 +655,19 @@ const LogosTable = () => {
                                 >
                                     Delete {selectedRows.size > 0 ? `(${selectedRows.size})` : ''}
                                 </Button>
+
+                                {hasSchedulesDirectSources && (
+                                    <Button
+                                        leftSection={<Download size={16} />}
+                                        variant="light"
+                                        size="xs"
+                                        color="blue"
+                                        onClick={downloadLogosFromEPG}
+                                        loading={isDownloadingFromEPG}
+                                    >
+                                        Download from Schedules Direct
+                                    </Button>
+                                )}
 
                                 <Button
                                     leftSection={<SquarePlus size={18} />}

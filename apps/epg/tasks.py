@@ -1109,6 +1109,12 @@ def parse_programs_for_tvg_id(epg_id):
 
         logger.info(f"Refreshing program data for tvg_id: {epg.tvg_id}")
 
+        # Check if this is a Schedules Direct source - they don't use XML files
+        if epg_source.source_type == 'schedules_direct':
+            logger.info(f"Schedules Direct source detected for {epg.tvg_id}, programs are already in database")
+            release_task_lock('parse_epg_programs', epg_id)
+            return
+
         # Optimize deletion with a single delete query instead of chunking
         # This is faster for most database engines
         ProgramData.objects.filter(epg=epg).delete()
@@ -1477,10 +1483,27 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             process = None
 def fetch_schedules_direct(source):
     logger.info(f"Fetching Schedules Direct data from source: {source.name}")
+    
+    # Update source status to fetching
+    source.status = 'fetching'
+    source.save(update_fields=['status'])
+    
+    # Send initial download notification
+    send_epg_update(source.id, "downloading", 0)
+    
     try:
+        if not source.username or not source.api_key:
+            error_msg = "Schedules Direct username and password are required"
+            logger.error(error_msg)
+            source.status = 'error'
+            source.last_message = error_msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+            return False
+
         # Get default user agent from settings
         default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
+        user_agent = "Dispatcharr/1.0"  # Default user agent for Schedules Direct
 
         if default_user_agent_setting and default_user_agent_setting.value:
             try:
@@ -1491,58 +1514,388 @@ def fetch_schedules_direct(source):
             except (ValueError, Exception) as e:
                 logger.warning(f"Error retrieving default user agent, using fallback: {e}")
 
-        api_url = ''
+        base_url = "https://json.schedulesdirect.org/20141201"
+        
+        # Step 1: Authenticate and get token
+        logger.info("Authenticating with Schedules Direct")
+        import hashlib
+        password_hash = hashlib.sha1(source.api_key.encode('utf-8')).hexdigest()
+        
+        auth_data = {
+            "username": source.username,
+            "password": password_hash
+        }
+        
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {source.api_key}',
             'User-Agent': user_agent
         }
-        logger.debug(f"Requesting subscriptions from Schedules Direct using URL: {api_url}")
-        response = requests.get(api_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        subscriptions = response.json()
-        logger.debug(f"Fetched subscriptions: {subscriptions}")
+        
+        token_response = requests.post(f"{base_url}/token", json=auth_data, headers=headers, timeout=30)
+        
+        if token_response.status_code != 200:
+            error_msg = f"Authentication failed: {token_response.status_code} - {token_response.text}"
+            logger.error(error_msg)
+            source.status = 'error'
+            source.last_message = error_msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+            return False
+            
+        token_data = token_response.json()
+        token = token_data.get('token')
+        
+        if not token:
+            error_msg = "No token received from Schedules Direct"
+            logger.error(error_msg)
+            source.status = 'error'
+            source.last_message = error_msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+            return False
+            
+        # Add token to headers for subsequent requests
+        headers['token'] = token
+        
+        send_epg_update(source.id, "downloading", 20, message="Authentication successful")
+        
+        # Step 2: Check system status
+        status_response = requests.get(f"{base_url}/status", headers=headers, timeout=30)
+        if status_response.status_code == 200:
+            status_data = status_response.json()
+            if status_data.get('systemStatus', [{}])[0].get('status') == 'Offline':
+                error_msg = "Schedules Direct system is offline"
+                logger.error(error_msg)
+                source.status = 'error'
+                source.last_message = error_msg
+                source.save(update_fields=['status', 'last_message'])
+                send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+                return False
+        
+        send_epg_update(source.id, "downloading", 40, message="System status checked")
+        
+        # Step 3: Get user's lineups
+        lineups_response = requests.get(f"{base_url}/lineups", headers=headers, timeout=30)
+        lineups_response.raise_for_status()
+        lineups_data = lineups_response.json()
+        
+        if not lineups_data.get('lineups'):
+            error_msg = "No lineups found for this account"
+            logger.error(error_msg)
+            source.status = 'error'
+            source.last_message = error_msg
+            source.save(update_fields=['status', 'last_message'])
+            send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+            return False
+        
+        send_epg_update(source.id, "downloading", 60, message="Retrieved lineups")
+        
+        # Step 4: Get stations for each lineup and fetch schedules
+        total_programs = 0
+        channels_processed = 0
+        
+        # Import here to avoid circular imports
+        from apps.channels.models import Channel
+        
+        # Update status to parsing
+        source.status = 'parsing'
+        source.save(update_fields=['status'])
+        send_epg_update(source.id, "parsing_channels", 0)
+        
+        for lineup in lineups_data.get('lineups', []):
+            lineup_uri = lineup.get('lineup')
+            if not lineup_uri:
+                continue
+                
+            logger.info(f"Processing lineup: {lineup_uri}")
+            
+            # Get lineup details and stations
+            lineup_response = requests.get(f"{base_url}/lineups/{lineup_uri}", headers=headers, timeout=30)
+            lineup_response.raise_for_status()
+            lineup_detail = lineup_response.json()
+            
+            stations = lineup_detail.get('stations', [])
+            if not stations:
+                logger.warning(f"No stations found in lineup {lineup_uri}")
+                continue
+            
+            # Process stations in batches
+            batch_size = 50
+            for i in range(0, len(stations), batch_size):
+                station_batch = stations[i:i+batch_size]
+                station_ids = [station.get('stationID') for station in station_batch if station.get('stationID')]
+                
+                if not station_ids:
+                    continue
+                
+                # Create EPGData entries for each station
+                for station in station_batch:
+                    station_id = station.get('stationID')
+                    station_name = station.get('name', station_id)
+                    logo_url = station.get('logo', {}).get('URL') if station.get('logo') else None
+                    
+                    if not station_id:
+                        continue
+                    
+                    # Create or get EPGData for this station
+                    epg_data, created = EPGData.objects.get_or_create(
+                        tvg_id=station_id,
+                        epg_source=source,
+                        defaults={'name': station_name, 'logo_url': logo_url}
+                    )
+                    
+                    if created:
+                        logger.debug(f"Created EPGData for station {station_id}: {station_name}")
+                    else:
+                        # Update name and logo_url if they changed
+                        updates = {}
+                        if epg_data.name != station_name:
+                            updates['name'] = station_name
+                        if epg_data.logo_url != logo_url:
+                            updates['logo_url'] = logo_url
+                        
+                        if updates:
+                            for field, value in updates.items():
+                                setattr(epg_data, field, value)
+                            epg_data.save(update_fields=list(updates.keys()))
+                    
+                    # Download logo if we have a logo URL
+                    if logo_url:
+                        try:
+                            logo = download_logo_from_url(logo_url, station_name)
+                            if logo:
+                                logger.debug(f"Downloaded logo for station {station_id}: {logo.name}")
+                        except Exception as logo_error:
+                            logger.warning(f"Failed to download logo for station {station_id}: {logo_error}")
+                    
+                    channels_processed += 1
+                
+                # Update progress
+                progress = 60 + int((channels_processed / len(stations)) * 30)
+                send_epg_update(source.id, "parsing_channels", progress, processed=channels_processed, total=len(stations))
+        
+        # Complete channel parsing
+        send_epg_update(source.id, "parsing_channels", 100, status="success", channels_count=channels_processed)
+        
+        # Step 5: Get schedules for stations that have associated channels
+        send_epg_update(source.id, "parsing_programs", 0)
+        
+        # Find channels that have tvc_guide_stationid matching our stations
+        associated_channels = Channel.objects.filter(
+            tvc_guide_stationid__in=EPGData.objects.filter(epg_source=source).values_list('tvg_id', flat=True)
+        )
+        
+        if not associated_channels.exists():
+            logger.warning("No channels are associated with Schedules Direct stations via tvc_guide_stationid")
+            # Still mark as success since we got the station data
+            source.status = 'success'
+            source.last_message = f"Successfully retrieved {channels_processed} stations, but no channels are linked via tvc_guide_stationid"
+            source.updated_at = timezone.now()
+            source.save(update_fields=['status', 'last_message', 'updated_at'])
+            send_epg_update(source.id, "parsing_programs", 100, status="success", message=source.last_message)
+            return True
+        
+        # Get schedules for associated stations
+        station_ids_with_channels = list(associated_channels.values_list('tvc_guide_stationid', flat=True))
+        
+        from datetime import datetime, timedelta
+        
+        # Get schedules for next 7 days starting from today
+        # Use Django's timezone-aware current time and convert to UTC for Schedules Direct API
+        now_utc = timezone.now().astimezone(dt_timezone.utc)
+        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Generate dates starting from today (day 0) through next 6 days (total 7 days)
+        dates = [(today_utc + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+        
+        logger.info(f"Requesting Schedules Direct data for dates: {dates}")
+        logger.info(f"Current UTC time: {now_utc}, Today UTC date: {today_utc.strftime('%Y-%m-%d')}")
+        
+        schedule_requests = []
+        for station_id in station_ids_with_channels:
+            schedule_requests.append({
+                "stationID": station_id,
+                "date": dates
+            })
+        
+        # Request schedules in batches
+        batch_size = 100  # Schedules Direct allows up to 5000 requests
+        programs_processed = 0
+        
+        # First, clear all existing programs for stations that we're about to update
+        station_ids_set = set(station_ids_with_channels)
+        epg_data_to_clear = EPGData.objects.filter(tvg_id__in=station_ids_set, epg_source=source)
+        for epg_data in epg_data_to_clear:
+            ProgramData.objects.filter(epg=epg_data).delete()
+            logger.debug(f"Cleared existing programs for station {epg_data.tvg_id}")
 
-        for sub in subscriptions:
-            tvg_id = sub.get('stationID')
-            logger.debug(f"Processing subscription for tvg_id: {tvg_id}")
-            schedules_url = f"/schedules/{tvg_id}"
-            logger.debug(f"Requesting schedules from URL: {schedules_url}")
-            sched_response = requests.get(schedules_url, headers=headers, timeout=30)
-            sched_response.raise_for_status()
-            schedules = sched_response.json()
-            logger.debug(f"Fetched schedules: {schedules}")
-
-            epg_data, created = EPGData.objects.get_or_create(
-                tvg_id=tvg_id,
-                defaults={'name': tvg_id}
+        for i in range(0, len(schedule_requests), batch_size):
+            batch_requests = schedule_requests[i:i+batch_size]
+            
+            schedules_response = requests.post(
+                f"{base_url}/schedules", 
+                json=batch_requests, 
+                headers=headers, 
+                timeout=60
             )
-            if created:
-                logger.info(f"Created new EPGData for tvg_id '{tvg_id}'.")
-            else:
-                logger.debug(f"Found existing EPGData for tvg_id '{tvg_id}'.")
-
-            for sched in schedules.get('schedules', []):
-                title = sched.get('title', 'No Title')
-                desc = sched.get('description', '')
-                start_time = parse_schedules_direct_time(sched.get('startTime'))
-                end_time = parse_schedules_direct_time(sched.get('endTime'))
-                obj, created = ProgramData.objects.update_or_create(
-                    epg=epg_data,
-                    start_time=start_time,
-                    title=title,
-                    defaults={
-                        'end_time': end_time,
-                        'description': desc,
-                        'sub_title': ''
-                    }
-                )
-                if created:
-                    logger.info(f"Created ProgramData '{title}' for tvg_id '{tvg_id}'.")
+            schedules_response.raise_for_status()
+            schedules_data = schedules_response.json()
+            
+            # Process each station's schedule
+            for station_schedule in schedules_data:
+                station_id = station_schedule.get('stationID')
+                programs = station_schedule.get('programs', [])
+                
+                # Get the EPGData for this station
+                try:
+                    epg_data = EPGData.objects.get(tvg_id=station_id, epg_source=source)
+                except EPGData.DoesNotExist:
+                    logger.warning(f"No EPGData found for station {station_id}")
+                    continue
+                
+                # Collect all program IDs for this station for metadata lookup
+                program_ids = [program.get('programID') for program in programs if program.get('programID')]
+                
+                # Get program metadata in batches
+                program_metadata = {}
+                metadata_batch_size = 1000  # Schedules Direct allows max 5000
+                
+                for j in range(0, len(program_ids), metadata_batch_size):
+                    batch_program_ids = program_ids[j:j+metadata_batch_size]
+                    
+                    try:
+                        programs_response = requests.post(
+                            f"{base_url}/programs",
+                            json=batch_program_ids,
+                            headers=headers,
+                            timeout=60
+                        )
+                        programs_response.raise_for_status()
+                        programs_data = programs_response.json()
+                        
+                        # Store metadata by program ID
+                        for prog_data in programs_data:
+                            prog_id = prog_data.get('programID')
+                            if prog_id:
+                                program_metadata[prog_id] = prog_data
+                                
+                    except Exception as metadata_error:
+                        logger.warning(f"Failed to fetch program metadata for station {station_id}, batch {j}: {metadata_error}")
+                
+                # Create new programs with actual metadata
+                programs_to_create = []
+                logger.debug(f"Processing {len(programs)} programs for station {station_id}")
+                
+                # Debug: Check the date distribution of programs
+                date_counts = {}
+                for program in programs:
+                    air_date_time = program.get('airDateTime', '')
+                    if air_date_time:
+                        date_part = air_date_time[:10]  # Extract YYYY-MM-DD part
+                        date_counts[date_part] = date_counts.get(date_part, 0) + 1
+                
+                logger.info(f"Station {station_id} program date distribution: {date_counts}")
+                
+                for program in programs:
+                    try:
+                        start_time = parse_schedules_direct_time(program.get('airDateTime'))
+                        duration = program.get('duration', 0)
+                        end_time = start_time + timedelta(seconds=duration)
+                        
+                        # Get program details from metadata
+                        program_id = program.get('programID')
+                        metadata = program_metadata.get(program_id, {})
+                        
+                        # Extract title and description from metadata
+                        title = f"Program {program_id}"  # Default fallback
+                        description = ""
+                        
+                        if metadata:
+                            # Get title from various possible fields
+                            titles = metadata.get('titles', [])
+                            if titles:
+                                # Find the first title of type "title120" or just the first title
+                                for title_entry in titles:
+                                    if title_entry.get('title120'):
+                                        title = title_entry['title120']
+                                        break
+                                else:
+                                    # If no title120, use first available title
+                                    first_title = titles[0]
+                                    title = first_title.get('title120') or first_title.get('title', f"Program {program_id}")
+                            
+                            # Get description
+                            descriptions = metadata.get('descriptions', {})
+                            if descriptions:
+                                # Try different description types in order of preference
+                                for desc_type in ['description1000', 'description100', 'description60']:
+                                    if descriptions.get(desc_type):
+                                        for desc_entry in descriptions[desc_type]:
+                                            if desc_entry.get('description'):
+                                                description = desc_entry['description']
+                                                break
+                                        if description:
+                                            break
+                        
+                        programs_to_create.append(ProgramData(
+                            epg=epg_data,
+                            start_time=start_time,
+                            end_time=end_time,
+                            title=title,
+                            description=description,
+                            tvg_id=station_id
+                        ))
+                        programs_processed += 1
+                        
+                    except Exception as e:
+                        logger.warning(f"Error parsing program for station {station_id}: {e}")
+                        continue
+                
+                # Bulk create programs
+                logger.debug(f"Attempting to create {len(programs_to_create)} programs for station {station_id}")
+                if programs_to_create:
+                    try:
+                        ProgramData.objects.bulk_create(programs_to_create, batch_size=1000)
+                        logger.info(f"Successfully created {len(programs_to_create)} programs for station {station_id}")
+                        
+                        # Verify programs were actually created
+                        actual_count = ProgramData.objects.filter(epg=epg_data).count()
+                        logger.info(f"Verification: {actual_count} programs now exist for station {station_id}")
+                    except Exception as bulk_error:
+                        logger.error(f"Failed to bulk create programs for station {station_id}: {bulk_error}")
                 else:
-                    logger.info(f"Updated ProgramData '{title}' for tvg_id '{tvg_id}'.")
+                    logger.warning(f"No programs to create for station {station_id}")
+            
+            # Update progress
+            progress = int((i + len(batch_requests)) / len(schedule_requests) * 100)
+            send_epg_update(source.id, "parsing_programs", progress, processed=programs_processed)
+        
+        # Success!
+        source.status = 'success'
+        source.last_message = f"Successfully retrieved {channels_processed} stations and {programs_processed} programs"
+        source.updated_at = timezone.now()
+        source.save(update_fields=['status', 'last_message', 'updated_at'])
+        send_epg_update(source.id, "parsing_programs", 100, status="success", message=source.last_message)
+        
+        logger.info(f"Schedules Direct sync completed: {channels_processed} stations, {programs_processed} programs")
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Network error fetching from Schedules Direct: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        source.status = 'error'
+        source.last_message = error_msg
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+        return False
     except Exception as e:
-        logger.error(f"Error fetching Schedules Direct data from {source.name}: {e}", exc_info=True)
+        error_msg = f"Error fetching Schedules Direct data: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        source.status = 'error'
+        source.last_message = error_msg
+        source.save(update_fields=['status', 'last_message'])
+        send_epg_update(source.id, "downloading", 100, status="error", error=error_msg)
+        return False
 
 
 # -------------------------------
@@ -1899,3 +2252,93 @@ def detect_file_format(file_path=None, content=None):
 
     # If we reach here, we couldn't reliably determine the format
     return format_type, is_compressed, file_extension
+
+
+def download_logo_from_url(logo_url, station_name):
+    """
+    Download a logo from a URL and create a Logo object.
+    
+    Args:
+        logo_url (str): URL of the logo to download
+        station_name (str): Name of the station for the logo filename
+        
+    Returns:
+        Logo object if successful, None if failed
+    """
+    if not logo_url or not station_name:
+        return None
+        
+    try:
+        # Import Logo model here to avoid circular imports
+        from apps.channels.models import Logo
+        
+        # Clean up station name for filename first to determine the local path
+        safe_name = "".join(c for c in station_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_name = safe_name.replace(' ', '_')
+        
+        # Get file extension from URL first
+        parsed_ext = os.path.splitext(logo_url.split('?')[0])[1].lower()
+        ext = parsed_ext if parsed_ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp'] else '.png'
+        
+        # Create expected filename and file path
+        filename = f"sd_{safe_name}{ext}"
+        file_path = os.path.join("/data/logos", filename)
+        
+        # Check if we already have a logo with this local file path or remote URL
+        existing_logo = Logo.objects.filter(url__in=[logo_url, file_path]).first()
+        if existing_logo:
+            logger.debug(f"Logo already exists for {station_name}: {existing_logo.url}")
+            return existing_logo
+        
+        # Download the logo
+        response = requests.get(logo_url, timeout=30, stream=True)
+        response.raise_for_status()
+        
+        # Update file extension based on Content-Type if available
+        content_type = response.headers.get('content-type', '').lower()
+        if 'png' in content_type:
+            ext = '.png'
+        elif 'jpeg' in content_type or 'jpg' in content_type:
+            ext = '.jpg'
+        elif 'gif' in content_type:
+            ext = '.gif'
+        elif 'webp' in content_type:
+            ext = '.webp'
+        
+        # Update filename and file path with correct extension
+        filename = f"sd_{safe_name}{ext}"
+        file_path = os.path.join("/data/logos", filename)
+        
+        # Check again with the corrected file path
+        existing_logo = Logo.objects.filter(url=file_path).first()
+        if existing_logo:
+            logger.debug(f"Logo already exists at path: {file_path}")
+            return existing_logo
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # Save the file
+        with open(file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        # Use get_or_create to avoid database constraint violations
+        logo, created = Logo.objects.get_or_create(
+            url=file_path,
+            defaults={'name': f"{station_name} Logo"}
+        )
+        
+        if created:
+            logger.info(f"Downloaded and saved logo for {station_name}: {file_path}")
+        else:
+            logger.debug(f"Logo already exists at {file_path}, reusing existing logo for {station_name}")
+        return logo
+        
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to download logo from {logo_url}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error downloading logo for {station_name}: {e}", exc_info=True)
+        return None

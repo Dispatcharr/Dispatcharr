@@ -196,13 +196,27 @@ const EPGsTable = () => {
         accessorKey: 'url',
         enableSorting: false,
         cell: ({ cell, row }) => {
-          const value =
-            cell.getValue() ||
-            row.original.api_key ||
-            row.original.file_path ||
-            '';
+          const url = cell.getValue();
+          const apiKey = row.original.api_key;
+          const filePath = row.original.file_path;
+          
+          // Determine what to display
+          let value = '';
+          let displayValue = '';
+          
+          if (url) {
+            value = url;
+            displayValue = url;
+          } else if (apiKey) {
+            value = apiKey;
+            displayValue = '••••••••'; // Mask the password
+          } else if (filePath) {
+            value = filePath;
+            displayValue = filePath;
+          }
+          
           return (
-            <Tooltip label={value} disabled={!value}>
+            <Tooltip label={displayValue === '••••••••' ? 'Password (hidden)' : value} disabled={!value}>
               <div
                 style={{
                   whiteSpace: 'nowrap',
@@ -211,7 +225,7 @@ const EPGsTable = () => {
                   maxWidth: '100%',
                 }}
               >
-                {value}
+                {displayValue}
               </div>
             </Tooltip>
           );
@@ -593,7 +607,7 @@ Source Type: ${epgToDelete.source_type}
 ${epgToDelete.url
                   ? `URL: ${epgToDelete.url}`
                   : epgToDelete.api_key
-                    ? `API Key: ${epgToDelete.api_key}`
+                    ? `Password: ••••••••`
                     : epgToDelete.file_path
                       ? `File Path: ${epgToDelete.file_path}`
                       : ''

@@ -14,6 +14,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'source_type',
             'url',
             'api_key',
+            'username',
             'is_active',
             'file_path',
             'refresh_interval',
@@ -28,9 +29,20 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return list(obj.epgs.values_list('id', flat=True))
 
 class ProgramDataSerializer(serializers.ModelSerializer):
+    epg = serializers.SerializerMethodField()
+    
     class Meta:
         model = ProgramData
-        fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id']
+        fields = ['id', 'epg', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id', 'custom_properties']
+    
+    def get_epg(self, obj):
+        """Return EPG data in the format expected by the TV guide frontend"""
+        if obj.epg:
+            return {
+                'tvg_id': obj.epg.tvg_id,
+                'name': obj.epg.name
+            }
+        return None
 
 class EPGDataSerializer(serializers.ModelSerializer):
     """
@@ -46,4 +58,5 @@ class EPGDataSerializer(serializers.ModelSerializer):
             'tvg_id',
             'name',
             'epg_source',
+            'logo_url',
         ]

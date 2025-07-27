@@ -516,6 +516,7 @@ class Channel(models.Model):
         return True
 
 
+
 class ChannelProfile(models.Model):
     name = models.CharField(max_length=100, unique=True)
 

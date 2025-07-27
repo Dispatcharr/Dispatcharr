@@ -1159,6 +1159,92 @@ class CleanupUnusedLogosAPIView(APIView):
         })
 
 
+class BulkDownloadLogosFromEPGAPIView(APIView):
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+    
+    @swagger_auto_schema(
+        operation_description="Download and save logos locally from EPGData logo_urls (Schedules Direct)",
+        responses={200: "Logo download initiated"},
+    )
+    def post(self, request):
+        """Download logos from EPGData records that have logo_urls"""
+        try:
+            from apps.epg.models import EPGData, EPGSource
+            from apps.epg.tasks import download_logo_from_url
+            
+            # Check if any Schedules Direct sources exist
+            schedules_direct_sources = EPGSource.objects.filter(source_type='schedules_direct')
+            if not schedules_direct_sources.exists():
+                return Response({
+                    "error": "No Schedules Direct sources found"
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get all EPG data with logo URLs that don't already have locally stored logos
+            epg_data_with_logos = EPGData.objects.filter(
+                logo_url__isnull=False,
+                epg_source__source_type='schedules_direct'
+            ).exclude(logo_url='')
+            
+            if not epg_data_with_logos.exists():
+                return Response({
+                    "message": "No EPG data with logo URLs found",
+                    "downloaded_count": 0
+                })
+            
+            downloaded_count = 0
+            skipped_count = 0
+            error_count = 0
+            
+            for epg_data in epg_data_with_logos:
+                try:
+                    # Check if we already have this logo URL
+                    existing_logo = Logo.objects.filter(url=epg_data.logo_url).first()
+                    if existing_logo:
+                        skipped_count += 1
+                        continue
+                    
+                    # Download and save the logo
+                    downloaded_logo = download_logo_from_url(epg_data.logo_url, epg_data.name)
+                    if downloaded_logo:
+                        # Update any channels that use this EPG data to use the new logo
+                        from apps.channels.models import Channel
+                        channels_using_epg = Channel.objects.filter(epg_data=epg_data)
+                        for channel in channels_using_epg:
+                            if not channel.logo:  # Only set if channel doesn't already have a logo
+                                channel.logo = downloaded_logo
+                                channel.save(update_fields=['logo'])
+                                logger.info(f"Updated channel {channel.name} to use downloaded logo")
+                        
+                        downloaded_count += 1
+                        logger.info(f"Downloaded logo for {epg_data.name}")
+                    else:
+                        error_count += 1
+                        
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"Error downloading logo for {epg_data.name}: {e}")
+            
+            return Response({
+                "message": f"Logo download completed. Downloaded {downloaded_count}, skipped {skipped_count}, errors {error_count}",
+                "downloaded_count": downloaded_count,
+                "skipped_count": skipped_count,
+                "error_count": error_count,
+                "total_processed": epg_data_with_logos.count()
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in bulk logo download: {e}")
+            return Response({
+                "error": f"Failed to download logos: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class LogoViewSet(viewsets.ModelViewSet):
     queryset = Logo.objects.all()
     serializer_class = LogoSerializer

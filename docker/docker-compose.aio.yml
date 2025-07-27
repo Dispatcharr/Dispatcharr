@@ -3,7 +3,7 @@ services:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    image: ghcr.io/dispatcharr/dispatcharr:latest
+    image: dispatcharr-with-schedules-direct
     container_name: dispatcharr
     ports:
       - 9191:9191
