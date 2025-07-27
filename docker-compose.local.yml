@@ -1,0 +1,62 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: dispatcharr_web
+    ports:
+      - 9191:9191
+    depends_on:
+      - db
+      - redis
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - DISPATCHARR_LOG_LEVEL=info
+    volumes:
+      - ./data/logos:/data/logos
+
+  celery:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: dispatcharr_celery
+    depends_on:
+      - db
+      - redis
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    volumes:
+      - ./data/logos:/data/logos
+    command: >
+      bash -c "
+      celery -A dispatcharr worker -l info
+      "
+
+  db:
+    image: postgres:14
+    container_name: dispatcharr_db
+    ports:
+      - "5436:5432"
+    environment:
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:latest
+    container_name: dispatcharr_redis
+
+volumes:
+  postgres_data:
