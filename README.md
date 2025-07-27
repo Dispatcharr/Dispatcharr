@@ -63,10 +63,28 @@ docker run -d \
   -p 9191:9191 \
   --name dispatcharr \
   -v dispatcharr_data:/data \
+  -v dispatcharr_logos:/data/logos \
   ghcr.io/dispatcharr/dispatcharr:latest
 ```
 
 > Customize ports and volumes to fit your setup.
+
+### 📂 Important Volume Mounts
+
+For persistent logo storage and data retention, make sure to mount these volumes:
+
+- `/data` - General application data (databases, uploads, etc.)
+- `/data/logos` - Downloaded channel logos (ensures logos persist across container restarts)
+
+**Example with persistent logo storage:**
+```bash
+docker run -d \
+  -p 9191:9191 \
+  --name dispatcharr \
+  -v ./data:/data \
+  -v ./data/logos:/data/logos \
+  ghcr.io/dispatcharr/dispatcharr:latest
+```
 
 ---
 
@@ -77,6 +95,13 @@ docker run -d \
 | **All-in-One Deployment**   | [docker-compose.aio.yml](docker/docker-compose.aio.yml) | ⭐ Recommended! A simple, all-in-one solution — everything runs in a single container for quick setup.  |
 | **Modular Deployment**      | [docker-compose.yml](docker/docker-compose.yml)         | Separate containers for Dispatcharr, Celery, and Postgres — perfect if you want more granular control. |
 | **Development Environment** | [docker-compose.dev.yml](docker/docker-compose.dev.yml) | Developer-friendly setup with pre-configured ports and settings for contributing and testing.          |
+
+**💡Tip:** For logo persistence, add volume mounts to your chosen Docker Compose file:
+```yaml
+volumes:
+  - ./data:/data
+  - ./data/logos:/data/logos  # Ensures downloaded logos persist across restarts
+```
 
 ---
 
