@@ -140,17 +140,19 @@ clone_dispatcharr_repo() {
   if [ -d "$APP_DIR/.git" ]; then
     echo ">>> Updating existing Dispatcharr repo..."
     su - "$DISPATCH_USER" <<EOSU
-cd "$APP_DIR"
-git fetch origin
-git checkout $DISPATCH_BRANCH
-git pull origin $DISPATCH_BRANCH
-EOSU
-  else
-    echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
-    rm -rf "$APP_DIR"/*
-    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
-    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
-  fi
+    cd "$APP_DIR"
+    git fetch origin
+    git reset --hard HEAD
+    git fetch origin
+    git checkout $DISPATCH_BRANCH
+    git pull origin $DISPATCH_BRANCH
+    EOSU
+      else
+        echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
+        rm -rf "$APP_DIR"/*
+        chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+        su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+      fi
 }
 
 ##############################################################################
