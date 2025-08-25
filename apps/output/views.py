@@ -266,11 +266,11 @@ def generate_dummy_epg(
 
         # Create program entry with escaped channel name
         xml_lines.append(
-            f'  <programme start="{start_str}" stop="{stop_str}" channel="{program["channel_id"]}">'
+            f"""  <programme start="{start_str}" stop="{stop_str}" channel="{program['channel_id']}">"""
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
-        xml_lines.append(f"  </programme>")
+        xml_lines.append("  </programme>")
 
     return xml_lines
 
