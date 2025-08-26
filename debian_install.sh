@@ -146,13 +146,13 @@ clone_dispatcharr_repo() {
     git fetch origin
     git checkout $DISPATCH_BRANCH
     git pull origin $DISPATCH_BRANCH
-    EOSU
-      else
-        echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
-        rm -rf "$APP_DIR"/*
-        chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
-        su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
-      fi
+EOSU
+  else
+    echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
+    rm -rf "$APP_DIR"/*
+    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+  fi
 }
 
 ##############################################################################
