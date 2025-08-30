@@ -58,12 +58,16 @@ configure_variables() {
   PYTHON_BIN=$(command -v python3)
   SYSTEMD_DIR="/etc/systemd/system"
   NGINX_SITE="/etc/nginx/sites-available/dispatcharr"
+  ARCH=$(uname -m)
+  if [[ "$ARCH" != "aarch64" ]]; then
+    echo "[ERROR] This script expects an ARM64 system (aarch64), but found $ARCH. The Rollup module may not be compatible."
+    exit 1
+  fi
 }
 
 ##############################################################################
 # 2) Install System Packages
 ##############################################################################
-
 install_packages() {
   echo ">>> Installing system packages..."
   apt-get update
@@ -76,8 +80,9 @@ install_packages() {
 
   if ! command -v node >/dev/null 2>&1; then
     echo ">>> Installing Node.js..."
-    curl -sL https://deb.nodesource.com/setup_23.x | bash -
+    curl -sL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
+    npm install -g npm@latest
   fi
 
   systemctl enable --now postgresql redis-server
@@ -129,6 +134,7 @@ setup_postgresql() {
 # 5) Clone Dispatcharr Repository
 ##############################################################################
 
+
 clone_dispatcharr_repo() {
   echo ">>> Installing or updating Dispatcharr in ${APP_DIR} ..."
   
@@ -139,22 +145,20 @@ clone_dispatcharr_repo() {
 
   if [ -d "$APP_DIR/.git" ]; then
     echo ">>> Updating existing Dispatcharr repo..."
-    su - "$DISPATCH_USER" <<EOSU
-    cd "$APP_DIR"
-    git fetch origin
-    git reset --hard HEAD
-    git fetch origin
-    git checkout $DISPATCH_BRANCH
-    git pull origin $DISPATCH_BRANCH
-    EOSU
-      else
-        echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
-        rm -rf "$APP_DIR"/*
-        chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
-        su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
-      fi
+    su - "$DISPATCH_USER" -c "
+      cd \"$APP_DIR\"
+      git fetch origin
+      git checkout $DISPATCH_BRANCH
+      git reset --hard origin/$DISPATCH_BRANCH
+      git pull origin $DISPATCH_BRANCH
+    "
+  else
+    echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
+    rm -rf "$APP_DIR"/*
+    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+  fi
 }
-
 ##############################################################################
 # 6) Setup Python Environment
 ##############################################################################
@@ -179,9 +183,15 @@ EOSU
 build_frontend() {
   echo ">>> Building frontend..."
   su - "$DISPATCH_USER" <<EOSU
-cd "$APP_DIR/frontend"
-npm install --legacy-peer-deps
-npm run build
+  cd "$APP_DIR/frontend"
+  # Clean node_modules and package-lock.json
+  rm -rf node_modules package-lock.json
+  # Clear npm cache
+  npm cache clean --force
+  # Install dependencies, skipping optional ones if needed
+  npm install --legacy-peer-deps || npm install --legacy-peer-deps --no-optional
+  # Build the frontend
+  npm run build
 EOSU
 }
 
