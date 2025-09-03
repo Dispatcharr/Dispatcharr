@@ -96,7 +96,7 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Build EPG URL using the same pattern as other endpoints
     base_url = request.build_absolute_uri('/')[:-1]
-    epg_url = f"{base_url}/epg"
+    epg_url = f"{base_url}/output/epg"
 
     # Start M3U content with EPG URLs
     m3u_content = f'#EXTM3U url-tvg="{epg_url}" x-tvg-url="{epg_url}"\n'
