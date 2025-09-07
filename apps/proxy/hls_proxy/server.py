@@ -1063,7 +1063,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--host', '-H',
-        default='0.0.0.0',
+        default=os.environ.get("HLS_PROXY_BIND", "0.0.0.0"),
         help='Interface to bind server to (default: all interfaces)'
     )
     parser.add_argument(

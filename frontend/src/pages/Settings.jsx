@@ -147,7 +147,7 @@ const SettingsPage = () => {
       );
       networkAccessForm.setValues(
         Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-          acc[key] = networkAccessSettings[key] || '0.0.0.0/0';
+          acc[key] = networkAccessSettings[key] || process.env.REACT_APP_DEFAULT_NETWORK || '0.0.0.0/0';
           return acc;
         }, {})
       );

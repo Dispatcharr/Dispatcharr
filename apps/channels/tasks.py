@@ -261,7 +261,9 @@ def run_recording(channel_id, start_time_str, end_time_str):
     )
 
     logger.info(f"Starting recording for channel {channel.name}")
-    with requests.get(f"http://localhost:5656/proxy/ts/stream/{channel.uuid}", headers={
+    backend_host = os.environ.get("BACKEND_HOST", "backend")
+    backend_port = os.environ.get("BACKEND_PORT", "5656")
+    with requests.get(f"http://{backend_host}:{backend_port}/proxy/ts/stream/{channel.uuid}", headers={
         'User-Agent': 'Dispatcharr-DVR',
     }, stream=True) as response:
         # Raise an exception for bad responses (4xx, 5xx)

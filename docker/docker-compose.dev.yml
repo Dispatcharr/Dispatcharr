@@ -14,8 +14,8 @@ services:
       # - ./data/db:/data
     environment:
       - DISPATCHARR_ENV=dev
-      - REDIS_HOST=localhost
-      - CELERY_BROKER_URL=redis://localhost:6379/0
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
       - DISPATCHARR_LOG_LEVEL=debug
 
   pgadmin:

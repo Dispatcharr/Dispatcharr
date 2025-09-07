@@ -12,7 +12,7 @@ class Command(BaseCommand):
         db_name = db_settings['NAME']
         user = db_settings['USER']
         password = db_settings['PASSWORD']
-        host = db_settings.get('HOST', 'localhost')
+        host = db_settings.get('HOST', 'postgres')
         port = db_settings.get('PORT', 5432)
 
         self.stdout.write(self.style.WARNING(

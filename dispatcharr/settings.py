@@ -5,7 +5,7 @@ from datetime import timedelta
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = "REPLACE_ME_WITH_A_REAL_SECRET"
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 REDIS_DB = os.environ.get("REDIS_DB", "0")
 
 # Set DEBUG to True for development, False for production
@@ -130,8 +130,8 @@ else:
             "NAME": os.environ.get("POSTGRES_DB", "dispatcharr"),
             "USER": os.environ.get("POSTGRES_USER", "dispatch"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
-            "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
-            "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
+            "HOST": os.environ.get("POSTGRES_HOST", "postgres"),
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
         }
     }
 
@@ -176,7 +176,7 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 
 # Configure Redis key prefix
@@ -211,7 +211,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
 
-SERVER_IP = "127.0.0.1"
+SERVER_IP = os.environ.get("SERVER_IP", "dispatcharr")
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
@@ -226,7 +226,7 @@ SIMPLE_JWT = {
 }
 
 # Redis connection settings
-REDIS_URL = "redis://localhost:6379/0"
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 REDIS_SOCKET_TIMEOUT = 60  # Socket timeout in seconds
 REDIS_SOCKET_CONNECT_TIMEOUT = 5  # Connection timeout in seconds
 REDIS_HEALTH_CHECK_INTERVAL = 15  # Health check every 15 seconds
