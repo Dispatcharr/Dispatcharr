@@ -146,13 +146,13 @@ clone_dispatcharr_repo() {
     git fetch origin
     git checkout $DISPATCH_BRANCH
     git pull origin $DISPATCH_BRANCH
-    EOSU
-      else
-        echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
-        rm -rf "$APP_DIR"/*
-        chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
-        su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
-      fi
+EOSU
+  else
+    echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
+    rm -rf "$APP_DIR"/*
+    chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
+    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+  fi
 }
 
 ##############################################################################
@@ -227,7 +227,7 @@ Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
-ExecStartPre=/usr/bin/bash -c 'until pg_isready -h localhost -U ${POSTGRES_USER}; do sleep 1; done'
+ExecStartPre=/usr/bin/bash -c 'until pg_isready -h ${POSTGRES_HOST} -U ${POSTGRES_USER}; do sleep 1; done'
 ExecStart=${APP_DIR}/env/bin/gunicorn \\
     --workers=4 \\
     --worker-class=gevent \\
@@ -259,7 +259,7 @@ Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
-Environment="CELERY_BROKER_URL=redis://localhost:6379/0"
+Environment="CELERY_BROKER_URL=redis://redis:6379/0"
 ExecStart=${APP_DIR}/env/bin/celery -A dispatcharr worker -l info
 Restart=always
 KillMode=mixed
@@ -286,7 +286,7 @@ Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 Environment="POSTGRES_HOST=localhost"
-Environment="CELERY_BROKER_URL=redis://localhost:6379/0"
+Environment="CELERY_BROKER_URL=redis://redis:6379/0"
 ExecStart=${APP_DIR}/env/bin/celery -A dispatcharr beat -l info
 Restart=always
 KillMode=mixed
@@ -341,7 +341,7 @@ server {
         alias ${APP_DIR}/media/;
     }
     location /ws/ {
-        proxy_pass http://127.0.0.1:${WEBSOCKET_PORT};
+        proxy_pass http://dispatcharr:${WEBSOCKET_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "Upgrade";

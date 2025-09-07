@@ -49,38 +49,38 @@ try:
 
     # Don't wait for connection, just set up the debugging session
     logger.info("Initializing debugpy on 0.0.0.0:5678...")
-    try:
-        # Configure debugpy to listen without socket timeout initially
-        debugpy.listen(("0.0.0.0", 5678))
-        logger.info("debugpy now listening on 0.0.0.0:5678")
+    host = os.environ.get("DEBUGPY_HOST", "0.0.0.0")
+    logger.info(f"Initializing debugpy on {host}:5678...")
+    debugpy.listen((host, 5678))
+    logger.info(f"debugpy now listening on {host}:5678")
 
-        if WAIT_FOR_DEBUGGER:
-            logger.info(f"Waiting for debugger to attach (timeout: {DEBUG_TIMEOUT}s)...")
-            start_time = time.time()
+    if WAIT_FOR_DEBUGGER:
+        logger.info(f"Waiting for debugger to attach (timeout: {DEBUG_TIMEOUT}s)...")
+        start_time = time.time()
 
-            # Use a more reliable approach for checking connection
-            while not debugpy.is_client_connected() and (time.time() - start_time < DEBUG_TIMEOUT):
-                time.sleep(1)
-                if (time.time() - start_time) % 5 == 0:  # Log only every 5 seconds to reduce spam
-                    logger.info(f"Still waiting for debugger connection... ({int(time.time() - start_time)}s)")
+        # Use a more reliable approach for checking connection
+        while not debugpy.is_client_connected() and (time.time() - start_time < DEBUG_TIMEOUT):
+            time.sleep(1)
+            if (time.time() - start_time) % 5 == 0:  # Log only every 5 seconds to reduce spam
+                logger.info(f"Still waiting for debugger connection... ({int(time.time() - start_time)}s)")
 
-            if debugpy.is_client_connected():
-                logger.info("Debugger attached successfully!")
-            else:
-                logger.warning(f"Debugger not attached after {DEBUG_TIMEOUT}s, continuing anyway...")
-    except RuntimeError as re:
-        if "already in use" in str(re):
-            logger.warning(f"Port 5678 already in use. This might indicate another debugging session is active.")
-            logger.info("Continuing without debugging...")
-        elif "timed out waiting for adapter to connect" in str(re):
-            logger.warning(f"debugpy.listen timed out after {DEBUG_TIMEOUT}s. This is normal in some environments.")
-            logger.info("Continuing without debugging...")
+        if debugpy.is_client_connected():
+            logger.info("Debugger attached successfully!")
         else:
-            logger.error(f"RuntimeError with debugpy.listen: {re}", exc_info=True)
-            logger.info("Continuing without debugging...")
-    except Exception as e:
-        logger.error(f"Error with debugpy.listen: {e}", exc_info=True)
+            logger.warning(f"Debugger not attached after {DEBUG_TIMEOUT}s, continuing anyway...")
+except RuntimeError as re:
+    if "already in use" in str(re):
+        logger.warning(f"Port 5678 already in use. This might indicate another debugging session is active.")
         logger.info("Continuing without debugging...")
+    elif "timed out waiting for adapter to connect" in str(re):
+        logger.warning(f"debugpy.listen timed out after {DEBUG_TIMEOUT}s. This is normal in some environments.")
+        logger.info("Continuing without debugging...")
+    else:
+        logger.error(f"RuntimeError with debugpy.listen: {re}", exc_info=True)
+        logger.info("Continuing without debugging...")
+except Exception as e:
+    logger.error(f"Error with debugpy.listen: {e}", exc_info=True)
+    logger.info("Continuing without debugging...")
 
 except ImportError:
     logger.error("debugpy not installed, continuing without debugging support")

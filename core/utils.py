@@ -52,7 +52,7 @@ class RedisClient:
             while retry_count < max_retries:
                 try:
                     # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'redis'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
 
@@ -145,7 +145,7 @@ class RedisClient:
             while retry_count < max_retries:
                 try:
                     # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'redis'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
 

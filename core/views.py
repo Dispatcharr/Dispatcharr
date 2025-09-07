@@ -36,7 +36,7 @@ def stream_view(request, channel_uuid):
     A persistent Redis lock is used to prevent concurrent streaming on the same channel.
     """
     try:
-        redis_host = getattr(settings, "REDIS_HOST", "localhost")
+        redis_host = getattr(settings, "REDIS_HOST", "redis")
         redis_client = redis.Redis(host=settings.REDIS_HOST, port=6379, db=int(getattr(settings, "REDIS_DB", "0")))
 
         # Retrieve the channel by the provided stream_id.
