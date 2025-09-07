@@ -849,13 +849,23 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     candidates = []
     if explicit:
         candidates.append(explicit)
+    # Prefer environment variable for internal API base
+    internal_api_base = os.environ.get('DISPATCHARR_INTERNAL_API_BASE')
+    if internal_api_base:
+        candidates.append(internal_api_base)
+    # Use service name for Docker by default
+    candidates.append('http://dispatcharr:9191')
+    # Optionally add dev/debug ports if in dev mode
     if is_dev:
-        # Debug container typically exposes API on 5656
-        candidates.extend(['http://127.0.0.1:5656', 'http://127.0.0.1:9191'])
-    # Docker service name fallback
-    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', 'http://web:9191'))
-    # Last-resort localhost ports
-    candidates.extend(['http://localhost:5656', 'http://localhost:9191'])
+        candidates.extend([
+            f"http://{os.environ.get('DISPATCHARR_HOST', '127.0.0.1')}:5656",
+            f"http://{os.environ.get('DISPATCHARR_HOST', '127.0.0.1')}:9191"
+        ])
+    # Fallback to localhost as last resort
+    candidates.extend([
+        'http://localhost:5656',
+        'http://localhost:9191'
+    ])
 
     chosen_base = None
     last_error = None
