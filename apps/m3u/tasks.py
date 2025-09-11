@@ -722,6 +722,24 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
 
     account = M3UAccount.objects.get(id=account_id)
 
+    compiled_filters = [
+        (
+            re.compile(
+                f.regex_pattern,
+                (
+                    re.IGNORECASE
+                    if json.loads(f.custom_properties or "{}").get(
+                        "case_sensitive", True
+                    )
+                    == False
+                    else 0
+                ),
+            ),
+            f,
+        )
+        for f in account.filters.order_by("order")
+    ]
+
     streams_to_create = []
     streams_to_update = []
     stream_hashes = {}
@@ -763,7 +781,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         continue
 
                     logger.debug(
-                        f"Found {len(streams)} streams for category {group_name}"
+                        f"Found {len(streams)} streams for XC category {group_name}"
                     )
 
                     for stream in streams:
@@ -772,6 +790,26 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         tvg_id = stream.get("epg_channel_id", "")
                         tvg_logo = stream.get("stream_icon", "")
                         group_title = group_name
+
+                        include = True
+                        for pattern, filter in compiled_filters:
+                            logger.debug(f"XC Checking filter patterh {pattern}")
+                            target = name
+                            if filter.filter_type == "url":
+                                target = url
+                            elif filter.filter_type == "group":
+                                target = group_title
+
+                            if pattern.search(target or ""):
+                                logger.debug(
+                                    f"XC Stream {name} - {url} matches filter pattern {filter.regex_pattern}"
+                                )
+                                include = not filter.exclude
+                                break
+
+                        if not include:
+                            logger.debug(f"XC Stream excluded by filter, skipping.")
+                            continue
 
                         stream_hash = Stream.generate_hash_key(
                             name, url, tvg_id, hash_keys
