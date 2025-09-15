@@ -924,7 +924,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 f.regex_pattern,
                 (
                     re.IGNORECASE
-                    if (f.custom_properties or {}).get(
+                    if json.loads(f.custom_properties or "{}").get(
                         "case_sensitive", True
                     )
                     == False
