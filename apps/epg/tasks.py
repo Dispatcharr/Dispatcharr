@@ -873,10 +873,12 @@ def parse_channels_only(source):
                     tvg_id = elem.get('id', '').strip()
                     if tvg_id:
                         display_name = None
+                        icon_url = None
                         for child in elem:
                             if child.tag == 'display-name' and child.text:
                                 display_name = child.text.strip()
-                                break
+                            elif child.tag == 'icon':
+                                icon_url = child.get('src', '').strip()
 
                         if not display_name:
                             display_name = tvg_id
@@ -894,17 +896,24 @@ def parse_channels_only(source):
                                     epgs_to_create.append(EPGData(
                                         tvg_id=tvg_id,
                                         name=display_name,
+                                        icon_url=icon_url,
                                         epg_source=source,
                                     ))
                                     logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 1: {tvg_id} - {display_name}")
                                     processed_channels += 1
                                     continue
 
-                            # We use the cached object to check if the name has changed
+                            # We use the cached object to check if the name or icon_url has changed
                             epg_obj = existing_epgs[tvg_id]
+                            needs_update = False
                             if epg_obj.name != display_name:
-                                # Only update if the name actually changed
                                 epg_obj.name = display_name
+                                needs_update = True
+                            if epg_obj.icon_url != icon_url:
+                                epg_obj.icon_url = icon_url
+                                needs_update = True
+
+                            if needs_update:
                                 epgs_to_update.append(epg_obj)
                                 logger.debug(f"[parse_channels_only] Added channel to update to epgs_to_update: {tvg_id} - {display_name}")
                             else:
@@ -915,6 +924,7 @@ def parse_channels_only(source):
                             epgs_to_create.append(EPGData(
                                 tvg_id=tvg_id,
                                 name=display_name,
+                                icon_url=icon_url,
                                 epg_source=source,
                             ))
                             logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 2: {tvg_id} - {display_name}")
@@ -937,7 +947,7 @@ def parse_channels_only(source):
                         logger.info(f"[parse_channels_only] Bulk updating {len(epgs_to_update)} EPG entries")
                         if process:
                             logger.info(f"[parse_channels_only] Memory before bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                        EPGData.objects.bulk_update(epgs_to_update, ["name"])
+                        EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
                         if process:
                             logger.info(f"[parse_channels_only] Memory after bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                         epgs_to_update = []
@@ -1004,7 +1014,7 @@ def parse_channels_only(source):
             logger.debug(f"[parse_channels_only] Created final batch of {len(epgs_to_create)} EPG entries")
 
         if epgs_to_update:
-            EPGData.objects.bulk_update(epgs_to_update, ["name"])
+            EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
             logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
         if process:
             logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")

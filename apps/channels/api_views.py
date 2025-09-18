@@ -39,7 +39,7 @@ from .serializers import (
     ChannelProfileSerializer,
     RecordingSerializer,
 )
-from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl
+from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl, match_single_channel_epg, match_selected_channels_epg
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -493,6 +493,68 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channels": serialized_channels
         })
 
+    @action(detail=False, methods=["post"], url_path="set-names-from-epg")
+    def set_names_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel names from EPG data
+        """
+        from .tasks import set_channels_names_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_names_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG name setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
+    @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
+    def set_logos_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel logos from EPG data
+        """
+        from .tasks import set_channels_logos_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_logos_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG logo setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
     @action(detail=False, methods=["get"], url_path="ids")
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
@@ -779,15 +841,64 @@ class ChannelViewSet(viewsets.ModelViewSet):
     # ─────────────────────────────────────────────────────────
     @swagger_auto_schema(
         method="post",
-        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data.",
+        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data. If channel_ids are provided, only those channels will be processed.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'channel_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                    description='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.'
+                )
+            }
+        ),
         responses={202: "EPG matching task initiated"},
     )
     @action(detail=False, methods=["post"], url_path="match-epg")
     def match_epg(self, request):
-        match_epg_channels.delay()
+        # Get channel IDs from request body if provided
+        channel_ids = request.data.get('channel_ids', [])
+
+        if channel_ids:
+            # Process only selected channels
+            from .tasks import match_selected_channels_epg
+            match_selected_channels_epg.delay(channel_ids)
+            message = f"EPG matching task initiated for {len(channel_ids)} selected channel(s)."
+        else:
+            # Process all channels without EPG (original behavior)
+            match_epg_channels.delay()
+            message = "EPG matching task initiated for all channels without EPG."
+
         return Response(
-            {"message": "EPG matching task initiated."}, status=status.HTTP_202_ACCEPTED
+            {"message": message}, status=status.HTTP_202_ACCEPTED
         )
+
+    @swagger_auto_schema(
+        method="post",
+        operation_description="Try to auto-match this specific channel with EPG data.",
+        responses={200: "EPG matching completed", 202: "EPG matching task initiated"},
+    )
+    @action(detail=True, methods=["post"], url_path="match-epg")
+    def match_channel_epg(self, request, pk=None):
+        channel = self.get_object()
+
+        # Import the matching logic
+        from apps.channels.tasks import match_single_channel_epg
+
+        try:
+            # Try to match this specific channel - call synchronously for immediate response
+            result = match_single_channel_epg.apply_async(args=[channel.id]).get(timeout=30)
+
+            # Refresh the channel from DB to get any updates
+            channel.refresh_from_db()
+
+            return Response({
+                "message": result.get("message", "Channel matching completed"),
+                "matched": result.get("matched", False),
+                "channel": self.get_serializer(channel).data
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
     # ─────────────────────────────────────────────────────────
     # 7) Set EPG and Refresh

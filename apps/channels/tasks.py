@@ -12,6 +12,7 @@ import gc
 
 from celery import shared_task
 from django.utils.text import slugify
+from rapidfuzz import fuzz
 
 from apps.channels.models import Channel
 from apps.epg.models import EPGData
@@ -26,6 +27,87 @@ import tempfile
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+def send_epg_matching_progress(total_channels, matched_channels, current_channel_name="", stage="matching"):
+    """
+    Send EPG matching progress via WebSocket
+    """
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            progress_data = {
+                'type': 'epg_matching_progress',
+                'total': total_channels,
+                'matched': len(matched_channels) if isinstance(matched_channels, list) else matched_channels,
+                'remaining': total_channels - (len(matched_channels) if isinstance(matched_channels, list) else matched_channels),
+                'current_channel': current_channel_name,
+                'stage': stage,
+                'progress_percent': round((len(matched_channels) if isinstance(matched_channels, list) else matched_channels) / total_channels * 100, 1) if total_channels > 0 else 0
+            }
+
+            async_to_sync(channel_layer.group_send)(
+                "updates",
+                {
+                    "type": "update",
+                    "data": {
+                        "type": "epg_matching_progress",
+                        **progress_data
+                    }
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Failed to send EPG matching progress: {e}")
+
+# Lazy loading for ML models - only imported/loaded when needed
+_ml_model_cache = {
+    'sentence_transformer': None
+}
+
+def get_sentence_transformer():
+    """Lazy load the sentence transformer model only when needed"""
+    if _ml_model_cache['sentence_transformer'] is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import util
+
+            model_name = "sentence-transformers/all-MiniLM-L6-v2"
+            cache_dir = "/data/models"
+
+            # Check environment variable to disable downloads
+            disable_downloads = os.environ.get('DISABLE_ML_DOWNLOADS', 'false').lower() == 'true'
+
+            if disable_downloads:
+                # Check if model exists before attempting to load
+                hf_model_path = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
+                if not os.path.exists(hf_model_path):
+                    logger.warning("ML model not found and downloads disabled (DISABLE_ML_DOWNLOADS=true). Skipping ML matching.")
+                    return None, None
+
+            # Ensure cache directory exists
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # Let sentence-transformers handle all cache detection and management
+            logger.info(f"Loading sentence transformer model (cache: {cache_dir})")
+            _ml_model_cache['sentence_transformer'] = SentenceTransformer(
+                model_name,
+                cache_folder=cache_dir
+            )
+
+            return _ml_model_cache['sentence_transformer'], util
+        except ImportError:
+            logger.warning("sentence-transformers not available - ML-enhanced matching disabled")
+            return None, None
+        except Exception as e:
+            logger.error(f"Failed to load sentence transformer: {e}")
+            return None, None
+    else:
+        from sentence_transformers import util
+        return _ml_model_cache['sentence_transformer'], util
+
+# ML matching thresholds (same as original script)
+BEST_FUZZY_THRESHOLD = 85
+LOWER_FUZZY_THRESHOLD = 40
+EMBED_SIM_THRESHOLD = 0.65
 
 # Words we remove to help with fuzzy + embedding matching
 COMMON_EXTRANEOUS_WORDS = [
@@ -49,155 +131,353 @@ def normalize_name(name: str) -> str:
 
     norm = name.lower()
     norm = re.sub(r"\[.*?\]", "", norm)
+
+    # Extract and preserve important call signs from parentheses before removing them
+    # This captures call signs like (KVLY), (KING), (KARE), etc.
+    call_sign_match = re.search(r"\(([A-Z]{3,5})\)", name)
+    preserved_call_sign = ""
+    if call_sign_match:
+        preserved_call_sign = " " + call_sign_match.group(1).lower()
+
+    # Now remove all parentheses content
     norm = re.sub(r"\(.*?\)", "", norm)
+
+    # Add back the preserved call sign
+    norm = norm + preserved_call_sign
+
     norm = re.sub(r"[^\w\s]", "", norm)
     tokens = norm.split()
     tokens = [t for t in tokens if t not in COMMON_EXTRANEOUS_WORDS]
     norm = " ".join(tokens).strip()
     return norm
 
+def match_channels_to_epg(channels_data, epg_data, region_code=None, use_ml=True, send_progress=True):
+    """
+    EPG matching logic that finds the best EPG matches for channels using
+    multiple matching strategies including fuzzy matching and ML models.
+
+    Automatically uses conservative thresholds for bulk matching (multiple channels)
+    to avoid bad matches that create user cleanup work, and aggressive thresholds
+    for single channel matching where users specifically requested a match attempt.
+    """
+    channels_to_update = []
+    matched_channels = []
+    total_channels = len(channels_data)
+
+    # Send initial progress
+    if send_progress:
+        send_epg_matching_progress(total_channels, 0, stage="starting")
+
+    # Try to get ML models if requested (but don't load yet - lazy loading)
+    st_model, util = None, None
+    epg_embeddings = None
+    ml_available = use_ml
+
+    # Automatically determine matching strategy based on number of channels
+    is_bulk_matching = len(channels_data) > 1
+
+    # Adjust matching thresholds based on operation type
+    if is_bulk_matching:
+        # Conservative thresholds for bulk matching to avoid creating cleanup work
+        FUZZY_HIGH_CONFIDENCE = 90      # Only very high fuzzy scores
+        FUZZY_MEDIUM_CONFIDENCE = 70    # Higher threshold for ML enhancement
+        ML_HIGH_CONFIDENCE = 0.75       # Higher ML confidence required
+        ML_LAST_RESORT = 0.65          # More conservative last resort
+        FUZZY_LAST_RESORT_MIN = 50     # Higher fuzzy minimum for last resort
+        logger.info(f"Using conservative thresholds for bulk matching ({total_channels} channels)")
+    else:
+        # More aggressive thresholds for single channel matching (user requested specific match)
+        FUZZY_HIGH_CONFIDENCE = 85      # Original threshold
+        FUZZY_MEDIUM_CONFIDENCE = 40    # Original threshold
+        ML_HIGH_CONFIDENCE = 0.65       # Original threshold
+        ML_LAST_RESORT = 0.50          # Original desperate threshold
+        FUZZY_LAST_RESORT_MIN = 20     # Original minimum
+        logger.info("Using aggressive thresholds for single channel matching")    # Process each channel
+    for index, chan in enumerate(channels_data):
+        normalized_tvg_id = chan.get("tvg_id", "")
+        fallback_name = chan["tvg_id"].strip() if chan["tvg_id"] else chan["name"]
+
+        # Send progress update every 5 channels or for the first few
+        if send_progress and (index < 5 or index % 5 == 0 or index == total_channels - 1):
+            send_epg_matching_progress(
+                total_channels,
+                len(matched_channels),
+                current_channel_name=chan["name"][:50],  # Truncate long names
+                stage="matching"
+            )
+        normalized_tvg_id = chan.get("tvg_id", "")
+        fallback_name = chan["tvg_id"].strip() if chan["tvg_id"] else chan["name"]
+
+        # Step 1: Exact TVG ID match
+        epg_by_tvg_id = next((epg for epg in epg_data if epg["tvg_id"] == normalized_tvg_id), None)
+        if normalized_tvg_id and epg_by_tvg_id:
+            chan["epg_data_id"] = epg_by_tvg_id["id"]
+            channels_to_update.append(chan)
+            matched_channels.append((chan['id'], fallback_name, epg_by_tvg_id["tvg_id"]))
+            logger.info(f"Channel {chan['id']} '{fallback_name}' => EPG found by exact tvg_id={epg_by_tvg_id['tvg_id']}")
+            continue
+
+        # Step 2: Secondary TVG ID check (legacy compatibility)
+        if chan["tvg_id"]:
+            epg_match = [epg["id"] for epg in epg_data if epg["tvg_id"] == chan["tvg_id"]]
+            if epg_match:
+                chan["epg_data_id"] = epg_match[0]
+                channels_to_update.append(chan)
+                matched_channels.append((chan['id'], fallback_name, chan["tvg_id"]))
+                logger.info(f"Channel {chan['id']} '{chan['name']}' => EPG found by secondary tvg_id={chan['tvg_id']}")
+                continue
+
+        # Step 3: Name-based fuzzy matching
+        if not chan["norm_chan"]:
+            logger.debug(f"Channel {chan['id']} '{chan['name']}' => empty after normalization, skipping")
+            continue
+
+        best_score = 0
+        best_epg = None
+
+        # Debug: show what we're matching against
+        logger.debug(f"Fuzzy matching '{chan['norm_chan']}' against EPG entries...")
+
+        # Find best fuzzy match
+        for row in epg_data:
+            if not row.get("norm_name"):
+                continue
+
+            base_score = fuzz.ratio(chan["norm_chan"], row["norm_name"])
+            bonus = 0
+
+            # Apply region-based bonus/penalty
+            if region_code and row.get("tvg_id"):
+                combined_text = row["tvg_id"].lower() + " " + row["name"].lower()
+                dot_regions = re.findall(r'\.([a-z]{2})', combined_text)
+
+                if dot_regions:
+                    if region_code in dot_regions:
+                        bonus = 15  # Bigger bonus for matching region
+                    else:
+                        bonus = -15  # Penalty for different region
+                elif region_code in combined_text:
+                    bonus = 10
+
+            score = base_score + bonus
+
+            # Debug the best few matches
+            if score > 50:  # Only show decent matches
+                logger.debug(f"  EPG '{row['name']}' (norm: '{row['norm_name']}') => score: {score} (base: {base_score}, bonus: {bonus})")
+
+            if score > best_score:
+                best_score = score
+                best_epg = row
+
+        # Log the best score we found
+        if best_epg:
+            logger.info(f"Channel {chan['id']} '{chan['name']}' => best match: '{best_epg['name']}' (score: {best_score})")
+        else:
+            logger.debug(f"Channel {chan['id']} '{chan['name']}' => no EPG entries with valid norm_name found")
+            continue
+
+        # High confidence match - accept immediately
+        if best_score >= FUZZY_HIGH_CONFIDENCE:
+            chan["epg_data_id"] = best_epg["id"]
+            channels_to_update.append(chan)
+            matched_channels.append((chan['id'], chan['name'], best_epg["tvg_id"]))
+            logger.info(f"Channel {chan['id']} '{chan['name']}' => matched tvg_id={best_epg['tvg_id']} (score={best_score})")
+
+        # Medium confidence - use ML if available (lazy load models here)
+        elif best_score >= FUZZY_MEDIUM_CONFIDENCE and ml_available:
+            # Lazy load ML models only when we actually need them
+            if st_model is None:
+                st_model, util = get_sentence_transformer()
+
+            # Lazy generate embeddings only when we actually need them
+            if epg_embeddings is None and st_model and any(row.get("norm_name") for row in epg_data):
+                try:
+                    logger.info("Generating embeddings for EPG data using ML model (lazy loading)")
+                    epg_embeddings = st_model.encode(
+                        [row["norm_name"] for row in epg_data if row.get("norm_name")],
+                        convert_to_tensor=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to generate embeddings: {e}")
+                    epg_embeddings = None
+
+            if epg_embeddings is not None and st_model:
+                try:
+                    # Generate embedding for this channel
+                    chan_embedding = st_model.encode(chan["norm_chan"], convert_to_tensor=True)
+
+                    # Calculate similarity with all EPG embeddings
+                    sim_scores = util.cos_sim(chan_embedding, epg_embeddings)[0]
+                    top_index = int(sim_scores.argmax())
+                    top_value = float(sim_scores[top_index])
+
+                    if top_value >= ML_HIGH_CONFIDENCE:
+                        # Find the EPG entry that corresponds to this embedding index
+                        epg_with_names = [epg for epg in epg_data if epg.get("norm_name")]
+                        matched_epg = epg_with_names[top_index]
+
+                        chan["epg_data_id"] = matched_epg["id"]
+                        channels_to_update.append(chan)
+                        matched_channels.append((chan['id'], chan['name'], matched_epg["tvg_id"]))
+                        logger.info(f"Channel {chan['id']} '{chan['name']}' => matched EPG tvg_id={matched_epg['tvg_id']} (fuzzy={best_score}, ML-sim={top_value:.2f})")
+                    else:
+                        logger.info(f"Channel {chan['id']} '{chan['name']}' => fuzzy={best_score}, ML-sim={top_value:.2f} < {ML_HIGH_CONFIDENCE}, trying last resort...")
+
+                        # Last resort: try ML with very low fuzzy threshold
+                        if top_value >= ML_LAST_RESORT:  # Dynamic last resort threshold
+                            epg_with_names = [epg for epg in epg_data if epg.get("norm_name")]
+                            matched_epg = epg_with_names[top_index]
+
+                            chan["epg_data_id"] = matched_epg["id"]
+                            channels_to_update.append(chan)
+                            matched_channels.append((chan['id'], chan['name'], matched_epg["tvg_id"]))
+                            logger.info(f"Channel {chan['id']} '{chan['name']}' => LAST RESORT match EPG tvg_id={matched_epg['tvg_id']} (fuzzy={best_score}, ML-sim={top_value:.2f})")
+                        else:
+                            logger.info(f"Channel {chan['id']} '{chan['name']}' => even last resort ML-sim {top_value:.2f} < {ML_LAST_RESORT}, skipping")
+
+                except Exception as e:
+                    logger.warning(f"ML matching failed for channel {chan['id']}: {e}")
+                    # Fall back to non-ML decision
+                    logger.info(f"Channel {chan['id']} '{chan['name']}' => fuzzy score {best_score} below threshold, skipping")
+
+        # Last resort: Try ML matching even with very low fuzzy scores
+        elif best_score >= FUZZY_LAST_RESORT_MIN and ml_available:
+            # Lazy load ML models for last resort attempts
+            if st_model is None:
+                st_model, util = get_sentence_transformer()
+
+            # Lazy generate embeddings for last resort attempts
+            if epg_embeddings is None and st_model and any(row.get("norm_name") for row in epg_data):
+                try:
+                    logger.info("Generating embeddings for EPG data using ML model (last resort lazy loading)")
+                    epg_embeddings = st_model.encode(
+                        [row["norm_name"] for row in epg_data if row.get("norm_name")],
+                        convert_to_tensor=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to generate embeddings for last resort: {e}")
+                    epg_embeddings = None
+
+            if epg_embeddings is not None and st_model:
+                try:
+                    logger.info(f"Channel {chan['id']} '{chan['name']}' => trying ML as last resort (fuzzy={best_score})")
+                    # Generate embedding for this channel
+                    chan_embedding = st_model.encode(chan["norm_chan"], convert_to_tensor=True)
+
+                    # Calculate similarity with all EPG embeddings
+                    sim_scores = util.cos_sim(chan_embedding, epg_embeddings)[0]
+                    top_index = int(sim_scores.argmax())
+                    top_value = float(sim_scores[top_index])
+
+                    if top_value >= ML_LAST_RESORT:  # Dynamic threshold for desperate attempts
+                        # Find the EPG entry that corresponds to this embedding index
+                        epg_with_names = [epg for epg in epg_data if epg.get("norm_name")]
+                        matched_epg = epg_with_names[top_index]
+
+                        chan["epg_data_id"] = matched_epg["id"]
+                        channels_to_update.append(chan)
+                        matched_channels.append((chan['id'], chan['name'], matched_epg["tvg_id"]))
+                        logger.info(f"Channel {chan['id']} '{chan['name']}' => DESPERATE LAST RESORT match EPG tvg_id={matched_epg['tvg_id']} (fuzzy={best_score}, ML-sim={top_value:.2f})")
+                    else:
+                        logger.info(f"Channel {chan['id']} '{chan['name']}' => desperate last resort ML-sim {top_value:.2f} < {ML_LAST_RESORT}, giving up")
+                except Exception as e:
+                    logger.warning(f"Last resort ML matching failed for channel {chan['id']}: {e}")
+                    logger.info(f"Channel {chan['id']} '{chan['name']}' => best fuzzy score={best_score} < {FUZZY_MEDIUM_CONFIDENCE}, giving up")
+        else:
+            # No ML available or very low fuzzy score
+            logger.info(f"Channel {chan['id']} '{chan['name']}' => best fuzzy score={best_score} < {FUZZY_MEDIUM_CONFIDENCE}, no ML fallback available")
+
+    # Clean up ML models from memory after matching (infrequent operation)
+    if _ml_model_cache['sentence_transformer'] is not None:
+        logger.info("Cleaning up ML models from memory")
+        _ml_model_cache['sentence_transformer'] = None
+        gc.collect()
+
+    # Send final progress update
+    if send_progress:
+        send_epg_matching_progress(
+            total_channels,
+            len(matched_channels),
+            stage="completed"
+        )
+
+    return {
+        "channels_to_update": channels_to_update,
+        "matched_channels": matched_channels
+    }
+
 @shared_task
 def match_epg_channels():
     """
-    Goes through all Channels and tries to find a matching EPGData row by:
-      1) If channel.tvg_id is valid in EPGData, skip.
-      2) If channel has a tvg_id but not found in EPGData, attempt direct EPGData lookup.
-      3) Otherwise, perform name-based fuzzy matching with optional region-based bonus.
-      4) If a match is found, we set channel.tvg_id
-      5) Summarize and log results.
+    Uses integrated EPG matching instead of external script.
+    Provides the same functionality with better performance and maintainability.
     """
     try:
-        logger.info("Starting EPG matching logic...")
+        logger.info("Starting integrated EPG matching...")
 
-        # Attempt to retrieve a "preferred-region" if configured
+        # Get region preference
         try:
             region_obj = CoreSettings.objects.get(key="preferred-region")
             region_code = region_obj.value.strip().lower()
         except CoreSettings.DoesNotExist:
             region_code = None
 
-        matched_channels = []
-        channels_to_update = []
-
         # Get channels that don't have EPG data assigned
         channels_without_epg = Channel.objects.filter(epg_data__isnull=True)
         logger.info(f"Found {channels_without_epg.count()} channels without EPG data")
 
-        channels_json = []
+        channels_data = []
         for channel in channels_without_epg:
-            # Normalize TVG ID - strip whitespace and convert to lowercase
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
-            if normalized_tvg_id:
-                logger.info(f"Processing channel {channel.id} '{channel.name}' with TVG ID='{normalized_tvg_id}'")
-
-            channels_json.append({
+            channels_data.append({
                 "id": channel.id,
                 "name": channel.name,
-                "tvg_id": normalized_tvg_id,  # Use normalized TVG ID
-                "original_tvg_id": channel.tvg_id,  # Keep original for reference
+                "tvg_id": normalized_tvg_id,
+                "original_tvg_id": channel.tvg_id,
                 "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
-                "norm_chan": normalize_name(normalized_tvg_id if normalized_tvg_id else channel.name)
+                "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
             })
 
-        # Similarly normalize EPG data TVG IDs
-        epg_json = []
+        # Get all EPG data
+        epg_data = []
         for epg in EPGData.objects.all():
             normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
-            epg_json.append({
+            epg_data.append({
                 'id': epg.id,
-                'tvg_id': normalized_tvg_id,  # Use normalized TVG ID
-                'original_tvg_id': epg.tvg_id,  # Keep original for reference
+                'tvg_id': normalized_tvg_id,
+                'original_tvg_id': epg.tvg_id,
                 'name': epg.name,
                 'norm_name': normalize_name(epg.name),
                 'epg_source_id': epg.epg_source.id if epg.epg_source else None,
             })
 
-        # Log available EPG data TVG IDs for debugging
-        unique_epg_tvg_ids = set(e['tvg_id'] for e in epg_json if e['tvg_id'])
-        logger.info(f"Available EPG TVG IDs: {', '.join(sorted(unique_epg_tvg_ids))}")
+        logger.info(f"Processing {len(channels_data)} channels against {len(epg_data)} EPG entries")
 
-        payload = {
-            "channels": channels_json,
-            "epg_data": epg_json,
-            "region_code": region_code,
-        }
-
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.write(json.dumps(payload).encode('utf-8'))
-            temp_file_path = temp_file.name
-
-        # After writing to the file but before subprocess
-        # Explicitly delete the large data structures
-        del payload
-        gc.collect()
-
-        process = subprocess.Popen(
-            ['python', '/app/scripts/epg_match.py', temp_file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        stdout = ''
-        block_size = 1024
-
-        while True:
-            # Monitor stdout and stderr for readability
-            readable, _, _ = select.select([process.stdout, process.stderr], [], [], 1) # timeout of 1 second
-
-            if not readable: # timeout expired
-                if process.poll() is not None: # check if process finished
-                    break
-                else: # process still running, continue
-                    continue
-
-            for stream in readable:
-                if stream == process.stdout:
-                    stdout += stream.read(block_size)
-                elif stream == process.stderr:
-                    error = stream.readline()
-                    if error:
-                        logger.info(error.strip())
-
-            if process.poll() is not None:
-                break
-
-        process.wait()
-        os.remove(temp_file_path)
-
-        if process.returncode != 0:
-            return f"Failed to process EPG matching"
-
-        result = json.loads(stdout)
-        # This returns lists of dicts, not model objects
+        # Run EPG matching with progress updates - automatically uses conservative thresholds for bulk operations
+        result = match_channels_to_epg(channels_data, epg_data, region_code, use_ml=True, send_progress=True)
         channels_to_update_dicts = result["channels_to_update"]
         matched_channels = result["matched_channels"]
 
-        # Explicitly clean up large objects
-        del stdout, result
-        gc.collect()
-
-        # Convert your dict-based 'channels_to_update' into real Channel objects
+        # Update channels in database
         if channels_to_update_dicts:
-            # Extract IDs of the channels that need updates
             channel_ids = [d["id"] for d in channels_to_update_dicts]
-
-            # Fetch them from DB
             channels_qs = Channel.objects.filter(id__in=channel_ids)
             channels_list = list(channels_qs)
 
-            # Build a map from channel_id -> epg_data_id (or whatever fields you need)
-            epg_mapping = {
-                d["id"]: d["epg_data_id"] for d in channels_to_update_dicts
-            }
+            # Create mapping from channel_id to epg_data_id
+            epg_mapping = {d["id"]: d["epg_data_id"] for d in channels_to_update_dicts}
 
-            # Populate each Channel object with the updated epg_data_id
+            # Update each channel with matched EPG data
             for channel_obj in channels_list:
-                # The script sets 'epg_data_id' in the returned dict
-                # We either assign directly, or fetch the EPGData instance if needed.
-                channel_obj.epg_data_id = epg_mapping.get(channel_obj.id)
+                epg_data_id = epg_mapping.get(channel_obj.id)
+                if epg_data_id:
+                    try:
+                        epg_data_obj = EPGData.objects.get(id=epg_data_id)
+                        channel_obj.epg_data = epg_data_obj
+                    except EPGData.DoesNotExist:
+                        logger.error(f"EPG data {epg_data_id} not found for channel {channel_obj.id}")
 
-            # Now we have real model objects, so bulk_update will work
+            # Bulk update all channels
             Channel.objects.bulk_update(channels_list, ["epg_data"])
 
         total_matched = len(matched_channels)
@@ -208,9 +488,9 @@ def match_epg_channels():
         else:
             logger.info("No new channels were matched.")
 
-        logger.info("Finished EPG matching logic.")
+        logger.info("Finished integrated EPG matching.")
 
-        # Send update with additional information for refreshing UI
+        # Send WebSocket update
         channel_layer = get_channel_layer()
         associations = [
             {"channel_id": chan["id"], "epg_data_id": chan["epg_data_id"]}
@@ -224,21 +504,309 @@ def match_epg_channels():
                 "data": {
                     "success": True,
                     "type": "epg_match",
-                    "refresh_channels": True,  # Flag to tell frontend to refresh channels
+                    "refresh_channels": True,
                     "matches_count": total_matched,
                     "message": f"EPG matching complete: {total_matched} channel(s) matched",
-                    "associations": associations  # Add the associations data
+                    "associations": associations
                 }
             }
         )
 
         return f"Done. Matched {total_matched} channel(s)."
+
     finally:
-        # Final cleanup
+        # Clean up ML models from memory after bulk matching
+        if _ml_model_cache['sentence_transformer'] is not None:
+            logger.info("Cleaning up ML models from memory")
+            _ml_model_cache['sentence_transformer'] = None
+
+        # Memory cleanup
         gc.collect()
-        # Use our standardized cleanup function for more thorough memory management
         from core.utils import cleanup_memory
         cleanup_memory(log_usage=True, force_collection=True)
+
+
+@shared_task
+def match_selected_channels_epg(channel_ids):
+    """
+    Match EPG data for only the specified selected channels.
+    Uses the same integrated EPG matching logic but processes only selected channels.
+    """
+    try:
+        logger.info(f"Starting integrated EPG matching for {len(channel_ids)} selected channels...")
+
+        # Get region preference
+        try:
+            region_obj = CoreSettings.objects.get(key="preferred-region")
+            region_code = region_obj.value.strip().lower()
+        except CoreSettings.DoesNotExist:
+            region_code = None
+
+        # Get only the specified channels that don't have EPG data assigned
+        channels_without_epg = Channel.objects.filter(
+            id__in=channel_ids,
+            epg_data__isnull=True
+        )
+        logger.info(f"Found {channels_without_epg.count()} selected channels without EPG data")
+
+        if not channels_without_epg.exists():
+            logger.info("No selected channels need EPG matching.")
+
+            # Send WebSocket update
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                'updates',
+                {
+                    'type': 'update',
+                    "data": {
+                        "success": True,
+                        "type": "epg_match",
+                        "refresh_channels": True,
+                        "matches_count": 0,
+                        "message": "No selected channels need EPG matching",
+                        "associations": []
+                    }
+                }
+            )
+            return "No selected channels needed EPG matching."
+
+        channels_data = []
+        for channel in channels_without_epg:
+            normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+            channels_data.append({
+                "id": channel.id,
+                "name": channel.name,
+                "tvg_id": normalized_tvg_id,
+                "original_tvg_id": channel.tvg_id,
+                "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
+                "norm_chan": normalize_name(channel.name)
+            })
+
+        # Get all EPG data
+        epg_data = []
+        for epg in EPGData.objects.all():
+            normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
+            epg_data.append({
+                'id': epg.id,
+                'tvg_id': normalized_tvg_id,
+                'original_tvg_id': epg.tvg_id,
+                'name': epg.name,
+                'norm_name': normalize_name(epg.name),
+                'epg_source_id': epg.epg_source.id if epg.epg_source else None,
+            })
+
+        logger.info(f"Processing {len(channels_data)} selected channels against {len(epg_data)} EPG entries")
+
+        # Run EPG matching with progress updates - automatically uses appropriate thresholds
+        result = match_channels_to_epg(channels_data, epg_data, region_code, use_ml=True, send_progress=True)
+        channels_to_update_dicts = result["channels_to_update"]
+        matched_channels = result["matched_channels"]
+
+        # Update channels in database
+        if channels_to_update_dicts:
+            channel_ids_to_update = [d["id"] for d in channels_to_update_dicts]
+            channels_qs = Channel.objects.filter(id__in=channel_ids_to_update)
+            channels_list = list(channels_qs)
+
+            # Create mapping from channel_id to epg_data_id
+            epg_mapping = {d["id"]: d["epg_data_id"] for d in channels_to_update_dicts}
+
+            # Update each channel with matched EPG data
+            for channel_obj in channels_list:
+                epg_data_id = epg_mapping.get(channel_obj.id)
+                if epg_data_id:
+                    try:
+                        epg_data_obj = EPGData.objects.get(id=epg_data_id)
+                        channel_obj.epg_data = epg_data_obj
+                    except EPGData.DoesNotExist:
+                        logger.error(f"EPG data {epg_data_id} not found for channel {channel_obj.id}")
+
+            # Bulk update all channels
+            Channel.objects.bulk_update(channels_list, ["epg_data"])
+
+        total_matched = len(matched_channels)
+        if total_matched:
+            logger.info(f"Selected Channel Match Summary: {total_matched} channel(s) matched.")
+            for (cid, cname, tvg) in matched_channels:
+                logger.info(f"  - Channel ID={cid}, Name='{cname}' => tvg_id='{tvg}'")
+        else:
+            logger.info("No selected channels were matched.")
+
+        logger.info("Finished integrated EPG matching for selected channels.")
+
+        # Send WebSocket update
+        channel_layer = get_channel_layer()
+        associations = [
+            {"channel_id": chan["id"], "epg_data_id": chan["epg_data_id"]}
+            for chan in channels_to_update_dicts
+        ]
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                "data": {
+                    "success": True,
+                    "type": "epg_match",
+                    "refresh_channels": True,
+                    "matches_count": total_matched,
+                    "message": f"EPG matching complete: {total_matched} selected channel(s) matched",
+                    "associations": associations
+                }
+            }
+        )
+
+        return f"Done. Matched {total_matched} selected channel(s)."
+
+    finally:
+        # Clean up ML models from memory after bulk matching
+        if _ml_model_cache['sentence_transformer'] is not None:
+            logger.info("Cleaning up ML models from memory")
+            _ml_model_cache['sentence_transformer'] = None
+
+        # Memory cleanup
+        gc.collect()
+        from core.utils import cleanup_memory
+        cleanup_memory(log_usage=True, force_collection=True)
+
+
+@shared_task
+def match_single_channel_epg(channel_id):
+    """
+    Try to match a single channel with EPG data using the integrated matching logic
+    that includes both fuzzy and ML-enhanced matching. Returns a dict with match status and message.
+    """
+    try:
+        from apps.channels.models import Channel
+        from apps.epg.models import EPGData
+
+        logger.info(f"Starting integrated single channel EPG matching for channel ID {channel_id}")
+
+        # Get the channel
+        try:
+            channel = Channel.objects.get(id=channel_id)
+        except Channel.DoesNotExist:
+            return {"matched": False, "message": "Channel not found"}
+
+        # If channel already has EPG data, skip
+        if channel.epg_data:
+            return {"matched": False, "message": f"Channel '{channel.name}' already has EPG data assigned"}
+
+        # Prepare single channel data for matching (same format as bulk matching)
+        normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+        channel_data = {
+            "id": channel.id,
+            "name": channel.name,
+            "tvg_id": normalized_tvg_id,
+            "original_tvg_id": channel.tvg_id,
+            "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
+            "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
+        }
+
+        logger.info(f"Channel data prepared: name='{channel.name}', tvg_id='{normalized_tvg_id}', norm_chan='{channel_data['norm_chan']}'")
+
+        # Debug: Test what the normalization does to preserve call signs
+        test_name = "NBC 11 (KVLY) - Fargo"  # Example for testing
+        test_normalized = normalize_name(test_name)
+        logger.debug(f"DEBUG normalization example: '{test_name}' → '{test_normalized}' (call sign preserved)")
+
+        # Get all EPG data for matching - must include norm_name field
+        epg_data_list = []
+        for epg in EPGData.objects.filter(name__isnull=False).exclude(name=''):
+            normalized_epg_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
+            epg_data_list.append({
+                'id': epg.id,
+                'tvg_id': normalized_epg_tvg_id,
+                'original_tvg_id': epg.tvg_id,
+                'name': epg.name,
+                'norm_name': normalize_name(epg.name),
+                'epg_source_id': epg.epg_source.id if epg.epg_source else None,
+            })
+
+        if not epg_data_list:
+            return {"matched": False, "message": "No EPG data available for matching"}
+
+        logger.info(f"Matching single channel '{channel.name}' against {len(epg_data_list)} EPG entries")
+
+        # Send progress for single channel matching
+        send_epg_matching_progress(1, 0, current_channel_name=channel.name, stage="matching")
+
+        # Use the EPG matching function - automatically uses aggressive thresholds for single channel
+        result = match_channels_to_epg([channel_data], epg_data_list, send_progress=False)
+        channels_to_update = result.get("channels_to_update", [])
+        matched_channels = result.get("matched_channels", [])
+
+        if channels_to_update:
+            # Find our channel in the results
+            channel_match = None
+            for update in channels_to_update:
+                if update["id"] == channel.id:
+                    channel_match = update
+                    break
+
+            if channel_match:
+                # Apply the match to the channel
+                try:
+                    epg_data = EPGData.objects.get(id=channel_match['epg_data_id'])
+                    channel.epg_data = epg_data
+                    channel.save(update_fields=["epg_data"])
+
+                    # Find match details from matched_channels for better reporting
+                    match_details = None
+                    for match_info in matched_channels:
+                        if match_info[0] == channel.id:  # matched_channels format: (channel_id, channel_name, epg_info)
+                            match_details = match_info
+                            break
+
+                    success_msg = f"Channel '{channel.name}' matched with EPG '{epg_data.name}'"
+                    if match_details:
+                        success_msg += f" (matched via: {match_details[2]})"
+
+                    logger.info(success_msg)
+
+                    # Send completion progress for single channel
+                    send_epg_matching_progress(1, 1, current_channel_name=channel.name, stage="completed")
+
+                    # Clean up ML models from memory after single channel matching
+                    if _ml_model_cache['sentence_transformer'] is not None:
+                        logger.info("Cleaning up ML models from memory")
+                        _ml_model_cache['sentence_transformer'] = None
+                        gc.collect()
+
+                    return {
+                        "matched": True,
+                        "message": success_msg,
+                        "epg_name": epg_data.name,
+                        "epg_id": epg_data.id
+                    }
+                except EPGData.DoesNotExist:
+                    return {"matched": False, "message": "Matched EPG data not found"}
+
+        # No match found
+        # Send completion progress for single channel (failed)
+        send_epg_matching_progress(1, 0, current_channel_name=channel.name, stage="completed")
+
+        # Clean up ML models from memory after single channel matching
+        if _ml_model_cache['sentence_transformer'] is not None:
+            logger.info("Cleaning up ML models from memory")
+            _ml_model_cache['sentence_transformer'] = None
+            gc.collect()
+
+        return {
+            "matched": False,
+            "message": f"No suitable EPG match found for channel '{channel.name}'"
+        }
+
+    except Exception as e:
+        logger.error(f"Error in integrated single channel EPG matching: {e}", exc_info=True)
+
+        # Clean up ML models from memory even on error
+        if _ml_model_cache['sentence_transformer'] is not None:
+            logger.info("Cleaning up ML models from memory after error")
+            _ml_model_cache['sentence_transformer'] = None
+            gc.collect()
+
+        return {"matched": False, "message": f"Error during matching: {str(e)}"}
 
 
 def evaluate_series_rules_impl(tvg_id: str | None = None):
@@ -1892,6 +2460,230 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
             'task_id': task_id,
             'progress': 0,
             'total': total_streams,
+            'status': 'failed',
+            'message': f'Task failed: {str(e)}',
+            'error': str(e)
+        })
+        raise
+
+
+@shared_task(bind=True)
+def set_channels_names_from_epg(self, channel_ids):
+    """
+    Celery task to set channel names from EPG data for multiple channels
+    """
+    from core.utils import send_websocket_update
+
+    task_id = self.request.id
+    total_channels = len(channel_ids)
+    updated_count = 0
+    errors = []
+
+    try:
+        logger.info(f"Starting EPG name setting task for {total_channels} channels")
+
+        # Send initial progress
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_name_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'running',
+            'message': 'Starting EPG name setting...'
+        })
+
+        batch_size = 100
+        for i in range(0, total_channels, batch_size):
+            batch_ids = channel_ids[i:i + batch_size]
+            batch_updates = []
+
+            # Get channels and their EPG data
+            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data')
+
+            for channel in channels:
+                try:
+                    if channel.epg_data and channel.epg_data.name:
+                        if channel.name != channel.epg_data.name:
+                            channel.name = channel.epg_data.name
+                            batch_updates.append(channel)
+                            updated_count += 1
+                except Exception as e:
+                    errors.append(f"Channel {channel.id}: {str(e)}")
+                    logger.error(f"Error processing channel {channel.id}: {e}")
+
+            # Bulk update the batch
+            if batch_updates:
+                Channel.objects.bulk_update(batch_updates, ['name'])
+
+            # Send progress update
+            progress = min(i + batch_size, total_channels)
+            send_websocket_update('updates', 'update', {
+                'type': 'epg_name_setting_progress',
+                'task_id': task_id,
+                'progress': progress,
+                'total': total_channels,
+                'status': 'running',
+                'message': f'Updated {updated_count} channel names...',
+                'updated_count': updated_count
+            })
+
+        # Send completion notification
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_name_setting_progress',
+            'task_id': task_id,
+            'progress': total_channels,
+            'total': total_channels,
+            'status': 'completed',
+            'message': f'Successfully updated {updated_count} channel names from EPG data',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        })
+
+        logger.info(f"EPG name setting task completed. Updated {updated_count} channels")
+        return {
+            'status': 'completed',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        }
+
+    except Exception as e:
+        logger.error(f"EPG name setting task failed: {e}")
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_name_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'failed',
+            'message': f'Task failed: {str(e)}',
+            'error': str(e)
+        })
+        raise
+
+
+@shared_task(bind=True)
+def set_channels_logos_from_epg(self, channel_ids):
+    """
+    Celery task to set channel logos from EPG data for multiple channels
+    Creates logos from EPG icon URLs if they don't exist
+    """
+    from .models import Logo
+    from core.utils import send_websocket_update
+    import requests
+    from urllib.parse import urlparse
+
+    task_id = self.request.id
+    total_channels = len(channel_ids)
+    updated_count = 0
+    created_logos_count = 0
+    errors = []
+
+    try:
+        logger.info(f"Starting EPG logo setting task for {total_channels} channels")
+
+        # Send initial progress
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_logo_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'running',
+            'message': 'Starting EPG logo setting...'
+        })
+
+        batch_size = 50  # Smaller batch for logo processing
+        for i in range(0, total_channels, batch_size):
+            batch_ids = channel_ids[i:i + batch_size]
+            batch_updates = []
+
+            # Get channels and their EPG data
+            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data', 'logo')
+
+            for channel in channels:
+                try:
+                    if channel.epg_data and channel.epg_data.icon_url:
+                        icon_url = channel.epg_data.icon_url.strip()
+
+                        # Try to find existing logo with this URL
+                        try:
+                            logo = Logo.objects.get(url=icon_url)
+                        except Logo.DoesNotExist:
+                            # Create new logo from EPG icon URL
+                            try:
+                                # Generate a name for the logo
+                                logo_name = channel.epg_data.name or f"Logo for {channel.epg_data.tvg_id}"
+
+                                # Create the logo record
+                                logo = Logo.objects.create(
+                                    name=logo_name,
+                                    url=icon_url
+                                )
+                                created_logos_count += 1
+                                logger.info(f"Created new logo from EPG: {logo_name} - {icon_url}")
+
+                            except Exception as create_error:
+                                errors.append(f"Channel {channel.id}: Failed to create logo from {icon_url}: {str(create_error)}")
+                                logger.error(f"Failed to create logo for channel {channel.id}: {create_error}")
+                                continue
+
+                        # Update channel logo if different
+                        if channel.logo != logo:
+                            channel.logo = logo
+                            batch_updates.append(channel)
+                            updated_count += 1
+
+                except Exception as e:
+                    errors.append(f"Channel {channel.id}: {str(e)}")
+                    logger.error(f"Error processing channel {channel.id}: {e}")
+
+            # Bulk update the batch
+            if batch_updates:
+                Channel.objects.bulk_update(batch_updates, ['logo'])
+
+            # Send progress update
+            progress = min(i + batch_size, total_channels)
+            send_websocket_update('updates', 'update', {
+                'type': 'epg_logo_setting_progress',
+                'task_id': task_id,
+                'progress': progress,
+                'total': total_channels,
+                'status': 'running',
+                'message': f'Updated {updated_count} channel logos, created {created_logos_count} new logos...',
+                'updated_count': updated_count,
+                'created_logos_count': created_logos_count
+            })
+
+        # Send completion notification
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_logo_setting_progress',
+            'task_id': task_id,
+            'progress': total_channels,
+            'total': total_channels,
+            'status': 'completed',
+            'message': f'Successfully updated {updated_count} channel logos and created {created_logos_count} new logos from EPG data',
+            'updated_count': updated_count,
+            'created_logos_count': created_logos_count,
+            'error_count': len(errors),
+            'errors': errors
+        })
+
+        logger.info(f"EPG logo setting task completed. Updated {updated_count} channels, created {created_logos_count} logos")
+        return {
+            'status': 'completed',
+            'updated_count': updated_count,
+            'created_logos_count': created_logos_count,
+            'error_count': len(errors),
+            'errors': errors
+        }
+
+    except Exception as e:
+        logger.error(f"EPG logo setting task failed: {e}")
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_logo_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
             'status': 'failed',
             'message': f'Task failed: {str(e)}',
             'error': str(e)

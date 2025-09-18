@@ -516,6 +516,52 @@ export default class API {
     }
   }
 
+  static async setChannelNamesFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-names-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG name setting task', e);
+      throw e;
+    }
+  }
+
+  static async setChannelLogosFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-logos-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG logo setting task', e);
+      throw e;
+    }
+  }
+
   static async assignChannelNumbers(channelIds, startingNum = 1) {
     try {
       const response = await request(`${host}/api/channels/channels/assign/`, {
@@ -1437,18 +1483,44 @@ export default class API {
     }
   }
 
-  static async matchEpg() {
+  static async matchEpg(channelIds = null) {
     try {
+      const requestBody = channelIds ? { channel_ids: channelIds } : {};
+
       const response = await request(
         `${host}/api/channels/channels/match-epg/`,
         {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
         }
       );
 
       return response;
     } catch (e) {
       errorNotification('Failed to run EPG auto-match', e);
+    }
+  }
+
+  static async matchChannelEpg(channelId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/match-epg/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the channel in the store with the refreshed data if provided
+      if (response.channel) {
+        useChannelsStore.getState().updateChannel(response.channel);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to run EPG auto-match for channel', e);
     }
   }
 
