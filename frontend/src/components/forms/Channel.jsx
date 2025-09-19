@@ -79,6 +79,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const [selectedEPG, setSelectedEPG] = useState('');
   const [tvgFilter, setTvgFilter] = useState('');
   const [logoFilter, setLogoFilter] = useState('');
+  const [logoUrl, setLogoUrl] = useState('');
 
   const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
   const [groupFilter, setGroupFilter] = useState('');
@@ -199,6 +200,82 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     }
   };
 
+  const processLogoUrlAndSetFormik = async (url, suggestedName, notificationIdPrefix = 'creating-logo') => {
+    if (!url) {
+      notifications.show({
+        title: 'No URL Provided',
+        message: 'Please enter a URL for the logo.',
+        color: 'orange',
+      });
+      return false;
+    }
+
+    try {
+      // Try to find a logo that matches the icon URL - check ALL logos to avoid duplicates
+      let matchingLogo = Object.values(allLogos).find(
+        (logo) => logo.url === url
+      );
+
+      if (matchingLogo) {
+        formik.setFieldValue('logo_id', matchingLogo.id);
+        notifications.show({
+          title: 'Success',
+          message: `Logo set to "${matchingLogo.name}"`, 
+          color: 'green',
+        });
+      } else {
+        // Logo doesn't exist - create it
+        const notificationId = `${notificationIdPrefix}-${Date.now()}`;
+        notifications.show({
+          id: notificationId,
+          title: 'Creating Logo',
+          message: `Creating new logo from URL...`,
+          loading: true,
+        });
+
+        try {
+          const newLogoData = {
+            name: suggestedName || url.substring(url.lastIndexOf('/') + 1) || `Logo for ${url}`,
+            url: url,
+          };
+
+          // Create logo by calling the Logo API directly
+          const newLogo = await API.createLogo(newLogoData);
+
+          formik.setFieldValue('logo_id', newLogo.id);
+
+          notifications.update({
+            id: notificationId,
+            title: 'Success',
+            message: `Created and assigned new logo "${newLogo.name}"`, 
+            loading: false,
+            color: 'green',
+            autoClose: 5000,
+          });
+        } catch (createError) {
+          notifications.update({
+            id: notificationId,
+            title: 'Error',
+            message: 'Failed to create logo from URL. Check if the URL is a valid image.',
+            loading: false,
+            color: 'red',
+            autoClose: 5000,
+          });
+          throw createError;
+        }
+      }
+      return true;
+    } catch (error) {
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to set logo from URL',
+        color: 'red',
+      });
+      console.error('Set logo from URL error:', error);
+      return false;
+    }
+  };
+  
   const handleSetLogoFromEpg = async () => {
     const epgDataId = formik.values.epg_data_id;
     if (!epgDataId) {
@@ -220,69 +297,22 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       return;
     }
 
-    try {
-      // Try to find a logo that matches the EPG icon URL - check ALL logos to avoid duplicates
-      let matchingLogo = Object.values(allLogos).find(
-        (logo) => logo.url === tvg.icon_url
-      );
-
-      if (matchingLogo) {
-        formik.setFieldValue('logo_id', matchingLogo.id);
-        notifications.show({
-          title: 'Success',
-          message: `Logo set to "${matchingLogo.name}"`,
-          color: 'green',
-        });
-      } else {
-        // Logo doesn't exist - create it
-        notifications.show({
-          id: 'creating-logo',
-          title: 'Creating Logo',
-          message: `Creating new logo from EPG icon URL...`,
-          loading: true,
-        });
-
-        try {
-          const newLogoData = {
-            name: tvg.name || `Logo for ${tvg.icon_url}`,
-            url: tvg.icon_url,
-          };
-
-          // Create logo by calling the Logo API directly
-          const newLogo = await API.createLogo(newLogoData);
-
-          formik.setFieldValue('logo_id', newLogo.id);
-
-          notifications.update({
-            id: 'creating-logo',
-            title: 'Success',
-            message: `Created and assigned new logo "${newLogo.name}"`,
-            loading: false,
-            color: 'green',
-            autoClose: 5000,
-          });
-        } catch (createError) {
-          notifications.update({
-            id: 'creating-logo',
-            title: 'Error',
-            message: 'Failed to create logo from EPG icon URL',
-            loading: false,
-            color: 'red',
-            autoClose: 5000,
-          });
-          throw createError;
-        }
-      }
-    } catch (error) {
-      notifications.show({
-        title: 'Error',
-        message: 'Failed to set logo from EPG data',
-        color: 'red',
-      });
-      console.error('Set logo from EPG error:', error);
-    }
+    await processLogoUrlAndSetFormik(tvg.icon_url, tvg.name, 'creating-logo-epg');
   };
-
+  
+  const handleSetLogoFromUrl = async () => {
+    if (!logoUrl) {
+      notifications.show({
+        title: 'No URL Provided',
+        message: 'Please enter a URL for the logo.',
+        color: 'orange',
+      });
+      return;
+    }
+    await processLogoUrlAndSetFormik(logoUrl, null, 'creating-logo-manual');
+    setLogoUrl(''); // Clear the input field
+  };
+  
   const formik = useFormik({
     initialValues: {
       name: '',
@@ -491,7 +521,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 onChange={formik.handleChange}
                 error={formik.errors.name ? formik.touched.name : ''}
                 size="xs"
-                style={{ flex: 1 }}
               />
 
               <Flex gap="sm">
@@ -819,6 +848,23 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
               <Stack>
                 <Text size="sm">Upload Logo</Text>
+                <Group>
+                  <TextInput
+                    style={{ flex: 1 }}
+                    placeholder="Enter logo URL"
+                    value={logoUrl}
+                    onChange={(event) => setLogoUrl(event.currentTarget.value)}
+                    size="xs"
+                  />
+                  <Button
+                    onClick={handleSetLogoFromUrl}
+                    size="xs"
+                    variant="default"
+                    disabled={formik.isSubmitting}
+                  >
+                    Submit
+                  </Button>
+                </Group>
                 <Dropzone
                   onDrop={handleLogoChange}
                   onReject={(files) => console.log('rejected files', files)}
