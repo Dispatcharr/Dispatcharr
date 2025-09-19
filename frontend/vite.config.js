@@ -13,13 +13,13 @@ export default defineConfig({
 
     // proxy: {
     //   "/api": {
-    //     target: "http://localhost:5656", // Backend server
+    //     target: process.env.VITE_API_BASE_URL || "http://backend:5656", // Backend server
     //     changeOrigin: true,
     //     secure: false, // Set to true if backend uses HTTPS
     //     // rewrite: (path) => path.replace(/^\/api/, ""), // Optional path rewrite
     //   },
     //   "/ws": {
-    //     target: "http://localhost:8001", // Backend server
+    //     target: process.env.VITE_API_BASE_URL || "http://backend:8001", // Backend server
     //     changeOrigin: true,
     //     secure: false, // Set to true if backend uses HTTPS
     //     // rewrite: (path) => path.replace(/^\/api/, ""), // Optional path rewrite

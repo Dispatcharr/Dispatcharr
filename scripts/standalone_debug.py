@@ -22,8 +22,9 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dispatcharr.settings')
 
 # Setup debugpy and wait for connection
 logger.info("Setting up debugpy...")
-debugpy.listen(("0.0.0.0", 5678))
-logger.info("Waiting for debugger to attach... Connect to 0.0.0.0:5678")
+host = os.environ.get("DEBUGPY_HOST", "0.0.0.0")
+debugpy.listen((host, 5678))
+logger.info(f"Waiting for debugger to attach... Connect to {host}:5678")
 debugpy.wait_for_client()
 logger.info("Debugger attached!")
 
@@ -33,4 +34,4 @@ import django
 django.setup()
 
 from django.core.management import execute_from_command_line
-execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:8000'])
+execute_from_command_line(['manage.py', 'runserver', f'{host}:8000'])

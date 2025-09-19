@@ -144,7 +144,7 @@ class ProxyServer:
                         from django.conf import settings
                         import redis
 
-                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'redis'))
                         redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                         redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
 
@@ -1194,7 +1194,7 @@ class ProxyServer:
                 logger.info(f"Non-owner cleanup: Removed stream buffer for channel {channel_id}")
 
             if channel_id in self.client_managers:
-                del self.client_managers[channel_id]
+                del self.stream_managers[channel_id]
                 logger.info(f"Non-owner cleanup: Removed client manager for channel {channel_id}")
 
             return True
