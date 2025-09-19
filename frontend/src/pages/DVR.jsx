@@ -42,6 +42,12 @@ import API from '../api';
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
 
+/* Handle datetime formats */
+const [timeFormatSetting] = useLocalStorage('time-format', '12h');
+const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+const timeFormat = timeFormatSetting === '12h' ? 'h:mm A' : 'HH:mm';
+const dateFormat = dateFormatSetting === 'mdy' ? 'MMMM D' : 'D MMMM';
+
 // Short preview that triggers the details modal when clicked
 const RecordingSynopsis = ({ description, onOpen }) => {
   const truncated = description?.length > 140;
@@ -169,7 +175,7 @@ const RecordingDetailsModal = ({ opened, onClose, recording, channel, posterUrl,
               <Text fw={600} size="sm" lineClamp={1} title={pr.sub_title || pr.title}>{pr.sub_title || pr.title}</Text>
               {se && <Badge color="gray" variant="light">{se}</Badge>}
             </Group>
-            <Text size="xs">{start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}</Text>
+            <Text size="xs">{start.format(`${dateFormat}, YYYY ${timeFormat}`)} – {end.format(timeFormat)}</Text>
           </Stack>
           <Group gap={6}>
             <Button size="xs" color="red" variant="light" onClick={onRemove}>Remove</Button>
@@ -262,7 +268,7 @@ const RecordingDetailsModal = ({ opened, onClose, recording, channel, posterUrl,
               )}
             </Group>
           </Group>
-          <Text size="sm">{start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}</Text>
+          <Text size="sm">{start.format(`${dateFormat}, YYYY ${timeFormat}`)} – {end.format(timeFormat)}</Text>
           {rating && (
             <Group gap={8}>
               <Badge color="yellow" title={ratingSystem}>{rating}</Badge>
@@ -489,7 +495,7 @@ const RecordingCard = ({ recording, category, onOpenDetails }) => {
             <Text size="sm" c="dimmed">
               {isSeriesGroup ? 'Next recording' : 'Time'}
             </Text>
-            <Text size="sm">{start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}</Text>
+            <Text size="sm">{start.format(`${dateFormat}, YYYY ${timeFormat}`)} – {end.format(timeFormat)}</Text>
           </Group>
 
           {!isSeriesGroup && description && (
