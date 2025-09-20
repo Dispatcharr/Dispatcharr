@@ -38,7 +38,8 @@ const M3UFilter = ({ filter = null, m3u, isOpen, onClose }) => {
         filter_type: filter.filter_type,
         regex_pattern: filter.regex_pattern,
         exclude: filter.exclude,
-        case_sensitive: (filter.custom_properties || {}).case_sensitive ?? true,
+        case_sensitive:
+          JSON.parse(filter.custom_properties || '{}').case_sensitive ?? true,
       });
     } else {
       form.reset();
