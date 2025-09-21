@@ -29,18 +29,32 @@ import { FixedSizeList as List } from 'react-window';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import LazyLogo from '../LazyLogo';
+import logo from '../../images/logo.png';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
   const groupListRef = useRef(null);
+  const logoListRef = useRef(null);
 
   const channelGroups = useChannelsStore((s) => s.channelGroups);
+  const {
+    logos: channelLogos,
+    ensureLogosLoaded,
+    isLoading: logosLoading,
+  } = useChannelLogoSelection();
+
+  useEffect(() => {
+    ensureLogosLoaded();
+  }, [ensureLogosLoaded]);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [selectedChannelGroup, setSelectedChannelGroup] = useState('-1');
+  const [selectedLogoId, setSelectedLogoId] = useState('-1');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regexFind, setRegexFind] = useState('');
   const [regexReplace, setRegexReplace] = useState('');
@@ -49,10 +63,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [groupFilter, setGroupFilter] = useState('');
   const groupOptions = Object.values(channelGroups);
 
+  const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
+  const [logoFilter, setLogoFilter] = useState('');
+
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
       channel_group: '(no change)',
+      logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
     },
@@ -69,6 +87,15 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     } else {
       delete values.channel_group_id;
     }
+
+    if (selectedLogoId && selectedLogoId !== '-1') {
+      if (selectedLogoId === '0') {
+        values.logo_id = null;
+      } else {
+        values.logo_id = parseInt(selectedLogoId);
+      }
+    }
+    delete values.logo;
 
     // Handle stream profile ID - convert special values
     if (!values.stream_profile_id || values.stream_profile_id === '-1') {
@@ -241,6 +268,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       group.name.toLowerCase().includes(groupFilter.toLowerCase())
     ),
   ];
+
+  const logoOptions = useMemo(() => {
+    return [
+      { id: '-1', name: '(no change)' },
+      { id: '0', name: '(remove logo)' },
+      ...Object.values(channelLogos),
+    ];
+  }, [channelLogos]);
+
+  const filteredLogos = logoOptions.filter((logo) =>
+    logo.name.toLowerCase().includes(logoFilter.toLowerCase())
+  );
 
   if (!isOpen) {
     return <></>;
@@ -444,6 +483,153 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   </ScrollArea>
                 </Popover.Dropdown>
               </Popover>
+
+              <Group style={{ width: '100%' }} align="flex-end" gap="xs">
+                <Popover
+                  opened={logoPopoverOpened}
+                  onChange={setLogoPopoverOpened}
+                  withArrow
+                >
+                  <Popover.Target>
+                    <TextInput
+                      label="Logo"
+                      readOnly
+                      {...form.getInputProps('logo')}
+                      key={form.key('logo')}
+                      onClick={() => setLogoPopoverOpened(true)}
+                      size="xs"
+                      style={{ flex: 1 }}
+                      rightSection={
+                        selectedLogoId !== '-1' && (
+                          <ActionIcon
+                            size="xs"
+                            variant="subtle"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLogoId('-1');
+                              form.setValues({ logo: '(no change)' });
+                            }}
+                          >
+                            <X size={12} />
+                          </ActionIcon>
+                        )
+                      }
+                    />
+                  </Popover.Target>
+                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                    <Group>
+                      <TextInput
+                        placeholder="Filter"
+                        value={logoFilter}
+                        onChange={(event) =>
+                          setLogoFilter(event.currentTarget.value)
+                        }
+                        mb="xs"
+                        size="xs"
+                      />
+                      {logosLoading && (
+                        <Text size="xs" c="dimmed">
+                          Loading...
+                        </Text>
+                      )}
+                    </Group>
+                    <ScrollArea style={{ height: 200 }}>
+                      {filteredLogos.length === 0 ? (
+                        <Center style={{ height: 200 }}>
+                          <Text size="sm" c="dimmed">
+                            {logoFilter
+                              ? 'No logos match your filter'
+                              : 'No logos available'}
+                          </Text>
+                        </Center>
+                      ) : (
+                        <List
+                          height={200}
+                          itemCount={filteredLogos.length}
+                          itemSize={55}
+                          style={{ width: '100%' }}
+                          ref={logoListRef}
+                        >
+                          {({ index, style }) => (
+                            <div
+                              style={{
+                                ...style,
+                                cursor: 'pointer',
+                                padding: '5px',
+                                borderRadius: '4px',
+                              }}
+                              onClick={() => {
+                                setSelectedLogoId(filteredLogos[index].id);
+                                form.setValues({
+                                  logo: filteredLogos[index].name,
+                                });
+                                setLogoPopoverOpened(false);
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                  'rgb(68, 68, 68)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                  'transparent';
+                              }}
+                            >
+                              <Center
+                                style={{
+                                  flexDirection: 'column',
+                                  gap: '2px',
+                                }}
+                              >
+                                {filteredLogos[index].id > 0 ? (
+                                  <img
+                                    src={
+                                      filteredLogos[index].cache_url || logo
+                                    }
+                                    height="30"
+                                    style={{
+                                      maxWidth: 80,
+                                      objectFit: 'contain',
+                                    }}
+                                    alt={filteredLogos[index].name || 'Logo'}
+                                    onError={(e) => {
+                                      if (e.target.src !== logo) {
+                                        e.target.src = logo;
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <Box h={30} />
+                                )}
+                                <Text
+                                  size="xs"
+                                  c="dimmed"
+                                  ta="center"
+                                  style={{
+                                    maxWidth: 80,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {filteredLogos[index].name}
+                                </Text>
+                              </Center>
+                            </div>
+                          )}
+                        </List>
+                      )}
+                    </ScrollArea>
+                  </Popover.Dropdown>
+                </Popover>
+                {selectedLogoId > 0 && (
+                  <LazyLogo
+                    logoId={selectedLogoId}
+                    alt="channel logo"
+                    style={{ height: 24, marginBottom: 5 }}
+                  />
+                )}
+              </Group>
+
 
               <Select
                 id="stream_profile_id"
