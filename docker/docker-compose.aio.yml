@@ -9,7 +9,6 @@ services:
       - 9191:9191
     volumes:
       - dispatcharr_data:/data
-      - ./data:/data
     environment:
       - DISPATCHARR_ENV=aio
       - REDIS_HOST=localhost
