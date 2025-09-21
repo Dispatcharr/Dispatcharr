@@ -19,6 +19,7 @@ from tzlocal import get_localzone
 from urllib.parse import urlparse
 import base64
 import logging
+from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
 
@@ -864,11 +865,11 @@ def xc_get_live_categories(user):
                 channel_profiles
             )
 
-        channel_groups = ChannelGroup.objects.filter(**filters).distinct()
+        channel_groups = ChannelGroup.objects.filter(**filters).distinct().order_by(Lower("name"))
     else:
         channel_groups = ChannelGroup.objects.filter(
             channels__isnull=False, channels__user_level__lte=user.user_level
-        ).distinct()
+        ).distinct().order_by(Lower("name"))
 
     for group in channel_groups:
         response.append(
@@ -1012,31 +1013,11 @@ def xc_get_vod_categories(user):
 
     response = []
 
-    # Filter categories based on user's M3U accounts
-    if user.user_level == 0:
-        # For regular users, get categories from their accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            # Get M3U accounts accessible through user's profiles
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-        else:
-            m3u_accounts = []
-
-        # Get categories that have movie relations with these accounts
-        categories = VODCategory.objects.filter(
-            category_type='movie',
-            m3umovierelation__m3u_account__in=m3u_accounts
-        ).distinct()
-    else:
-        # Admins can see all categories that have active movie relations
-        categories = VODCategory.objects.filter(
-            category_type='movie',
-            m3umovierelation__m3u_account__is_active=True
-        ).distinct()
+    # All authenticated users get access to VOD from all active M3U accounts
+    categories = VODCategory.objects.filter(
+        category_type='movie',
+        m3umovierelation__m3u_account__is_active=True
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1055,21 +1036,8 @@ def xc_get_vod_streams(request, user, category_id=None):
 
     streams = []
 
-    # Build filters for movies based on user access
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"m3u_relations__m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_relations__m3u_account__in"] = m3u_accounts
-        else:
-            return []  # No accessible accounts
 
     if category_id:
         filters["m3u_relations__category_id"] = category_id
@@ -1131,28 +1099,11 @@ def xc_get_series_categories(user):
 
     response = []
 
-    # Similar filtering as VOD categories but for series
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-        else:
-            m3u_accounts = []
-
-        # Get categories that have series relations with these accounts
-        categories = VODCategory.objects.filter(
-            category_type='series',
-            m3useriesrelation__m3u_account__in=m3u_accounts
-        ).distinct()
-    else:
-        categories = VODCategory.objects.filter(
-            category_type='series',
-            m3useriesrelation__m3u_account__is_active=True
-        ).distinct()
+    # All authenticated users get access to series from all active M3U accounts
+    categories = VODCategory.objects.filter(
+        category_type='series',
+        m3useriesrelation__m3u_account__is_active=True
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1170,20 +1121,8 @@ def xc_get_series(request, user, category_id=None):
 
     series_list = []
 
-    # Build filters based on user access
+    # All authenticated users get access to series from all active M3U accounts
     filters = {"m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return []
 
     if category_id:
         filters["category_id"] = category_id
@@ -1232,20 +1171,8 @@ def xc_get_series_info(request, user, series_id):
     if not series_id:
         raise Http404()
 
-    # Get series relation with user access filtering
+    # All authenticated users get access to series from all active M3U accounts
     filters = {"id": series_id, "m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            raise Http404()
 
     try:
         series_relation = M3USeriesRelation.objects.select_related('series', 'series__logo').get(**filters)
@@ -1443,20 +1370,8 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # Get movie relation with user access filtering - use movie ID instead of relation ID
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": vod_id, "m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            raise Http404()
 
     try:
         # Order by account priority to get the best relation when multiple exist
@@ -1606,21 +1521,8 @@ def xc_movie_stream(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    # Get movie relation based on user access level - use movie ID instead of relation ID
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    if user.user_level < 10:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return JsonResponse({"error": "No accessible content"}, status=403)
 
     try:
         # Order by account priority to get the best relation when multiple exist
@@ -1656,21 +1558,8 @@ def xc_series_stream(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    # Get episode relation based on user access level - use episode ID instead of stream_id
+    # All authenticated users get access to series/episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    if user.user_level < 10:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return JsonResponse({"error": "No accessible content"}, status=403)
 
     try:
         episode_relation = M3UEpisodeRelation.objects.select_related('episode').get(**filters)

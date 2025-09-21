@@ -3,7 +3,7 @@ import api from '../api';
 
 const useLogosStore = create((set, get) => ({
   logos: {},
-  channelLogos: {}, // Separate state for channel-assignable logos
+  channelLogos: {}, // Keep this for simplicity, but we'll be more careful about when we populate it
   isLoading: false,
   backgroundLoading: false,
   hasLoadedAll: false, // Track if we've loaded all logos
@@ -21,12 +21,29 @@ const useLogosStore = create((set, get) => ({
   },
 
   addLogo: (newLogo) =>
-    set((state) => ({
-      logos: {
+    set((state) => {
+      // Add to main logos store always
+      const newLogos = {
         ...state.logos,
         [newLogo.id]: { ...newLogo },
-      },
-    })),
+      };
+      
+      // Add to channelLogos if the user has loaded channel-assignable logos
+      // This means they're using channel forms and the new logo should be available there
+      // Newly created logos are channel-assignable (they start unused)
+      let newChannelLogos = state.channelLogos;
+      if (state.hasLoadedChannelLogos) {
+        newChannelLogos = {
+          ...state.channelLogos,
+          [newLogo.id]: { ...newLogo },
+        };
+      }
+
+      return {
+        logos: newLogos,
+        channelLogos: newChannelLogos,
+      };
+    }),
 
   updateLogo: (logo) =>
     set((state) => ({
@@ -34,13 +51,25 @@ const useLogosStore = create((set, get) => ({
         ...state.logos,
         [logo.id]: { ...logo },
       },
+      // Update in channelLogos if it exists there
+      channelLogos: state.channelLogos[logo.id]
+        ? {
+            ...state.channelLogos,
+            [logo.id]: { ...logo },
+          }
+        : state.channelLogos,
     })),
 
   removeLogo: (logoId) =>
     set((state) => {
       const newLogos = { ...state.logos };
+      const newChannelLogos = { ...state.channelLogos };
       delete newLogos[logoId];
-      return { logos: newLogos };
+      delete newChannelLogos[logoId];
+      return {
+        logos: newLogos,
+        channelLogos: newChannelLogos,
+      };
     }),
 
   // Smart loading methods
@@ -155,8 +184,15 @@ const useLogosStore = create((set, get) => ({
 
       console.log(`Fetched ${logos.length} channel-assignable logos`);
 
-      // Store in separate channelLogos state
+      // Store in both places, but this is intentional and only when specifically requested
       set({
+        logos: {
+          ...get().logos, // Keep existing logos
+          ...logos.reduce((acc, logo) => {
+            acc[logo.id] = { ...logo };
+            return acc;
+          }, {}),
+        },
         channelLogos: logos.reduce((acc, logo) => {
           acc[logo.id] = { ...logo };
           return acc;

@@ -469,3 +469,203 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+
+class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet that combines Movies and Series for unified 'All' view"""
+    queryset = Movie.objects.none()  # Empty queryset, we override list method
+    serializer_class = MovieSerializer  # Default serializer, overridden in list
+    pagination_class = VODPagination
+
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['name', 'description', 'genre']
+    ordering_fields = ['name', 'year', 'created_at']
+    ordering = ['name']
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
+    def list(self, request, *args, **kwargs):
+        """Override list to handle unified content properly - database-level approach"""
+        import logging
+        from django.db import connection
+
+        logger = logging.getLogger(__name__)
+        logger.error("=== UnifiedContentViewSet.list() called ===")
+
+        try:
+            # Get pagination parameters
+            page_size = int(request.query_params.get('page_size', 24))
+            page_number = int(request.query_params.get('page', 1))
+
+            logger.error(f"Page {page_number}, page_size {page_size}")
+
+            # Calculate offset for unified pagination
+            offset = (page_number - 1) * page_size
+
+            # For high page numbers, use raw SQL for efficiency
+            # This avoids loading and sorting massive amounts of data in Python
+
+            search = request.query_params.get('search', '')
+            category = request.query_params.get('category', '')
+
+            # Build WHERE clauses
+            where_conditions = [
+                # Only active content
+                "movies.id IN (SELECT DISTINCT movie_id FROM vod_m3umovierelation mmr JOIN m3u_m3uaccount ma ON mmr.m3u_account_id = ma.id WHERE ma.is_active = true)",
+                "series.id IN (SELECT DISTINCT series_id FROM vod_m3useriesrelation msr JOIN m3u_m3uaccount ma ON msr.m3u_account_id = ma.id WHERE ma.is_active = true)"
+            ]
+
+            params = []
+
+            if search:
+                where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
+                where_conditions[1] += " AND LOWER(series.name) LIKE %s"
+                search_param = f"%{search.lower()}%"
+                params.extend([search_param, search_param])
+
+            if category:
+                if '|' in category:
+                    cat_name, cat_type = category.split('|', 1)
+                    if cat_type == 'movie':
+                        where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                        where_conditions[1] = "1=0"  # Exclude series
+                        params.append(cat_name)
+                    elif cat_type == 'series':
+                        where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                        where_conditions[0] = "1=0"  # Exclude movies
+                        params.append(cat_name)
+                else:
+                    where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                    where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                    params.extend([category, category])
+
+            # Use UNION ALL with ORDER BY and LIMIT/OFFSET for true unified pagination
+            # This is much more efficient than Python sorting
+            sql = f"""
+            WITH unified_content AS (
+                SELECT
+                    movies.id,
+                    movies.uuid,
+                    movies.name,
+                    movies.description,
+                    movies.year,
+                    movies.rating,
+                    movies.genre,
+                    movies.duration_secs as duration,
+                    movies.created_at,
+                    movies.updated_at,
+                    movies.custom_properties,
+                    movies.logo_id,
+                    logo.name as logo_name,
+                    logo.url as logo_url,
+                    'movie' as content_type
+                FROM vod_movie movies
+                LEFT JOIN dispatcharr_channels_logo logo ON movies.logo_id = logo.id
+                WHERE {where_conditions[0]}
+
+                UNION ALL
+
+                SELECT
+                    series.id,
+                    series.uuid,
+                    series.name,
+                    series.description,
+                    series.year,
+                    series.rating,
+                    series.genre,
+                    NULL as duration,
+                    series.created_at,
+                    series.updated_at,
+                    series.custom_properties,
+                    series.logo_id,
+                    logo.name as logo_name,
+                    logo.url as logo_url,
+                    'series' as content_type
+                FROM vod_series series
+                LEFT JOIN dispatcharr_channels_logo logo ON series.logo_id = logo.id
+                WHERE {where_conditions[1]}
+            )
+            SELECT * FROM unified_content
+            ORDER BY LOWER(name), id
+            LIMIT %s OFFSET %s
+            """
+
+            params.extend([page_size, offset])
+
+            logger.error(f"Executing SQL with LIMIT {page_size} OFFSET {offset}")
+
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                columns = [col[0] for col in cursor.description]
+                results = []
+
+                for row in cursor.fetchall():
+                    item_dict = dict(zip(columns, row))
+
+                    # Build logo object in the format expected by frontend
+                    logo_data = None
+                    if item_dict['logo_id']:
+                        logo_data = {
+                            'id': item_dict['logo_id'],
+                            'name': item_dict['logo_name'],
+                            'url': item_dict['logo_url'],
+                            'cache_url': f"/media/logo_cache/{item_dict['logo_id']}.png" if item_dict['logo_id'] else None,
+                            'channel_count': 0,  # We don't need this for VOD
+                            'is_used': True,
+                            'channel_names': []  # We don't need this for VOD
+                        }
+
+                    # Convert to the format expected by frontend
+                    formatted_item = {
+                        'id': item_dict['id'],
+                        'uuid': str(item_dict['uuid']),
+                        'name': item_dict['name'],
+                        'description': item_dict['description'] or '',
+                        'year': item_dict['year'],
+                        'rating': float(item_dict['rating']) if item_dict['rating'] else 0.0,
+                        'genre': item_dict['genre'] or '',
+                        'duration': item_dict['duration'],
+                        'created_at': item_dict['created_at'].isoformat() if item_dict['created_at'] else None,
+                        'updated_at': item_dict['updated_at'].isoformat() if item_dict['updated_at'] else None,
+                        'custom_properties': item_dict['custom_properties'] or {},
+                        'logo': logo_data,
+                        'content_type': item_dict['content_type']
+                    }
+                    results.append(formatted_item)
+
+            logger.error(f"Retrieved {len(results)} results via SQL")
+
+            # Get total count estimate (for pagination info)
+            # Use a separate efficient count query
+            count_sql = f"""
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM vod_movie movies WHERE {where_conditions[0]}
+                UNION ALL
+                SELECT 1 FROM vod_series series WHERE {where_conditions[1]}
+            ) as total_count
+            """
+
+            count_params = params[:-2]  # Remove LIMIT and OFFSET params
+
+            with connection.cursor() as cursor:
+                cursor.execute(count_sql, count_params)
+                total_count = cursor.fetchone()[0]
+
+            response_data = {
+                'count': total_count,
+                'next': offset + page_size < total_count,
+                'previous': page_number > 1,
+                'results': results
+            }
+
+            return Response(response_data)
+
+        except Exception as e:
+            logger.error(f"Error in UnifiedContentViewSet.list(): {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response({'error': str(e)}, status=500)

@@ -184,6 +184,7 @@ const UsersTable = () => {
       {
         header: 'Email',
         accessorKey: 'email',
+        grow: true,
         cell: ({ getValue }) => (
           <Box
             style={{

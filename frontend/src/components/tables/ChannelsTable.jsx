@@ -45,6 +45,7 @@ import {
   Stack,
   Select,
   NumberInput,
+  Tooltip,
 } from '@mantine/core';
 import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
@@ -52,6 +53,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
 import LazyLogo from '../LazyLogo';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import useEPGsStore from '../../store/epgs';
 import { CustomTable, useTable } from './CustomTable';
 import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
@@ -217,6 +219,9 @@ const ChannelRowActions = React.memo(
 );
 
 const ChannelsTable = ({}) => {
+  // EPG data lookup
+  const tvgsById = useEPGsStore((s) => s.tvgsById);
+  const epgs = useEPGsStore((s) => s.epgs);
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
@@ -288,6 +293,7 @@ const ChannelsTable = ({}) => {
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
+    epg: '',
   });
   const [isLoading, setIsLoading] = useState(true);
 
@@ -299,6 +305,12 @@ const ChannelsTable = ({}) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+
+  // Column sizing state for resizable columns
+  const [columnSizing, setColumnSizing] = useLocalStorage(
+    'channels-table-column-sizing',
+    {}
+  );
 
   // M3U and EPG URL configuration state
   const [m3uParams, setM3uParams] = useState({
@@ -321,6 +333,25 @@ const ChannelsTable = ({}) => {
   const groupOptions = Object.values(channelGroups)
     .filter((group) => activeGroupIds.has(group.id))
     .map((group) => group.name);
+
+  // Get unique EPG sources from active channels
+  const activeEPGSources = new Set();
+  let hasUnlinkedChannels = false;
+  Object.values(channels).forEach((channel) => {
+    if (channel.epg_data_id) {
+      const epgObj = tvgsById[channel.epg_data_id];
+      if (epgObj && epgObj.epg_source) {
+        const epgName = epgs[epgObj.epg_source]?.name || epgObj.epg_source;
+        activeEPGSources.add(epgName);
+      }
+    } else {
+      hasUnlinkedChannels = true;
+    }
+  });
+  const epgOptions = Array.from(activeEPGSources).sort();
+  if (hasUnlinkedChannels) {
+    epgOptions.unshift('No EPG');
+  }
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
@@ -346,7 +377,17 @@ const ChannelsTable = ({}) => {
 
     // Apply debounced filters
     Object.entries(filters).forEach(([key, value]) => {
-      if (value) params.append(key, value);
+      if (value) {
+        if (Array.isArray(value)) {
+          // Convert null values to "null" string for URL parameter
+          const processedValue = value
+            .map((v) => (v === null ? 'null' : v))
+            .join(',');
+          params.append(key, processedValue);
+        } else {
+          params.append(key, value);
+        }
+      }
     });
 
     const [results, ids] = await Promise.all([
@@ -381,7 +422,24 @@ const ChannelsTable = ({}) => {
     }));
   };
 
-  const editChannel = async (ch = null) => {
+  const handleEPGChange = (value) => {
+    // Convert "No EPG" to null for natural filtering
+    const processedValue = value
+      ? value.map((v) => (v === 'No EPG' ? null : v))
+      : '';
+    setFilters((prev) => ({
+      ...prev,
+      epg: processedValue,
+    }));
+  };
+
+  const editChannel = async (ch = null, opts = {}) => {
+    // If forceAdd is set, always open a blank form
+    if (opts.forceAdd) {
+      setChannel(null);
+      setChannelModalOpen(true);
+      return;
+    }
     // Use table's selected state instead of store state to avoid stale selections
     const currentSelection = table ? table.selectedTableIds : [];
     console.log('editChannel called with:', {
@@ -651,14 +709,17 @@ const ChannelsTable = ({}) => {
       {
         id: 'expand',
         size: 20,
+        enableResizing: false,
       },
       {
         id: 'select',
         size: 30,
+        enableResizing: false,
       },
       {
         id: 'enabled',
         size: 45,
+        enableResizing: false,
         cell: ({ row, table }) => {
           return (
             <ChannelEnabledSwitch
@@ -672,7 +733,9 @@ const ChannelsTable = ({}) => {
       {
         id: 'channel_number',
         accessorKey: 'channel_number',
-        size: 40,
+        size: columnSizing.channel_number || 40,
+        minSize: 30,
+        maxSize: 100,
         cell: ({ getValue }) => {
           const value = getValue();
           // Format as integer if no decimal component
@@ -693,6 +756,9 @@ const ChannelsTable = ({}) => {
       {
         id: 'name',
         accessorKey: 'name',
+        size: columnSizing.name || 200,
+        minSize: 100,
+        grow: true,
         cell: ({ getValue }) => (
           <Box
             style={{
@@ -704,6 +770,54 @@ const ChannelsTable = ({}) => {
             {getValue()}
           </Box>
         ),
+      },
+      {
+        id: 'epg',
+        header: 'EPG',
+        accessorKey: 'epg_data_id',
+        cell: ({ getValue }) => {
+          const epgDataId = getValue();
+          const epgObj = epgDataId ? tvgsById[epgDataId] : null;
+          const tvgName = epgObj?.name;
+          const tvgId = epgObj?.tvg_id;
+          const epgName =
+            epgObj && epgObj.epg_source
+              ? epgs[epgObj.epg_source]?.name || epgObj.epg_source
+              : null;
+
+          const tooltip = epgObj
+            ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${tvgName ? `TVG Name: ${tvgName}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
+            : '';
+          return (
+            <Box
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {epgObj && epgName ? (
+                <Tooltip
+                  label={
+                    <span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>
+                  }
+                  withArrow
+                  position="top"
+                >
+                  <span>
+                    {epgObj.epg_source} - {tvgId}
+                  </span>
+                </Tooltip>
+              ) : epgObj ? (
+                <span>{epgObj.name}</span>
+              ) : (
+                <span style={{ color: '#888' }}>Not Assigned</span>
+              )}
+            </Box>
+          );
+        },
+        size: columnSizing.epg || 200,
+        minSize: 80,
       },
       {
         id: 'channel_group',
@@ -722,6 +836,8 @@ const ChannelsTable = ({}) => {
             {getValue()}
           </Box>
         ),
+        size: columnSizing.channel_group || 175,
+        minSize: 100,
       },
       {
         id: 'logo',
@@ -730,6 +846,9 @@ const ChannelsTable = ({}) => {
           return row.logo_id;
         },
         size: 75,
+        minSize: 50,
+        maxSize: 120,
+        enableResizing: false,
         header: '',
         cell: ({ getValue }) => {
           const logoId = getValue();
@@ -748,6 +867,7 @@ const ChannelsTable = ({}) => {
       {
         id: 'actions',
         size: tableSize == 'compact' ? 75 : 100,
+        enableResizing: false,
         header: '',
         cell: ({ row }) => (
           <ChannelRowActions
@@ -762,7 +882,7 @@ const ChannelsTable = ({}) => {
         ),
       },
     ],
-    [selectedProfileId, channelGroups, logos, theme]
+    [selectedProfileId, channelGroups, logos, theme, columnSizing]
   );
 
   const renderHeaderCell = (header) => {
@@ -776,6 +896,21 @@ const ChannelsTable = ({}) => {
     }
 
     switch (header.id) {
+      case 'epg':
+        return (
+          <MultiSelect
+            placeholder="EPG"
+            variant="unstyled"
+            data={epgOptions}
+            className="table-input-header"
+            size="xs"
+            searchable
+            clearable
+            onClick={stopPropagation}
+            onChange={handleEPGChange}
+            style={{ width: '100%' }}
+          />
+        );
       case 'enabled':
         return (
           <Center style={{ width: '100%' }}>
@@ -822,6 +957,7 @@ const ChannelsTable = ({}) => {
         return (
           <MultiSelect
             placeholder="Group"
+            className="table-input-header"
             variant="unstyled"
             data={groupOptions}
             size="xs"
@@ -848,6 +984,12 @@ const ChannelsTable = ({}) => {
     manualFiltering: true,
     enableRowSelection: true,
     onRowSelectionChange: onRowSelectionChange,
+    state: {
+      columnSizing,
+      pagination,
+      sorting,
+    },
+    onColumnSizingChange: setColumnSizing,
     getExpandedRowHeight: (row) => {
       return 20 + 28 * row.original.streams.length;
     },
@@ -867,6 +1009,7 @@ const ChannelsTable = ({}) => {
       channel_number: renderHeaderCell,
       channel_group: renderHeaderCell,
       enabled: renderHeaderCell,
+      epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
       const hasStreams =
@@ -1195,7 +1338,7 @@ const ChannelsTable = ({}) => {
                 style={{
                   flex: 1,
                   overflowY: 'auto',
-                  overflowX: 'hidden',
+                  overflowX: 'auto',
                   border: 'solid 1px rgb(68,68,68)',
                   borderRadius: 'var(--mantine-radius-default)',
                 }}

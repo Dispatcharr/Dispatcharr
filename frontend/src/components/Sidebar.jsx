@@ -11,7 +11,7 @@ import {
   Copy,
   ChartLine,
   Video,
-  Ellipsis,
+  PlugZap,
   LogOut,
   User,
   FileImage,
@@ -112,6 +112,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
           { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
           { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
+          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
           {
             label: 'Users',
             icon: <User size={20} />,

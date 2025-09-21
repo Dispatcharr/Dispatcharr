@@ -30,7 +30,7 @@ from .serializers import (
     M3UAccountProfileSerializer,
 )
 
-from .tasks import refresh_single_m3u_account, refresh_m3u_accounts
+from .tasks import refresh_single_m3u_account, refresh_m3u_accounts, refresh_account_info
 import json
 
 
@@ -346,6 +346,54 @@ class RefreshSingleM3UAPIView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class RefreshAccountInfoAPIView(APIView):
+    """Triggers account info refresh for a single M3U account"""
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @swagger_auto_schema(
+        operation_description="Triggers a refresh of account information for a specific M3U profile",
+        responses={202: "Account info refresh initiated", 400: "Profile not found or not XtreamCodes"},
+    )
+    def post(self, request, profile_id, format=None):
+        try:
+            from .models import M3UAccountProfile
+            profile = M3UAccountProfile.objects.get(id=profile_id)
+            account = profile.m3u_account
+
+            if account.account_type != M3UAccount.Types.XC:
+                return Response(
+                    {
+                        "success": False,
+                        "error": "Account info refresh is only available for XtreamCodes accounts",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            refresh_account_info.delay(profile_id)
+            return Response(
+                {
+                    "success": True,
+                    "message": f"Account info refresh initiated for profile {profile.name}.",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except M3UAccountProfile.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "error": "Profile not found",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
 
 class UserAgentViewSet(viewsets.ModelViewSet):

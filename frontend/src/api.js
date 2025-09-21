@@ -323,14 +323,27 @@ export default class API {
   static async addChannel(channel) {
     try {
       let body = null;
+      // Prepare a copy to safely mutate
+      const channelData = { ...channel };
+
+      // Remove channel_number if empty, null, or not a valid number
+      if (
+        channelData.channel_number === '' ||
+        channelData.channel_number === null ||
+        channelData.channel_number === undefined ||
+        (typeof channelData.channel_number === 'string' && channelData.channel_number.trim() === '')
+      ) {
+        delete channelData.channel_number;
+      }
+
       if (channel.logo_file) {
         // Must send FormData for file upload
         body = new FormData();
-        for (const prop in channel) {
-          body.append(prop, channel[prop]);
+        for (const prop in channelData) {
+          body.append(prop, channelData[prop]);
         }
       } else {
-        body = { ...channel };
+        body = { ...channelData };
         delete body.logo_file;
       }
 
@@ -503,6 +516,52 @@ export default class API {
     }
   }
 
+  static async setChannelNamesFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-names-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG name setting task', e);
+      throw e;
+    }
+  }
+
+  static async setChannelLogosFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-logos-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG logo setting task', e);
+      throw e;
+    }
+  }
+
   static async assignChannelNumbers(channelIds, startingNum = 1) {
     try {
       const response = await request(`${host}/api/channels/channels/assign/`, {
@@ -536,24 +595,32 @@ export default class API {
     }
   }
 
-  static async createChannelsFromStreams(values) {
+  static async createChannelsFromStreamsAsync(streamIds, channelProfileIds = null, startingChannelNumber = null) {
     try {
+      const requestBody = {
+        stream_ids: streamIds,
+      };
+
+      if (channelProfileIds !== null) {
+        requestBody.channel_profile_ids = channelProfileIds;
+      }
+
+      if (startingChannelNumber !== null) {
+        requestBody.starting_channel_number = startingChannelNumber;
+      }
+
       const response = await request(
         `${host}/api/channels/channels/from-stream/bulk/`,
         {
           method: 'POST',
-          body: values,
+          body: requestBody,
         }
       );
 
-      if (response.created && response.created.length > 0) {
-        useChannelsStore.getState().addChannels(response.created);
-      }
-
       return response;
     } catch (e) {
-      errorNotification('Failed to create channels', e);
-      throw e; // Re-throw to allow proper error handling in calling code
+      errorNotification('Failed to start bulk channel creation task', e);
+      throw e;
     }
   }
 
@@ -1145,6 +1212,22 @@ export default class API {
     }
   }
 
+  static async refreshAccountInfo(profileId) {
+    try {
+      const response = await request(`${host}/api/m3u/refresh-account-info/${profileId}/`, {
+        method: 'POST',
+      });
+      return response;
+    } catch (e) {
+      // If it's a structured error response, return it instead of throwing
+      if (e.body && typeof e.body === 'object') {
+        return e.body;
+      }
+      errorNotification(`Failed to refresh account info for profile ${profileId}`, e);
+      throw e;
+    }
+  }
+
   static async addM3UFilter(accountId, values) {
     try {
       const response = await request(
@@ -1219,6 +1302,94 @@ export default class API {
     }
   }
 
+  // Plugins API
+  static async getPlugins() {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/`);
+      return response.plugins || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve plugins', e);
+    }
+  }
+
+  static async reloadPlugins() {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/reload/`, {
+        method: 'POST',
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reload plugins', e);
+    }
+  }
+
+  static async importPlugin(file) {
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await request(`${host}/api/plugins/plugins/import/`, {
+        method: 'POST',
+        body: form,
+      });
+      return response;
+    } catch (e) {
+      // Show only the concise error message for plugin import
+      const msg = (e?.body && (e.body.error || e.body.detail)) || e?.message || 'Failed to import plugin';
+      notifications.show({ title: 'Import failed', message: msg, color: 'red' });
+      throw e;
+    }
+  }
+
+  static async deletePlugin(key) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/delete/`, {
+        method: 'DELETE',
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to delete plugin', e);
+    }
+  }
+
+  static async updatePluginSettings(key, settings) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/settings/`,
+        {
+          method: 'POST',
+          body: { settings },
+        }
+      );
+      return response?.settings || {};
+    } catch (e) {
+      errorNotification('Failed to update plugin settings', e);
+    }
+  }
+
+  static async runPluginAction(key, action, params = {}) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/run/`, {
+        method: 'POST',
+        body: { action, params },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to run plugin action', e);
+    }
+  }
+
+  static async setPluginEnabled(key, enabled) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/enabled/`, {
+        method: 'POST',
+        body: { enabled },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update plugin enabled state', e);
+    }
+  }
+
   static async checkSetting(values) {
     const { id, ...payload } = values;
 
@@ -1274,6 +1445,16 @@ export default class API {
     }
   }
 
+  static async getVODStats() {
+    try {
+      const response = await request(`${host}/proxy/vod/stats/`);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve VOD stats', e);
+    }
+  }
+
   static async stopChannel(id) {
     try {
       const response = await request(`${host}/proxy/ts/stop/${id}`, {
@@ -1302,18 +1483,54 @@ export default class API {
     }
   }
 
-  static async matchEpg() {
+  static async matchEpg(channelIds = null) {
     try {
+      const requestBody = channelIds ? { channel_ids: channelIds } : {};
+
       const response = await request(
         `${host}/api/channels/channels/match-epg/`,
         {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
         }
       );
 
       return response;
     } catch (e) {
       errorNotification('Failed to run EPG auto-match', e);
+    }
+  }
+
+  static async matchChannelEpg(channelId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/match-epg/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the channel in the store with the refreshed data if provided
+      if (response.channel) {
+        useChannelsStore.getState().updateChannel(response.channel);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to run EPG auto-match for channel', e);
+    }
+  }
+
+  static async fetchActiveChannelStats() {
+    try {
+      const response = await request(`${host}/proxy/ts/status`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch active channel stats', e);
+      throw e;
     }
   }
 
@@ -1899,15 +2116,28 @@ export default class API {
 
   static async getStreamsByIds(ids) {
     try {
-      const params = new URLSearchParams();
-      params.append('ids', ids.join(','));
-      const response = await request(
-        `${host}/api/channels/streams/?${params.toString()}`
-      );
-
-      return response.results || response;
+      // Use POST for large ID lists to avoid URL length limitations
+      if (ids.length > 50) {
+        const response = await request(
+          `${host}/api/channels/streams/by-ids/`,
+          {
+            method: 'POST',
+            body: { ids },
+          }
+        );
+        return response;
+      } else {
+        // Use GET for small ID lists for backward compatibility
+        const params = new URLSearchParams();
+        params.append('ids', ids.join(','));
+        const response = await request(
+          `${host}/api/channels/streams/?${params.toString()}`
+        );
+        return response.results || response;
+      }
     } catch (e) {
       errorNotification('Failed to retrieve streams by IDs', e);
+      throw e; // Re-throw to allow proper error handling in calling code
     }
   }
 
@@ -1919,7 +2149,14 @@ export default class API {
       );
       return response;
     } catch (e) {
-      errorNotification('Failed to retrieve movies', e);
+      // Don't show error notification for "Invalid page" errors as they're handled gracefully
+      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
+                           e.message?.includes('Invalid page');
+
+      if (!isInvalidPage) {
+        errorNotification('Failed to retrieve movies', e);
+      }
+      throw e;
     }
   }
 
@@ -1930,7 +2167,39 @@ export default class API {
       );
       return response;
     } catch (e) {
-      errorNotification('Failed to retrieve series', e);
+      // Don't show error notification for "Invalid page" errors as they're handled gracefully
+      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
+                           e.message?.includes('Invalid page');
+
+      if (!isInvalidPage) {
+        errorNotification('Failed to retrieve series', e);
+      }
+      throw e;
+    }
+  }
+
+  static async getAllContent(params = new URLSearchParams()) {
+    try {
+      console.log('Calling getAllContent with URL:', `${host}/api/vod/all/?${params.toString()}`);
+      const response = await request(
+        `${host}/api/vod/all/?${params.toString()}`
+      );
+      console.log('getAllContent raw response:', response);
+      return response;
+    } catch (e) {
+      console.error('getAllContent error:', e);
+      console.error('Error status:', e.status);
+      console.error('Error body:', e.body);
+      console.error('Error message:', e.message);
+
+      // Don't show error notification for "Invalid page" errors as they're handled gracefully
+      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
+                           e.message?.includes('Invalid page');
+
+      if (!isInvalidPage) {
+        errorNotification('Failed to retrieve content', e);
+      }
+      throw e;
     }
   }
 

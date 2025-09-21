@@ -5,9 +5,22 @@ import { Box } from '@mantine/core';
 import { Allotment } from 'allotment';
 import { USER_LEVELS } from '../constants';
 import useAuthStore from '../store/auth';
+import useLocalStorage from '../hooks/useLocalStorage';
 
 const ChannelsPage = () => {
   const authUser = useAuthStore((s) => s.user);
+  const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
+    'channels-splitter-sizes',
+    [50, 50]
+  );
+
+  const handleSplitChange = (sizes) => {
+    setAllotmentSizes(sizes);
+  };
+
+  const handleResize = (sizes) => {
+    setAllotmentSizes(sizes);
+  };
 
   if (!authUser.id) {
     return <></>;
@@ -30,10 +43,12 @@ const ChannelsPage = () => {
       }}
     >
       <Allotment
-        defaultSizes={[50, 50]}
+        defaultSizes={allotmentSizes}
         style={{ height: '100%', width: '100%', minWidth: '600px' }}
         className="custom-allotment"
         minSize={100}
+        onChange={handleSplitChange}
+        onResize={handleResize}
       >
         <div style={{ padding: 10, overflowX: 'auto', minWidth: '100px' }}>
           <div style={{ minWidth: '600px' }}>

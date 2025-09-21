@@ -62,9 +62,9 @@ def refresh_vod_content(account_id):
 
         logger.info(f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds")
 
-        # Cleanup orphaned VOD content after refresh
-        logger.info("Starting cleanup of orphaned VOD content")
-        cleanup_result = cleanup_orphaned_vod_content(scan_start_time=start_time)
+        # Cleanup orphaned VOD content after refresh (scoped to this account only)
+        logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
+        cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
 
         # Send completion notification
@@ -135,11 +135,11 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     # Process movies in chunks using the simple approach
     chunk_size = 1000
     total_movies = len(all_movies_data)
+    total_chunks = (total_movies + chunk_size - 1) // chunk_size if total_movies > 0 else 0
 
     for i in range(0, total_movies, chunk_size):
         chunk = all_movies_data[i:i + chunk_size]
         chunk_num = (i // chunk_size) + 1
-        total_chunks = (total_movies + chunk_size - 1) // chunk_size
 
         logger.info(f"Processing movie chunk {chunk_num}/{total_chunks} ({len(chunk)} movies)")
         process_movie_batch(account, chunk, categories_by_provider, relations, scan_start_time)
@@ -158,11 +158,11 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
     # Process series in chunks using the simple approach
     chunk_size = 1000
     total_series = len(all_series_data)
+    total_chunks = (total_series + chunk_size - 1) // chunk_size if total_series > 0 else 0
 
     for i in range(0, total_series, chunk_size):
         chunk = all_series_data[i:i + chunk_size]
         chunk_num = (i // chunk_size) + 1
-        total_chunks = (total_series + chunk_size - 1) // chunk_size
 
         logger.info(f"Processing series chunk {chunk_num}/{total_chunks} ({len(chunk)} series)")
         process_series_batch(account, chunk, categories_by_provider, relations, scan_start_time)
@@ -427,17 +427,18 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     updated = True
 
             # Handle logo assignment for existing movies
+            logo_updated = False
             if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
                 new_logo = existing_logos[logo_url]
                 if movie.logo != new_logo:
-                    movie.logo = new_logo
-                    updated = True
+                    movie._logo_to_update = new_logo
+                    logo_updated = True
             elif (not logo_url or len(logo_url) > 500) and movie.logo:
                 # Clear logo if no logo URL provided or URL is too long
-                movie.logo = None
-                updated = True
+                movie._logo_to_update = None
+                logo_updated = True
 
-            if updated:
+            if updated or logo_updated:
                 movies_to_update.append(movie)
         else:
             # Create new movie
@@ -509,10 +510,17 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Update existing movies
             if movies_to_update:
+                # First, update all fields except logo to avoid unsaved related object issues
                 Movie.objects.bulk_update(movies_to_update, [
                     'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
-                    'duration_secs', 'custom_properties', 'logo'
+                    'duration_secs', 'custom_properties'
                 ])
+
+                # Handle logo updates separately to avoid bulk_update issues
+                for movie in movies_to_update:
+                    if hasattr(movie, '_logo_to_update'):
+                        movie.logo = movie._logo_to_update
+                        movie.save(update_fields=['logo'])
 
             # Update relations to reference the correct movie objects
             for relation in relations_to_create:
@@ -741,17 +749,18 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     updated = True
 
             # Handle logo assignment for existing series
+            logo_updated = False
             if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
                 new_logo = existing_logos[logo_url]
                 if series.logo != new_logo:
-                    series.logo = new_logo
-                    updated = True
+                    series._logo_to_update = new_logo
+                    logo_updated = True
             elif (not logo_url or len(logo_url) > 500) and series.logo:
                 # Clear logo if no logo URL provided or URL is too long
-                series.logo = None
-                updated = True
+                series._logo_to_update = None
+                logo_updated = True
 
-            if updated:
+            if updated or logo_updated:
                 series_to_update.append(series)
         else:
             # Create new series
@@ -823,10 +832,17 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Update existing series
             if series_to_update:
+                # First, update all fields except logo to avoid unsaved related object issues
                 Series.objects.bulk_update(series_to_update, [
                     'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
-                    'custom_properties', 'logo'
+                    'custom_properties'
                 ])
+
+                # Handle logo updates separately to avoid bulk_update issues
+                for series in series_to_update:
+                    if hasattr(series, '_logo_to_update'):
+                        series.logo = series._logo_to_update
+                        series.save(update_fields=['logo'])
 
             # Update relations to reference the correct series objects
             for relation in relations_to_create:
@@ -1292,7 +1308,7 @@ def batch_refresh_series_episodes(account_id, series_ids=None):
 
 
 @shared_task
-def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None):
+def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=None):
     """Clean up VOD content that has no M3U relations or has stale relations"""
     from datetime import timedelta
 
@@ -1302,30 +1318,44 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None):
     # Calculate cutoff date for stale relations
     cutoff_date = reference_time - timedelta(days=stale_days)
 
+    # Build base query filters
+    base_filters = {'last_seen__lt': cutoff_date}
+    if account_id:
+        base_filters['m3u_account_id'] = account_id
+        logger.info(f"Cleaning up stale VOD content for account {account_id}")
+    else:
+        logger.info("Cleaning up stale VOD content across all accounts")
+
     # Clean up stale movie relations (haven't been seen in the specified days)
-    stale_movie_relations = M3UMovieRelation.objects.filter(last_seen__lt=cutoff_date)
+    stale_movie_relations = M3UMovieRelation.objects.filter(**base_filters)
     stale_movie_count = stale_movie_relations.count()
     stale_movie_relations.delete()
 
     # Clean up stale series relations
-    stale_series_relations = M3USeriesRelation.objects.filter(last_seen__lt=cutoff_date)
+    stale_series_relations = M3USeriesRelation.objects.filter(**base_filters)
     stale_series_count = stale_series_relations.count()
     stale_series_relations.delete()
 
     # Clean up stale episode relations
-    stale_episode_relations = M3UEpisodeRelation.objects.filter(last_seen__lt=cutoff_date)
+    stale_episode_relations = M3UEpisodeRelation.objects.filter(**base_filters)
     stale_episode_count = stale_episode_relations.count()
     stale_episode_relations.delete()
 
-    # Clean up movies with no relations (orphaned)
-    orphaned_movies = Movie.objects.filter(m3u_relations__isnull=True)
-    orphaned_movie_count = orphaned_movies.count()
-    orphaned_movies.delete()
+    # Clean up movies with no relations (orphaned) - only if no account_id specified (global cleanup)
+    if not account_id:
+        orphaned_movies = Movie.objects.filter(m3u_relations__isnull=True)
+        orphaned_movie_count = orphaned_movies.count()
+        orphaned_movies.delete()
 
-    # Clean up series with no relations (orphaned)
-    orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
-    orphaned_series_count = orphaned_series.count()
-    orphaned_series.delete()
+        # Clean up series with no relations (orphaned) - only if no account_id specified (global cleanup)
+        orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
+        orphaned_series_count = orphaned_series.count()
+        orphaned_series.delete()
+    else:
+        # When cleaning up for specific account, we don't remove orphaned content
+        # as other accounts might still reference it
+        orphaned_movie_count = 0
+        orphaned_series_count = 0
 
     # Episodes will be cleaned up via CASCADE when series are deleted
 

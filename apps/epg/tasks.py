@@ -28,6 +28,23 @@ from core.utils import acquire_task_lock, release_task_lock, send_websocket_upda
 
 logger = logging.getLogger(__name__)
 
+
+def validate_icon_url_fast(icon_url, max_length=None):
+    """
+    Fast validation for icon URLs during parsing.
+    Returns None if URL is too long, original URL otherwise.
+    If max_length is None, gets it dynamically from the EPGData model field.
+    """
+    if max_length is None:
+        # Get max_length dynamically from the model field
+        max_length = EPGData._meta.get_field('icon_url').max_length
+
+    if icon_url and len(icon_url) > max_length:
+        logger.warning(f"Icon URL too long ({len(icon_url)} > {max_length}), skipping: {icon_url[:100]}...")
+        return None
+    return icon_url
+
+
 MAX_EXTRACT_CHUNK_SIZE = 65536 # 64kb (base2)
 
 
@@ -831,6 +848,7 @@ def parse_channels_only(source):
         processed_channels = 0
         batch_size = 500  # Process in batches to limit memory usage
         progress = 0  # Initialize progress variable here
+        icon_url_max_length = EPGData._meta.get_field('icon_url').max_length  # Get max length for icon_url field
 
         # Track memory at key points
         if process:
@@ -873,10 +891,15 @@ def parse_channels_only(source):
                     tvg_id = elem.get('id', '').strip()
                     if tvg_id:
                         display_name = None
+                        icon_url = None
                         for child in elem:
-                            if child.tag == 'display-name' and child.text:
+                            if display_name is None and child.tag == 'display-name' and child.text:
                                 display_name = child.text.strip()
-                                break
+                            elif child.tag == 'icon':
+                                raw_icon_url = child.get('src', '').strip()
+                                icon_url = validate_icon_url_fast(raw_icon_url, icon_url_max_length)
+                            if display_name and icon_url:
+                                break  # No need to continue if we have both
 
                         if not display_name:
                             display_name = tvg_id
@@ -894,17 +917,24 @@ def parse_channels_only(source):
                                     epgs_to_create.append(EPGData(
                                         tvg_id=tvg_id,
                                         name=display_name,
+                                        icon_url=icon_url,
                                         epg_source=source,
                                     ))
                                     logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 1: {tvg_id} - {display_name}")
                                     processed_channels += 1
                                     continue
 
-                            # We use the cached object to check if the name has changed
+                            # We use the cached object to check if the name or icon_url has changed
                             epg_obj = existing_epgs[tvg_id]
+                            needs_update = False
                             if epg_obj.name != display_name:
-                                # Only update if the name actually changed
                                 epg_obj.name = display_name
+                                needs_update = True
+                            if epg_obj.icon_url != icon_url:
+                                epg_obj.icon_url = icon_url
+                                needs_update = True
+
+                            if needs_update:
                                 epgs_to_update.append(epg_obj)
                                 logger.debug(f"[parse_channels_only] Added channel to update to epgs_to_update: {tvg_id} - {display_name}")
                             else:
@@ -915,6 +945,7 @@ def parse_channels_only(source):
                             epgs_to_create.append(EPGData(
                                 tvg_id=tvg_id,
                                 name=display_name,
+                                icon_url=icon_url,
                                 epg_source=source,
                             ))
                             logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 2: {tvg_id} - {display_name}")
@@ -937,7 +968,7 @@ def parse_channels_only(source):
                         logger.info(f"[parse_channels_only] Bulk updating {len(epgs_to_update)} EPG entries")
                         if process:
                             logger.info(f"[parse_channels_only] Memory before bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                        EPGData.objects.bulk_update(epgs_to_update, ["name"])
+                        EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
                         if process:
                             logger.info(f"[parse_channels_only] Memory after bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                         epgs_to_update = []
@@ -1004,7 +1035,7 @@ def parse_channels_only(source):
             logger.debug(f"[parse_channels_only] Created final batch of {len(epgs_to_create)} EPG entries")
 
         if epgs_to_update:
-            EPGData.objects.bulk_update(epgs_to_update, ["name"])
+            EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
             logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
         if process:
             logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")

@@ -14,6 +14,7 @@ import Guide from './pages/Guide';
 import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
+import PluginsPage from './pages/Plugins';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
@@ -141,6 +142,7 @@ const App = () => {
                         <Route path="/guide" element={<Guide />} />
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
+                        <Route path="/plugins" element={<PluginsPage />} />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />

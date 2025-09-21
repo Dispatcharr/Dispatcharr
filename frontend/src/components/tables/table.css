@@ -8,8 +8,8 @@ html {
 }
 
 .divTable {
+  width: 100%;
   /* border: 1px solid lightgray; */
-  /* width: fit-content; */
   /* display: flex;
     flex-direction: column; */
 }
@@ -179,4 +179,36 @@ html {
   -moz-user-select: text !important;
   -ms-user-select: text !important;
   cursor: text !important;
+}
+
+/* Column resize handle styles */
+.resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 100%;
+  width: 5px;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  background-color: transparent;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.resizer:hover {
+  opacity: 1 !important;
+  background-color: #6b7280 !important;
+}
+
+.resizer.isResizing {
+  opacity: 1 !important;
+  background-color: #3b82f6 !important;
+  width: 3px;
+}
+
+/* Show resize handle on header hover */
+.th:hover .resizer {
+  opacity: 0.5;
+  background-color: #6b7280;
 }

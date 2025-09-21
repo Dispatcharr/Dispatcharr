@@ -1,6 +1,7 @@
 import { Box, Flex } from '@mantine/core';
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
+import { useMemo } from 'react';
 import table from '../../../helpers/table';
 
 const CustomTableBody = ({
@@ -22,6 +23,19 @@ const CustomTableBody = ({
   };
 
   const rows = getRowModel().rows;
+
+  // Calculate minimum width based only on fixed-size columns
+  const minTableWidth = useMemo(() => {
+    if (rows.length === 0) return 0;
+
+    return rows[0].getVisibleCells().reduce((total, cell) => {
+      // Only count columns with fixed sizes, flexible columns will expand
+      const columnSize = cell.column.columnDef.size
+        ? cell.column.getSize()
+        : cell.column.columnDef.minSize || 150; // Default min for flexible columns
+      return total + columnSize;
+    }, 0);
+  }, [rows]);
 
   const renderTableBodyContents = () => {
     const virtualized = false;
@@ -94,6 +108,7 @@ const CustomTableBody = ({
           style={{
             display: 'flex',
             width: '100%',
+            minWidth: '100%', // Force full width
             ...(row.getIsSelected() && {
               backgroundColor: '#163632',
             }),
@@ -101,16 +116,24 @@ const CustomTableBody = ({
           }}
         >
           {row.getVisibleCells().map((cell) => {
+            const hasFixedSize = cell.column.columnDef.size;
+            const isFlexible = !hasFixedSize;
+
             return (
               <Box
                 className="td"
                 key={`td-${cell.id}`}
                 style={{
-                  flex: cell.column.columnDef.size ? '0 0 auto' : '1 1 0',
-                  width: cell.column.columnDef.size
-                    ? cell.column.getSize()
-                    : undefined,
-                  minWidth: 0,
+                  ...(cell.column.columnDef.grow
+                    ? {
+                        flex: '1 1 0%',
+                        minWidth: 0,
+                      }
+                    : {
+                        flex: `0 0 ${cell.column.getSize ? cell.column.getSize() : 150}px`,
+                        width: `${cell.column.getSize ? cell.column.getSize() : 150}px`,
+                        maxWidth: `${cell.column.getSize ? cell.column.getSize() : 150}px`,
+                      }),
                   ...(tableCellProps && tableCellProps({ cell })),
                 }}
               >

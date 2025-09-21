@@ -28,6 +28,7 @@ from apps.accounts.permissions import (
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField
 from .config_helper import ConfigHelper
 from .services.channel_service import ChannelService
+from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
     transform_url,
@@ -632,6 +633,18 @@ def channel_status(request, channel_id=None):
 
                 if cursor == 0:
                     break
+
+            # Send WebSocket update with the stats
+            # Format it the same way the original Celery task did
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "success": True,
+                    "type": "channel_stats",
+                    "stats": json.dumps({'channels': all_channels, 'count': len(all_channels)})
+                }
+            )
 
             return JsonResponse({"channels": all_channels, "count": len(all_channels)})
 

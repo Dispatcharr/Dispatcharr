@@ -143,11 +143,18 @@ const ChannelTableHeader = ({
   const matchEpg = async () => {
     try {
       // Hit our new endpoint that triggers the fuzzy matching Celery task
-      await API.matchEpg();
-
-      notifications.show({
-        title: 'EPG matching task started!',
-      });
+      // If channels are selected, only match those; otherwise match all
+      if (selectedTableIds.length > 0) {
+        await API.matchEpg(selectedTableIds);
+        notifications.show({
+          title: `EPG matching task started for ${selectedTableIds.length} selected channel(s)!`,
+        });
+      } else {
+        await API.matchEpg();
+        notifications.show({
+          title: 'EPG matching task started for all channels without EPG!',
+        });
+      }
     } catch (err) {
       notifications.show(`Error: ${err.message}`);
     }
@@ -259,7 +266,7 @@ const ChannelTableHeader = ({
             leftSection={<SquarePlus size={18} />}
             variant="light"
             size="xs"
-            onClick={() => editChannel()}
+            onClick={() => editChannel(null, { forceAdd: true })}
             disabled={authUser.user_level != USER_LEVELS.ADMIN}
             p={5}
             color={theme.tailwind.green[5]}
@@ -298,7 +305,11 @@ const ChannelTableHeader = ({
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
                 onClick={matchEpg}
               >
-                <Text size="xs">Auto-Match</Text>
+                <Text size="xs">
+                  {selectedTableIds.length > 0
+                    ? `Auto-Match (${selectedTableIds.length} selected)`
+                    : 'Auto-Match EPG'}
+                </Text>
               </Menu.Item>
 
               <Menu.Item

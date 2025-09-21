@@ -18,4 +18,7 @@ urlpatterns = [
 
     # Position tracking
     path('position/<uuid:content_id>/', views.VODPositionView.as_view(), name='vod_position'),
+
+    # VOD Stats
+    path('stats/', views.VODStatsView.as_view(), name='vod_stats'),
 ]

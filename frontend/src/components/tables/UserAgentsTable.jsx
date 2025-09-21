@@ -61,11 +61,13 @@ const UserAgentsTable = () => {
       {
         header: 'Name',
         accessorKey: 'name',
+        size: 125,
       },
       {
         header: 'User-Agent',
         accessorKey: 'user_agent',
         enableSorting: false,
+        grow: true,
         cell: ({ cell }) => (
           <div
             style={{

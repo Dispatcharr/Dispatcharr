@@ -39,7 +39,7 @@ from .serializers import (
     ChannelProfileSerializer,
     RecordingSerializer,
 )
-from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl
+from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl, match_single_channel_epg, match_selected_channels_epg
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -178,6 +178,35 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return the response with the list of unique group names
         return Response(list(group_names))
 
+    @swagger_auto_schema(
+        method="post",
+        operation_description="Retrieve streams by a list of IDs using POST to avoid URL length limitations",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["ids"],
+            properties={
+                "ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    description="List of stream IDs to retrieve"
+                ),
+            },
+        ),
+        responses={200: StreamSerializer(many=True)},
+    )
+    @action(detail=False, methods=["post"], url_path="by-ids")
+    def get_by_ids(self, request, *args, **kwargs):
+        ids = request.data.get("ids", [])
+        if not isinstance(ids, list):
+            return Response(
+                {"error": "ids must be a list of integers"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        streams = Stream.objects.filter(id__in=ids)
+        serializer = self.get_serializer(streams, many=True)
+        return Response(serializer.data)
+
 
 # ─────────────────────────────────────────────────────────
 # 2) Channel Group Management (CRUD)
@@ -293,17 +322,42 @@ class ChannelPagination(PageNumberPagination):
         return super().paginate_queryset(queryset, request, view)
 
 
+class EPGFilter(django_filters.Filter):
+    """
+    Filter channels by EPG source name or null (unlinked).
+    """
+    def filter(self, queryset, value):
+        if not value:
+            return queryset
+
+        # Split comma-separated values
+        values = [v.strip() for v in value.split(',')]
+        query = Q()
+
+        for val in values:
+            if val == 'null':
+                # Filter for channels with no EPG data
+                query |= Q(epg_data__isnull=True)
+            else:
+                # Filter for channels with specific EPG source name
+                query |= Q(epg_data__epg_source__name__icontains=val)
+
+        return queryset.filter(query)
+
+
 class ChannelFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr="icontains")
-    channel_group_name = OrInFilter(
+    channel_group = OrInFilter(
         field_name="channel_group__name", lookup_expr="icontains"
     )
+    epg = EPGFilter()
 
     class Meta:
         model = Channel
         fields = [
             "name",
-            "channel_group_name",
+            "channel_group",
+            "epg",
         ]
 
 
@@ -439,6 +493,68 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channels": serialized_channels
         })
 
+    @action(detail=False, methods=["post"], url_path="set-names-from-epg")
+    def set_names_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel names from EPG data
+        """
+        from .tasks import set_channels_names_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_names_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG name setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
+    @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
+    def set_logos_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel logos from EPG data
+        """
+        from .tasks import set_channels_logos_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_logos_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG logo setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
     @action(detail=False, methods=["get"], url_path="ids")
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
@@ -534,40 +650,42 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_group = stream.channel_group
 
         name = request.data.get("name")
+
+
         if name is None:
             name = stream.name
 
         # Check if client provided a channel_number; if not, auto-assign one.
         stream_custom_props = stream.custom_properties or {}
-
-        channel_number = None
-        if "tvg-chno" in stream_custom_props:
-            channel_number = float(stream_custom_props["tvg-chno"])
-        elif "channel-number" in stream_custom_props:
-            channel_number = float(stream_custom_props["channel-number"])
-        elif "num" in stream_custom_props:
-            channel_number = float(stream_custom_props["num"])
+        channel_number = request.data.get("channel_number")
 
         if channel_number is None:
-            provided_number = request.data.get("channel_number")
-            if provided_number is None:
-                channel_number = Channel.get_next_available_channel_number()
-            else:
-                try:
-                    channel_number = float(provided_number)
-                except ValueError:
-                    return Response(
-                        {"error": "channel_number must be an integer."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                # If the provided number is already used, return an error.
-                if Channel.objects.filter(channel_number=channel_number).exists():
-                    return Response(
-                        {
-                            "error": f"Channel number {channel_number} is already in use. Please choose a different number."
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+            # Channel number not provided by client, check stream properties or auto-assign
+            if "tvg-chno" in stream_custom_props:
+                channel_number = float(stream_custom_props["tvg-chno"])
+            elif "channel-number" in stream_custom_props:
+                channel_number = float(stream_custom_props["channel-number"])
+            elif "num" in stream_custom_props:
+                channel_number = float(stream_custom_props["num"])
+        elif channel_number == 0:
+            # Special case: 0 means ignore provider numbers and auto-assign
+            channel_number = None
+
+        if channel_number is None:
+            # Still None, auto-assign the next available channel number
+            channel_number = Channel.get_next_available_channel_number()
+
+
+        try:
+            channel_number = float(channel_number)
+        except ValueError:
+            return Response(
+                {"error": "channel_number must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # If the provided number is already used, return an error.
+        if Channel.objects.filter(channel_number=channel_number).exists():
+            channel_number = Channel.get_next_available_channel_number(channel_number)
         # Get the tvc_guide_stationid from custom properties if it exists
         tvc_guide_stationid = None
         if "tvc-guide-stationid" in stream_custom_props:
@@ -642,282 +760,145 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     for profile in profiles
                 ])
 
+        # Send WebSocket notification for single channel creation
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {
+            'type': 'channels_created',
+            'count': 1,
+            'channel_id': channel.id,
+            'channel_name': channel.name,
+            'channel_number': channel.channel_number
+        })
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @swagger_auto_schema(
         method="post",
         operation_description=(
-            "Bulk create channels from existing streams. For each object, if 'channel_number' is provided, "
-            "it is used (if available); otherwise, the next available number is auto-assigned. "
-            "Each object must include 'stream_id' and 'name'. "
-            "Supports single profile ID or array of profile IDs in 'channel_profile_ids'."
+            "Asynchronously bulk create channels from stream IDs. "
+            "Returns a task ID to track progress via WebSocket. "
+            "This is the recommended approach for large bulk operations."
         ),
         request_body=openapi.Schema(
-            type=openapi.TYPE_ARRAY,
-            items=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                required=["stream_id"],
-                properties={
-                    "stream_id": openapi.Schema(
-                        type=openapi.TYPE_INTEGER,
-                        description="ID of the stream to link",
-                    ),
-                    "channel_number": openapi.Schema(
-                        type=openapi.TYPE_NUMBER,
-                        description="(Optional) Desired channel number. Must not be in use.",
-                    ),
-                    "name": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Desired channel name"
-                    ),
-                    "channel_profile_ids": openapi.Schema(
-                        type=openapi.TYPE_ARRAY,
-                        items=openapi.Items(type=openapi.TYPE_INTEGER),
-                        description="(Optional) Channel profile ID(s) to add the channel to. Can be a single ID or array of IDs."
-                    ),
-                },
-            ),
+            type=openapi.TYPE_OBJECT,
+            required=["stream_ids"],
+            properties={
+                "stream_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    description="List of stream IDs to create channels from"
+                ),
+                "channel_profile_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    description="(Optional) Channel profile ID(s) to add the channels to. If not provided, channels are added to all profiles."
+                ),
+                "starting_channel_number": openapi.Schema(
+                    type=openapi.TYPE_INTEGER,
+                    description="(Optional) Starting channel number mode: null=use provider numbers, 0=lowest available, other=start from specified number"
+                ),
+            },
         ),
-        responses={201: "Bulk channels created"},
+        responses={202: "Task started successfully"},
     )
     @action(detail=False, methods=["post"], url_path="from-stream/bulk")
     def from_stream_bulk(self, request):
-        data_list = request.data
-        if not isinstance(data_list, list):
+        from .tasks import bulk_create_channels_from_streams
+
+        stream_ids = request.data.get("stream_ids", [])
+        channel_profile_ids = request.data.get("channel_profile_ids")
+        starting_channel_number = request.data.get("starting_channel_number")
+
+        if not stream_ids:
             return Response(
-                {"error": "Expected a list of channel objects"},
+                {"error": "stream_ids is required and cannot be empty"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        created_channels = []
-        errors = []
-
-        # Gather current used numbers once.
-        used_numbers = set(
-            Channel.objects.all().values_list("channel_number", flat=True)
-        )
-        next_number = 1
-
-        def get_auto_number():
-            nonlocal next_number
-            while next_number in used_numbers:
-                next_number += 1
-            used_numbers.add(next_number)
-            return next_number
-
-        logos_to_create = []
-        channels_to_create = []
-        streams_map = []
-        logo_map = []
-        profile_map = []  # Track which profiles each channel should be added to
-
-        for item in data_list:
-            stream_id = item.get("stream_id")
-            if not stream_id:
-                errors.append(
-                    {
-                        "item": item,
-                        "error": "Missing required field: stream_id is required.",
-                    }
-                )
-                continue
-
-            try:
-                stream = get_object_or_404(Stream, pk=stream_id)
-            except Exception as e:
-                errors.append({"item": item, "error": str(e)})
-                continue
-
-            name = item.get("name")
-            if name is None:
-                name = stream.name
-
-            channel_group = stream.channel_group
-
-            stream_custom_props = stream.custom_properties or {}
-
-            channel_number = None
-            if "tvg-chno" in stream_custom_props:
-                channel_number = float(stream_custom_props["tvg-chno"])
-            elif "channel-number" in stream_custom_props:
-                channel_number = float(stream_custom_props["channel-number"])
-            elif "num" in stream_custom_props:
-                channel_number = float(stream_custom_props["num"])
-            # Get the tvc_guide_stationid from custom properties if it exists
-            tvc_guide_stationid = None
-            if "tvc-guide-stationid" in stream_custom_props:
-                tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
-
-            # Determine channel number: if provided, use it (if free); else auto assign.
-            if channel_number is None:
-                provided_number = item.get("channel_number")
-                if provided_number is None:
-                    channel_number = get_auto_number()
-                else:
-                    try:
-                        channel_number = float(provided_number)
-                    except ValueError:
-                        errors.append(
-                            {
-                                "item": item,
-                                "error": "channel_number must be a number.",
-                            }
-                        )
-                        continue
-                    if (
-                        channel_number in used_numbers
-                        or Channel.objects.filter(
-                            channel_number=channel_number
-                        ).exists()
-                    ):
-                        errors.append(
-                            {
-                                "item": item,
-                                "error": f"Channel number {channel_number} is already in use.",
-                            }
-                        )
-                        continue
-                    used_numbers.add(channel_number)
-
-            channel_data = {
-                "channel_number": channel_number,
-                "name": name,
-                "tvc_guide_stationid": tvc_guide_stationid,
-                "tvg_id": stream.tvg_id,
-            }
-
-            # Only add channel_group_id if the stream has a channel group
-            if channel_group:
-                channel_data["channel_group_id"] = channel_group.id
-
-            # Attempt to find existing EPGs with the same tvg-id
-            epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
-            if epgs:
-                channel_data["epg_data_id"] = epgs.first().id
-
-            serializer = self.get_serializer(data=channel_data)
-            if serializer.is_valid():
-                validated_data = serializer.validated_data
-                channel = Channel(**validated_data)
-                channels_to_create.append(channel)
-
-                streams_map.append([stream_id])
-                # Store which profiles this channel should be added to - normalize to array
-                channel_profile_ids = item.get("channel_profile_ids")
-                if channel_profile_ids is not None:
-                    # Normalize single ID to array
-                    if not isinstance(channel_profile_ids, list):
-                        channel_profile_ids = [channel_profile_ids]
-
-                profile_map.append(channel_profile_ids)
-
-                if stream.logo_url:
-                    logos_to_create.append(
-                        Logo(
-                            url=stream.logo_url,
-                            name=stream.name or stream.tvg_id,
-                        )
-                    )
-                    logo_map.append(stream.logo_url)
-                else:
-                    logo_map.append(None)
-
-            else:
-                errors.append({"item": item, "error": serializer.errors})
-
-        if logos_to_create:
-            Logo.objects.bulk_create(logos_to_create, ignore_conflicts=True)
-
-        channel_logos = {
-            logo.url: logo
-            for logo in Logo.objects.filter(
-                url__in=[url for url in logo_map if url is not None]
+        if not isinstance(stream_ids, list):
+            return Response(
+                {"error": "stream_ids must be a list of integers"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        }
 
-        # Get all profiles for default assignment
-        all_profiles = ChannelProfile.objects.all()
-        channel_profile_memberships = []
+        # Normalize channel_profile_ids to array if single ID provided
+        if channel_profile_ids is not None:
+            if not isinstance(channel_profile_ids, list):
+                channel_profile_ids = [channel_profile_ids]
 
-        if channels_to_create:
-            with transaction.atomic():
-                created_channels = Channel.objects.bulk_create(channels_to_create)
+        # Start the async task
+        task = bulk_create_channels_from_streams.delay(stream_ids, channel_profile_ids, starting_channel_number)
 
-                update = []
-                for channel, stream_ids, logo_url, channel_profile_ids in zip(
-                    created_channels, streams_map, logo_map, profile_map
-                ):
-                    if logo_url:
-                        channel.logo = channel_logos[logo_url]
-                    update.append(channel)
-
-                    # Handle channel profile membership based on channel_profile_ids
-                    if channel_profile_ids:
-                        # Add channel only to the specified profiles
-                        try:
-                            specific_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
-                            channel_profile_memberships.extend([
-                                ChannelProfileMembership(
-                                    channel_profile=profile,
-                                    channel=channel,
-                                    enabled=True
-                                )
-                                for profile in specific_profiles
-                            ])
-                        except Exception:
-                            # If profiles don't exist, add to all profiles as fallback
-                            channel_profile_memberships.extend([
-                                ChannelProfileMembership(
-                                    channel_profile=profile,
-                                    channel=channel,
-                                    enabled=True
-                                )
-                                for profile in all_profiles
-                            ])
-                    else:
-                        # Default behavior: add to all profiles
-                        channel_profile_memberships.extend([
-                            ChannelProfileMembership(
-                                channel_profile=profile,
-                                channel=channel,
-                                enabled=True
-                            )
-                            for profile in all_profiles
-                        ])
-
-                # Bulk create profile memberships
-                if channel_profile_memberships:
-                    ChannelProfileMembership.objects.bulk_create(
-                        channel_profile_memberships
-                    )
-
-                # Update logos
-                if update:
-                    Channel.objects.bulk_update(update, ["logo"])
-
-                # Set stream relationships
-                for channel, stream_ids in zip(created_channels, streams_map):
-                    channel.streams.set(stream_ids)
-
-        response_data = {"created": ChannelSerializer(created_channels, many=True).data}
-        if errors:
-            response_data["errors"] = errors
-
-        return Response(response_data, status=status.HTTP_201_CREATED)
+        return Response({
+            "task_id": task.id,
+            "message": f"Bulk channel creation task started for {len(stream_ids)} streams",
+            "stream_count": len(stream_ids),
+            "status": "started"
+        }, status=status.HTTP_202_ACCEPTED)
 
     # ─────────────────────────────────────────────────────────
     # 6) EPG Fuzzy Matching
     # ─────────────────────────────────────────────────────────
     @swagger_auto_schema(
         method="post",
-        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data.",
+        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data. If channel_ids are provided, only those channels will be processed.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'channel_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                    description='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.'
+                )
+            }
+        ),
         responses={202: "EPG matching task initiated"},
     )
     @action(detail=False, methods=["post"], url_path="match-epg")
     def match_epg(self, request):
-        match_epg_channels.delay()
+        # Get channel IDs from request body if provided
+        channel_ids = request.data.get('channel_ids', [])
+
+        if channel_ids:
+            # Process only selected channels
+            from .tasks import match_selected_channels_epg
+            match_selected_channels_epg.delay(channel_ids)
+            message = f"EPG matching task initiated for {len(channel_ids)} selected channel(s)."
+        else:
+            # Process all channels without EPG (original behavior)
+            match_epg_channels.delay()
+            message = "EPG matching task initiated for all channels without EPG."
+
         return Response(
-            {"message": "EPG matching task initiated."}, status=status.HTTP_202_ACCEPTED
+            {"message": message}, status=status.HTTP_202_ACCEPTED
         )
+
+    @swagger_auto_schema(
+        method="post",
+        operation_description="Try to auto-match this specific channel with EPG data.",
+        responses={200: "EPG matching completed", 202: "EPG matching task initiated"},
+    )
+    @action(detail=True, methods=["post"], url_path="match-epg")
+    def match_channel_epg(self, request, pk=None):
+        channel = self.get_object()
+
+        # Import the matching logic
+        from apps.channels.tasks import match_single_channel_epg
+
+        try:
+            # Try to match this specific channel - call synchronously for immediate response
+            result = match_single_channel_epg.apply_async(args=[channel.id]).get(timeout=30)
+
+            # Refresh the channel from DB to get any updates
+            channel.refresh_from_db()
+
+            return Response({
+                "message": result.get("message", "Channel matching completed"),
+                "matched": result.get("matched", False),
+                "channel": self.get_serializer(channel).data
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
     # ─────────────────────────────────────────────────────────
     # 7) Set EPG and Refresh
@@ -1466,8 +1447,10 @@ class LogoViewSet(viewsets.ModelViewSet):
             if redis_client:
                 # Use the same key format as the file scanner
                 redis_key = f"processed_file:{file_path}"
-                redis_client.setex(redis_key, 60 * 60 * 24 * 3, "api_upload")  # 3 day TTL
-                logger.debug(f"Marked uploaded logo file as processed in Redis: {file_path}")
+                # Store the actual file modification time to match the file scanner's expectation
+                file_mtime = os.path.getmtime(file_path)
+                redis_client.setex(redis_key, 60 * 60 * 24 * 3, str(file_mtime))  # 3 day TTL
+                logger.debug(f"Marked uploaded logo file as processed in Redis: {file_path} (mtime: {file_mtime})")
         except Exception as e:
             logger.warning(f"Failed to mark logo file as processed in Redis: {e}")
 
@@ -1830,7 +1813,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        library_dir = '/app/data'
+        library_dir = '/data'
         allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
 
         def _safe_remove(path: str):

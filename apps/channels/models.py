@@ -379,14 +379,17 @@ class Channel(models.Model):
             if not m3u_account:
                 logger.debug(f"Stream {stream.id} has no M3U account")
                 continue
+            if m3u_account.is_active == False:
+                logger.debug(f"M3U account {m3u_account.id} is inactive, skipping.")
+                continue
 
-            m3u_profiles = m3u_account.profiles.all()
+            m3u_profiles = m3u_account.profiles.filter(is_active=True)
             default_profile = next(
                 (obj for obj in m3u_profiles if obj.is_default), None
             )
 
             if not default_profile:
-                logger.debug(f"M3U account {m3u_account.id} has no default profile")
+                logger.debug(f"M3U account {m3u_account.id} has no active default profile")
                 continue
 
             profiles = [default_profile] + [
@@ -394,11 +397,6 @@ class Channel(models.Model):
             ]
 
             for profile in profiles:
-                # Skip inactive profiles
-                if not profile.is_active:
-                    logger.debug(f"Skipping inactive profile {profile.id}")
-                    continue
-
                 has_active_profiles = True
 
                 profile_connections_key = f"profile_connections:{profile.id}"
@@ -433,9 +431,9 @@ class Channel(models.Model):
 
         # No available streams - determine specific reason
         if has_streams_but_maxed_out:
-            error_reason = "All M3U profiles have reached maximum connection limits"
+            error_reason = "All active M3U profiles have reached maximum connection limits"
         elif has_active_profiles:
-            error_reason = "No compatible profile found for any assigned stream"
+            error_reason = "No compatible active profile found for any assigned stream"
         else:
             error_reason = "No active profiles found for any assigned stream"
 

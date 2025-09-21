@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import M3UAccount, M3UFilter, ServerGroup, UserAgent
+from .models import M3UAccount, M3UFilter, ServerGroup, UserAgent, M3UAccountProfile
 import json
 
 
@@ -83,3 +83,108 @@ class M3UFilterAdmin(admin.ModelAdmin):
 class ServerGroupAdmin(admin.ModelAdmin):
     list_display = ("name",)
     search_fields = ("name",)
+
+
+@admin.register(M3UAccountProfile)
+class M3UAccountProfileAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "m3u_account",
+        "is_default",
+        "is_active",
+        "max_streams",
+        "current_viewers",
+        "account_status_display",
+        "account_expiration_display",
+        "last_refresh_display",
+    )
+    list_filter = ("is_active", "is_default", "m3u_account__account_type")
+    search_fields = ("name", "m3u_account__name")
+    readonly_fields = ("account_info_display",)
+    
+    def account_status_display(self, obj):
+        """Display account status from custom properties"""
+        status = obj.get_account_status()
+        if status:
+            # Create colored status display
+            color_map = {
+                'Active': 'green',
+                'Expired': 'red',
+                'Disabled': 'red',
+                'Banned': 'red',
+            }
+            color = color_map.get(status, 'black')
+            return format_html(
+                '<span style="color: {};">{}</span>',
+                color,
+                status
+            )
+        return "Unknown"
+    account_status_display.short_description = "Account Status"
+    
+    def account_expiration_display(self, obj):
+        """Display account expiration from custom properties"""
+        expiration = obj.get_account_expiration()
+        if expiration:
+            from datetime import datetime
+            if expiration < datetime.now():
+                return format_html(
+                    '<span style="color: red;">{}</span>',
+                    expiration.strftime('%Y-%m-%d %H:%M')
+                )
+            else:
+                return format_html(
+                    '<span style="color: green;">{}</span>',
+                    expiration.strftime('%Y-%m-%d %H:%M')
+                )
+        return "Unknown"
+    account_expiration_display.short_description = "Expires"
+    
+    def last_refresh_display(self, obj):
+        """Display last refresh time from custom properties"""
+        last_refresh = obj.get_last_refresh()
+        if last_refresh:
+            return last_refresh.strftime('%Y-%m-%d %H:%M:%S')
+        return "Never"
+    last_refresh_display.short_description = "Last Refresh"
+    
+    def account_info_display(self, obj):
+        """Display formatted account information from custom properties"""
+        if not obj.custom_properties:
+            return "No account information available"
+        
+        html_parts = []
+        
+        # User Info
+        user_info = obj.custom_properties.get('user_info', {})
+        if user_info:
+            html_parts.append("<h3>User Information:</h3>")
+            html_parts.append("<ul>")
+            for key, value in user_info.items():
+                if key == 'exp_date' and value:
+                    try:
+                        from datetime import datetime
+                        exp_date = datetime.fromtimestamp(float(value))
+                        value = exp_date.strftime('%Y-%m-%d %H:%M:%S')
+                    except (ValueError, TypeError):
+                        pass
+                html_parts.append(f"<li><strong>{key}:</strong> {value}</li>")
+            html_parts.append("</ul>")
+        
+        # Server Info
+        server_info = obj.custom_properties.get('server_info', {})
+        if server_info:
+            html_parts.append("<h3>Server Information:</h3>")
+            html_parts.append("<ul>")
+            for key, value in server_info.items():
+                html_parts.append(f"<li><strong>{key}:</strong> {value}</li>")
+            html_parts.append("</ul>")
+        
+        # Last Refresh
+        last_refresh = obj.custom_properties.get('last_refresh')
+        if last_refresh:
+            html_parts.append(f"<p><strong>Last Refresh:</strong> {last_refresh}</p>")
+        
+        return format_html(''.join(html_parts)) if html_parts else "No account information available"
+    
+    account_info_display.short_description = "Account Information"

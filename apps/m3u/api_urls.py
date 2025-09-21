@@ -6,6 +6,7 @@ from .api_views import (
     ServerGroupViewSet,
     RefreshM3UAPIView,
     RefreshSingleM3UAPIView,
+    RefreshAccountInfoAPIView,
     UserAgentViewSet,
     M3UAccountProfileViewSet,
 )
@@ -32,6 +33,11 @@ urlpatterns = [
         "refresh/<int:account_id>/",
         RefreshSingleM3UAPIView.as_view(),
         name="m3u_refresh_single",
+    ),
+    path(
+        "refresh-account-info/<int:profile_id>/",
+        RefreshAccountInfoAPIView.as_view(),
+        name="m3u_refresh_account_info",
     ),
 ]
 

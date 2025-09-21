@@ -12,6 +12,7 @@ from .constants import EventType
 from .config_helper import ConfigHelper
 from .redis_keys import RedisKeys
 from .utils import get_logger
+from core.utils import send_websocket_update
 
 logger = get_logger()
 
@@ -35,6 +36,45 @@ class ClientManager:
         # Start heartbeat thread for local clients
         self._start_heartbeat_thread()
         self._registered_clients = set()  # Track already registered client IDs
+
+    def _trigger_stats_update(self):
+        """Trigger a channel stats update via WebSocket"""
+        try:
+            # Import here to avoid potential import issues
+            from apps.proxy.ts_proxy.channel_status import ChannelStatus
+            import redis
+
+            # Get all channels from Redis
+            redis_client = redis.Redis.from_url('redis://localhost:6379', decode_responses=True)
+            all_channels = []
+            cursor = 0
+
+            while True:
+                cursor, keys = redis_client.scan(cursor, match="ts_proxy:channel:*:clients", count=100)
+                for key in keys:
+                    # Extract channel ID from key
+                    parts = key.split(':')
+                    if len(parts) >= 4:
+                        ch_id = parts[2]
+                        channel_info = ChannelStatus.get_basic_channel_info(ch_id)
+                        if channel_info:
+                            all_channels.append(channel_info)
+
+                if cursor == 0:
+                    break
+
+            # Send WebSocket update using existing infrastructure
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "success": True,
+                    "type": "channel_stats",
+                    "stats": json.dumps({'channels': all_channels, 'count': len(all_channels)})
+                }
+            )
+        except Exception as e:
+            logger.debug(f"Failed to trigger stats update: {e}")
 
     def _start_heartbeat_thread(self):
         """Start thread to regularly refresh client presence in Redis"""
@@ -260,6 +300,9 @@ class ClientManager:
                         json.dumps(event_data)
                     )
 
+                    # Trigger channel stats update via WebSocket
+                    self._trigger_stats_update()
+
                 # Get total clients across all workers
                 total_clients = self.get_total_client_count()
                 logger.info(f"New client connected: {client_id} (local: {len(self.clients)}, total: {total_clients})")
@@ -274,6 +317,8 @@ class ClientManager:
 
     def remove_client(self, client_id):
         """Remove a client from this channel and Redis"""
+        client_ip = None
+
         with self.lock:
             if client_id in self.clients:
                 self.clients.remove(client_id)
@@ -284,6 +329,14 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
+                # Get client IP before removing the data
+                client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                client_data = self.redis_client.hgetall(client_key)
+                if client_data and b'ip_address' in client_data:
+                    client_ip = client_data[b'ip_address'].decode('utf-8')
+                elif client_data and 'ip_address' in client_data:
+                    client_ip = client_data['ip_address']
+
                 # Remove from channel's client set
                 self.redis_client.srem(self.client_set_key, client_id)
 
@@ -312,6 +365,9 @@ class ClientManager:
                     "remaining_clients": remaining
                 })
                 self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
+
+                # Trigger channel stats update via WebSocket
+                self._trigger_stats_update()
 
             total_clients = self.get_total_client_count()
             logger.info(f"Client disconnected: {client_id} (local: {len(self.clients)}, total: {total_clients})")

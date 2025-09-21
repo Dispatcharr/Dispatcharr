@@ -72,7 +72,7 @@ const StreamProfiles = () => {
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 150,
+        size: 175,
         cell: ({ cell }) => (
           <div
             style={{
@@ -88,7 +88,7 @@ const StreamProfiles = () => {
       {
         header: 'Command',
         accessorKey: 'command',
-        size: 150,
+        size: 100,
         cell: ({ cell }) => (
           <div
             style={{
@@ -104,7 +104,7 @@ const StreamProfiles = () => {
       {
         header: 'Parameters',
         accessorKey: 'parameters',
-        // size: 200,
+        grow: true,
         cell: ({ cell }) => (
           <Tooltip label={cell.getValue()}>
             <div

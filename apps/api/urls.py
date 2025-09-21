@@ -25,6 +25,7 @@ urlpatterns = [
     path('hdhr/', include(('apps.hdhr.api_urls', 'hdhr'), namespace='hdhr')),
     path('m3u/', include(('apps.m3u.api_urls', 'm3u'), namespace='m3u')),
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
+    path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),

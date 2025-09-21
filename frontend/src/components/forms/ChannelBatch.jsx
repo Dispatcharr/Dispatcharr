@@ -27,6 +27,7 @@ import {
 import { ListOrdered, SquarePlus, SquareX, X } from 'lucide-react';
 import { FixedSizeList as List } from 'react-window';
 import { useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
@@ -35,7 +36,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const groupListRef = useRef(null);
 
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
@@ -134,6 +134,74 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     }
   };
 
+  const handleSetNamesFromEpg = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    try {
+      // Start the backend task
+      await API.setChannelNamesFromEpg(channelIds);
+
+      // The task will send WebSocket updates for progress
+      // Just show that it started successfully
+      notifications.show({
+        title: 'Task Started',
+        message: `Started setting names from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
+        color: 'blue',
+      });
+
+      // Close the modal since the task is now running in background
+      onClose();
+    } catch (error) {
+      console.error('Failed to start EPG name setting task:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to start EPG name setting task.',
+        color: 'red',
+      });
+    }
+  };
+
+  const handleSetLogosFromEpg = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    try {
+      // Start the backend task
+      await API.setChannelLogosFromEpg(channelIds);
+
+      // The task will send WebSocket updates for progress
+      // Just show that it started successfully
+      notifications.show({
+        title: 'Task Started',
+        message: `Started setting logos from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
+        color: 'blue',
+      });
+
+      // Close the modal since the task is now running in background
+      onClose();
+    } catch (error) {
+      console.error('Failed to start EPG logo setting task:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to start EPG logo setting task.',
+        color: 'red',
+      });
+    }
+  };
+
   // useEffect(() => {
   //   // const sameStreamProfile = channels.every(
   //   //   (channel) => channel.stream_profile_id == channels[0].stream_profile_id
@@ -183,7 +251,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       <Modal
         opened={isOpen}
         onClose={onClose}
-        size={"lg"}
+        size={'lg'}
         title={
           <Group gap="5">
             <ListOrdered size="20" />
@@ -197,7 +265,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
             <Stack gap="5" style={{ flex: 1 }}>
               <Paper withBorder p="xs" radius="md">
                 <Group justify="space-between" align="center" mb={6}>
-                  <Text size="sm" fw={600}>Channel Name</Text>
+                  <Text size="sm" fw={600}>
+                    Channel Name
+                  </Text>
                 </Group>
                 <Group align="end" gap="xs" wrap="nowrap">
                   <TextInput
@@ -222,6 +292,36 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   find={regexFind}
                   replace={regexReplace}
                 />
+              </Paper>
+
+              <Paper withBorder p="xs" radius="md">
+                <Group justify="space-between" align="center" mb={6}>
+                  <Text size="sm" fw={600}>
+                    EPG Operations
+                  </Text>
+                </Group>
+                <Group gap="xs" wrap="nowrap">
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={handleSetNamesFromEpg}
+                    style={{ flex: 1 }}
+                  >
+                    Set Names from EPG
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={handleSetLogosFromEpg}
+                    style={{ flex: 1 }}
+                  >
+                    Set Logos from EPG
+                  </Button>
+                </Group>
+                <Text size="xs" c="dimmed" mt="xs">
+                  Updates channel names and logos based on their assigned EPG
+                  data
+                </Text>
               </Paper>
 
               <Popover
@@ -403,7 +503,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 export default ChannelBatchForm;
 
 // Lightweight inline preview component to visualize rename results for a subset
-const RegexPreview = ({ channelIds, find, replace}) => {
+const RegexPreview = ({ channelIds, find, replace }) => {
   const channelsMap = useChannelsStore((s) => s.channels);
   const previewItems = useMemo(() => {
     const items = [];
@@ -412,7 +512,8 @@ const RegexPreview = ({ channelIds, find, replace}) => {
     let re;
     try {
       re = new RegExp(find, flags);
-    } catch (e) {
+    } catch (error) {
+      console.error('Invalid regex:', error);
       return [{ before: 'Invalid regex', after: '' }];
     }
     for (let i = 0; i < Math.min(channelIds.length, 25); i++) {
@@ -431,20 +532,41 @@ const RegexPreview = ({ channelIds, find, replace}) => {
   return (
     <Box mt={8}>
       <Text size="xs" c="dimmed" mb={4}>
-        Preview (first {Math.min(channelIds.length, 25)} of {channelIds.length} selected)
+        Preview (first {Math.min(channelIds.length, 25)} of {channelIds.length}{' '}
+        selected)
       </Text>
       <ScrollArea h={120} offsetScrollbars>
         <Stack gap={4}>
           {previewItems.length === 0 ? (
-            <Text size="xs" c="dimmed">No changes with current pattern.</Text>
+            <Text size="xs" c="dimmed">
+              No changes with current pattern.
+            </Text>
           ) : (
             previewItems.map((row, idx) => (
               <Group key={idx} gap={8} wrap="nowrap" align="center">
-                <Text size="xs" style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <Text
+                  size="xs"
+                  style={{
+                    flex: 1,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {row.before}
                 </Text>
-                <Text size="xs" c="gray.6">→</Text>
-                <Text size="xs" style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <Text size="xs" c="gray.6">
+                  →
+                </Text>
+                <Text
+                  size="xs"
+                  style={{
+                    flex: 1,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {row.after}
                 </Text>
               </Group>

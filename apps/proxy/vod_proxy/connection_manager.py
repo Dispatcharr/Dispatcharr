@@ -475,7 +475,8 @@ class VODConnectionManager:
                 "connected_at": str(time.time()),
                 "last_activity": str(time.time()),
                 "bytes_sent": "0",
-                "position_seconds": "0"
+                "position_seconds": "0",
+                "last_position_update": str(time.time())
             }
 
             # Use pipeline for atomic operations
@@ -1079,7 +1080,7 @@ class VODConnectionManager:
             if range_header:
                 logger.info(f"[{client_id}] *** CLIENT RANGE REQUEST: {range_header} ***")
 
-                # Parse range for logging
+                # Parse range for seeking detection
                 try:
                     if 'bytes=' in range_header:
                         range_part = range_header.replace('bytes=', '')

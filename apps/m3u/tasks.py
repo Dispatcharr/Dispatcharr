@@ -903,6 +903,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
+    if compiled_filters:
+        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -912,10 +914,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-
+            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
             include = True
             for pattern, filter in compiled_filters:
-                logger.debug(f"Checking filter patterh {pattern}")
+                logger.trace(f"Checking filter pattern {pattern}")
                 target = name
                 if filter.filter_type == "url":
                     target = url
@@ -1176,13 +1178,13 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                 )
 
             logger.info(
-                f"Creating XCClient with URL: {server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
+                f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
             )
 
             # Create XCClient with explicit error handling
             try:
                 with XCClient(
-                    server_url, account.username, account.password, user_agent_string
+                    account.server_url, account.username, account.password, user_agent_string
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
@@ -1191,6 +1193,54 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         logger.debug(f"Authenticating with XC server {server_url}")
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
+
+                        # Save account information to all active profiles
+                        try:
+                            from apps.m3u.models import M3UAccountProfile
+
+                            profiles = M3UAccountProfile.objects.filter(
+                                m3u_account=account,
+                                is_active=True
+                            )
+
+                            # Update each profile with account information using its own transformed credentials
+                            for profile in profiles:
+                                try:
+                                    # Get transformed credentials for this specific profile
+                                    profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
+
+                                    # Create a separate XC client for this profile's credentials
+                                    with XCClient(
+                                        profile_url,
+                                        profile_username,
+                                        profile_password,
+                                        user_agent_string
+                                    ) as profile_client:
+                                        # Authenticate with this profile's credentials
+                                        if profile_client.authenticate():
+                                            # Get account information specific to this profile's credentials
+                                            profile_account_info = profile_client.get_account_info()
+
+                                            # Merge with existing custom_properties if they exist
+                                            existing_props = profile.custom_properties or {}
+                                            existing_props.update(profile_account_info)
+                                            profile.custom_properties = existing_props
+                                            profile.save(update_fields=['custom_properties'])
+
+                                            logger.info(f"Updated account information for profile '{profile.name}' with transformed credentials")
+                                        else:
+                                            logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
+
+                                except Exception as profile_error:
+                                    logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                                    # Continue with other profiles even if one fails
+
+                            logger.info(f"Processed account information for {profiles.count()} profiles for account {account.name}")
+
+                        except Exception as save_error:
+                            logger.warning(f"Failed to process profile account information: {str(save_error)}")
+                            # Don't fail the whole process if saving account info fails
+
                     except Exception as e:
                         error_msg = f"Failed to authenticate with XC server: {str(e)}"
                         logger.error(error_msg)
@@ -1990,6 +2040,200 @@ def sync_auto_channels(account_id, scan_start_time=None):
         return f"Auto sync error: {str(e)}"
 
 
+def get_transformed_credentials(account, profile=None):
+    """
+    Get transformed credentials for XtreamCodes API calls.
+
+    Args:
+        account: M3UAccount instance
+        profile: M3UAccountProfile instance (optional, if not provided will use primary profile)
+
+    Returns:
+        tuple: (transformed_url, transformed_username, transformed_password)
+    """
+    import re
+    import urllib.parse
+
+    # If no profile is provided, find the primary active profile
+    if profile is None:
+        try:
+            from apps.m3u.models import M3UAccountProfile
+            profile = M3UAccountProfile.objects.filter(
+                m3u_account=account,
+                is_active=True
+            ).first()
+            if profile:
+                logger.debug(f"Using primary profile '{profile.name}' for URL transformation")
+            else:
+                logger.debug(f"No active profiles found for account {account.name}, using base credentials")
+        except Exception as e:
+            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
+            profile = None
+
+    base_url = account.server_url
+    base_username = account.username
+    base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
+    # Format: http://server.com:port/username/password/rest_of_path
+    if base_url and base_username and base_password:
+        # Remove trailing slash from server URL if present
+        clean_server_url = base_url.rstrip('/')
+
+        # Build the complete URL with embedded credentials
+        complete_url = f"{clean_server_url}/{base_username}/{base_password}/"
+        logger.debug(f"Built complete URL: {complete_url}")
+
+        # Apply profile-specific transformations if profile is provided
+        if profile and profile.search_pattern and profile.replace_pattern:
+            try:
+                # Handle backreferences in the replacement pattern
+                safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', profile.replace_pattern)
+
+                # Apply transformation to the complete URL
+                transformed_complete_url = re.sub(profile.search_pattern, safe_replace_pattern, complete_url)
+                logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
+
+                # Extract components from the transformed URL
+                # Pattern: http://server.com:port/username/password/
+                parsed_url = urllib.parse.urlparse(transformed_complete_url)
+                path_parts = [part for part in parsed_url.path.split('/') if part]
+
+                if len(path_parts) >= 2:
+                    # Extract username and password from path
+                    transformed_username = path_parts[0]
+                    transformed_password = path_parts[1]
+
+                    # Rebuild server URL without the username/password path
+                    transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    if parsed_url.port:
+                        transformed_url = f"{parsed_url.scheme}://{parsed_url.hostname}:{parsed_url.port}"
+
+                    logger.debug(f"Extracted transformed credentials:")
+                    logger.debug(f"  Server URL: {transformed_url}")
+                    logger.debug(f"  Username: {transformed_username}")
+                    logger.debug(f"  Password: {transformed_password}")
+
+                    return transformed_url, transformed_username, transformed_password
+                else:
+                    logger.warning(f"Could not extract credentials from transformed URL: {transformed_complete_url}")
+                    return base_url, base_username, base_password
+
+            except Exception as e:
+                logger.error(f"Error transforming URL for profile {profile.name if profile else 'unknown'}: {e}")
+                return base_url, base_username, base_password
+        else:
+            # No profile or no transformation patterns
+            return base_url, base_username, base_password
+    else:
+        logger.warning(f"Missing credentials for account {account.name}")
+        return base_url, base_username, base_password
+
+
+@shared_task
+def refresh_account_info(profile_id):
+    """Refresh only the account information for a specific M3U profile."""
+    if not acquire_task_lock("refresh_account_info", profile_id):
+        return f"Account info refresh task already running for profile_id={profile_id}."
+
+    try:
+        from apps.m3u.models import M3UAccountProfile
+        import re
+
+        profile = M3UAccountProfile.objects.get(id=profile_id)
+        account = profile.m3u_account
+
+        if account.account_type != M3UAccount.Types.XC:
+            release_task_lock("refresh_account_info", profile_id)
+            return f"Profile {profile_id} belongs to account {account.id} which is not an XtreamCodes account."
+
+        # Get transformed credentials using the helper function
+        transformed_url, transformed_username, transformed_password = get_transformed_credentials(account, profile)
+
+        # Initialize XtreamCodes client with extracted/transformed credentials
+        client = XCClient(
+            transformed_url,
+            transformed_username,
+            transformed_password,
+            account.get_user_agent(),
+        )        # Authenticate and get account info
+        auth_result = client.authenticate()
+        if not auth_result:
+            error_msg = f"Authentication failed for profile {profile.name} ({profile_id})"
+            logger.error(error_msg)
+
+            # Send error notification to frontend via websocket
+            send_websocket_update(
+                "updates",
+                "update",
+                {
+                    "type": "account_info_refresh_error",
+                    "profile_id": profile_id,
+                    "profile_name": profile.name,
+                    "error": "Authentication failed with the provided credentials",
+                    "message": f"Failed to authenticate profile '{profile.name}'. Please check the credentials."
+                }
+            )
+
+            release_task_lock("refresh_account_info", profile_id)
+            return error_msg
+
+        # Get account information
+        account_info = client.get_account_info()
+
+        # Update only this specific profile with the new account info
+        if not profile.custom_properties:
+            profile.custom_properties = {}
+        profile.custom_properties.update(account_info)
+        profile.save()
+
+        # Send success notification to frontend via websocket
+        send_websocket_update(
+            "updates",
+            "update",
+            {
+                "type": "account_info_refresh_success",
+                "profile_id": profile_id,
+                "profile_name": profile.name,
+                "message": f"Account information successfully refreshed for profile '{profile.name}'"
+            }
+        )
+
+        release_task_lock("refresh_account_info", profile_id)
+        return f"Account info refresh completed for profile {profile_id} ({profile.name})."
+
+    except M3UAccountProfile.DoesNotExist:
+        error_msg = f"Profile {profile_id} not found"
+        logger.error(error_msg)
+
+        send_websocket_update(
+            "updates",
+            "update",
+            {
+                "type": "account_refresh_error",
+                "profile_id": profile_id,
+                "error": "Profile not found",
+                "message": f"Profile {profile_id} not found"
+            }
+        )
+
+        release_task_lock("refresh_account_info", profile_id)
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error refreshing account info for profile {profile_id}: {str(e)}"
+        logger.error(error_msg)
+
+        send_websocket_update(
+            "updates",
+            "update",
+            {
+                "type": "account_refresh_error",
+                "profile_id": profile_id,
+                "error": str(e),
+                "message": f"Failed to refresh account info: {str(e)}"
+            }
+        )
+
+        release_task_lock("refresh_account_info", profile_id)
+        return error_msg
 @shared_task
 def refresh_single_m3u_account(account_id):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""

@@ -450,8 +450,40 @@ class RecordingSerializer(serializers.ModelSerializer):
         read_only_fields = ["task_id"]
 
     def validate(self, data):
+        from core.models import CoreSettings
         start_time = data.get("start_time")
         end_time = data.get("end_time")
+
+        # If this is an EPG-based recording (program provided), apply global pre/post offsets
+        try:
+            cp = data.get("custom_properties") or {}
+            is_epg_based = isinstance(cp, dict) and isinstance(cp.get("program"), (dict,))
+        except Exception:
+            is_epg_based = False
+
+        if is_epg_based and start_time and end_time:
+            try:
+                pre_min = int(CoreSettings.get_dvr_pre_offset_minutes())
+            except Exception:
+                pre_min = 0
+            try:
+                post_min = int(CoreSettings.get_dvr_post_offset_minutes())
+            except Exception:
+                post_min = 0
+            from datetime import timedelta
+            try:
+                if pre_min and pre_min > 0:
+                    start_time = start_time - timedelta(minutes=pre_min)
+            except Exception:
+                pass
+            try:
+                if post_min and post_min > 0:
+                    end_time = end_time + timedelta(minutes=post_min)
+            except Exception:
+                pass
+            # write back adjusted times so scheduling uses them
+            data["start_time"] = start_time
+            data["end_time"] = end_time
 
         now = timezone.now()  # timezone-aware current time
 

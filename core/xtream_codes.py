@@ -136,6 +136,47 @@ class Client:
             logger.error(traceback.format_exc())
             raise
 
+    def get_account_info(self):
+        """Get account information from the last authentication response"""
+        if not self.server_info:
+            raise ValueError("Not authenticated. Call authenticate() first.")
+
+        from datetime import datetime
+
+        # Extract relevant account information
+        user_info = self.server_info.get('user_info', {})
+        server_info = self.server_info.get('server_info', {})
+
+        account_info = {
+            'last_refresh': datetime.utcnow().isoformat() + 'Z',  # Explicit UTC with Z suffix
+            'auth_timestamp': datetime.utcnow().timestamp(),
+            'user_info': {
+                'username': user_info.get('username'),
+                'password': user_info.get('password'),
+                'message': user_info.get('message'),
+                'auth': user_info.get('auth'),
+                'status': user_info.get('status'),
+                'exp_date': user_info.get('exp_date'),
+                'is_trial': user_info.get('is_trial'),
+                'active_cons': user_info.get('active_cons'),
+                'created_at': user_info.get('created_at'),
+                'max_connections': user_info.get('max_connections'),
+                'allowed_output_formats': user_info.get('allowed_output_formats', [])
+            },
+            'server_info': {
+                'url': server_info.get('url'),
+                'port': server_info.get('port'),
+                'https_port': server_info.get('https_port'),
+                'server_protocol': server_info.get('server_protocol'),
+                'rtmp_port': server_info.get('rtmp_port'),
+                'timezone': server_info.get('timezone'),
+                'timestamp_now': server_info.get('timestamp_now'),
+                'time_now': server_info.get('time_now')
+            }
+        }
+
+        return account_info
+
     def get_live_categories(self):
         """Get live TV categories"""
         try:

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import API from '../../api';
 import M3UProfile from './M3UProfile';
+import AccountInfoModal from './AccountInfoModal';
 import usePlaylistsStore from '../../store/playlists';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
@@ -18,13 +19,16 @@ import {
   Center,
   Group,
   Switch,
+  Badge,
+  Stack,
 } from '@mantine/core';
-import { SquareMinus, SquarePen } from 'lucide-react';
+import { SquareMinus, SquarePen, Info } from 'lucide-react';
 
 const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
   const allProfiles = usePlaylistsStore((s) => s.profiles);
+  const fetchPlaylist = usePlaylistsStore((s) => s.fetchPlaylist);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -34,6 +38,15 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [profileToDelete, setProfileToDelete] = useState(null);
+  const [accountInfoOpen, setAccountInfoOpen] = useState(false);
+  const [selectedProfileForInfo, setSelectedProfileForInfo] = useState(null);
+
+  const handleRefreshAccountInfo = async () => {
+    // Refresh the playlist data to get updated account info
+    if (playlist?.id) {
+      await fetchPlaylist(playlist.id);
+    }
+  };
 
   useEffect(() => {
     try {
@@ -109,8 +122,64 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
   };
 
   const closeEditor = () => {
-    setProfile(null);
     setProfileEditorOpen(false);
+    // Delay clearing the profile until after the modal animation completes
+    setTimeout(() => {
+      setProfile(null);
+    }, 300); // Mantine modal animation typically takes ~200-300ms
+  };
+
+  const showAccountInfo = (profile) => {
+    setSelectedProfileForInfo(profile);
+    setAccountInfoOpen(true);
+  };
+
+  const closeAccountInfo = () => {
+    setSelectedProfileForInfo(null);
+    setAccountInfoOpen(false);
+  };
+
+  // Helper function to get account status from profile
+  const getAccountStatus = (profile) => {
+    if (!profile.custom_properties?.user_info) return null;
+    return profile.custom_properties.user_info.status;
+  };
+
+  // Helper function to check if account is expired
+  const isAccountExpired = (profile) => {
+    if (!profile.custom_properties?.user_info?.exp_date) return false;
+    try {
+      const expDate = new Date(
+        parseInt(profile.custom_properties.user_info.exp_date) * 1000
+      );
+      return expDate < new Date();
+    } catch {
+      return false;
+    }
+  };
+
+  // Helper function to get account expiration info
+  const getExpirationInfo = (profile) => {
+    if (!profile.custom_properties?.user_info?.exp_date) return null;
+    try {
+      const expDate = new Date(
+        parseInt(profile.custom_properties.user_info.exp_date) * 1000
+      );
+      const now = new Date();
+      const diffMs = expDate - now;
+
+      if (diffMs <= 0) return { text: 'Expired', color: 'red' };
+
+      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      if (days > 30) return { text: `${days} days`, color: 'green' };
+      if (days > 7) return { text: `${days} days`, color: 'yellow' };
+      if (days > 0) return { text: `${days} days`, color: 'orange' };
+
+      const hours = Math.floor(diffMs / (1000 * 60 * 60));
+      return { text: `${hours}h`, color: 'red' };
+    } catch {
+      return null;
+    }
   };
 
   // Don't render if modal is not open, or if playlist data is invalid
@@ -132,57 +201,133 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
             // Sort remaining profiles alphabetically by name
             return a.name.localeCompare(b.name);
           })
-          .map((item) => (
-            <Card key={item.id}>
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                <Group justify="space-between">
-                  <Text fw={600}>{item.name}</Text>
-                  <Switch
-                    checked={item.is_active}
-                    onChange={() => toggleActive(item)}
-                    disabled={item.is_default}
-                    style={{ paddingTop: 6 }}
-                  />
-                </Group>
+          .map((item) => {
+            const accountStatus = getAccountStatus(item);
+            const expirationInfo = getExpirationInfo(item);
+            const expired = isAccountExpired(item);
 
-                <Flex gap="sm">
-                  <NumberInput
-                    label="Max Streams"
-                    value={item.max_streams}
-                    disabled={item.is_default}
-                    onChange={(value) => modifyMaxStreams(value, item)}
-                    style={{ flex: 1 }}
-                  />
+            return (
+              <Card key={item.id}>
+                <Stack spacing="sm">
+                  {/* Header with name and status badges */}
+                  <Group justify="space-between" align="center">
+                    <Group spacing="sm" align="center">
+                      <Stack spacing={2}>
+                        <Text fw={600}>{item.name}</Text>
+                        {/* Show notes if they exist */}
+                        {item.custom_properties?.notes && (
+                          <Text
+                            size="xs"
+                            c="dimmed"
+                            style={{ fontStyle: 'italic' }}
+                          >
+                            {item.custom_properties.notes}
+                          </Text>
+                        )}
+                      </Stack>
+                      {playlist?.account_type === 'XC' &&
+                        item.custom_properties && (
+                          <Group spacing="xs">
+                            {/* Account status badge */}
+                            {accountStatus && (
+                              <Badge
+                                size="sm"
+                                color={
+                                  accountStatus === 'Active'
+                                    ? 'green'
+                                    : expired
+                                      ? 'red'
+                                      : 'gray'
+                                }
+                                variant="light"
+                              >
+                                {accountStatus}
+                              </Badge>
+                            )}
+                            {/* Expiration badge */}
+                            {expirationInfo && (
+                              <Badge
+                                size="sm"
+                                color={expirationInfo.color}
+                                variant="outline"
+                              >
+                                {expirationInfo.text}
+                              </Badge>
+                            )}
+                            {/* Info button next to badges */}
+                            <ActionIcon
+                              size="sm"
+                              variant="filled"
+                              color="blue"
+                              onClick={() => showAccountInfo(item)}
+                              title="View account information"
+                              style={{
+                                backgroundColor: 'rgba(34, 139, 230, 0.1)',
+                                color: '#228be6',
+                              }}
+                            >
+                              <Info size="16" />
+                            </ActionIcon>
+                          </Group>
+                        )}
+                    </Group>
+                  </Group>
 
-                  {!item.is_default && (
-                    <Group
-                      align="flex-end"
-                      gap="xs"
-                      style={{ paddingBottom: 8 }}
-                    >
+                  {/* Max Streams and Actions */}
+                  <Flex gap="sm" align="flex-end">
+                    <NumberInput
+                      label="Max Streams"
+                      value={item.max_streams}
+                      disabled={item.is_default}
+                      onChange={(value) => modifyMaxStreams(value, item)}
+                      style={{ flex: 1 }}
+                    />
+
+                    <Group spacing="xs" style={{ paddingBottom: 8 }}>
+                      {/* Toggle switch */}
+                      <Switch
+                        checked={item.is_active}
+                        onChange={() => toggleActive(item)}
+                        disabled={item.is_default}
+                        label="Active"
+                        labelPosition="left"
+                        size="sm"
+                      />
+
+                      {/* Always show edit button, but limit what can be edited for default profiles */}
                       <ActionIcon
                         size="sm"
                         variant="transparent"
                         color={theme.tailwind.yellow[3]}
                         onClick={() => editProfile(item)}
+                        title={
+                          item.is_default
+                            ? 'Edit profile name and notes'
+                            : 'Edit profile'
+                        }
                       >
                         <SquarePen size="20" />
                       </ActionIcon>
 
-                      <ActionIcon
-                        color={theme.tailwind.red[6]}
-                        onClick={() => deleteProfile(item.id)}
-                        size="small"
-                        variant="transparent"
-                      >
-                        <SquareMinus size="20" />
-                      </ActionIcon>
+                      {!item.is_default && (
+                        <>
+                          <ActionIcon
+                            color={theme.tailwind.red[6]}
+                            onClick={() => deleteProfile(item.id)}
+                            size="small"
+                            variant="transparent"
+                            title="Delete profile"
+                          >
+                            <SquareMinus size="20" />
+                          </ActionIcon>
+                        </>
+                      )}
                     </Group>
-                  )}
-                </Flex>
-              </Box>
-            </Card>
-          ))}
+                  </Flex>
+                </Stack>
+              </Card>
+            );
+          })}
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
           <Button
@@ -226,6 +371,12 @@ This action cannot be undone.`}
         actionKey="delete-profile"
         onSuppressChange={suppressWarning}
         size="md"
+      />
+      <AccountInfoModal
+        isOpen={accountInfoOpen}
+        onClose={closeAccountInfo}
+        profile={selectedProfileForInfo}
+        onRefresh={handleRefreshAccountInfo}
       />
     </>
   );

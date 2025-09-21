@@ -71,6 +71,39 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
             if instance.value != request.data["value"]:
                 rehash_streams.delay(request.data["value"].split(","))
 
+        # If DVR pre/post offsets changed, reschedule upcoming recordings
+        try:
+            from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
+            if instance.key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
+                if instance.value != request.data.get("value"):
+                    try:
+                        # Prefer async task if Celery is available
+                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+                        reschedule_upcoming_recordings_for_offset_change.delay()
+                    except Exception:
+                        # Fallback to synchronous implementation
+                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+                        reschedule_upcoming_recordings_for_offset_change_impl()
+        except Exception:
+            pass
+
+        return response
+
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        # If creating DVR pre/post offset settings, also reschedule upcoming recordings
+        try:
+            key = request.data.get("key")
+            from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
+            if key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
+                try:
+                    from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+                    reschedule_upcoming_recordings_for_offset_change.delay()
+                except Exception:
+                    from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+                    reschedule_upcoming_recordings_for_offset_change_impl()
+        except Exception:
+            pass
         return response
     @action(detail=False, methods=["post"], url_path="check")
     def check(self, request, *args, **kwargs):

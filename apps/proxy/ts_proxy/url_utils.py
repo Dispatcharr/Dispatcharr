@@ -142,7 +142,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             if not m3u_account:
                 return {'error': 'Stream has no M3U account'}
 
-            m3u_profiles = m3u_account.profiles.all()
+            m3u_profiles = m3u_account.profiles.filter(is_active=True)
             default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
 
             if not default_profile:
@@ -153,10 +153,6 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
 
             selected_profile = None
             for profile in profiles:
-                # Skip inactive profiles
-                if not profile.is_active:
-                    logger.debug(f"Skipping inactive profile {profile.id}")
-                    continue
 
                 # Check connection availability
                 if redis_client:
@@ -281,8 +277,10 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                 if not m3u_account:
                     logger.debug(f"Stream {stream.id} has no M3U account")
                     continue
-
-                m3u_profiles = m3u_account.profiles.all()
+                if m3u_account.is_active == False:
+                    logger.debug(f"M3U account {m3u_account.id} is inactive, skipping.")
+                    continue
+                m3u_profiles = m3u_account.profiles.filter(is_active=True)
                 default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
 
                 if not default_profile:
@@ -294,11 +292,6 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
 
                 selected_profile = None
                 for profile in profiles:
-                    # Skip inactive profiles
-                    if not profile.is_active:
-                        logger.debug(f"Skipping inactive profile {profile.id}")
-                        continue
-
                     # Check connection availability
                     if redis_client:
                         profile_connections_key = f"profile_connections:{profile.id}"

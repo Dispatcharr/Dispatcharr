@@ -394,7 +394,7 @@ const LogosTable = () => {
       {
         header: 'Name',
         accessorKey: 'name',
-        size: 200,
+        size: 250,
         cell: ({ getValue }) => (
           <Text fw={500} size="sm">
             {getValue()}
@@ -479,6 +479,7 @@ const LogosTable = () => {
       {
         header: 'URL',
         accessorKey: 'url',
+        grow: true,
         cell: ({ getValue }) => (
           <Group gap={4} style={{ alignItems: 'center' }}>
             <Box

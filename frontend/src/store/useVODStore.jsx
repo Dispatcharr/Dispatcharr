@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import api from '../api';
 
 const useVODStore = create((set, get) => ({
-  movies: {},
-  series: {},
+  content: {}, // Store for individual content details (when fetching movie/series details)
+  currentPageContent: [], // Store the current page's results
   episodes: {},
   categories: {},
   loading: false,
@@ -15,7 +15,7 @@ const useVODStore = create((set, get) => ({
   },
   currentPage: 1,
   totalCount: 0,
-  pageSize: 20,
+  pageSize: 24,
 
   setFilters: (newFilters) =>
     set((state) => ({
@@ -28,12 +28,18 @@ const useVODStore = create((set, get) => ({
       currentPage: page,
     })),
 
-  fetchMovies: async () => {
+  setPageSize: (size) =>
+    set(() => ({
+      pageSize: size,
+      currentPage: 1, // Reset to first page when page size changes
+    })),
+
+  fetchContent: async () => {
     try {
       set({ loading: true, error: null });
       const state = get();
-      const params = new URLSearchParams();
 
+      const params = new URLSearchParams();
       params.append('page', state.currentPage);
       params.append('page_size', state.pageSize);
 
@@ -45,60 +51,62 @@ const useVODStore = create((set, get) => ({
         params.append('category', state.filters.category);
       }
 
-      const response = await api.getMovies(params);
+      let allResults = [];
+      let totalCount = 0;
 
-      // Handle both paginated and non-paginated responses
-      const results = response.results || response;
-      const count = response.count || results.length;
+      if (state.filters.type === 'movies') {
+        // Fetch only movies
+        const response = await api.getMovies(params);
+        const results = response.results || response;
+        allResults = results.map((item) => ({ ...item, contentType: 'movie' }));
+        totalCount = response.count || results.length;
+      } else if (state.filters.type === 'series') {
+        // Fetch only series
+        const response = await api.getSeries(params);
+        const results = response.results || response;
+        allResults = results.map((item) => ({
+          ...item,
+          contentType: 'series',
+        }));
+        totalCount = response.count || results.length;
+      } else {
+        // Use the new unified backend endpoint for 'all' view
+        const response = await api.getAllContent(params);
+        console.log('getAllContent response:', response);
+        console.log('response type:', typeof response);
+        console.log(
+          'response keys:',
+          response ? Object.keys(response) : 'no response'
+        );
 
+        const results = response.results || response;
+        console.log('results:', results);
+        console.log('results type:', typeof results);
+        console.log('results is array:', Array.isArray(results));
+
+        // Check if results is actually an array before calling map
+        if (!Array.isArray(results)) {
+          console.error('Results is not an array:', results);
+          throw new Error('Invalid response format - results is not an array');
+        }
+
+        // The backend already provides content_type and proper sorting/pagination
+        allResults = results.map((item) => ({
+          ...item,
+          contentType: item.content_type, // Backend provides this field
+        }));
+        totalCount = response.count || results.length;
+      }
+
+      // Store the current page results directly (don't accumulate all pages)
       set({
-        movies: results.reduce((acc, movie) => {
-          acc[movie.id] = movie;
-          return acc;
-        }, {}),
-        totalCount: count,
+        currentPageContent: allResults, // This is the paginated data for current page
+        totalCount,
         loading: false,
       });
     } catch (error) {
-      console.error('Failed to fetch movies:', error);
-      set({ error: 'Failed to load movies.', loading: false });
-    }
-  },
-
-  fetchSeries: async () => {
-    set({ loading: true, error: null });
-    try {
-      const state = get();
-      const params = new URLSearchParams();
-
-      params.append('page', state.currentPage);
-      params.append('page_size', state.pageSize);
-
-      if (state.filters.search) {
-        params.append('search', state.filters.search);
-      }
-
-      if (state.filters.category) {
-        params.append('category', state.filters.category);
-      }
-
-      const response = await api.getSeries(params);
-
-      // Handle both paginated and non-paginated responses
-      const results = response.results || response;
-      const count = response.count || results.length;
-
-      set({
-        series: results.reduce((acc, series) => {
-          acc[series.id] = series;
-          return acc;
-        }, {}),
-        totalCount: count,
-        loading: false,
-      });
-    } catch (error) {
-      console.error('Failed to fetch series:', error);
-      set({ error: 'Failed to load series.', loading: false });
+      console.error('Failed to fetch content:', error);
+      set({ error: 'Failed to load content.', loading: false });
     }
   },
 
@@ -152,9 +160,12 @@ const useVODStore = create((set, get) => ({
       };
       console.log('Fetched Movie Details:', movieDetails);
       set((state) => ({
-        movies: {
-          ...state.movies,
-          [movieDetails.id]: movieDetails,
+        content: {
+          ...state.content,
+          [`movie_${movieDetails.id}`]: {
+            ...movieDetails,
+            contentType: 'movie',
+          },
         },
         loading: false,
       }));
@@ -255,36 +266,48 @@ const useVODStore = create((set, get) => ({
 
   addMovie: (movie) =>
     set((state) => ({
-      movies: { ...state.movies, [movie.id]: movie },
+      content: {
+        ...state.content,
+        [`movie_${movie.id}`]: { ...movie, contentType: 'movie' },
+      },
     })),
 
   updateMovie: (movie) =>
     set((state) => ({
-      movies: { ...state.movies, [movie.id]: movie },
+      content: {
+        ...state.content,
+        [`movie_${movie.id}`]: { ...movie, contentType: 'movie' },
+      },
     })),
 
   removeMovie: (movieId) =>
     set((state) => {
-      const updatedMovies = { ...state.movies };
-      delete updatedMovies[movieId];
-      return { movies: updatedMovies };
+      const updatedContent = { ...state.content };
+      delete updatedContent[`movie_${movieId}`];
+      return { content: updatedContent };
     }),
 
   addSeries: (series) =>
     set((state) => ({
-      series: { ...state.series, [series.id]: series },
+      content: {
+        ...state.content,
+        [`series_${series.id}`]: { ...series, contentType: 'series' },
+      },
     })),
 
   updateSeries: (series) =>
     set((state) => ({
-      series: { ...state.series, [series.id]: series },
+      content: {
+        ...state.content,
+        [`series_${series.id}`]: { ...series, contentType: 'series' },
+      },
     })),
 
   removeSeries: (seriesId) =>
     set((state) => {
-      const updatedSeries = { ...state.series };
-      delete updatedSeries[seriesId];
-      return { series: updatedSeries };
+      const updatedContent = { ...state.content };
+      delete updatedContent[`series_${seriesId}`];
+      return { content: updatedContent };
     }),
 
   fetchSeriesInfo: async (seriesId) => {
@@ -363,9 +386,9 @@ const useVODStore = create((set, get) => ({
       }
 
       set((state) => ({
-        series: {
-          ...state.series,
-          [seriesInfo.id]: seriesInfo,
+        content: {
+          ...state.content,
+          [`series_${seriesInfo.id}`]: { ...seriesInfo, contentType: 'series' },
         },
         loading: false,
       }));
@@ -381,6 +404,29 @@ const useVODStore = create((set, get) => ({
       throw error;
     }
   },
+
+  // Helper methods for getting filtered content
+  getFilteredContent: () => {
+    const state = get();
+    // Return the current page content directly - backend handles all filtering/pagination
+    return state.currentPageContent;
+  },
+
+  getMovies: () => {
+    const state = get();
+    return Object.values(state.content).filter(
+      (item) => item.contentType === 'movie'
+    );
+  },
+
+  getSeries: () => {
+    const state = get();
+    return Object.values(state.content).filter(
+      (item) => item.contentType === 'series'
+    );
+  },
+
+  clearContent: () => set({ content: {}, totalCount: 0 }),
 }));
 
 export default useVODStore;

@@ -39,11 +39,16 @@ import {
   UnstyledButton,
   LoadingOverlay,
   Skeleton,
+  Modal,
+  NumberInput,
+  Radio,
+  Checkbox,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useChannelsTableStore from '../../store/channelsTable';
+import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 
@@ -54,6 +59,7 @@ const StreamRowActions = ({
   deleteStream,
   handleWatchStream,
   selectedChannelIds,
+  createChannelFromStream,
 }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const channelSelectionStreams = useChannelsTableStore(
@@ -61,23 +67,6 @@ const StreamRowActions = ({
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
   );
   const fetchLogos = useLogosStore((s) => s.fetchLogos);
-
-  const createChannelFromStream = async () => {
-    const selectedChannelProfileId =
-      useChannelsStore.getState().selectedProfileId;
-
-    await API.createChannelFromStream({
-      name: row.original.name,
-      channel_number: null,
-      stream_id: row.original.id,
-      // Only pass channel_profile_ids if a specific profile is selected (not "All")
-      ...(selectedChannelProfileId !== '0' && {
-        channel_profile_ids: selectedChannelProfileId,
-      }),
-    });
-    await API.requeryChannels();
-    fetchLogos();
-  };
 
   const addStreamToChannel = async () => {
     await API.updateChannel({
@@ -140,7 +129,7 @@ const StreamRowActions = ({
           size={iconSize}
           color={theme.tailwind.green[5]}
           variant="transparent"
-          onClick={createChannelFromStream}
+          onClick={() => createChannelFromStream(row.original)}
         >
           <SquarePlus size="18" fontSize="small" />
         </ActionIcon>
@@ -178,7 +167,7 @@ const StreamRowActions = ({
   );
 };
 
-const StreamsTable = ({}) => {
+const StreamsTable = () => {
   const theme = useMantineTheme();
 
   /**
@@ -196,6 +185,21 @@ const StreamsTable = ({}) => {
   const [isLoading, setIsLoading] = useState(true);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
   const [selectedStreamIds, setSelectedStreamIds] = useState([]);
+
+  // Channel numbering modal state
+  const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
+    useState(false);
+  const [numberingMode, setNumberingMode] = useState('provider'); // 'provider', 'auto', or 'custom'
+  const [customStartNumber, setCustomStartNumber] = useState(1);
+  const [rememberChoice, setRememberChoice] = useState(false);
+
+  // Single channel numbering modal state
+  const [singleChannelModalOpen, setSingleChannelModalOpen] = useState(false);
+  const [singleChannelMode, setSingleChannelMode] = useState('provider'); // 'provider', 'auto', or 'specific'
+  const [specificChannelNumber, setSpecificChannelNumber] = useState(1);
+  const [rememberSingleChoice, setRememberSingleChoice] = useState(false);
+  const [currentStreamForChannel, setCurrentStreamForChannel] = useState(null);
+
   // const [allRowsSelected, setAllRowsSelected] = useState(false);
 
   // Add local storage for page size
@@ -212,6 +216,10 @@ const StreamsTable = ({}) => {
     channel_group: '',
     m3u_account: '',
   });
+  const [columnSizing, setColumnSizing] = useLocalStorage(
+    'streams-table-column-sizing',
+    {}
+  );
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
     setPagination((prev) => ({
@@ -244,6 +252,10 @@ const StreamsTable = ({}) => {
   const showVideo = useVideoStore((s) => s.showVideo);
   const [tableSize, _] = useLocalStorage('table-size', 'default');
 
+  // Warnings store for "remember choice" functionality
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+
   const handleSelectClick = (e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -256,19 +268,21 @@ const StreamsTable = ({}) => {
     () => [
       {
         id: 'actions',
-        size: tableSize == 'compact' ? 60 : 80,
+        size: columnSizing.actions || (tableSize == 'compact' ? 60 : 80),
       },
       {
         id: 'select',
-        size: 30,
+        size: columnSizing.select || 30,
       },
       {
         header: 'Name',
         accessorKey: 'name',
+        grow: true,
+        size: columnSizing.name || 200,
         cell: ({ getValue }) => (
           <Box
             style={{
-              whiteSpace: 'nowrap',
+              whiteSpace: 'pre',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
@@ -283,10 +297,11 @@ const StreamsTable = ({}) => {
           channelGroups[row.channel_group]
             ? channelGroups[row.channel_group].name
             : '',
+        size: columnSizing.group || 150,
         cell: ({ getValue }) => (
           <Box
             style={{
-              whiteSpace: 'nowrap',
+              whiteSpace: 'pre',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
@@ -297,7 +312,7 @@ const StreamsTable = ({}) => {
       },
       {
         id: 'm3u',
-        size: 150,
+        size: columnSizing.m3u || 150,
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -315,7 +330,7 @@ const StreamsTable = ({}) => {
         ),
       },
     ],
-    [channelGroups, playlists]
+    [channelGroups, playlists, columnSizing, tableSize]
   );
 
   /**
@@ -411,48 +426,82 @@ const StreamsTable = ({}) => {
     fetchChannelGroups,
   ]);
 
-  // Bulk creation: create channels from selected streams in one API call
+  // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
-    setIsLoading(true);
+    if (selectedStreamIds.length === 0) return;
+
+    // Check if user has suppressed the channel numbering dialog
+    const actionKey = 'channel-numbering-choice';
+    if (isWarningSuppressed(actionKey)) {
+      // Use the remembered settings or default to 'provider' mode
+      const savedMode =
+        localStorage.getItem('channel-numbering-mode') || 'provider';
+      const savedStartNumber =
+        localStorage.getItem('channel-numbering-start') || '1';
+
+      const startingChannelNumberValue =
+        savedMode === 'provider'
+          ? null
+          : savedMode === 'auto'
+            ? 0
+            : Number(savedStartNumber);
+
+      await executeChannelCreation(startingChannelNumberValue);
+    } else {
+      // Show the modal to let user choose
+      setChannelNumberingModalOpen(true);
+    }
+  };
+
+  // Separate function to actually execute the channel creation
+  const executeChannelCreation = async (startingChannelNumberValue) => {
     try {
       const selectedChannelProfileId =
         useChannelsStore.getState().selectedProfileId;
 
-      // Try to fetch the actual stream data for selected streams
-      let streamsData = [];
-      try {
-        streamsData = await API.getStreamsByIds(selectedStreamIds);
-      } catch (error) {
-        console.warn('Could not fetch stream details, using IDs only:', error);
-      }
+      // Use the async API for all bulk operations
+      const response = await API.createChannelsFromStreamsAsync(
+        selectedStreamIds,
+        selectedChannelProfileId !== '0' ? [selectedChannelProfileId] : null,
+        startingChannelNumberValue
+      );
 
-      const streamData = selectedStreamIds.map((streamId) => {
-        const stream = streamsData.find((s) => s.id === streamId);
-        return {
-          stream_id: streamId,
-          name: stream?.name || `Stream ${streamId}`,
-          ...(selectedChannelProfileId !== '0' && {
-            channel_profile_ids: selectedChannelProfileId,
-          }),
-        };
-      });
+      console.log(
+        `Bulk creation task started: ${response.task_id} for ${response.stream_count} streams`
+      );
 
-      await API.createChannelsFromStreams(streamData);
-      await API.requeryChannels();
-
-      // Refresh channel profiles to update the membership information
-      await useChannelsStore.getState().fetchChannelProfiles();
-
-      fetchLogos();
-
-      // Clear selection and refresh data
+      // Clear selection since the task has started
       setSelectedStreamIds([]);
-      await fetchData();
     } catch (error) {
-      console.error('Error creating channels from streams:', error);
-    } finally {
-      setIsLoading(false);
+      console.error('Error starting bulk channel creation:', error);
+      // Error notifications will be handled by WebSocket
     }
+  };
+
+  // Handle confirming the channel numbering modal
+  const handleChannelNumberingConfirm = async () => {
+    // Save the choice if user wants to remember it
+    if (rememberChoice) {
+      suppressWarning('channel-numbering-choice');
+      localStorage.setItem('channel-numbering-mode', numberingMode);
+      if (numberingMode === 'custom') {
+        localStorage.setItem(
+          'channel-numbering-start',
+          customStartNumber.toString()
+        );
+      }
+    }
+
+    // Convert mode to API value
+    const startingChannelNumberValue =
+      numberingMode === 'provider'
+        ? null
+        : numberingMode === 'auto'
+          ? 0
+          : Number(customStartNumber);
+
+    setChannelNumberingModalOpen(false);
+    await executeChannelCreation(startingChannelNumberValue);
   };
 
   const editStream = async (stream = null) => {
@@ -474,6 +523,80 @@ const StreamsTable = ({}) => {
     setStream(null);
     setModalOpen(false);
     fetchData();
+  };
+
+  // Single channel creation functions
+  const createChannelFromStream = async (stream) => {
+    // Check if user has suppressed the single channel numbering dialog
+    const actionKey = 'single-channel-numbering-choice';
+    if (isWarningSuppressed(actionKey)) {
+      // Use the remembered settings or default to 'provider' mode
+      const savedMode =
+        localStorage.getItem('single-channel-numbering-mode') || 'provider';
+      const savedChannelNumber =
+        localStorage.getItem('single-channel-numbering-specific') || '1';
+
+      const channelNumberValue =
+        savedMode === 'provider'
+          ? null
+          : savedMode === 'auto'
+            ? 0
+            : Number(savedChannelNumber);
+
+      await executeSingleChannelCreation(stream, channelNumberValue);
+    } else {
+      // Show the modal to let user choose
+      setCurrentStreamForChannel(stream);
+      setSingleChannelModalOpen(true);
+    }
+  };
+
+  // Separate function to actually execute single channel creation
+  const executeSingleChannelCreation = async (stream, channelNumber = null) => {
+    const selectedChannelProfileId =
+      useChannelsStore.getState().selectedProfileId;
+
+    await API.createChannelFromStream({
+      name: stream.name,
+      channel_number: channelNumber,
+      stream_id: stream.id,
+      // Only pass channel_profile_ids if a specific profile is selected (not "All")
+      ...(selectedChannelProfileId !== '0' && {
+        channel_profile_ids: selectedChannelProfileId,
+      }),
+    });
+    await API.requeryChannels();
+    const fetchLogos = useChannelsStore.getState().fetchLogos;
+    fetchLogos();
+  };
+
+  // Handle confirming the single channel numbering modal
+  const handleSingleChannelNumberingConfirm = async () => {
+    // Save the choice if user wants to remember it
+    if (rememberSingleChoice) {
+      suppressWarning('single-channel-numbering-choice');
+      localStorage.setItem('single-channel-numbering-mode', singleChannelMode);
+      if (singleChannelMode === 'specific') {
+        localStorage.setItem(
+          'single-channel-numbering-specific',
+          specificChannelNumber.toString()
+        );
+      }
+    }
+
+    // Convert mode to API value
+    const channelNumberValue =
+      singleChannelMode === 'provider'
+        ? null
+        : singleChannelMode === 'auto'
+          ? 0
+          : Number(specificChannelNumber);
+
+    setSingleChannelModalOpen(false);
+    await executeSingleChannelCreation(
+      currentStreamForChannel,
+      channelNumberValue
+    );
   };
 
   const addStreamsToChannel = async () => {
@@ -631,6 +754,7 @@ const StreamsTable = ({}) => {
               deleteStream={deleteStream}
               handleWatchStream={handleWatchStream}
               selectedChannelIds={selectedChannelIds}
+              createChannelFromStream={createChannelFromStream}
             />
           );
       }
@@ -652,6 +776,8 @@ const StreamsTable = ({}) => {
     filters,
     pagination,
     sorting,
+    columnSizing,
+    setColumnSizing,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,
     manualSorting: true,
@@ -768,7 +894,7 @@ const StreamsTable = ({}) => {
                 p={5}
                 disabled={selectedStreamIds.length == 0}
               >
-                Create Channels
+                {`Create Channels (${selectedStreamIds.length})`}
               </Button>
 
               <Button
@@ -855,7 +981,7 @@ const StreamsTable = ({}) => {
               style={{
                 flex: 1,
                 overflowY: 'auto',
-                overflowX: 'hidden',
+                overflowX: 'auto',
                 border: 'solid 1px rgb(68,68,68)',
                 borderRadius: 'var(--mantine-radius-default)',
               }}
@@ -907,6 +1033,148 @@ const StreamsTable = ({}) => {
         isOpen={modalOpen}
         onClose={closeStreamForm}
       />
+
+      {/* Channel Numbering Modal */}
+      <Modal
+        opened={channelNumberingModalOpen}
+        onClose={() => setChannelNumberingModalOpen(false)}
+        title="Channel Numbering Options"
+        size="md"
+        centered
+      >
+        <Stack spacing="md">
+          <Text size="sm" c="dimmed">
+            Choose how to assign channel numbers to the{' '}
+            {selectedStreamIds.length} selected streams:
+          </Text>
+
+          <Radio.Group
+            value={numberingMode}
+            onChange={setNumberingMode}
+            label="Numbering Mode"
+          >
+            <Stack mt="xs" spacing="xs">
+              <Radio
+                value="provider"
+                label="Use Provider Numbers"
+                description="Use tvg-chno or channel-number from stream metadata, auto-assign for conflicts"
+              />
+              <Radio
+                value="auto"
+                label="Auto-Assign Sequential"
+                description="Start from the lowest available channel number and increment by 1"
+              />
+              <Radio
+                value="custom"
+                label="Start from Custom Number"
+                description="Start sequential numbering from a specific channel number"
+              />
+            </Stack>
+          </Radio.Group>
+
+          {numberingMode === 'custom' && (
+            <NumberInput
+              label="Starting Channel Number"
+              description="Channel numbers will be assigned starting from this number"
+              value={customStartNumber}
+              onChange={setCustomStartNumber}
+              min={1}
+              max={9999}
+              placeholder="Enter starting number..."
+            />
+          )}
+
+          <Checkbox
+            checked={rememberChoice}
+            onChange={(event) => setRememberChoice(event.currentTarget.checked)}
+            label="Remember this choice and don't ask again"
+          />
+
+          <Group justify="flex-end" mt="md">
+            <Button
+              variant="default"
+              onClick={() => setChannelNumberingModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleChannelNumberingConfirm}>
+              Create Channels
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Single Channel Numbering Modal */}
+      <Modal
+        opened={singleChannelModalOpen}
+        onClose={() => setSingleChannelModalOpen(false)}
+        title="Channel Number Assignment"
+        size="md"
+        centered
+      >
+        <Stack spacing="md">
+          <Text size="sm" c="dimmed">
+            Choose how to assign the channel number for "
+            {currentStreamForChannel?.name}":
+          </Text>
+
+          <Radio.Group
+            value={singleChannelMode}
+            onChange={setSingleChannelMode}
+            label="Number Assignment"
+          >
+            <Stack mt="xs" spacing="xs">
+              <Radio
+                value="provider"
+                label="Use Provider Number"
+                description="Use tvg-chno or channel-number from stream metadata, auto-assign if not available"
+              />
+              <Radio
+                value="auto"
+                label="Auto-Assign Next Available"
+                description="Automatically assign the next available channel number"
+              />
+              <Radio
+                value="specific"
+                label="Use Specific Number"
+                description="Use a specific channel number"
+              />
+            </Stack>
+          </Radio.Group>
+
+          {singleChannelMode === 'specific' && (
+            <NumberInput
+              label="Channel Number"
+              description="The specific channel number to assign"
+              value={specificChannelNumber}
+              onChange={setSpecificChannelNumber}
+              min={1}
+              max={9999}
+              placeholder="Enter channel number..."
+            />
+          )}
+
+          <Checkbox
+            checked={rememberSingleChoice}
+            onChange={(event) =>
+              setRememberSingleChoice(event.currentTarget.checked)
+            }
+            label="Remember this choice and don't ask again"
+          />
+
+          <Group justify="flex-end" mt="md">
+            <Button
+              variant="default"
+              onClick={() => setSingleChannelModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSingleChannelNumberingConfirm}>
+              Create Channel
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </>
   );
 };

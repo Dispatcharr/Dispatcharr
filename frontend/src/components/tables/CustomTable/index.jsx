@@ -18,6 +18,8 @@ const useTable = ({
   onRowSelectionChange = null,
   getExpandedRowHeight = null,
   state = [],
+  columnSizing,
+  setColumnSizing,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
@@ -85,15 +87,21 @@ const useTable = ({
 
   const table = useReactTable({
     defaultColumn: {
-      size: undefined,
       minSize: 0,
+      maxSize: Number.MAX_SAFE_INTEGER,
+      size: 150,
     },
     ...options,
     state: {
-      data: options.data,
+      ...options.state,
       selectedTableIds,
+      ...(columnSizing && { columnSizing }),
     },
+    onStateChange: options.onStateChange,
+    ...(setColumnSizing && { onColumnSizingChange: setColumnSizing }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
+    enableColumnResizing: true,
+    columnResizeMode: 'onChange',
   });
 
   const selectedTableIdsSet = useMemo(

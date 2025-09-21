@@ -11,6 +11,10 @@ import re
 import requests
 import pickle
 import base64
+import os
+import socket
+import mimetypes
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
@@ -20,12 +24,71 @@ from apps.m3u.models import M3UAccountProfile
 logger = logging.getLogger("vod_proxy")
 
 
+def infer_content_type_from_url(url: str) -> Optional[str]:
+    """
+    Infer MIME type from file extension in URL
+
+    Args:
+        url: The stream URL
+
+    Returns:
+        MIME type string or None if cannot be determined
+    """
+    try:
+        parsed_url = urlparse(url)
+        path = parsed_url.path
+
+        # Extract file extension
+        _, ext = os.path.splitext(path)
+        ext = ext.lower()
+
+        # Common video format mappings
+        video_mime_types = {
+            '.mp4': 'video/mp4',
+            '.mkv': 'video/x-matroska',
+            '.avi': 'video/x-msvideo',
+            '.mov': 'video/quicktime',
+            '.wmv': 'video/x-ms-wmv',
+            '.flv': 'video/x-flv',
+            '.webm': 'video/webm',
+            '.m4v': 'video/x-m4v',
+            '.3gp': 'video/3gpp',
+            '.ts': 'video/mp2t',
+            '.m3u8': 'application/x-mpegURL',
+            '.mpg': 'video/mpeg',
+            '.mpeg': 'video/mpeg',
+        }
+
+        if ext in video_mime_types:
+            logger.debug(f"Inferred content type '{video_mime_types[ext]}' from extension '{ext}' in URL: {url}")
+            return video_mime_types[ext]
+
+        # Fallback to mimetypes module
+        mime_type, _ = mimetypes.guess_type(path)
+        if mime_type and mime_type.startswith('video/'):
+            logger.debug(f"Inferred content type '{mime_type}' using mimetypes for URL: {url}")
+            return mime_type
+
+        logger.debug(f"Could not infer content type from URL: {url}")
+        return None
+
+    except Exception as e:
+        logger.warning(f"Error inferring content type from URL '{url}': {e}")
+        return None
+
+
 class SerializableConnectionState:
     """Serializable connection state that can be stored in Redis"""
 
     def __init__(self, session_id: str, stream_url: str, headers: dict,
-                 content_length: str = None, content_type: str = 'video/mp4',
-                 final_url: str = None, m3u_profile_id: int = None):
+                 content_length: str = None, content_type: str = None,
+                 final_url: str = None, m3u_profile_id: int = None,
+                 # Session metadata fields (previously stored in vod_session key)
+                 content_obj_type: str = None, content_uuid: str = None,
+                 content_name: str = None, client_ip: str = None,
+                 client_user_agent: str = None, utc_start: str = None,
+                 utc_end: str = None, offset: str = None,
+                 worker_id: str = None, connection_type: str = "redis_backed"):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -37,6 +100,29 @@ class SerializableConnectionState:
         self.request_count = 0
         self.active_streams = 0
 
+        # Session metadata (consolidated from vod_session key)
+        self.content_obj_type = content_obj_type
+        self.content_uuid = content_uuid
+        self.content_name = content_name
+        self.client_ip = client_ip
+        self.client_user_agent = client_user_agent
+        self.utc_start = utc_start or ""
+        self.utc_end = utc_end or ""
+        self.offset = offset or ""
+        self.worker_id = worker_id
+        self.connection_type = connection_type
+        self.created_at = time.time()
+
+        # Additional tracking fields
+        self.bytes_sent = 0
+        self.position_seconds = 0
+
+        # Range/seek tracking for position calculation
+        self.last_seek_byte = 0
+        self.last_seek_percentage = 0.0
+        self.total_content_size = 0
+        self.last_seek_timestamp = 0.0
+
     def to_dict(self):
         """Convert to dictionary for Redis storage"""
         return {
@@ -44,12 +130,32 @@ class SerializableConnectionState:
             'stream_url': self.stream_url or '',
             'headers': json.dumps(self.headers or {}),
             'content_length': str(self.content_length) if self.content_length is not None else '',
-            'content_type': self.content_type or 'video/mp4',
+            'content_type': self.content_type or '',
             'final_url': self.final_url or '',
             'm3u_profile_id': str(self.m3u_profile_id) if self.m3u_profile_id is not None else '',
             'last_activity': str(self.last_activity),
             'request_count': str(self.request_count),
-            'active_streams': str(self.active_streams)
+            'active_streams': str(self.active_streams),
+            # Session metadata
+            'content_obj_type': self.content_obj_type or '',
+            'content_uuid': self.content_uuid or '',
+            'content_name': self.content_name or '',
+            'client_ip': self.client_ip or '',
+            'client_user_agent': self.client_user_agent or '',
+            'utc_start': self.utc_start or '',
+            'utc_end': self.utc_end or '',
+            'offset': self.offset or '',
+            'worker_id': self.worker_id or '',
+            'connection_type': self.connection_type or 'redis_backed',
+            'created_at': str(self.created_at),
+            # Additional tracking fields
+            'bytes_sent': str(self.bytes_sent),
+            'position_seconds': str(self.position_seconds),
+            # Range/seek tracking
+            'last_seek_byte': str(self.last_seek_byte),
+            'last_seek_percentage': str(self.last_seek_percentage),
+            'total_content_size': str(self.total_content_size),
+            'last_seek_timestamp': str(self.last_seek_timestamp)
         }
 
     @classmethod
@@ -60,13 +166,33 @@ class SerializableConnectionState:
             stream_url=data['stream_url'],
             headers=json.loads(data['headers']) if data['headers'] else {},
             content_length=data.get('content_length') if data.get('content_length') else None,
-            content_type=data.get('content_type', 'video/mp4'),
+            content_type=data.get('content_type') or None,
             final_url=data.get('final_url') if data.get('final_url') else None,
-            m3u_profile_id=int(data.get('m3u_profile_id')) if data.get('m3u_profile_id') else None
+            m3u_profile_id=int(data.get('m3u_profile_id')) if data.get('m3u_profile_id') else None,
+            # Session metadata
+            content_obj_type=data.get('content_obj_type') or None,
+            content_uuid=data.get('content_uuid') or None,
+            content_name=data.get('content_name') or None,
+            client_ip=data.get('client_ip') or None,
+            client_user_agent=data.get('client_user_agent') or data.get('user_agent') or None,
+            utc_start=data.get('utc_start') or '',
+            utc_end=data.get('utc_end') or '',
+            offset=data.get('offset') or '',
+            worker_id=data.get('worker_id') or None,
+            connection_type=data.get('connection_type', 'redis_backed')
         )
         obj.last_activity = float(data.get('last_activity', time.time()))
         obj.request_count = int(data.get('request_count', 0))
         obj.active_streams = int(data.get('active_streams', 0))
+        obj.created_at = float(data.get('created_at', time.time()))
+        # Additional tracking fields
+        obj.bytes_sent = int(data.get('bytes_sent', 0))
+        obj.position_seconds = int(data.get('position_seconds', 0))
+        # Range/seek tracking
+        obj.last_seek_byte = int(data.get('last_seek_byte', 0))
+        obj.last_seek_percentage = float(data.get('last_seek_percentage', 0.0))
+        obj.total_content_size = int(data.get('total_content_size', 0))
+        obj.last_seek_timestamp = float(data.get('last_seek_timestamp', 0.0))
         return obj
 
 
@@ -108,7 +234,7 @@ class RedisBackedVODConnection:
         try:
             data = state.to_dict()
             # Log the data being saved for debugging
-            logger.debug(f"[{self.session_id}] Saving connection state: {data}")
+            logger.trace(f"[{self.session_id}] Saving connection state: {data}")
 
             # Verify all values are valid for Redis
             for key, value in data.items():
@@ -144,8 +270,14 @@ class RedisBackedVODConnection:
         except Exception as e:
             logger.error(f"[{self.session_id}] Error releasing lock: {e}")
 
-    def create_connection(self, stream_url: str, headers: dict, m3u_profile_id: int = None) -> bool:
-        """Create a new connection state in Redis"""
+    def create_connection(self, stream_url: str, headers: dict, m3u_profile_id: int = None,
+                         # Session metadata (consolidated from vod_session key)
+                         content_obj_type: str = None, content_uuid: str = None,
+                         content_name: str = None, client_ip: str = None,
+                         client_user_agent: str = None, utc_start: str = None,
+                         utc_end: str = None, offset: str = None,
+                         worker_id: str = None) -> bool:
+        """Create a new connection state in Redis with consolidated session metadata"""
         if not self._acquire_lock():
             logger.warning(f"[{self.session_id}] Could not acquire lock for connection creation")
             return False
@@ -157,12 +289,27 @@ class RedisBackedVODConnection:
                 logger.info(f"[{self.session_id}] Connection already exists in Redis")
                 return True
 
-            # Create new connection state
-            state = SerializableConnectionState(self.session_id, stream_url, headers, m3u_profile_id=m3u_profile_id)
+            # Create new connection state with consolidated session metadata
+            state = SerializableConnectionState(
+                session_id=self.session_id,
+                stream_url=stream_url,
+                headers=headers,
+                m3u_profile_id=m3u_profile_id,
+                # Session metadata
+                content_obj_type=content_obj_type,
+                content_uuid=content_uuid,
+                content_name=content_name,
+                client_ip=client_ip,
+                client_user_agent=client_user_agent,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                offset=offset,
+                worker_id=worker_id
+            )
             success = self._save_connection_state(state)
 
             if success:
-                logger.info(f"[{self.session_id}] Created new connection state in Redis")
+                logger.info(f"[{self.session_id}] Created new connection state in Redis with consolidated session metadata")
 
             return success
         finally:
@@ -218,9 +365,47 @@ class RedisBackedVODConnection:
             # Update state with response info on first request
             if state.request_count == 1:
                 if not state.content_length:
-                    state.content_length = response.headers.get('content-length')
-                if not state.content_type:
-                    state.content_type = response.headers.get('content-type', 'video/mp4')
+                    # Try to get full file size from Content-Range header first (for range requests)
+                    content_range = response.headers.get('content-range')
+                    if content_range and '/' in content_range:
+                        try:
+                            # Parse "bytes 0-1023/12653476926" to get total size
+                            total_size = content_range.split('/')[-1]
+                            if total_size.isdigit():
+                                state.content_length = total_size
+                                logger.debug(f"[{self.session_id}] Got full file size from Content-Range: {total_size}")
+                            else:
+                                # Fallback to Content-Length for partial size
+                                state.content_length = response.headers.get('content-length')
+                        except Exception as e:
+                            logger.warning(f"[{self.session_id}] Error parsing Content-Range: {e}")
+                            state.content_length = response.headers.get('content-length')
+                    else:
+                        # No Content-Range, use Content-Length (for non-range requests)
+                        state.content_length = response.headers.get('content-length')
+
+                logger.debug(f"[{self.session_id}] Response headers received: {dict(response.headers)}")
+
+                if not state.content_type:  # This will be True for None, '', or any falsy value
+                    # Get content type from provider response headers
+                    provider_content_type = (response.headers.get('content-type') or
+                                           response.headers.get('Content-Type') or
+                                           response.headers.get('CONTENT-TYPE'))
+
+                    if provider_content_type:
+                        logger.debug(f"[{self.session_id}] Using provider Content-Type: '{provider_content_type}'")
+                        state.content_type = provider_content_type
+                    else:
+                        # Provider didn't send Content-Type, infer from URL extension
+                        inferred_content_type = infer_content_type_from_url(state.stream_url)
+                        if inferred_content_type:
+                            logger.info(f"[{self.session_id}] Provider missing Content-Type, inferred from URL: '{inferred_content_type}'")
+                            state.content_type = inferred_content_type
+                        else:
+                            logger.debug(f"[{self.session_id}] No Content-Type from provider and could not infer from URL, using default: 'video/mp4'")
+                            state.content_type = 'video/mp4'
+                else:
+                    logger.debug(f"[{self.session_id}] Content-Type already set in state: {state.content_type}")
                 if not state.final_url:
                     state.final_url = response.url
 
@@ -320,8 +505,38 @@ class RedisBackedVODConnection:
         if state:
             return {
                 'content_length': state.content_length,
-                'content_type': state.content_type,
+                'content_type': state.content_type or 'video/mp4',
                 'final_url': state.final_url
+            }
+        return {}
+
+    def get_session_metadata(self):
+        """Get session metadata from consolidated connection state"""
+        state = self._get_connection_state()
+        if state:
+            return {
+                'content_obj_type': state.content_obj_type,
+                'content_uuid': state.content_uuid,
+                'content_name': state.content_name,
+                'client_ip': state.client_ip,
+                'client_user_agent': state.client_user_agent,
+                'utc_start': state.utc_start,
+                'utc_end': state.utc_end,
+                'offset': state.offset,
+                'worker_id': state.worker_id,
+                'connection_type': state.connection_type,
+                'created_at': state.created_at,
+                'last_activity': state.last_activity,
+                'm3u_profile_id': state.m3u_profile_id,
+                'bytes_sent': state.bytes_sent,
+                'position_seconds': state.position_seconds,
+                'active_streams': state.active_streams,
+                'request_count': state.request_count,
+                # Range/seek tracking
+                'last_seek_byte': state.last_seek_byte,
+                'last_seek_percentage': state.last_seek_percentage,
+                'total_content_size': state.total_content_size,
+                'last_seek_timestamp': state.last_seek_timestamp
             }
         return {}
 
@@ -340,48 +555,32 @@ class RedisBackedVODConnection:
         # Remove from Redis
         if self.redis_client:
             try:
-                # Get session information for cleanup
-                session_key = f"vod_session:{self.session_id}"
-                session_data = self.redis_client.hgetall(session_key)
-
-                # Convert bytes to strings if needed
-                if session_data and isinstance(list(session_data.keys())[0], bytes):
-                    session_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in session_data.items()}
-
                 # Use pipeline for atomic cleanup operations
                 pipe = self.redis_client.pipeline()
 
-                # 1. Remove main connection state
+                # 1. Remove main connection state (now contains consolidated data)
                 pipe.delete(self.connection_key)
 
                 # 2. Remove distributed lock
                 pipe.delete(self.lock_key)
 
-                # 3. Remove session tracking
-                pipe.delete(session_key)
-
-                # 4. Clean up legacy vod_proxy connection keys if session data exists
-                if session_data:
-                    content_type = session_data.get('content_type')
-                    content_uuid = session_data.get('content_uuid')
-
-                    if content_type and content_uuid:
-                        # Remove from vod_proxy connection tracking
-                        vod_proxy_connection_key = f"vod_proxy:connection:{content_type}:{content_uuid}:{self.session_id}"
-                        pipe.delete(vod_proxy_connection_key)
-
-                        # Remove from content connections set
-                        content_connections_key = f"vod_proxy:content:{content_type}:{content_uuid}:connections"
-                        pipe.srem(content_connections_key, self.session_id)
-
                 # Execute all cleanup operations
                 pipe.execute()
 
-                logger.info(f"[{self.session_id}] Cleaned up all Redis keys (connection, session, locks)")
+                logger.info(f"[{self.session_id}] Cleaned up all Redis keys (consolidated connection state, locks)")
 
                 # Decrement profile connections if we have the state and connection manager
                 if state and state.m3u_profile_id and connection_manager:
+                    logger.info(f"[{self.session_id}] Decrementing profile connection count for profile {state.m3u_profile_id}")
                     connection_manager._decrement_profile_connections(state.m3u_profile_id)
+                    logger.info(f"[{self.session_id}] Profile connection count decremented for profile {state.m3u_profile_id}")
+                else:
+                    if not state:
+                        logger.warning(f"[{self.session_id}] No connection state found during cleanup - cannot decrement profile connections")
+                    elif not state.m3u_profile_id:
+                        logger.warning(f"[{self.session_id}] No profile ID in connection state - cannot decrement profile connections")
+                    elif not connection_manager:
+                        logger.warning(f"[{self.session_id}] No connection manager provided - cannot decrement profile connections")
 
             except Exception as e:
                 logger.error(f"[{self.session_id}] Error cleaning up Redis state: {e}")
@@ -466,7 +665,7 @@ class MultiWorkerVODConnectionManager:
             return None
 
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile,
-                                  client_ip, user_agent, request,
+                                  client_ip, client_user_agent, request,
                                   utc_start=None, utc_end=None, offset=None, range_header=None):
         """Stream content with Redis-backed persistent connection"""
 
@@ -479,8 +678,28 @@ class MultiWorkerVODConnectionManager:
         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed streaming request for {content_type} {content_name}")
 
         try:
+            # First, try to find an existing idle session that matches our criteria
+            matching_session_id = self.find_matching_idle_session(
+                content_type=content_type,
+                content_uuid=content_uuid,
+                client_ip=client_ip,
+                client_user_agent=client_user_agent,
+                utc_start=utc_start,
+                utc_end=utc_end,
+                offset=offset
+            )
+
+            # Use matching session if found, otherwise use the provided session_id
+            if matching_session_id:
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Found matching idle session: {matching_session_id}")
+                effective_session_id = matching_session_id
+                client_id = matching_session_id  # Update client_id for logging consistency
+            else:
+                logger.info(f"[{client_id}] Worker {self.worker_id} - No matching idle session found, using new session")
+                effective_session_id = session_id
+
             # Create Redis-backed connection
-            redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+            redis_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
 
             # Check if connection exists, create if not
             existing_state = redis_connection._get_connection_state()
@@ -495,68 +714,63 @@ class MultiWorkerVODConnectionManager:
                 # Apply timeshift parameters
                 modified_stream_url = self._apply_timeshift_parameters(stream_url, utc_start, utc_end, offset)
 
-                # Prepare headers
+                # Prepare headers for provider request
                 headers = {}
-                if user_agent:
-                    headers['User-Agent'] = user_agent
+                # Use M3U account's user-agent for provider requests, not client's user-agent
+                m3u_user_agent = m3u_profile.m3u_account.get_user_agent()
+                if m3u_user_agent:
+                    headers['User-Agent'] = m3u_user_agent.user_agent
+                    logger.info(f"[{client_id}] Using M3U account user-agent: {m3u_user_agent.user_agent}")
+                elif client_user_agent:
+                    # Fallback to client's user-agent if M3U doesn't have one
+                    headers['User-Agent'] = client_user_agent
+                    logger.info(f"[{client_id}] Using client user-agent (M3U fallback): {client_user_agent}")
+                else:
+                    logger.warning(f"[{client_id}] No user-agent available (neither M3U nor client)")
 
                 # Forward important headers from request
-                important_headers = ['authorization', 'x-forwarded-for', 'x-real-ip', 'referer', 'origin', 'accept']
+                important_headers = ['authorization', 'referer', 'origin', 'accept']
                 for header_name in important_headers:
                     django_header = f'HTTP_{header_name.upper().replace("-", "_")}'
                     if hasattr(request, 'META') and django_header in request.META:
                         headers[header_name] = request.META[django_header]
 
-                # Add client IP
-                if client_ip:
-                    headers['X-Forwarded-For'] = client_ip
-                    headers['X-Real-IP'] = client_ip
-
-                # Add worker identification
-                headers['X-Worker-ID'] = self.worker_id
-
-                # Create connection state in Redis
-                if not redis_connection.create_connection(modified_stream_url, headers, m3u_profile.id):
+                # Create connection state in Redis with consolidated session metadata
+                if not redis_connection.create_connection(
+                    stream_url=modified_stream_url,
+                    headers=headers,
+                    m3u_profile_id=m3u_profile.id,
+                    # Session metadata (consolidated from separate vod_session key)
+                    content_obj_type=content_type,
+                    content_uuid=content_uuid,
+                    content_name=content_name,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    utc_start=utc_start,
+                    utc_end=utc_end,
+                    offset=str(offset) if offset else None,
+                    worker_id=self.worker_id
+                ):
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
                     return HttpResponse("Failed to create connection", status=500)
 
                 # Increment profile connections after successful connection creation
                 self._increment_profile_connections(m3u_profile)
 
-                # Create session tracking
-                session_info = {
-                    "content_type": content_type,
-                    "content_uuid": content_uuid,
-                    "content_name": content_name,
-                    "created_at": str(time.time()),
-                    "last_activity": str(time.time()),
-                    "profile_id": str(m3u_profile.id),
-                    "client_ip": client_ip,
-                    "user_agent": user_agent,
-                    "utc_start": utc_start or "",
-                    "utc_end": utc_end or "",
-                    "offset": str(offset) if offset else "",
-                    "worker_id": self.worker_id,  # Track which worker created this
-                    "connection_type": "redis_backed"
-                }
-
-                session_key = f"vod_session:{session_id}"
-                if self.redis_client:
-                    self.redis_client.hset(session_key, mapping=session_info)
-                    self.redis_client.expire(session_key, self.session_ttl)
-
-                logger.info(f"[{client_id}] Worker {self.worker_id} - Created session: {session_info}")
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Created consolidated connection with session metadata")
             else:
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Using existing Redis-backed connection")
 
-                # Update session activity
-                session_key = f"vod_session:{session_id}"
-                if self.redis_client:
-                    self.redis_client.hset(session_key, mapping={
-                        "last_activity": str(time.time()),
-                        "last_worker_id": self.worker_id  # Track which worker last accessed this
-                    })
-                    self.redis_client.expire(session_key, self.session_ttl)
+                # Update session activity in consolidated connection state
+                if redis_connection._acquire_lock():
+                    try:
+                        state = redis_connection._get_connection_state()
+                        if state:
+                            state.last_activity = time.time()
+                            state.worker_id = self.worker_id  # Track which worker last accessed this
+                            redis_connection._save_connection_state(state)
+                    finally:
+                        redis_connection._release_lock()
 
             # Get stream from Redis-backed connection
             upstream_response = redis_connection.get_stream(range_header)
@@ -586,18 +800,37 @@ class MultiWorkerVODConnectionManager:
                             bytes_sent += len(chunk)
                             chunk_count += 1
 
-                            # Update activity every 100 chunks
+                            # Update activity every 100 chunks in consolidated connection state
                             if chunk_count % 100 == 0:
-                                self.update_connection_activity(
-                                    content_type=content_type,
-                                    content_uuid=content_uuid,
-                                    client_id=client_id,
-                                    bytes_sent=len(chunk)
-                                )
+                                # Update the connection state
+                                logger.debug(f"Client: [{client_id}] Worker: {self.worker_id} sent {chunk_count} chunks for VOD: {content_name}")
+                                if redis_connection._acquire_lock():
+                                    try:
+                                        state = redis_connection._get_connection_state()
+                                        if state:
+                                            state.last_activity = time.time()
+                                            # Store cumulative bytes sent in connection state
+                                            state.bytes_sent = bytes_sent  # Use cumulative bytes_sent, not chunk size
+                                            redis_connection._save_connection_state(state)
+                                    finally:
+                                        redis_connection._release_lock()
 
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed stream completed: {bytes_sent} bytes sent")
                     redis_connection.decrement_active_streams()
                     decremented = True
+
+                    # Schedule cleanup if no active streams after normal completion
+                    if not redis_connection.has_active_streams():
+                        def delayed_cleanup():
+                            time.sleep(1)  # Wait 1 second
+                            if not redis_connection.has_active_streams():
+                                logger.info(f"[{client_id}] Worker {self.worker_id} - Cleaning up idle Redis connection after normal completion")
+                                redis_connection.cleanup(connection_manager=self)
+
+                        import threading
+                        cleanup_thread = threading.Thread(target=delayed_cleanup)
+                        cleanup_thread.daemon = True
+                        cleanup_thread.start()
 
                 except GeneratorExit:
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Client disconnected from Redis-backed stream")
@@ -608,7 +841,7 @@ class MultiWorkerVODConnectionManager:
                     # Schedule cleanup if no active streams
                     if not redis_connection.has_active_streams():
                         def delayed_cleanup():
-                            time.sleep(10)  # Wait 10 seconds
+                            time.sleep(1)  # Wait 1 second
                             if not redis_connection.has_active_streams():
                                 logger.info(f"[{client_id}] Worker {self.worker_id} - Cleaning up idle Redis connection")
                                 redis_connection.cleanup(connection_manager=self)
@@ -648,23 +881,70 @@ class MultiWorkerVODConnectionManager:
 
             if connection_headers.get('content_length'):
                 response['Accept-Ranges'] = 'bytes'
-                response['Content-Length'] = connection_headers['content_length']
 
-                # Set Content-Range for partial requests
+                # For range requests, Content-Length should be the partial content size, not full file size
                 if range_header and 'bytes=' in range_header:
                     try:
                         range_part = range_header.replace('bytes=', '')
                         if '-' in range_part:
                             start_byte, end_byte = range_part.split('-', 1)
                             start = int(start_byte) if start_byte else 0
-                            end = int(end_byte) if end_byte else int(connection_headers['content_length']) - 1
-                            total_size = int(connection_headers['content_length'])
 
-                            content_range = f"bytes {start}-{end}/{total_size}"
-                            response['Content-Range'] = content_range
-                            logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {content_range}")
+                            # Get the FULL content size from the connection state (from initial request)
+                            state = redis_connection._get_connection_state()
+                            if state and state.content_length:
+                                full_content_size = int(state.content_length)
+                                end = int(end_byte) if end_byte else full_content_size - 1
+
+                                # Calculate partial content size for Content-Length header
+                                partial_content_size = end - start + 1
+                                response['Content-Length'] = str(partial_content_size)
+
+                                # Content-Range should show full file size per HTTP standards
+                                content_range = f"bytes {start}-{end}/{full_content_size}"
+                                response['Content-Range'] = content_range
+                                logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {content_range}, Content-Length: {partial_content_size}")
+
+                                # Store range information for the VOD stats API to calculate position
+                                if start > 0:
+                                    try:
+                                        position_percentage = (start / full_content_size) * 100
+                                        current_timestamp = time.time()
+
+                                        # Update the Redis connection state with seek information
+                                        if redis_connection._acquire_lock():
+                                            try:
+                                                # Refresh state in case it changed
+                                                state = redis_connection._get_connection_state()
+                                                if state:
+                                                    # Store range/seek information for stats API
+                                                    state.last_seek_byte = start
+                                                    state.last_seek_percentage = position_percentage
+                                                    state.total_content_size = full_content_size
+                                                    state.last_seek_timestamp = current_timestamp
+                                                    state.last_activity = current_timestamp
+                                                    redis_connection._save_connection_state(state)
+                                                    logger.info(f"[{client_id}] *** SEEK INFO STORED *** {position_percentage:.1f}% at byte {start:,}/{full_content_size:,} (timestamp: {current_timestamp})")
+                                            finally:
+                                                redis_connection._release_lock()
+                                        else:
+                                            logger.warning(f"[{client_id}] Could not acquire lock to update seek info")
+                                    except Exception as pos_e:
+                                        logger.error(f"[{client_id}] Error storing seek info: {pos_e}")
+                            else:
+                                # Fallback to partial content size if full size not available
+                                partial_size = int(connection_headers['content_length'])
+                                end = int(end_byte) if end_byte else partial_size - 1
+                                content_range = f"bytes {start}-{end}/{partial_size}"
+                                response['Content-Range'] = content_range
+                                response['Content-Length'] = str(end - start + 1)
+                                logger.warning(f"[{client_id}] Using partial content size for Content-Range (full size not available): {content_range}")
                     except Exception as e:
                         logger.warning(f"[{client_id}] Worker {self.worker_id} - Could not set Content-Range: {e}")
+                        response['Content-Length'] = connection_headers['content_length']
+                else:
+                    # For non-range requests, use the full content length
+                    response['Content-Length'] = connection_headers['content_length']
 
             logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed response ready (status: {response.status_code})")
             return response
@@ -923,15 +1203,15 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"Error updating connection activity: {e}")
 
     def find_matching_idle_session(self, content_type: str, content_uuid: str,
-                                 client_ip: str, user_agent: str,
+                                 client_ip: str, client_user_agent: str,
                                  utc_start=None, utc_end=None, offset=None) -> Optional[str]:
-        """Find existing Redis-backed session that matches criteria"""
+        """Find existing Redis-backed session that matches criteria using consolidated connection state"""
         if not self.redis_client:
             return None
 
         try:
-            # Search for sessions with matching content
-            pattern = "vod_session:*"
+            # Search for connections with consolidated session data
+            pattern = "vod_persistent_connection:*"
             cursor = 0
             matching_sessions = []
 
@@ -940,23 +1220,23 @@ class MultiWorkerVODConnectionManager:
 
                 for key in keys:
                     try:
-                        session_data = self.redis_client.hgetall(key)
-                        if not session_data:
+                        connection_data = self.redis_client.hgetall(key)
+                        if not connection_data:
                             continue
 
                         # Convert bytes keys/values to strings if needed
-                        if isinstance(list(session_data.keys())[0], bytes):
-                            session_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in session_data.items()}
+                        if isinstance(list(connection_data.keys())[0], bytes):
+                            connection_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in connection_data.items()}
 
-                        # Check if content matches
-                        stored_content_type = session_data.get('content_type', '')
-                        stored_content_uuid = session_data.get('content_uuid', '')
+                        # Check if content matches (using consolidated data)
+                        stored_content_type = connection_data.get('content_obj_type', '')
+                        stored_content_uuid = connection_data.get('content_uuid', '')
 
                         if stored_content_type != content_type or stored_content_uuid != content_uuid:
                             continue
 
                         # Extract session ID
-                        session_id = key.decode('utf-8').replace('vod_session:', '')
+                        session_id = key.decode('utf-8').replace('vod_persistent_connection:', '')
 
                         # Check if Redis-backed connection exists and has no active streams
                         redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
@@ -967,22 +1247,22 @@ class MultiWorkerVODConnectionManager:
                         score = 10  # Content match
                         match_reasons = ["content"]
 
-                        # Check other criteria
-                        stored_client_ip = session_data.get('client_ip', '')
-                        stored_user_agent = session_data.get('user_agent', '')
+                        # Check other criteria (using consolidated data)
+                        stored_client_ip = connection_data.get('client_ip', '')
+                        stored_user_agent = connection_data.get('client_user_agent', '') or connection_data.get('user_agent', '')
 
                         if stored_client_ip and stored_client_ip == client_ip:
                             score += 5
                             match_reasons.append("ip")
 
-                        if stored_user_agent and stored_user_agent == user_agent:
+                        if stored_user_agent and stored_user_agent == client_user_agent:
                             score += 3
                             match_reasons.append("user-agent")
 
-                        # Check timeshift parameters
-                        stored_utc_start = session_data.get('utc_start', '')
-                        stored_utc_end = session_data.get('utc_end', '')
-                        stored_offset = session_data.get('offset', '')
+                        # Check timeshift parameters (using consolidated data)
+                        stored_utc_start = connection_data.get('utc_start', '')
+                        stored_utc_end = connection_data.get('utc_end', '')
+                        stored_offset = connection_data.get('offset', '')
 
                         current_utc_start = utc_start or ""
                         current_utc_end = utc_end or ""
@@ -999,11 +1279,11 @@ class MultiWorkerVODConnectionManager:
                                 'session_id': session_id,
                                 'score': score,
                                 'reasons': match_reasons,
-                                'last_activity': float(session_data.get('last_activity', '0'))
+                                'last_activity': float(connection_data.get('last_activity', '0'))
                             })
 
                     except Exception as e:
-                        logger.debug(f"Error processing session key {key}: {e}")
+                        logger.debug(f"Error processing connection key {key}: {e}")
                         continue
 
                 if cursor == 0:
@@ -1022,4 +1302,16 @@ class MultiWorkerVODConnectionManager:
 
         except Exception as e:
             logger.error(f"Error finding matching idle session: {e}")
+            return None
+
+    def get_session_info(self, session_id: str) -> Optional[dict]:
+        """Get session information from consolidated connection state (compatibility method)"""
+        if not self.redis_client:
+            return None
+
+        try:
+            redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+            return redis_connection.get_session_metadata()
+        except Exception as e:
+            logger.error(f"Error getting session info for {session_id}: {e}")
             return None
