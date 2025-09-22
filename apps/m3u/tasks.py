@@ -903,6 +903,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
+    if compiled_filters:
+        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -912,10 +914,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-
+            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
             include = True
             for pattern, filter in compiled_filters:
-                logger.debug(f"Checking filter patterh {pattern}")
+                logger.trace(f"Checking filter pattern {pattern}")
                 target = name
                 if filter.filter_type == "url":
                     target = url

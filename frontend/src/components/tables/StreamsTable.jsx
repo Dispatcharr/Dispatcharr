@@ -282,7 +282,7 @@ const StreamsTable = () => {
         cell: ({ getValue }) => (
           <Box
             style={{
-              whiteSpace: 'nowrap',
+              whiteSpace: 'pre',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
@@ -301,7 +301,7 @@ const StreamsTable = () => {
         cell: ({ getValue }) => (
           <Box
             style={{
-              whiteSpace: 'nowrap',
+              whiteSpace: 'pre',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
