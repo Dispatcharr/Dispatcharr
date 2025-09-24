@@ -2073,13 +2073,13 @@ def get_transformed_credentials(account, profile=None):
     base_url = account.server_url
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
-    # Format: http://server.com:port/username/password/rest_of_path
+    # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
         # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/{base_username}/{base_password}/"
+        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
         logger.debug(f"Built complete URL: {complete_url}")
 
         # Apply profile-specific transformations if profile is provided
@@ -2093,14 +2093,14 @@ def get_transformed_credentials(account, profile=None):
                 logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
 
                 # Extract components from the transformed URL
-                # Pattern: http://server.com:port/username/password/
+                # Pattern: http://server.com:port/live/username/password/1234.ts
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
                 path_parts = [part for part in parsed_url.path.split('/') if part]
 
                 if len(path_parts) >= 2:
                     # Extract username and password from path
-                    transformed_username = path_parts[0]
-                    transformed_password = path_parts[1]
+                    transformed_username = path_parts[1]
+                    transformed_password = path_parts[2]
 
                     # Rebuild server URL without the username/password path
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
