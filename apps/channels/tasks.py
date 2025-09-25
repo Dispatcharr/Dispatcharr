@@ -227,6 +227,17 @@ def match_channels_to_epg(channels_data, epg_data, region_code=None, use_ml=True
                 logger.info(f"Channel {chan['id']} '{chan['name']}' => EPG found by secondary tvg_id={chan['tvg_id']}")
                 continue
 
+        # Step 2.5: Exact Gracenote ID match
+        normalized_gracenote_id = chan.get("gracenote_id", "")
+        if normalized_gracenote_id:
+            epg_by_gracenote_id = next((epg for epg in epg_data if epg["tvg_id"] == normalized_gracenote_id), None)
+            if epg_by_gracenote_id:
+                chan["epg_data_id"] = epg_by_gracenote_id["id"]
+                channels_to_update.append(chan)
+                matched_channels.append((chan['id'], fallback_name, f"gracenote:{epg_by_gracenote_id['tvg_id']}"))
+                logger.info(f"Channel {chan['id']} '{fallback_name}' => EPG found by exact gracenote_id={normalized_gracenote_id}")
+                continue
+
         # Step 3: Name-based fuzzy matching
         if not chan["norm_chan"]:
             logger.debug(f"Channel {chan['id']} '{chan['name']}' => empty after normalization, skipping")
@@ -429,11 +440,14 @@ def match_epg_channels():
         channels_data = []
         for channel in channels_without_epg:
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+            normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
             channels_data.append({
                 "id": channel.id,
                 "name": channel.name,
                 "tvg_id": normalized_tvg_id,
                 "original_tvg_id": channel.tvg_id,
+                "gracenote_id": normalized_gracenote_id,
+                "original_gracenote_id": channel.tvc_guide_stationid,
                 "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
                 "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
             })
@@ -573,11 +587,14 @@ def match_selected_channels_epg(channel_ids):
         channels_data = []
         for channel in channels_without_epg:
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+            normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
             channels_data.append({
                 "id": channel.id,
                 "name": channel.name,
                 "tvg_id": normalized_tvg_id,
                 "original_tvg_id": channel.tvg_id,
+                "gracenote_id": normalized_gracenote_id,
+                "original_gracenote_id": channel.tvc_guide_stationid,
                 "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
                 "norm_chan": normalize_name(channel.name)
             })
@@ -694,16 +711,19 @@ def match_single_channel_epg(channel_id):
 
         # Prepare single channel data for matching (same format as bulk matching)
         normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+        normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
         channel_data = {
             "id": channel.id,
             "name": channel.name,
             "tvg_id": normalized_tvg_id,
             "original_tvg_id": channel.tvg_id,
+            "gracenote_id": normalized_gracenote_id,
+            "original_gracenote_id": channel.tvc_guide_stationid,
             "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
             "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
         }
 
-        logger.info(f"Channel data prepared: name='{channel.name}', tvg_id='{normalized_tvg_id}', norm_chan='{channel_data['norm_chan']}'")
+        logger.info(f"Channel data prepared: name='{channel.name}', tvg_id='{normalized_tvg_id}', gracenote_id='{normalized_gracenote_id}', norm_chan='{channel_data['norm_chan']}'")
 
         # Debug: Test what the normalization does to preserve call signs
         test_name = "NBC 11 (KVLY) - Fargo"  # Example for testing
