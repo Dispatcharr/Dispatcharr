@@ -68,9 +68,10 @@ install_packages() {
   echo ">>> Installing system packages..."
   apt-get update
   declare -a packages=(
-    git curl wget build-essential gcc libpcre3-dev libpq-dev
+    git curl wget build-essential gcc libpcre2-dev libpq-dev
     python3-dev python3-venv python3-pip nginx redis-server
     postgresql postgresql-contrib ffmpeg procps streamlink
+    sudo
   )
   apt-get install -y --no-install-recommends "${packages[@]}"
 
