@@ -1,4 +1,7 @@
 # core/models.py
+import json
+
+from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
@@ -160,6 +163,23 @@ DVR_MOVIE_FALLBACK_TEMPLATE_KEY = slugify("DVR Movie Fallback Template")
 DVR_COMSKIP_ENABLED_KEY = slugify("DVR Comskip Enabled")
 DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
 DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
+BACKUPS_ENABLED_KEY = slugify("Backups Enabled")
+BACKUP_PATH_KEY = slugify("Backup Path")
+BACKUP_RETENTION_COUNT_KEY = slugify("Backup Retention Count")
+BACKUP_EXTRA_PATHS_KEY = slugify("Backup Extra Paths")
+BACKUP_INCLUDE_RECORDINGS_KEY = slugify("Backup Include Recordings")
+BACKUP_SCHEDULE_PRESET_KEY = slugify("Backup Schedule Preset")
+BACKUP_CRON_MINUTE_KEY = slugify("Backup Cron Minute")
+BACKUP_CRON_HOUR_KEY = slugify("Backup Cron Hour")
+BACKUP_CRON_DAY_OF_MONTH_KEY = slugify("Backup Cron Day Of Month")
+BACKUP_CRON_MONTH_OF_YEAR_KEY = slugify("Backup Cron Month Of Year")
+BACKUP_CRON_DAY_OF_WEEK_KEY = slugify("Backup Cron Day Of Week")
+BACKUP_CRON_TIMEZONE_KEY = slugify("Backup Cron Timezone")
+BACKUP_DAILY_TIME_KEY = slugify("Backup Daily Time")
+BACKUP_WEEKLY_TIME_KEY = slugify("Backup Weekly Time")
+BACKUP_WEEKLY_DAY_KEY = slugify("Backup Weekly Day")
+BACKUP_MONTHLY_TIME_KEY = slugify("Backup Monthly Time")
+BACKUP_MONTHLY_DAY_KEY = slugify("Backup Monthly Day")
 
 
 class CoreSettings(models.Model):
@@ -327,3 +347,143 @@ class CoreSettings(models.Model):
             return rules
         except Exception:
             return rules
+
+    @classmethod
+    def _set_value(cls, key, name, value):
+        obj, created = cls.objects.get_or_create(key=key, defaults={"name": name, "value": str(value)})
+        if created:
+            return obj
+        updates = {}
+        if obj.value != str(value):
+            obj.value = str(value)
+            updates["value"] = obj.value
+        if obj.name != name:
+            obj.name = name
+            updates["name"] = obj.name
+        if updates:
+            obj.save(update_fields=list(updates.keys()))
+        return obj
+
+    @classmethod
+    def get_backup_enabled(cls) -> bool:
+        try:
+            value = cls.objects.get(key=BACKUPS_ENABLED_KEY).value
+        except cls.DoesNotExist:
+            return False
+        return str(value).lower() in ("1", "true", "yes", "on")
+
+    @classmethod
+    def set_backup_enabled(cls, enabled: bool) -> None:
+        cls._set_value(BACKUPS_ENABLED_KEY, "Backups Enabled", "true" if enabled else "false")
+
+    @classmethod
+    def get_backup_retention_count(cls) -> int:
+        try:
+            value = int(cls.objects.get(key=BACKUP_RETENTION_COUNT_KEY).value)
+            return max(0, value)
+        except (cls.DoesNotExist, ValueError, TypeError):
+            return 5
+
+    @classmethod
+    def set_backup_retention_count(cls, count: int) -> None:
+        if count is None:
+            count = 5
+        try:
+            count = max(0, int(count))
+        except (ValueError, TypeError):
+            count = 5
+        cls._set_value(BACKUP_RETENTION_COUNT_KEY, "Backup Retention Count", str(count))
+
+    @classmethod
+    def get_backup_path(cls) -> str | None:
+        try:
+            return cls.objects.get(key=BACKUP_PATH_KEY).value
+        except cls.DoesNotExist:
+            return None
+
+    @classmethod
+    def set_backup_path(cls, path: str) -> None:
+        if not path:
+            return
+        cls._set_value(BACKUP_PATH_KEY, "Backup Path", path)
+
+    @classmethod
+    def get_backup_extra_paths(cls) -> list[str]:
+        try:
+            raw = cls.objects.get(key=BACKUP_EXTRA_PATHS_KEY).value
+        except cls.DoesNotExist:
+            return []
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if item]
+        return []
+
+    @classmethod
+    def set_backup_extra_paths(cls, paths: list[str]) -> None:
+        cleaned = [str(item) for item in paths if item]
+        serialized = json.dumps(cleaned)
+        if len(serialized) > 255:
+            raise ValueError("Too many backup paths specified")
+        cls._set_value(BACKUP_EXTRA_PATHS_KEY, "Backup Extra Paths", serialized)
+
+    @classmethod
+    def get_backup_include_recordings(cls) -> bool:
+        try:
+            value = cls.objects.get(key=BACKUP_INCLUDE_RECORDINGS_KEY).value
+        except cls.DoesNotExist:
+            return True
+        return str(value).lower() in ("1", "true", "yes", "on")
+
+    @classmethod
+    def set_backup_include_recordings(cls, include: bool) -> None:
+        cls._set_value(
+            BACKUP_INCLUDE_RECORDINGS_KEY,
+            "Backup Include Recordings",
+            "true" if include else "false",
+        )
+
+    @classmethod
+    def get_backup_schedule(cls) -> dict:
+        defaults = {
+            "preset": "daily",
+            "minute": "15",
+            "hour": "3",
+            "day_of_month": "*",
+            "month": "*",
+            "day_of_week": "*",
+            "timezone": getattr(settings, "TIME_ZONE", "UTC"),
+        }
+        mapping = {
+            "preset": BACKUP_SCHEDULE_PRESET_KEY,
+            "minute": BACKUP_CRON_MINUTE_KEY,
+            "hour": BACKUP_CRON_HOUR_KEY,
+            "day_of_month": BACKUP_CRON_DAY_OF_MONTH_KEY,
+            "month": BACKUP_CRON_MONTH_OF_YEAR_KEY,
+            "day_of_week": BACKUP_CRON_DAY_OF_WEEK_KEY,
+            "timezone": BACKUP_CRON_TIMEZONE_KEY,
+        }
+        schedule = {}
+        for field, key in mapping.items():
+            try:
+                value = cls.objects.get(key=key).value
+            except cls.DoesNotExist:
+                value = defaults[field]
+            if not value:
+                value = defaults[field]
+            schedule[field] = value
+        return schedule
+
+    @classmethod
+    def set_backup_schedule(cls, schedule: dict) -> None:
+        defaults = cls.get_backup_schedule()
+        payload = {**defaults, **schedule}
+        cls._set_value(BACKUP_SCHEDULE_PRESET_KEY, "Backup Schedule Preset", payload["preset"])
+        cls._set_value(BACKUP_CRON_MINUTE_KEY, "Backup Cron Minute", payload["minute"])
+        cls._set_value(BACKUP_CRON_HOUR_KEY, "Backup Cron Hour", payload["hour"])
+        cls._set_value(BACKUP_CRON_DAY_OF_MONTH_KEY, "Backup Cron Day Of Month", payload["day_of_month"])
+        cls._set_value(BACKUP_CRON_MONTH_OF_YEAR_KEY, "Backup Cron Month Of Year", payload["month"])
+        cls._set_value(BACKUP_CRON_DAY_OF_WEEK_KEY, "Backup Cron Day Of Week", payload["day_of_week"])
+        cls._set_value(BACKUP_CRON_TIMEZONE_KEY, "Backup Cron Timezone", payload["timezone"])

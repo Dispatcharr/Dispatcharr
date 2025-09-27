@@ -22,6 +22,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.channels.apps.ChannelsConfig",
     "apps.dashboard",
+    "apps.backups",
     "apps.epg",
     "apps.hdhr",
     "apps.m3u",
@@ -119,10 +120,17 @@ CHANNEL_LAYERS = {
 }
 
 if os.getenv("DB_ENGINE", None) == "sqlite":
+    default_sqlite_path = os.environ.get(
+        "DISPATCHARR_SQLITE_PATH",
+        str(BASE_DIR / "dispatcharr.db"),
+    )
+    sqlite_path = Path(default_sqlite_path)
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": "/data/dispatcharr.db",
+            "NAME": str(sqlite_path),
         }
     }
 else:
@@ -215,6 +223,27 @@ CELERY_BEAT_SCHEDULE = {
 
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
+
+
+def _resolve_storage_path(path_value: str) -> Path:
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return candidate
+    return (BASE_DIR / candidate).resolve()
+
+
+RAW_BACKUP_ROOT = os.environ.get("DISPATCHARR_BACKUP_ROOT", "/data/backups")
+BACKUP_ROOT = _resolve_storage_path(RAW_BACKUP_ROOT)
+
+RAW_BACKUP_DATA_DIRS = os.environ.get(
+    "DISPATCHARR_BACKUP_DATA_DIRS",
+    "/data/logos,/data/recordings,/data/uploads,/data/plugins",
+)
+BACKUP_DATA_DIRS = [
+    _resolve_storage_path(entry.strip())
+    for entry in RAW_BACKUP_DATA_DIRS.split(",")
+    if entry.strip()
+]
 
 
 SERVER_IP = "127.0.0.1"

@@ -1290,6 +1290,140 @@ export default class API {
     }
   }
 
+  static async getBackupSettings() {
+    try {
+      const response = await request(`${host}/api/backups/settings/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve backup settings', e);
+    }
+  }
+
+  static async updateBackupSettings(payload) {
+    try {
+      const response = await request(`${host}/api/backups/settings/`, {
+        method: 'PUT',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update backup settings', e);
+      throw e;
+    }
+  }
+
+  static async getBackupJobs() {
+    try {
+      const response = await request(`${host}/api/backups/jobs/`);
+      return response?.results || response || [];
+    } catch (e) {
+      errorNotification('Failed to load backup history', e);
+      throw e;
+    }
+  }
+
+  static async createBackupJob() {
+    try {
+      const response = await request(`${host}/api/backups/jobs/`, {
+        method: 'POST',
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start backup job', e);
+      throw e;
+    }
+  }
+
+  static async restoreBackupJob(jobId) {
+    try {
+      const response = await request(
+        `${host}/api/backups/jobs/${jobId}/restore/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start restore job', e);
+      throw e;
+    }
+  }
+
+  static async uploadAndRestoreBackup(file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await request(
+        `${host}/api/backups/jobs/restore-upload/`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to upload backup archive', e);
+      throw e;
+    }
+  }
+
+  static async cancelBackupJob(jobId) {
+    try {
+      return await request(
+        `${host}/api/backups/jobs/${jobId}/cancel/`,
+        {
+          method: 'POST',
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to cancel backup job', e);
+      throw e;
+    }
+  }
+
+  static async deleteBackupJob(jobId) {
+    try {
+      await request(`${host}/api/backups/jobs/${jobId}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete backup job', e);
+      throw e;
+    }
+  }
+
+  static async downloadBackupJob(jobId) {
+    try {
+      const token = await API.getAuthToken();
+      const response = await fetch(`${host}/api/backups/jobs/${jobId}/download/`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Failed to download backup');
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition');
+      let filename = `dispatcharr-backup-${jobId}.tar.gz`;
+      if (disposition) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match) {
+          filename = match[1];
+        }
+      }
+
+      return { blob, filename };
+    } catch (e) {
+      errorNotification('Failed to download backup', e);
+      throw e;
+    }
+  }
+
   static async getVersion() {
     try {
       const response = await request(`${host}/api/core/version/`, {
