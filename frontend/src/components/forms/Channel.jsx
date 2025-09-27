@@ -11,6 +11,7 @@ import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import useLogosStore from '../../store/logos';
 import LazyLogo from '../LazyLogo';
+import LogoForm from './Logo';
 import {
   Box,
   Button,
@@ -37,7 +38,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
-import { Dropzone } from '@mantine/dropzone';
+
 import { FixedSizeList as List } from 'react-window';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 
@@ -71,7 +72,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
 
-  const [logoPreview, setLogoPreview] = useState(null);
+  const [logoModalOpen, setLogoModalOpen] = useState(false);
   const [channelStreams, setChannelStreams] = useState([]);
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
@@ -97,33 +98,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     setChannelStreams(Array.from(streamSet));
   };
 
-  const handleLogoChange = async (files) => {
-    if (files.length === 1) {
-      const file = files[0];
-
-      // Validate file size on frontend first
-      if (file.size > 5 * 1024 * 1024) {
-        // 5MB
-        notifications.show({
-          title: 'Error',
-          message: 'File too large. Maximum size is 5MB.',
-          color: 'red',
-        });
-        return;
-      }
-
-      try {
-        const retval = await API.uploadLogo(file);
-        // Note: API.uploadLogo already adds the logo to the store, no need to fetch
-        setLogoPreview(retval.cache_url);
-        formik.setFieldValue('logo_id', retval.id);
-      } catch (error) {
-        console.error('Logo upload failed:', error);
-        // Error notification is already handled in API.uploadLogo
-      }
-    } else {
-      setLogoPreview(null);
+  const handleLogoSuccess = ({ logo }) => {
+    if (logo && logo.id) {
+      formik.setFieldValue('logo_id', logo.id);
+      ensureLogosLoaded(); // Refresh logos
     }
+    setLogoModalOpen(false);
   };
 
   const handleAutoMatchEpg = async () => {
@@ -809,35 +789,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 </Stack>
               </Group>
 
-              <Group>
-                <Divider size="xs" style={{ flex: 1 }} />
-                <Text size="xs" c="dimmed">
-                  OR
-                </Text>
-                <Divider size="xs" style={{ flex: 1 }} />
-              </Group>
-
-              <Stack>
-                <Text size="sm">Upload Logo</Text>
-                <Dropzone
-                  onDrop={handleLogoChange}
-                  onReject={(files) => console.log('rejected files', files)}
-                  maxSize={5 * 1024 ** 2}
-                >
-                  <Group
-                    justify="center"
-                    gap="xl"
-                    mih={40}
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <Text size="sm" inline>
-                      Drag images here or click to select files
-                    </Text>
-                  </Group>
-                </Dropzone>
-
-                <Center></Center>
-              </Stack>
+              <Button
+                onClick={() => setLogoModalOpen(true)}
+                fullWidth
+                variant="default"
+              >
+                Upload or Create Logo
+              </Button>
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -1056,6 +1014,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       <ChannelGroupForm
         isOpen={channelGroupModelOpen}
         onClose={handleChannelGroupModalClose}
+      />
+
+      <LogoForm
+        isOpen={logoModalOpen}
+        onClose={() => setLogoModalOpen(false)}
+        onSuccess={handleLogoSuccess}
       />
     </>
   );
