@@ -12,8 +12,10 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def wait_for_redis(host='localhost', port=6379, db=0, max_retries=30, retry_interval=2):
+def wait_for_redis(host=None, port=6379, db=0, max_retries=30, retry_interval=2):
     """Wait for Redis to become available"""
+    import os
+    host = host or os.environ.get('REDIS_HOST', 'redis')
     redis_client = None
     retry_count = 0
 

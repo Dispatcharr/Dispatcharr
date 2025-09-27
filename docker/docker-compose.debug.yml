@@ -15,6 +15,6 @@ services:
     environment:
       - DISPATCHARR_ENV=dev
       - DISPATCHARR_DEBUG=true
-      - REDIS_HOST=localhost
-      - CELERY_BROKER_URL=redis://localhost:6379/0
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
       - DISPATCHARR_LOG_LEVEL=trace

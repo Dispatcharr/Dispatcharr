@@ -1,6 +1,7 @@
 # dispatcharr/persistent_lock.py
 import uuid
 import redis
+import os
 
 class PersistentLock:
     """
@@ -74,7 +75,7 @@ class PersistentLock:
 # Example usage (for testing purposes only):
 if __name__ == "__main__":
     # Connect to Redis on localhost; adjust connection parameters as needed.
-    client = redis.Redis(host="localhost", port=6379, db=0)
+    client = redis.Redis(host=os.environ.get("REDIS_HOST", "redis"), port=6379, db=0)
     lock = PersistentLock(client, "lock:example_account", lock_timeout=120)
 
     if lock.acquire():

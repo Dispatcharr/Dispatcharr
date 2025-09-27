@@ -12,12 +12,9 @@ SSDP_PORT = 1900
 DEVICE_TYPE = "urn:schemas-upnp-org:device:MediaServer:1"
 SERVER_PORT = 8000
 
+# Prefer this to be fetched via a environment variable. 
 def get_host_ip():
-    try:
-        # This relies on "host.docker.internal" being mapped to the host’s gateway IP.
-        return socket.gethostbyname("host.docker.internal")
-    except Exception:
-        return "127.0.0.1"
+    return os.environ.get("DISPATCHARR_HOST_IP", "dispatcharr")
 
 def ssdp_response(addr, host_ip):
     response = (

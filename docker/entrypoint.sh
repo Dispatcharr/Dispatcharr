@@ -31,11 +31,11 @@ echo_with_timestamp() {
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
 export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secret}
-export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+export POSTGRES_HOST=${POSTGRES_HOST:-postgres}
 export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
-export REDIS_HOST=${REDIS_HOST:-localhost}
+export REDIS_HOST=${REDIS_HOST:-redis}
 export REDIS_DB=${REDIS_DB:-0}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
