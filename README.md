@@ -23,6 +23,7 @@ Dispatcharr has officially entered **BETA**, bringing powerful new features and 
 🧠 **EPG Auto-Match** — Match program data to channels automatically\
 ⚙️ **Streamlink + FFmpeg Support** — Flexible backend options for streaming and recording\
 🎬 **VOD Management** — Full Video on Demand support with movies and TV series\
+🛡️ **Automated Backups** — Schedule configuration snapshots and restore with confidence\
 🧼 **UI & UX Enhancements** — Smoother, faster, more responsive interface\
 🛁 **Output Compatibility** — HDHomeRun, M3U, and XMLTV EPG support for Plex, Jellyfin, and more
 

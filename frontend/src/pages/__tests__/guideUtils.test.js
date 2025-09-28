@@ -21,8 +21,8 @@ describe('guideUtils', () => {
 
       const map = buildChannelIdMap(channels, tvgsById);
 
-      expect(map.get('alpha')).toBe(1);
-      expect(map.get('uuid-2')).toBe(2);
+      expect(map.get('alpha')).toEqual([1]);
+      expect(map.get('uuid-2')).toEqual([2]);
     });
   });
 
@@ -53,8 +53,8 @@ describe('guideUtils', () => {
       ];
 
       const channelIdByTvgId = new Map([
-        ['alpha', 1],
-        ['beta', 2],
+        ['alpha', [1]],
+        ['beta', [2]],
       ]);
 
       const map = mapProgramsByChannel(programs, channelIdByTvgId);
