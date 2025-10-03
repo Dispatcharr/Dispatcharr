@@ -1,0 +1,175 @@
+name: Dependabot Container Build
+
+on:
+  workflow_run:
+    workflows: ["Base Image Build"]
+    types:
+      - completed
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+    # Only run on dependabot PRs for frontend-only changes
+    paths:
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'docker/Dockerfile'
+      - '.github/workflows/dependabot-build.yml'
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  check-dependabot:
+    runs-on: ubuntu-latest
+    outputs:
+      is-dependabot: ${{ steps.check.outputs.is-dependabot }}
+    steps:
+      - name: Check if PR is from dependabot
+        id: check
+        run: |
+          if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            echo "is-dependabot=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-dependabot=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-container:
+    runs-on: ubuntu-latest
+    needs: check-dependabot
+    if: needs.check-dependabot.outputs.is-dependabot == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set repository metadata and base tag
+        id: meta
+        run: |
+          # Get lowercase repository owner
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "repo_owner=${REPO_OWNER}" >> $GITHUB_OUTPUT
+
+          # Get repository name  
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+
+          # Determine base tag based on trigger
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Triggered by base image build - need to find the dependabot base tag
+            # Extract PR number from the workflow run
+            if [[ "${{ github.event.workflow_run.head_branch }}" =~ dependabot ]]; then
+              # For dependabot PRs, construct the base tag (we'll need to query the registry or make an assumption)
+              echo "base_tag=base" >> $GITHUB_OUTPUT  # Fallback to base for now
+            else
+              echo "base_tag=base" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Direct PR trigger - use standard base
+            echo "base_tag=base" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Dependabot Test Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.repo_owner }}/dispatcharr:dependabot-pr-${{ github.event.number }}
+          build-args: |
+            REPO_OWNER=${{ steps.meta.outputs.repo_owner }}
+            REPO_NAME=${{ steps.meta.outputs.repo_name }}
+            BASE_TAG=${{ steps.meta.outputs.base_tag }}
+            BRANCH=${{ github.head_ref }}
+            REPO_URL=https://github.com/${{ github.repository }}
+          file: ./docker/Dockerfile
+
+      - name: Comment on PR with build results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo, number } = context.issue;
+            const repoOwner = '${{ steps.meta.outputs.repo_owner }}';
+            const baseTag = '${{ steps.meta.outputs.base_tag }}';
+            
+            const comment = `## 🐳 Dependabot Container Build Complete
+            
+            The container has been successfully built and pushed for this dependabot PR, following the same build process as releases.
+            
+            **Image built:** \`ghcr.io/${repoOwner}/dispatcharr:dependabot-pr-${number}\`
+            **Base image used:** \`ghcr.io/${repoOwner}/dispatcharr:${baseTag}\`
+            
+            **Platforms:** linux/amd64, linux/arm64
+            
+            You can test this image before merging the dependency updates.`;
+            
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body: comment
+            });
+
+  cleanup-old-images:
+    runs-on: ubuntu-latest
+    needs: [check-dependabot, build-container]
+    if: needs.check-dependabot.outputs.is-dependabot == 'true' && always()
+    steps:
+      - name: Clean up old dependabot images
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const repoOwner = owner.toLowerCase();
+            const repoName = repo.toLowerCase();
+            
+            // Get all package versions
+            try {
+              const packages = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+                package_type: 'container',
+                package_name: repoName,
+                org: owner,
+                per_page: 100
+              });
+              
+              // Filter for dependabot PR images older than 7 days
+              const cutoffDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+              const oldImages = packages.data.filter(pkg => {
+                const isDepBot = pkg.metadata?.container?.tags?.some(tag => tag.includes('dependabot-pr-'));
+                const isOld = new Date(pkg.created_at) < cutoffDate;
+                return isDepBot && isOld;
+              });
+              
+              // Delete old images
+              for (const image of oldImages) {
+                try {
+                  await github.rest.packages.deletePackageVersionForOrg({
+                    package_type: 'container',
+                    package_name: repoName,
+                    org: owner,
+                    package_version_id: image.id
+                  });
+                  console.log(`Deleted old dependabot image: ${image.id}`);
+                } catch (error) {
+                  console.log(`Failed to delete image ${image.id}: ${error.message}`);
+                }
+              }
+            } catch (error) {
+              console.log(`Cleanup failed: ${error.message}`);
+            }

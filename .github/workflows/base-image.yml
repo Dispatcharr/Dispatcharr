@@ -9,6 +9,7 @@ on:
       - 'requirements.txt'
   pull_request:
     branches: [ main, dev ]
+    types: [ opened, synchronize, reopened ]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
@@ -55,8 +56,17 @@ jobs:
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
           echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
 
-          # Determine branch name
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          # Determine branch tag based on event type and branch
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # For pull requests, check if it's dependabot
+            if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+              # Create PR-specific tag for dependabot
+              echo "branch_tag=base-dependabot-pr-${{ github.event.number }}-${{ steps.timestamp.outputs.timestamp }}" >> $GITHUB_OUTPUT
+            else
+              # For regular PRs, use base for testing
+              echo "branch_tag=base-pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+            fi
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "branch_tag=base" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
             echo "branch_tag=base-dev" >> $GITHUB_OUTPUT
