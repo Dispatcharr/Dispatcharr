@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AppShell,
   Box,
@@ -20,9 +21,21 @@ import {
   FileInput,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { RefreshCcw, Trash2 } from 'lucide-react';
+import { RefreshCcw, Trash2, ArrowUp, ArrowDown } from 'lucide-react';
 import API from '../api';
 import { notifications } from '@mantine/notifications';
+import usePluginsStore from '../store/plugins';
+import { PluginUIProvider, PluginCanvas } from '../plugin-ui';
+import { ensureArray } from '../plugin-ui/utils';
+
+const formatTimestamp = (iso) => {
+  if (!iso) return null;
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+};
 
 const Field = ({ field, value, onChange }) => {
   const common = { label: field.label, description: field.help_text };
@@ -71,15 +84,22 @@ const Field = ({ field, value, onChange }) => {
 
 const PluginCard = ({
   plugin,
+  status,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
   onSaveSettings,
   onRunAction,
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
 }) => {
+  const navigate = useNavigate();
   const [settings, setSettings] = useState(plugin.settings || {});
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [runningAction, setRunningAction] = useState(null);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
   const [lastResult, setLastResult] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -89,6 +109,16 @@ const PluginCard = ({
     onConfirm: null,
   });
 
+  const clearPluginError = usePluginsStore((state) => state.clearPluginError);
+
+  const ui = plugin.ui_schema || {};
+  const missing = plugin.missing;
+  const pluginPages = ensureArray(Array.isArray(ui.pages) ? ui.pages : []);
+  const pluginPage = pluginPages.find((page) => (page.placement || 'plugin') === 'plugin');
+  const pluginLayout = ui.layout || pluginPage?.layout;
+  const hasAdvanced = !!pluginLayout;
+  const hasFields = !missing && Array.isArray(plugin.fields) && plugin.fields.length > 0;
+
   // Keep local enabled state in sync with props (e.g., after import + enable)
   React.useEffect(() => {
     setEnabled(!!plugin.enabled);
@@ -96,7 +126,7 @@ const PluginCard = ({
   // Sync settings if plugin changes identity
   React.useEffect(() => {
     setSettings(plugin.settings || {});
-  }, [plugin.key]);
+  }, [plugin.key, plugin.settings]);
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
@@ -105,7 +135,10 @@ const PluginCard = ({
   const save = async () => {
     setSaving(true);
     try {
-      await onSaveSettings(plugin.key, settings);
+      const updatedSettings = await onSaveSettings(plugin.key, settings);
+      if (updatedSettings && typeof updatedSettings === 'object') {
+        setSettings(updatedSettings);
+      }
       notifications.show({
         title: 'Saved',
         message: `${plugin.name} settings updated`,
@@ -116,7 +149,41 @@ const PluginCard = ({
     }
   };
 
-  const missing = plugin.missing;
+  const handleDownload = (download) => {
+    if (!download) return;
+    if (download.url) {
+      window.open(download.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (download.data) {
+      try {
+        const binary = window.atob(download.data);
+        const buffer = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          buffer[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([buffer], {
+          type: download.content_type || 'application/octet-stream',
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = download.filename || `${plugin.key}.bin`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        console.error('Failed to process plugin download payload', error);
+        notifications.show({
+          title: 'Download failed',
+          message: 'Unable to download file returned by plugin action',
+          color: 'red',
+        });
+      }
+    }
+  };
+
   return (
     <Card
       shadow="sm"
@@ -130,8 +197,46 @@ const PluginCard = ({
           <Text size="sm" c="dimmed">
             {plugin.description}
           </Text>
+          {status?.lastError ? (
+            <Text size="xs" c="red">
+              Reload failed: {status.lastError}
+            </Text>
+          ) : status?.lastReloadAt ? (
+            <Text size="xs" c="dimmed">
+              Last reload: {formatTimestamp(status.lastReloadAt)}
+            </Text>
+          ) : null}
         </div>
-        <Group gap="xs" align="center">
+      <Group gap="xs" align="center">
+          <Group gap={4}>
+            <ActionIcon
+              variant="subtle"
+              size="sm"
+              onClick={() => onMoveUp && onMoveUp(plugin.key)}
+              disabled={!canMoveUp}
+              title="Move up"
+            >
+              <ArrowUp size={16} />
+            </ActionIcon>
+            <ActionIcon
+              variant="subtle"
+              size="sm"
+              onClick={() => onMoveDown && onMoveDown(plugin.key)}
+              disabled={!canMoveDown}
+              title="Move down"
+            >
+              <ArrowDown size={16} />
+            </ActionIcon>
+          </Group>
+          {hasAdvanced && (
+            <Button
+              size="xs"
+              variant="light"
+              onClick={() => navigate(`/plugins/${plugin.key}`)}
+            >
+              Open
+            </Button>
+          )}
           <ActionIcon
             variant="subtle"
             color="red"
@@ -160,6 +265,9 @@ const PluginCard = ({
               if (next && resp?.ever_enabled) {
                 plugin.ever_enabled = true;
               }
+              if (next) {
+                clearPluginError(plugin.key);
+              }
             }}
             size="xs"
             onLabel="On"
@@ -175,7 +283,25 @@ const PluginCard = ({
         </Text>
       )}
 
-      {!missing && plugin.fields && plugin.fields.length > 0 && (
+      {hasAdvanced && !missing && (
+        <Stack gap="xs" mt="sm">
+          {plugin.ui_schema?.preview && (
+            <PluginUIProvider pluginKey={plugin.key} plugin={plugin}>
+              <PluginCanvas
+                layout={plugin.ui_schema.preview}
+                context={{ plugin, preview: true }}
+              />
+            </PluginUIProvider>
+          )}
+          <Text size="sm" c="dimmed">
+            {enabled
+              ? 'Use the Open button to explore the full workspace.'
+              : 'Enable to access the workspace.'}
+          </Text>
+        </Stack>
+      )}
+
+      {hasFields && (
         <Stack gap="xs" mt="sm">
           {plugin.fields.map((f) => (
             <Field
@@ -185,6 +311,11 @@ const PluginCard = ({
               onChange={updateField}
             />
           ))}
+          {hasAdvanced && !hasFields && plugin.settings && (
+            <Text size="sm" c="dimmed">
+              Settings are managed programmatically for this plugin.
+            </Text>
+          )}
           <Group>
             <Button loading={saving} onClick={save} variant="default" size="xs">
               Save Settings
@@ -193,103 +324,126 @@ const PluginCard = ({
         </Stack>
       )}
 
-      {!missing && plugin.actions && plugin.actions.length > 0 && (
+      {!hasAdvanced && !missing && plugin.actions && plugin.actions.length > 0 && (
         <>
           <Divider my="sm" />
           <Stack gap="xs">
-            {plugin.actions.map((a) => (
-              <Group key={a.id} justify="space-between">
-                <div>
-                  <Text>{a.label}</Text>
-                  {a.description && (
-                    <Text size="sm" c="dimmed">
-                      {a.description}
-                    </Text>
-                  )}
-                </div>
-                <Button
-                  loading={running}
-                  disabled={!enabled}
-                  onClick={async () => {
-                    setRunning(true);
-                    setLastResult(null);
-                    try {
-                      // Determine if confirmation is required from action metadata or fallback field
-                      const actionConfirm = a.confirm;
-                      const confirmField = (plugin.fields || []).find(
-                        (f) => f.id === 'confirm'
-                      );
-                      let requireConfirm = false;
-                      let confirmTitle = `Run ${a.label}?`;
-                      let confirmMessage = `You're about to run "${a.label}" from "${plugin.name}".`;
-                      if (actionConfirm) {
-                        if (typeof actionConfirm === 'boolean') {
-                          requireConfirm = actionConfirm;
-                        } else if (typeof actionConfirm === 'object') {
-                          requireConfirm = actionConfirm.required !== false;
-                          if (actionConfirm.title)
-                            confirmTitle = actionConfirm.title;
-                          if (actionConfirm.message)
-                            confirmMessage = actionConfirm.message;
-                        }
-                      } else if (confirmField) {
-                        const settingVal = settings?.confirm;
-                        const effectiveConfirm =
-                          (settingVal !== undefined
-                            ? settingVal
-                            : confirmField.default) ?? false;
-                        requireConfirm = !!effectiveConfirm;
-                      }
-
-                      if (requireConfirm) {
-                        await new Promise((resolve) => {
-                          setConfirmConfig({
-                            title: confirmTitle,
-                            message: confirmMessage,
-                            onConfirm: resolve,
-                          });
-                          setConfirmOpen(true);
-                        });
-                      }
-
-                      // Save settings before running to ensure backend uses latest values
+            {plugin.actions.map((a) => {
+              const isRunning = runningAction === a.id;
+              const buttonLabel = isRunning
+                ? a.running_label || 'Running…'
+                : a.button_label || a.label || 'Run';
+              return (
+                <Group key={a.id} justify="space-between" align="flex-start">
+                  <div>
+                    <Text>{a.label}</Text>
+                    {a.description && (
+                      <Text size="sm" c="dimmed">
+                        {a.description}
+                      </Text>
+                    )}
+                  </div>
+                  <Button
+                    loading={isRunning}
+                    disabled={!enabled || (running && !isRunning)}
+                    variant={a.variant || 'filled'}
+                    color={a.color || 'blue'}
+                    size={a.size || 'xs'}
+                    onClick={async () => {
+                      setRunning(true);
+                      setRunningAction(a.id);
+                      setLastResult(null);
                       try {
-                        await onSaveSettings(plugin.key, settings);
-                      } catch (e) {
-                        /* ignore, run anyway */
+                        const actionConfirm = a.confirm;
+                        const confirmField = (plugin.fields || []).find(
+                          (f) => f.id === 'confirm'
+                        );
+                        let requireConfirm = false;
+                        let confirmTitle = `Run ${a.label}?`;
+                        let confirmMessage = `You're about to run "${a.label}" from "${plugin.name}".`;
+                        if (actionConfirm) {
+                          if (typeof actionConfirm === 'boolean') {
+                            requireConfirm = actionConfirm;
+                          } else if (typeof actionConfirm === 'object') {
+                            requireConfirm = actionConfirm.required !== false;
+                            if (actionConfirm.title)
+                              confirmTitle = actionConfirm.title;
+                            if (actionConfirm.message)
+                              confirmMessage = actionConfirm.message;
+                          }
+                        } else if (confirmField) {
+                          const settingVal = settings?.confirm;
+                          const effectiveConfirm =
+                            (settingVal !== undefined
+                              ? settingVal
+                              : confirmField.default) ?? false;
+                          requireConfirm = !!effectiveConfirm;
+                        }
+
+                        if (requireConfirm) {
+                          await new Promise((resolve) => {
+                            setConfirmConfig({
+                              title: confirmTitle,
+                              message: confirmMessage,
+                              onConfirm: resolve,
+                            });
+                            setConfirmOpen(true);
+                          });
+                        }
+
+                        try {
+                          const updatedSettings = await onSaveSettings(
+                            plugin.key,
+                            settings
+                          );
+                          if (updatedSettings && typeof updatedSettings === 'object') {
+                            setSettings(updatedSettings);
+                          }
+                        } catch (e) {
+                          // Ignore errors, action can still run
+                        }
+
+                        const resp = await onRunAction(plugin.key, a.id);
+                        if (resp?.success) {
+                          setLastResult(resp.result || {});
+                          handleDownload(resp?.result?.download || resp?.result?.file_download);
+                          const msg =
+                            resp.result?.message ||
+                            a.success_message ||
+                            'Plugin action completed';
+                          notifications.show({
+                            title: a.success_title || plugin.name,
+                            message: msg,
+                            color: a.success_color || 'green',
+                          });
+                        } else {
+                          const err = resp?.error || 'Unknown error';
+                          setLastResult({ error: err });
+                          notifications.show({
+                            title: a.error_title || `${plugin.name} error`,
+                            message: String(err),
+                            color: a.error_color || 'red',
+                          });
+                        }
+                      } finally {
+                        setRunning(false);
+                        setRunningAction(null);
                       }
-                      const resp = await onRunAction(plugin.key, a.id);
-                      if (resp?.success) {
-                        setLastResult(resp.result || {});
-                        const msg =
-                          resp.result?.message || 'Plugin action completed';
-                        notifications.show({
-                          title: plugin.name,
-                          message: msg,
-                          color: 'green',
-                        });
-                      } else {
-                        const err = resp?.error || 'Unknown error';
-                        setLastResult({ error: err });
-                        notifications.show({
-                          title: `${plugin.name} error`,
-                          message: String(err),
-                          color: 'red',
-                        });
-                      }
-                    } finally {
-                      setRunning(false);
-                    }
-                  }}
-                  size="xs"
-                >
-                  {running ? 'Running…' : 'Run'}
-                </Button>
-              </Group>
-            ))}
+                    }}
+                  >
+                    {buttonLabel}
+                  </Button>
+                </Group>
+              );
+            })}
             {running && (
               <Text size="sm" c="dimmed">
                 Running action… please wait
+              </Text>
+            )}
+            {!running && lastResult?.download && (
+              <Text size="sm" c="dimmed">
+                Download ready: {lastResult.download.filename || 'file'}
               </Text>
             )}
             {!running && lastResult?.file && (
@@ -346,8 +500,6 @@ const PluginCard = ({
 };
 
 export default function PluginsPage() {
-  const [loading, setLoading] = useState(true);
-  const [plugins, setPlugins] = useState([]);
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -359,15 +511,30 @@ export default function PluginsPage() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [uploadNoticeId, setUploadNoticeId] = useState(null);
+  const [filter, setFilter] = useState('');
+
+  const pluginsMap = usePluginsStore((state) => state.plugins);
+  const order = usePluginsStore((state) => state.order);
+  const statusMap = usePluginsStore((state) => state.status);
+  const movePlugin = usePluginsStore((state) => state.movePlugin);
+  const pluginsLoading = usePluginsStore((state) => state.loading);
+  const pluginsList = useMemo(
+    () => order.map((key) => pluginsMap[key]).filter(Boolean),
+    [order, pluginsMap]
+  );
+  const filteredPlugins = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return pluginsList;
+    return pluginsList.filter((plugin) => {
+      const haystack = `${plugin.name || ''} ${plugin.description || ''}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [filter, pluginsList]);
+  const loading = pluginsLoading;
 
   const load = async () => {
-    setLoading(true);
-    try {
-      const list = await API.getPlugins();
-      setPlugins(list);
-    } finally {
-      setLoading(false);
-    }
+    await API.getPlugins({ resetError: true });
+    usePluginsStore.getState().markPluginsReloaded();
   };
 
   useEffect(() => {
@@ -413,6 +580,15 @@ export default function PluginsPage() {
         </Group>
       </Group>
 
+      <Group mb="md">
+        <TextInput
+          placeholder="Search plugins"
+          value={filter}
+          onChange={(event) => setFilter(event.currentTarget.value)}
+          w={320}
+        />
+      </Group>
+
       {loading ? (
         <Loader />
       ) : (
@@ -423,48 +599,37 @@ export default function PluginsPage() {
             verticalSpacing="md"
             breakpoints={[{ maxWidth: '48em', cols: 1 }]}
           >
-            {plugins.map((p) => (
-              <PluginCard
-                key={p.key}
-                plugin={p}
-                onSaveSettings={API.updatePluginSettings}
-                onRunAction={API.runPluginAction}
-                onToggleEnabled={async (key, next) => {
-                  const resp = await API.setPluginEnabled(key, next);
-                  if (resp?.ever_enabled !== undefined) {
-                    setPlugins((prev) =>
-                      prev.map((pl) =>
-                        pl.key === key
-                          ? {
-                              ...pl,
-                              ever_enabled: resp.ever_enabled,
-                              enabled: resp.enabled,
-                            }
-                          : pl
-                      )
-                    );
-                  } else {
-                    setPlugins((prev) =>
-                      prev.map((pl) =>
-                        pl.key === key ? { ...pl, enabled: next } : pl
-                      )
-                    );
-                  }
-                  return resp;
-                }}
-                onRequireTrust={requireTrust}
-                onRequestDelete={(plugin) => {
-                  setDeleteTarget(plugin);
-                  setDeleteOpen(true);
-                }}
-              />
-            ))}
+            {filteredPlugins.map((p) => {
+              const orderIndex = order.indexOf(p.key);
+              const canMoveUp = orderIndex > 0;
+              const canMoveDown = orderIndex !== -1 && orderIndex < order.length - 1;
+              return (
+                <PluginCard
+                  key={p.key}
+                  plugin={p}
+                  status={statusMap[p.key]}
+                  canMoveUp={canMoveUp}
+                  canMoveDown={canMoveDown}
+                  onMoveUp={() => movePlugin(p.key, 'up')}
+                  onMoveDown={() => movePlugin(p.key, 'down')}
+                  onSaveSettings={API.updatePluginSettings}
+                  onRunAction={API.runPluginAction}
+                  onToggleEnabled={API.setPluginEnabled}
+                  onRequireTrust={requireTrust}
+                  onRequestDelete={(plugin) => {
+                    setDeleteTarget(plugin);
+                    setDeleteOpen(true);
+                  }}
+                />
+              );
+            })}
           </SimpleGrid>
-          {plugins.length === 0 && (
+          {filteredPlugins.length === 0 && (
             <Box>
               <Text c="dimmed">
-                No plugins found. Drop a plugin into <code>/data/plugins</code>{' '}
-                and reload.
+                {filter.trim()
+                  ? 'No plugins match your search.'
+                  : 'No plugins found. Drop a plugin into /data/plugins and reload.'}
               </Text>
             </Box>
           )}
@@ -534,10 +699,6 @@ export default function PluginsPage() {
                   const resp = await API.importPlugin(importFile);
                   if (resp?.success && resp.plugin) {
                     setImported(resp.plugin);
-                    setPlugins((prev) => [
-                      resp.plugin,
-                      ...prev.filter((p) => p.key !== resp.plugin.key),
-                    ]);
                     notifications.update({
                       id,
                       loading: false,
@@ -624,13 +785,6 @@ export default function PluginsPage() {
                         true
                       );
                       if (resp?.success) {
-                        setPlugins((prev) =>
-                          prev.map((p) =>
-                            p.key === imported.key
-                              ? { ...p, enabled: true, ever_enabled: true }
-                              : p
-                          )
-                        );
                         notifications.show({
                           title: imported.name,
                           message: 'Plugin enabled',
@@ -733,9 +887,6 @@ export default function PluginsPage() {
                 try {
                   const resp = await API.deletePlugin(deleteTarget.key);
                   if (resp?.success) {
-                    setPlugins((prev) =>
-                      prev.filter((p) => p.key !== deleteTarget.key)
-                    );
                     notifications.show({
                       title: deleteTarget.name,
                       message: 'Plugin deleted',

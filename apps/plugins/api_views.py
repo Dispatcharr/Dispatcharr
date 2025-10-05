@@ -1,8 +1,8 @@
+import json
 import logging
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.decorators import api_view
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 import io
@@ -19,6 +19,45 @@ from .loader import PluginManager
 from .models import PluginConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_params(raw):
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if hasattr(raw, "dict"):
+        try:
+            return raw.dict()
+        except Exception:
+            pass
+    if hasattr(raw, "items") and not isinstance(raw, dict):
+        try:
+            return {k: v for k, v in raw.items()}
+        except Exception:
+            return {}
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    if isinstance(raw, str):
+        payload = raw.strip()
+        if not payload:
+            return {}
+        try:
+            decoded = json.loads(payload)
+            return decoded if isinstance(decoded, (dict, list)) else {"value": decoded}
+        except json.JSONDecodeError:
+            return {"value": payload}
+    return raw
+
+
+def _coerce_bool(raw) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
 
 
 class PluginsListAPIView(APIView):
@@ -186,6 +225,7 @@ class PluginImportAPIView(APIView):
                 "ever_enabled": ever_enabled,
                 "fields": plugin.fields or [],
                 "actions": plugin.actions or [],
+                "ui_schema": plugin.ui_schema or {},
             }
         })
 
@@ -221,8 +261,9 @@ class PluginRunAPIView(APIView):
 
     def post(self, request, key):
         pm = PluginManager.get()
-        action = request.data.get("action")
-        params = request.data.get("params", {})
+        data = request.data or {}
+        action = data.get("action")
+        params = _normalize_params(data.get("params", {}))
         if not action:
             return Response({"success": False, "error": "Missing 'action'"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -235,13 +276,69 @@ class PluginRunAPIView(APIView):
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            result = pm.run_action(key, action, params)
+            result = pm.run_action(
+                key,
+                action,
+                params,
+                request=request,
+                files=request.FILES or None,
+            )
             return Response({"success": True, "result": result})
         except PermissionError as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             logger.exception("Plugin action failed")
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PluginUIResourceAPIView(APIView):
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def post(self, request, key):
+        pm = PluginManager.get()
+        data = request.data or {}
+        resource = data.get("resource") or data.get("id")
+        if not resource:
+            return Response(
+                {"success": False, "error": "Missing 'resource' identifier"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = _normalize_params(data.get("params", {}))
+        allow_disabled = _coerce_bool(data.get("allow_disabled", False))
+
+        try:
+            result = pm.resolve_ui_resource(
+                key,
+                resource,
+                params,
+                request=request,
+                files=request.FILES or None,
+                allow_disabled=allow_disabled,
+            )
+            return Response({"success": True, "result": result})
+        except PermissionError as e:
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            logger.exception("Plugin resource resolution failed")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class PluginEnabledAPIView(APIView):

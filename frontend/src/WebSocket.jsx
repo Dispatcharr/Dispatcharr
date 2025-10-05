@@ -17,12 +17,17 @@ import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
 
-export const WebsocketContext = createContext([false, () => {}, null]);
+export const WebsocketContext = createContext([
+  false,
+  () => {},
+  { lastEvent: null, subscribe: () => () => {} },
+]);
 
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
   const [val, setVal] = useState(null);
   const ws = useRef(null);
+  const listenersRef = useRef(new Set());
   const reconnectTimerRef = useRef(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [connectionError, setConnectionError] = useState(null);
@@ -105,6 +110,16 @@ export const WebsocketProvider = ({ children }) => {
       // Create new WebSocket connection
       const socket = new WebSocket(wsUrl);
 
+      const notifyListeners = (payload) => {
+        listenersRef.current.forEach((listener) => {
+          try {
+            listener(payload);
+          } catch (listenerError) {
+            console.error('WebSocket listener error', listenerError);
+          }
+        });
+      };
+
       socket.onopen = () => {
         console.log('WebSocket connected successfully');
         setIsReady(true);
@@ -167,6 +182,8 @@ export const WebsocketProvider = ({ children }) => {
             // Don't need to do anything else for this event type
             return;
           }
+
+          notifyListeners(parsedEvent);
 
           // Handle standard message format for other event types
           switch (parsedEvent.data?.type) {
@@ -797,6 +814,29 @@ export const WebsocketProvider = ({ children }) => {
               break;
             }
 
+            case 'plugin_event': {
+              const data = parsedEvent.data || {};
+              const note = data.notification;
+              if (note) {
+                if (typeof note === 'string') {
+                  notifications.show({
+                    title: data.plugin || 'Plugin',
+                    message: note,
+                  });
+                } else if (typeof note === 'object') {
+                  notifications.show({
+                    title: note.title || data.event || data.plugin || 'Plugin',
+                    message: note.message || '',
+                    color: note.color,
+                    autoClose: note.autoClose,
+                    loading: note.loading,
+                  });
+                }
+              }
+              setVal(parsedEvent);
+              break;
+            }
+
             default:
               console.error(
                 `Unknown websocket event type: ${parsedEvent.data?.type}`
@@ -832,6 +872,7 @@ export const WebsocketProvider = ({ children }) => {
     getReconnectDelay,
     getWebSocketUrl,
     isReady,
+    listenersRef,
   ]);
 
   // Initial connection and cleanup
@@ -870,9 +911,27 @@ export const WebsocketProvider = ({ children }) => {
   const fetchLogos = useLogosStore((s) => s.fetchAllLogos);
   const fetchChannelProfiles = useChannelsStore((s) => s.fetchChannelProfiles);
 
+  const subscribe = useCallback((listener) => {
+    if (typeof listener !== 'function') {
+      return () => {};
+    }
+    listenersRef.current.add(listener);
+    return () => {
+      listenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const sendMessage = useCallback((payload) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(payload);
+    } else {
+      console.warn('WebSocket is not ready to send messages');
+    }
+  }, []);
+
   const ret = useMemo(() => {
-    return [isReady, ws.current?.send.bind(ws.current), val];
-  }, [isReady, val]);
+    return [isReady, sendMessage, { lastEvent: val, subscribe }];
+  }, [isReady, sendMessage, val, subscribe]);
 
   return (
     <WebsocketContext.Provider value={ret}>

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
@@ -16,6 +16,7 @@ import {
   User,
   FileImage,
 } from 'lucide-react';
+import * as LucideIcons from 'lucide-react';
 import {
   Avatar,
   AppShell,
@@ -37,6 +38,8 @@ import useAuthStore from '../store/auth'; // Add this import
 import API from '../api';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
+import usePluginsStore from '../store/plugins';
+import { ensureArray } from '../plugin-ui/utils';
 
 const NavLink = ({ item, isActive, collapsed }) => {
   return (
@@ -89,8 +92,49 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
+  const pluginsMap = usePluginsStore((state) => state.plugins);
+  const pluginOrder = usePluginsStore((state) => state.order);
+
+  const resolvePluginIcon = (iconName) => {
+    if (!iconName) return null;
+    const formatted = iconName
+      .replace(/[-_](\w)/g, (_, char) => char.toUpperCase())
+      .replace(/^(\w)/, (match) => match.toUpperCase());
+    return LucideIcons[iconName] || LucideIcons[formatted] || null;
+  };
+
+  const pluginNavItems = useMemo(() => {
+    const items = [];
+    pluginOrder.forEach((key) => {
+      const plugin = pluginsMap[key];
+      if (!plugin || plugin.missing || !plugin.enabled) return;
+      const ui = plugin.ui_schema || {};
+      const pages = ensureArray(ui.pages);
+      pages.forEach((page) => {
+        if ((page.placement || 'plugin').toLowerCase() !== 'sidebar') return;
+        if (plugin.settings?.show_sidebar === false) return;
+        if (page.requiresSetting) {
+          const flag = plugin.settings?.[page.requiresSetting];
+          if (flag !== undefined && flag !== null && !flag) {
+            return;
+          }
+        }
+        const rawPath = page.route || `/plugins/${key}/${page.id}`;
+        const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+        const IconComponent = resolvePluginIcon(page.icon || ui.icon);
+        items.push({
+          label: page.label || plugin.name,
+          path,
+          icon: IconComponent ? <IconComponent size={20} /> : <PlugZap size={20} />,
+          badge: page.badge,
+        });
+      });
+    });
+    return items;
+  }, [pluginOrder, pluginsMap]);
+
   // Navigation Items
-  const navItems =
+  const baseNavItems =
     authUser && authUser.user_level == USER_LEVELS.ADMIN
       ? [
           {
@@ -143,6 +187,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/settings',
           },
         ];
+
+  const navItems = [...baseNavItems, ...pluginNavItems];
 
   // Fetch environment settings including version on component mount
   useEffect(() => {

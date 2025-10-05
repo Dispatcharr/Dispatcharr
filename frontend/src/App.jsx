@@ -1,5 +1,5 @@
 // frontend/src/App.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BrowserRouter as Router,
   Route,
@@ -15,6 +15,7 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import PluginWorkspace from './pages/PluginWorkspace';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
@@ -33,6 +34,7 @@ import API from './api';
 import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
 import 'allotment/dist/style.css';
+import usePluginsStore from './store/plugins';
 
 const drawerWidth = 240;
 const miniDrawerWidth = 60;
@@ -48,6 +50,46 @@ const App = () => {
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+  const pluginsMap = usePluginsStore((state) => state.plugins);
+  const pluginOrder = usePluginsStore((state) => state.order);
+  const pluginRoutes = useMemo(() => {
+    const routes = [];
+    const seen = new Set();
+    pluginOrder.forEach((key) => {
+      const plugin = pluginsMap[key];
+      if (!plugin) return;
+
+      const basePath = `/plugins/${key}`;
+      if (!seen.has(basePath)) {
+        routes.push({
+          path: basePath,
+          element: <PluginWorkspace key={`plugin-${key}`} pluginKey={key} />,
+        });
+        seen.add(basePath);
+      }
+
+      const ui = plugin.ui_schema || {};
+      const pages = Array.isArray(ui.pages) ? ui.pages : [];
+      pages.forEach((page) => {
+        if (page.placement === 'hidden') return;
+        const rawPath = page.route || `/plugins/${key}/${page.id}`;
+        const normalized = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+        if (seen.has(normalized)) return;
+        routes.push({
+          path: normalized,
+          element: (
+            <PluginWorkspace
+              key={`plugin-${key}-${page.id}`}
+              pluginKey={key}
+              initialPageId={page.id}
+            />
+          ),
+        });
+        seen.add(normalized);
+      });
+    });
+    return routes;
+  }, [pluginsMap, pluginOrder]);
 
   const toggleDrawer = () => {
     setOpen(!open);
@@ -81,6 +123,7 @@ const App = () => {
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
+          await API.getPlugins({ resetError: true });
           // Start background logo loading after app is fully initialized (only once)
           if (!backgroundLoadingStarted) {
             setBackgroundLoadingStarted(true);
@@ -143,6 +186,13 @@ const App = () => {
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
                         <Route path="/plugins" element={<PluginsPage />} />
+                        {pluginRoutes.map((route) => (
+                          <Route
+                            key={route.path}
+                            path={route.path}
+                            element={route.element}
+                          />
+                        ))}
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />

@@ -1,3 +1,4 @@
+import copy
 import importlib
 import json
 import logging
@@ -7,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from django.db import transaction
+
+from core.utils import send_websocket_update
 
 from .models import PluginConfig
 
@@ -23,6 +26,7 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    ui_schema: Dict[str, Any] = field(default_factory=dict)
 
 
 class PluginManager:
@@ -86,11 +90,23 @@ class PluginManager:
             logger.debug(f"Skipping {path}: no plugin.py or package")
             return
 
-        candidate_modules = []
-        if has_pluginpy:
-            candidate_modules.append(f"{key}.plugin")
-        if has_pkg:
-            candidate_modules.append(key)
+        module_base = os.path.basename(path)
+        sanitized_base = module_base.replace(" ", "_").replace("-", "_") if module_base else ""
+        module_variants: List[str] = []
+        for variant in (sanitized_base, key):
+            if not variant:
+                continue
+            if variant not in module_variants:
+                module_variants.append(variant)
+
+        candidate_modules: List[str] = []
+        for base in module_variants:
+            if has_pluginpy:
+                module_name = f"{base}.plugin"
+                if module_name not in candidate_modules:
+                    candidate_modules.append(module_name)
+            if has_pkg and base not in candidate_modules:
+                candidate_modules.append(base)
 
         module = None
         plugin_cls = None
@@ -121,7 +137,34 @@ class PluginManager:
         version = getattr(instance, "version", "")
         description = getattr(instance, "description", "")
         fields = getattr(instance, "fields", [])
+        if callable(fields):
+            fields = fields()
         actions = getattr(instance, "actions", [])
+        if callable(actions):
+            actions = actions()
+        ui_schema = getattr(instance, "ui_schema", None)
+        if ui_schema is None:
+            ui_schema = getattr(instance, "ui", None)
+        if callable(ui_schema):
+            ui_schema = ui_schema()
+
+        try:
+            fields = copy.deepcopy(fields) if fields is not None else []
+        except TypeError:
+            fields = json.loads(json.dumps(fields)) if fields else []
+
+        try:
+            actions = copy.deepcopy(actions) if actions is not None else []
+        except TypeError:
+            actions = json.loads(json.dumps(actions)) if actions else []
+
+        if ui_schema is None:
+            ui_schema = {}
+        else:
+            try:
+                ui_schema = copy.deepcopy(ui_schema)
+            except TypeError:
+                ui_schema = json.loads(json.dumps(ui_schema))
 
         self._registry[key] = LoadedPlugin(
             key=key,
@@ -132,6 +175,7 @@ class PluginManager:
             instance=instance,
             fields=fields,
             actions=actions,
+            ui_schema=ui_schema,
         )
 
     def _sync_db_with_registry(self):
@@ -185,6 +229,7 @@ class PluginManager:
                     "fields": lp.fields or [],
                     "settings": (conf.settings if conf else {}),
                     "actions": lp.actions or [],
+                    "ui_schema": lp.ui_schema or {},
                     "missing": False,
                 }
             )
@@ -205,6 +250,7 @@ class PluginManager:
                     "fields": [],
                     "settings": conf.settings or {},
                     "actions": [],
+                    "ui_schema": {},
                     "missing": True,
                 }
             )
@@ -214,13 +260,49 @@ class PluginManager:
     def get_plugin(self, key: str) -> Optional[LoadedPlugin]:
         return self._registry.get(key)
 
+    def _build_context(self, lp: LoadedPlugin, cfg: PluginConfig, *, request=None, files=None):
+        def emit_event(event: str, payload: Optional[Dict[str, Any]] = None, *, success: bool = True):
+            data = {
+                "type": "plugin_event",
+                "plugin": lp.key,
+                "event": event,
+                "success": success,
+            }
+            if payload is not None:
+                data["payload"] = payload
+            send_websocket_update("updates", "update", data)
+
+        return {
+            "settings": cfg.settings or {},
+            "logger": logger,
+            "actions": {a.get("id"): a for a in (lp.actions or [])},
+            "emit_event": emit_event,
+            "request": request,
+            "files": files,
+            "ui_schema": lp.ui_schema or {},
+            "plugin": {
+                "key": lp.key,
+                "name": lp.name,
+                "version": lp.version,
+                "description": lp.description,
+            },
+        }
+
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
         cfg = PluginConfig.objects.get(key=key)
         cfg.settings = settings or {}
         cfg.save(update_fields=["settings", "updated_at"])
         return cfg.settings
 
-    def run_action(self, key: str, action_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run_action(
+        self,
+        key: str,
+        action_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        request=None,
+        files=None,
+    ) -> Dict[str, Any]:
         lp = self.get_plugin(key)
         if not lp or not lp.instance:
             raise ValueError(f"Plugin '{key}' not found")
@@ -230,12 +312,7 @@ class PluginManager:
             raise PermissionError(f"Plugin '{key}' is disabled")
         params = params or {}
 
-        # Provide a context object to the plugin
-        context = {
-            "settings": cfg.settings or {},
-            "logger": logger,
-            "actions": {a.get("id"): a for a in (lp.actions or [])},
-        }
+        context = self._build_context(lp, cfg, request=request, files=files)
 
         # Run either via Celery if plugin provides a delayed method, or inline
         run_method = getattr(lp.instance, "run", None)
@@ -252,3 +329,44 @@ class PluginManager:
         if isinstance(result, dict):
             return result
         return {"status": "ok", "result": result}
+
+    def resolve_ui_resource(
+        self,
+        key: str,
+        resource_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        request=None,
+        files=None,
+        allow_disabled: bool = False,
+    ) -> Dict[str, Any]:
+        lp = self.get_plugin(key)
+        if not lp or not lp.instance:
+            raise ValueError(f"Plugin '{key}' not found")
+
+        cfg = PluginConfig.objects.get(key=key)
+        if not allow_disabled and not cfg.enabled:
+            raise PermissionError(f"Plugin '{key}' is disabled")
+
+        resolver = getattr(lp.instance, "resolve_ui_resource", None)
+        params = params or {}
+        context = self._build_context(lp, cfg, request=request, files=files)
+
+        if callable(resolver):
+            result = resolver(resource_id, params, context)
+            if isinstance(result, dict):
+                return result
+            return {"status": "ok", "result": result}
+
+        if cfg.enabled or not allow_disabled:
+            return self.run_action(
+                key,
+                resource_id,
+                params,
+                request=request,
+                files=files,
+            )
+
+        raise PermissionError(
+            f"Plugin '{key}' is disabled and cannot resolve resource '{resource_id}'"
+        )

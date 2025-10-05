@@ -11,6 +11,7 @@ import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
 import useUsersStore from './store/users';
+import usePluginsStore from './store/plugins';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -1303,22 +1304,39 @@ export default class API {
   }
 
   // Plugins API
-  static async getPlugins() {
+  static async getPlugins(options = {}) {
+    const store = usePluginsStore.getState();
+    store.setLoading(true);
+    if (options?.resetError) {
+      store.setError(null);
+    }
     try {
       const response = await request(`${host}/api/plugins/plugins/`);
-      return response.plugins || [];
+      const plugins = response.plugins || [];
+      store.setPlugins(plugins);
+      return plugins;
     } catch (e) {
+      store.setError(e);
       errorNotification('Failed to retrieve plugins', e);
+    } finally {
+      store.setLoading(false);
     }
   }
 
-  static async reloadPlugins() {
+  static async reloadPlugins(options = {}) {
     try {
       const response = await request(`${host}/api/plugins/plugins/reload/`, {
         method: 'POST',
       });
+      if (options?.refetch !== false) {
+        await API.getPlugins();
+        usePluginsStore.getState().markPluginsReloaded();
+      }
       return response;
     } catch (e) {
+      const message =
+        (e?.body && (e.body.error || e.body.detail)) || e?.message || 'Plugin reload failed';
+      usePluginsStore.getState().markPluginsReloadError(message);
       errorNotification('Failed to reload plugins', e);
     }
   }
@@ -1331,6 +1349,9 @@ export default class API {
         method: 'POST',
         body: form,
       });
+      if (response?.plugin) {
+        usePluginsStore.getState().upsertPlugin(response.plugin);
+      }
       return response;
     } catch (e) {
       // Show only the concise error message for plugin import
@@ -1345,6 +1366,9 @@ export default class API {
       const response = await request(`${host}/api/plugins/plugins/${key}/delete/`, {
         method: 'DELETE',
       });
+      if (response?.success) {
+        usePluginsStore.getState().removePlugin(key);
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to delete plugin', e);
@@ -1360,21 +1384,99 @@ export default class API {
           body: { settings },
         }
       );
+      if (response?.settings) {
+        usePluginsStore.getState().updateSettings(key, response.settings);
+      }
       return response?.settings || {};
     } catch (e) {
       errorNotification('Failed to update plugin settings', e);
     }
   }
 
-  static async runPluginAction(key, action, params = {}) {
+  static async runPluginAction(key, action, params = {}, options = {}) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/run/`, {
+      let body;
+      if (options?.formData instanceof FormData) {
+        body = options.formData;
+        if (!options.skipActionField && !body.has('action')) {
+          body.append('action', action);
+        }
+        if (options.appendParams !== false) {
+          const payload =
+            typeof params === 'string' ? params : JSON.stringify(params || {});
+          body.append('params', payload);
+        }
+      } else {
+        body = { action, params };
+      }
+
+      const requestOptions = {
         method: 'POST',
-        body: { action, params },
-      });
+        body,
+        ...(options.fetchOptions || {}),
+      };
+
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/run/`,
+        requestOptions
+      );
+
+      if (options?.syncSettings && response?.result?.settings) {
+        usePluginsStore
+          .getState()
+          .updateSettings(key, response.result.settings);
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to run plugin action', e);
+    }
+  }
+
+  static async resolvePluginResource(
+    key,
+    resource,
+    params = {},
+    options = {}
+  ) {
+    try {
+      let body;
+      if (options?.formData instanceof FormData) {
+        body = options.formData;
+        if (!body.has('resource')) {
+          body.append('resource', resource);
+        }
+        if (options.appendParams !== false) {
+          const payload =
+            typeof params === 'string' ? params : JSON.stringify(params || {});
+          body.append('params', payload);
+        }
+        if (options.allowDisabled !== undefined && !body.has('allow_disabled')) {
+          body.append('allow_disabled', String(options.allowDisabled));
+        }
+      } else {
+        body = {
+          resource,
+          params,
+        };
+        if (options.allowDisabled !== undefined) {
+          body.allow_disabled = options.allowDisabled;
+        }
+      }
+
+      const requestOptions = {
+        method: 'POST',
+        body,
+        ...(options.fetchOptions || {}),
+      };
+
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/ui/resource/`,
+        requestOptions
+      );
+      return response?.result;
+    } catch (e) {
+      errorNotification('Failed to resolve plugin resource', e);
     }
   }
 
@@ -1384,6 +1486,14 @@ export default class API {
         method: 'POST',
         body: { enabled },
       });
+      if (response?.success && Object.prototype.hasOwnProperty.call(response, 'enabled')) {
+        usePluginsStore
+          .getState()
+          .updatePluginMeta(key, {
+            enabled: response.enabled,
+            ever_enabled: response.ever_enabled,
+          });
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to update plugin enabled state', e);
