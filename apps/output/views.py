@@ -62,7 +62,7 @@ def generate_m3u(request, profile_name=None, user=None):
                     channel_profiles
                 )
 
-            channels = Channel.objects.filter(**filters).order_by("channel_number")
+            channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
         else:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
                 "channel_number"
@@ -95,7 +95,22 @@ def generate_m3u(request, profile_name=None, user=None):
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
-    m3u_content = "#EXTM3U\n"
+    # Build EPG URL with query parameters if needed
+    epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+
+    # Optionally preserve certain query parameters
+    preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+    query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
+    if query_params:
+        from urllib.parse import urlencode
+        epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+    else:
+        epg_url = epg_base_url
+
+    # Add x-tvg-url and url-tvg attribute for EPG URL
+    m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+
+    # Start building M3U content
     for channel in channels:
         group_title = channel.channel_group.name if channel.channel_group else "Default"
 
@@ -311,7 +326,7 @@ def generate_epg(request, profile_name=None, user=None):
                         channel_profiles
                     )
 
-                channels = Channel.objects.filter(**filters).order_by("channel_number")
+                channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
                 channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
                     "channel_number"
@@ -895,7 +910,7 @@ def xc_get_live_streams(request, user, category_id=None):
         if category_id is not None:
             filters["channel_group__id"] = category_id
 
-        channels = Channel.objects.filter(**filters).order_by("channel_number")
+        channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
     else:
         if not category_id:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
@@ -951,7 +966,10 @@ def xc_get_epg(request, user, short=False):
             channel_profiles = user.channel_profiles.all()
             filters["channelprofilemembership__channel_profile__in"] = channel_profiles
 
-        channel = get_object_or_404(Channel, **filters)
+        # Use filter().first() with distinct instead of get_object_or_404 to handle multiple profile memberships
+        channel = Channel.objects.filter(**filters).distinct().first()
+        if not channel:
+            raise Http404()
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 

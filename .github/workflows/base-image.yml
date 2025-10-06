@@ -2,41 +2,36 @@ name: Base Image Build
 
 on:
   push:
-    branches: [ main, dev ]
+    branches: [main, dev]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'requirements.txt'
   pull_request:
-    branches: [ main, dev ]
+    branches: [main, dev]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'requirements.txt'
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch: # Allow manual triggering
 
 permissions:
-  contents: write    # For managing releases and pushing tags
-  packages: write    # For publishing to GitHub Container Registry
+  contents: write # For managing releases and pushing tags
+  packages: write # For publishing to GitHub Container Registry
 
 jobs:
-  build-base-image:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      repo_owner: ${{ steps.meta.outputs.repo_owner }}
+      repo_name: ${{ steps.meta.outputs.repo_name }}
+      branch_tag: ${{ steps.meta.outputs.branch_tag }}
+      timestamp: ${{ steps.timestamp.outputs.timestamp }}
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate timestamp for build
         id: timestamp
@@ -66,13 +61,111 @@ jobs:
             echo "branch_tag=base-${BRANCH}" >> $GITHUB_OUTPUT
           fi
 
+  docker:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push Docker base image
         uses: docker/build-push-action@v4
         with:
           context: .
           file: ./docker/DispatcharrBase
-          push: true
-          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/${{ matrix.platform }}
           tags: |
-            ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:base
-            ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:base-${{ steps.timestamp.outputs.timestamp }}
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
+          build-args: |
+            REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
+            REPO_NAME=${{ needs.prepare.outputs.repo_name }}
+            BRANCH=${{ github.ref_name }}
+            REPO_URL=https://github.com/${{ github.repository }}
+            TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
+
+  create-manifest:
+    needs: [prepare, docker]
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch manifest tags
+        run: |
+          set -euo pipefail
+          OWNER=${{ needs.prepare.outputs.repo_owner }}
+          REPO=${{ needs.prepare.outputs.repo_name }}
+          BRANCH_TAG=${{ needs.prepare.outputs.branch_tag }}
+          TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
+
+          echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
+
+          # GitHub Container Registry manifests
+          # branch tag (e.g. base or base-dev)
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
+            ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
+
+          # branch + timestamp tag
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
+            ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-arm64
+
+          # Docker Hub manifests
+          # branch tag (e.g. base or base-dev)
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
+
+          # branch + timestamp tag
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-arm64

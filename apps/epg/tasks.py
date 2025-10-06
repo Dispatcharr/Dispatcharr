@@ -28,6 +28,23 @@ from core.utils import acquire_task_lock, release_task_lock, send_websocket_upda
 
 logger = logging.getLogger(__name__)
 
+
+def validate_icon_url_fast(icon_url, max_length=None):
+    """
+    Fast validation for icon URLs during parsing.
+    Returns None if URL is too long, original URL otherwise.
+    If max_length is None, gets it dynamically from the EPGData model field.
+    """
+    if max_length is None:
+        # Get max_length dynamically from the model field
+        max_length = EPGData._meta.get_field('icon_url').max_length
+
+    if icon_url and len(icon_url) > max_length:
+        logger.warning(f"Icon URL too long ({len(icon_url)} > {max_length}), skipping: {icon_url[:100]}...")
+        return None
+    return icon_url
+
+
 MAX_EXTRACT_CHUNK_SIZE = 65536 # 64kb (base2)
 
 
@@ -831,6 +848,7 @@ def parse_channels_only(source):
         processed_channels = 0
         batch_size = 500  # Process in batches to limit memory usage
         progress = 0  # Initialize progress variable here
+        icon_url_max_length = EPGData._meta.get_field('icon_url').max_length  # Get max length for icon_url field
 
         # Track memory at key points
         if process:
@@ -859,7 +877,7 @@ def parse_channels_only(source):
 
             # Change iterparse to look for both channel and programme elements
             logger.debug(f"Creating iterparse context for channels and programmes")
-            channel_parser = etree.iterparse(source_file, events=('end',), tag=('channel', 'programme'), remove_blank_text=True)
+            channel_parser = etree.iterparse(source_file, events=('end',), tag=('channel', 'programme'), remove_blank_text=True, recover=True)
             if process:
                 logger.debug(f"[parse_channels_only] Memory after creating iterparse: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -875,10 +893,11 @@ def parse_channels_only(source):
                         display_name = None
                         icon_url = None
                         for child in elem:
-                            if child.tag == 'display-name' and child.text:
+                            if display_name is None and child.tag == 'display-name' and child.text:
                                 display_name = child.text.strip()
                             elif child.tag == 'icon':
-                                icon_url = child.get('src', '').strip()
+                                raw_icon_url = child.get('src', '').strip()
+                                icon_url = validate_icon_url_fast(raw_icon_url, icon_url_max_length)
                             if display_name and icon_url:
                                 break  # No need to continue if we have both
 
@@ -1223,7 +1242,7 @@ def parse_programs_for_tvg_id(epg_id):
             source_file = open(file_path, 'rb')
 
             # Stream parse the file using lxml's iterparse
-            program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True)
+            program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
 
             for _, elem in program_parser:
                 if elem.get('channel') == epg.tvg_id:

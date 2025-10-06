@@ -774,7 +774,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         group_title = group_name
 
                         stream_hash = Stream.generate_hash_key(
-                            name, url, tvg_id, hash_keys
+                            name, url, tvg_id, hash_keys, m3u_id=account_id
                         )
                         stream_props = {
                             "name": name,
@@ -903,6 +903,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
+    if compiled_filters:
+        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -912,10 +914,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-
+            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
             include = True
             for pattern, filter in compiled_filters:
-                logger.debug(f"Checking filter patterh {pattern}")
+                logger.trace(f"Checking filter pattern {pattern}")
                 target = name
                 if filter.filter_type == "url":
                     target = url
@@ -940,7 +942,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 )
                 continue
 
-            stream_hash = Stream.generate_hash_key(name, url, tvg_id, hash_keys)
+            stream_hash = Stream.generate_hash_key(name, url, tvg_id, hash_keys, m3u_id=account_id)
             stream_props = {
                 "name": name,
                 "url": url,
@@ -2071,13 +2073,13 @@ def get_transformed_credentials(account, profile=None):
     base_url = account.server_url
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
-    # Format: http://server.com:port/username/password/rest_of_path
+    # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
         # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/{base_username}/{base_password}/"
+        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
         logger.debug(f"Built complete URL: {complete_url}")
 
         # Apply profile-specific transformations if profile is provided
@@ -2091,14 +2093,14 @@ def get_transformed_credentials(account, profile=None):
                 logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
 
                 # Extract components from the transformed URL
-                # Pattern: http://server.com:port/username/password/
+                # Pattern: http://server.com:port/live/username/password/1234.ts
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
                 path_parts = [part for part in parsed_url.path.split('/') if part]
 
                 if len(path_parts) >= 2:
                     # Extract username and password from path
-                    transformed_username = path_parts[0]
-                    transformed_password = path_parts[1]
+                    transformed_username = path_parts[1]
+                    transformed_password = path_parts[2]
 
                     # Rebuild server URL without the username/password path
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"

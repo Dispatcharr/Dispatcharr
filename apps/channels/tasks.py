@@ -229,6 +229,17 @@ def match_channels_to_epg(channels_data, epg_data, region_code=None, use_ml=True
                 logger.info(f"Channel {chan['id']} '{chan['name']}' => EPG found by secondary tvg_id={chan['tvg_id']}")
                 continue
 
+        # Step 2.5: Exact Gracenote ID match
+        normalized_gracenote_id = chan.get("gracenote_id", "")
+        if normalized_gracenote_id:
+            epg_by_gracenote_id = next((epg for epg in epg_data if epg["tvg_id"] == normalized_gracenote_id), None)
+            if epg_by_gracenote_id:
+                chan["epg_data_id"] = epg_by_gracenote_id["id"]
+                channels_to_update.append(chan)
+                matched_channels.append((chan['id'], fallback_name, f"gracenote:{epg_by_gracenote_id['tvg_id']}"))
+                logger.info(f"Channel {chan['id']} '{fallback_name}' => EPG found by exact gracenote_id={normalized_gracenote_id}")
+                continue
+
         # Step 3: Name-based fuzzy matching
         if not chan["norm_chan"]:
             logger.debug(f"Channel {chan['id']} '{chan['name']}' => empty after normalization, skipping")
@@ -431,11 +442,14 @@ def match_epg_channels():
         channels_data = []
         for channel in channels_without_epg:
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+            normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
             channels_data.append({
                 "id": channel.id,
                 "name": channel.name,
                 "tvg_id": normalized_tvg_id,
                 "original_tvg_id": channel.tvg_id,
+                "gracenote_id": normalized_gracenote_id,
+                "original_gracenote_id": channel.tvc_guide_stationid,
                 "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
                 "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
             })
@@ -575,11 +589,14 @@ def match_selected_channels_epg(channel_ids):
         channels_data = []
         for channel in channels_without_epg:
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+            normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
             channels_data.append({
                 "id": channel.id,
                 "name": channel.name,
                 "tvg_id": normalized_tvg_id,
                 "original_tvg_id": channel.tvg_id,
+                "gracenote_id": normalized_gracenote_id,
+                "original_gracenote_id": channel.tvc_guide_stationid,
                 "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
                 "norm_chan": normalize_name(channel.name)
             })
@@ -696,16 +713,19 @@ def match_single_channel_epg(channel_id):
 
         # Prepare single channel data for matching (same format as bulk matching)
         normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
+        normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
         channel_data = {
             "id": channel.id,
             "name": channel.name,
             "tvg_id": normalized_tvg_id,
             "original_tvg_id": channel.tvg_id,
+            "gracenote_id": normalized_gracenote_id,
+            "original_gracenote_id": channel.tvc_guide_stationid,
             "fallback_name": normalized_tvg_id if normalized_tvg_id else channel.name,
             "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
         }
 
-        logger.info(f"Channel data prepared: name='{channel.name}', tvg_id='{normalized_tvg_id}', norm_chan='{channel_data['norm_chan']}'")
+        logger.info(f"Channel data prepared: name='{channel.name}', tvg_id='{normalized_tvg_id}', gracenote_id='{normalized_gracenote_id}', norm_chan='{channel_data['norm_chan']}'")
 
         # Debug: Test what the normalization does to preserve call signs
         test_name = "NBC 11 (KVLY) - Fargo"  # Example for testing
@@ -2446,7 +2466,9 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
 
         for i in range(0, total_streams, batch_size):
             batch_stream_ids = stream_ids[i:i + batch_size]
-            batch_streams = Stream.objects.filter(id__in=batch_stream_ids)
+            # Fetch streams and preserve the order from batch_stream_ids
+            batch_streams_dict = {stream.id: stream for stream in Stream.objects.filter(id__in=batch_stream_ids)}
+            batch_streams = [batch_streams_dict[stream_id] for stream_id in batch_stream_ids if stream_id in batch_streams_dict]
 
             # Send progress update
             send_websocket_update('updates', 'update', {
@@ -2891,6 +2913,101 @@ def set_channels_logos_from_epg(self, channel_ids):
         logger.error(f"EPG logo setting task failed: {e}")
         send_websocket_update('updates', 'update', {
             'type': 'epg_logo_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'failed',
+            'message': f'Task failed: {str(e)}',
+            'error': str(e)
+        })
+        raise
+
+
+@shared_task(bind=True)
+def set_channels_tvg_ids_from_epg(self, channel_ids):
+    """
+    Celery task to set channel TVG-IDs from EPG data for multiple channels
+    """
+    from core.utils import send_websocket_update
+
+    task_id = self.request.id
+    total_channels = len(channel_ids)
+    updated_count = 0
+    errors = []
+
+    try:
+        logger.info(f"Starting EPG TVG-ID setting task for {total_channels} channels")
+
+        # Send initial progress
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
+            'task_id': task_id,
+            'progress': 0,
+            'total': total_channels,
+            'status': 'running',
+            'message': 'Starting EPG TVG-ID setting...'
+        })
+
+        batch_size = 100
+        for i in range(0, total_channels, batch_size):
+            batch_ids = channel_ids[i:i + batch_size]
+            batch_updates = []
+
+            # Get channels and their EPG data
+            channels = Channel.objects.filter(id__in=batch_ids).select_related('epg_data')
+
+            for channel in channels:
+                try:
+                    if channel.epg_data and channel.epg_data.tvg_id:
+                        if channel.tvg_id != channel.epg_data.tvg_id:
+                            channel.tvg_id = channel.epg_data.tvg_id
+                            batch_updates.append(channel)
+                            updated_count += 1
+                except Exception as e:
+                    errors.append(f"Channel {channel.id}: {str(e)}")
+                    logger.error(f"Error processing channel {channel.id}: {e}")
+
+            # Bulk update the batch
+            if batch_updates:
+                Channel.objects.bulk_update(batch_updates, ['tvg_id'])
+
+            # Send progress update
+            progress = min(i + batch_size, total_channels)
+            send_websocket_update('updates', 'update', {
+                'type': 'epg_tvg_id_setting_progress',
+                'task_id': task_id,
+                'progress': progress,
+                'total': total_channels,
+                'status': 'running',
+                'message': f'Updated {updated_count} channel TVG-IDs...',
+                'updated_count': updated_count
+            })
+
+        # Send completion notification
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
+            'task_id': task_id,
+            'progress': total_channels,
+            'total': total_channels,
+            'status': 'completed',
+            'message': f'Successfully updated {updated_count} channel TVG-IDs from EPG data',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        })
+
+        logger.info(f"EPG TVG-ID setting task completed. Updated {updated_count} channels")
+        return {
+            'status': 'completed',
+            'updated_count': updated_count,
+            'error_count': len(errors),
+            'errors': errors
+        }
+
+    except Exception as e:
+        logger.error(f"EPG TVG-ID setting task failed: {e}")
+        send_websocket_update('updates', 'update', {
+            'type': 'epg_tvg_id_setting_progress',
             'task_id': task_id,
             'progress': 0,
             'total': total_channels,

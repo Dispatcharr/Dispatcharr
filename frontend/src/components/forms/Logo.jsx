@@ -106,13 +106,12 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
           onSuccess?.({ type: 'create', logo: newLogo }); // Call onSuccess for creates
         } else {
           // File was uploaded and logo was already created
-          // Note: API.uploadLogo already calls addLogo() in the store, so no need to call onSuccess
           notifications.show({
             title: 'Success',
             message: 'Logo uploaded successfully',
             color: 'green',
           });
-          // No onSuccess call needed - API.uploadLogo already updated the store
+          onSuccess?.({ type: 'create', logo: uploadResponse });
         }
         onClose();
       } catch (error) {
@@ -208,6 +207,24 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       setLogoPreview(url);
     } else if (!url) {
       setLogoPreview(null);
+    }
+  };
+
+  const handleUrlBlur = (event) => {
+    const urlValue = event.target.value;
+    if (urlValue) {
+      try {
+        const url = new URL(urlValue);
+        const pathname = url.pathname;
+        const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+        const nameWithoutExtension = filename.replace(/\.[^/.]+$/, '');
+        if (nameWithoutExtension) {
+          formik.setFieldValue('name', nameWithoutExtension);
+        }
+      } catch (error) {
+        // If the URL is invalid, do nothing.
+        // The validation schema will catch this.
+      }
     }
   };
 
@@ -323,6 +340,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
             placeholder="https://example.com/logo.png"
             {...formik.getFieldProps('url')}
             onChange={handleUrlChange}
+            onBlur={handleUrlBlur}
             error={formik.touched.url && formik.errors.url}
             disabled={!!selectedFile} // Disable when file is selected
           />

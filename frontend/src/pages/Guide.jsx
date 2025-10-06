@@ -1,5 +1,11 @@
 // frontend/src/pages/Guide.js
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, {
+  useMemo,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+} from 'react';
 import dayjs from 'dayjs';
 import API from '../api';
 import useChannelsStore from '../store/channels';
@@ -23,23 +29,220 @@ import {
   Transition,
   Modal,
   Stack,
-  useMantineTheme,
 } from '@mantine/core';
 import { Search, X, Clock, Video, Calendar, Play } from 'lucide-react';
 import './guide.css';
 import useEPGsStore from '../store/epgs';
 import useLocalStorage from '../hooks/useLocalStorage';
+import { useElementSize } from '@mantine/hooks';
+import { VariableSizeList } from 'react-window';
+import {
+  PROGRAM_HEIGHT,
+  EXPANDED_PROGRAM_HEIGHT,
+  buildChannelIdMap,
+  mapProgramsByChannel,
+  computeRowHeights,
+} from './guideUtils';
 
 /** Layout constants */
 const CHANNEL_WIDTH = 120; // Width of the channel/logo column
-const PROGRAM_HEIGHT = 90; // Height of each channel row
-const EXPANDED_PROGRAM_HEIGHT = 180; // Height for expanded program rows
 const HOUR_WIDTH = 450; // Increased from 300 to 450 to make each program wider
 const MINUTE_INCREMENT = 15; // For positioning programs every 15 min
 const MINUTE_BLOCK_WIDTH = HOUR_WIDTH / (60 / MINUTE_INCREMENT);
 
+const GuideRow = React.memo(({ index, style, data }) => {
+  const {
+    filteredChannels,
+    programsByChannelId,
+    expandedProgramId,
+    rowHeights,
+    logos,
+    hoveredChannelId,
+    setHoveredChannelId,
+    renderProgram,
+    handleLogoClick,
+    contentWidth,
+  } = data;
+
+  const channel = filteredChannels[index];
+  if (!channel) {
+    return null;
+  }
+
+  const channelPrograms = programsByChannelId.get(channel.id) || [];
+  const rowHeight =
+    rowHeights[index] ??
+    (channelPrograms.some((program) => program.id === expandedProgramId)
+      ? EXPANDED_PROGRAM_HEIGHT
+      : PROGRAM_HEIGHT);
+
+  return (
+    <div
+      data-testid="guide-row"
+      style={{ ...style, width: contentWidth, height: rowHeight }}
+    >
+      <Box
+        style={{
+          display: 'flex',
+          height: '100%',
+          borderBottom: '0px solid #27272A',
+          transition: 'height 0.2s ease',
+          position: 'relative',
+          overflow: 'visible',
+        }}
+      >
+        <Box
+          className="channel-logo"
+          style={{
+            width: CHANNEL_WIDTH,
+            minWidth: CHANNEL_WIDTH,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: '#18181B',
+            borderRight: '1px solid #27272A',
+            borderBottom: '1px solid #27272A',
+            boxShadow: '2px 0 5px rgba(0,0,0,0.2)',
+            left: 0,
+            zIndex: 30,
+            height: '100%',
+            transition: 'height 0.2s ease',
+            cursor: 'pointer',
+            position: 'relative',
+          }}
+          onClick={(event) => handleLogoClick(channel, event)}
+          onMouseEnter={() => setHoveredChannelId(channel.id)}
+          onMouseLeave={() => setHoveredChannelId(null)}
+        >
+          {hoveredChannelId === channel.id && (
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                width: '100%',
+                height: '100%',
+                backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                zIndex: 10,
+                animation: 'fadeIn 0.2s',
+              }}
+            >
+              <Play size={32} color="#fff" fill="#fff" />
+            </Flex>
+          )}
+
+          <Flex
+            direction="column"
+            align="center"
+            justify="space-between"
+            style={{
+              width: '100%',
+              height: '100%',
+              padding: '4px',
+              boxSizing: 'border-box',
+              zIndex: 5,
+              position: 'relative',
+            }}
+          >
+            <Box
+              style={{
+                width: '100%',
+                height: `${rowHeight - 32}px`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                padding: '4px',
+                marginBottom: '4px',
+              }}
+            >
+              <img
+                src={logos[channel.logo_id]?.cache_url || logo}
+                alt={channel.name}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                }}
+              />
+            </Box>
+
+            <Text
+              size="sm"
+              weight={600}
+              style={{
+                position: 'absolute',
+                bottom: '4px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: '#18181B',
+                padding: '2px 8px',
+                borderRadius: 4,
+                fontSize: '0.85em',
+                border: '1px solid #27272A',
+                height: '24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: '36px',
+              }}
+            >
+              {channel.channel_number || '-'}
+            </Text>
+          </Flex>
+        </Box>
+
+        <Box
+          style={{
+            flex: 1,
+            position: 'relative',
+            height: '100%',
+            transition: 'height 0.2s ease',
+            paddingLeft: 0,
+          }}
+        >
+          {channelPrograms.length > 0 ? (
+            channelPrograms.map((program) =>
+              renderProgram(program, undefined, channel)
+            )
+          ) : (
+            <>
+              {Array.from({ length: Math.ceil(24 / 2) }).map(
+                (_, placeholderIndex) => (
+                  <Box
+                    key={`placeholder-${channel.id}-${placeholderIndex}`}
+                    style={{
+                      position: 'absolute',
+                      left: placeholderIndex * (HOUR_WIDTH * 2),
+                      top: 0,
+                      width: HOUR_WIDTH * 2,
+                      height: rowHeight - 4,
+                      border: '1px dashed #2D3748',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#4A5568',
+                    }}
+                  >
+                    <Text size="sm">No program data</Text>
+                  </Box>
+                )
+              )}
+            </>
+          )}
+        </Box>
+      </Box>
+    </div>
+  );
+});
+
 export default function TVChannelGuide({ startDate, endDate }) {
-  const theme = useMantineTheme();
   const channels = useChannelsStore((s) => s.channels);
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -59,7 +262,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [existingRuleMode, setExistingRuleMode] = useState(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rules, setRules] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [initialScrollComplete, setInitialScrollComplete] = useState(false);
 
   // New filter states
@@ -71,6 +273,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   const guideRef = useRef(null);
   const timelineRef = useRef(null); // New ref for timeline scrolling
+  const listRef = useRef(null);
+  const isSyncingScroll = useRef(false);
+  const guideScrollLeftRef = useRef(0);
+  const {
+    ref: guideContainerRef,
+    width: guideWidth,
+    height: guideHeight,
+  } = useElementSize();
+  const [guideScrollLeft, setGuideScrollLeft] = useState(0);
 
   // Add new state to track hovered logo
   const [hoveredChannelId, setHoveredChannelId] = useState(null);
@@ -80,7 +291,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
     if (!Object.keys(channels).length === 0) {
       console.warn('No channels provided or empty channels array');
       notifications.show({ title: 'No channels available', color: 'red.5' });
-      setLoading(false);
       return;
     }
 
@@ -97,10 +307,19 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       console.log(`Using all ${sortedChannels.length} available channels`);
 
+      const processedPrograms = fetched.map((program) => {
+        const start = dayjs(program.start_time);
+        const end = dayjs(program.end_time);
+        return {
+          ...program,
+          startMs: start.valueOf(),
+          endMs: end.valueOf(),
+        };
+      });
+
       setGuideChannels(sortedChannels);
       setFilteredChannels(sortedChannels); // Initialize filtered channels
-      setPrograms(fetched);
-      setLoading(false);
+      setPrograms(processedPrograms);
     };
 
     fetchPrograms();
@@ -180,38 +399,79 @@ export default function TVChannelGuide({ startDate, endDate }) {
     ? latestProgramEnd
     : defaultEnd;
 
-  // Time increments in 15-min steps (for placing programs)
-  const programTimeline = useMemo(() => {
-    const times = [];
-    let current = start;
-    while (current.isBefore(end)) {
-      times.push(current);
-      current = current.add(MINUTE_INCREMENT, 'minute');
-    }
-    return times;
-  }, [start, end]);
+  const channelIdByTvgId = useMemo(
+    () => buildChannelIdMap(guideChannels, tvgsById),
+    [guideChannels, tvgsById]
+  );
+
+  const channelById = useMemo(() => {
+    const map = new Map();
+    guideChannels.forEach((channel) => {
+      map.set(channel.id, channel);
+    });
+    return map;
+  }, [guideChannels]);
+
+  const programsByChannelId = useMemo(
+    () => mapProgramsByChannel(programs, channelIdByTvgId),
+    [programs, channelIdByTvgId]
+  );
+
+  const recordingsByProgramId = useMemo(() => {
+    const map = new Map();
+    (recordings || []).forEach((recording) => {
+      const programId = recording?.custom_properties?.program?.id;
+      if (programId != null) {
+        map.set(programId, recording);
+      }
+    });
+    return map;
+  }, [recordings]);
+
+  const rowHeights = useMemo(
+    () =>
+      computeRowHeights(
+        filteredChannels,
+        programsByChannelId,
+        expandedProgramId
+      ),
+    [filteredChannels, programsByChannelId, expandedProgramId]
+  );
+
+  const getItemSize = useCallback(
+    (index) => rowHeights[index] ?? PROGRAM_HEIGHT,
+    [rowHeights]
+  );
+
+  const [timeFormatSetting] = useLocalStorage('time-format', '12h');
+  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  // Use user preference for time format
+  const timeFormat = timeFormatSetting === '12h' ? 'h:mm A' : 'HH:mm';
+  const dateFormat = dateFormatSetting === 'mdy' ? 'MMMM D' : 'D MMMM';
 
   // Format day label using relative terms when possible (Today, Tomorrow, etc)
-  const formatDayLabel = (time) => {
-    const today = dayjs().startOf('day');
-    const tomorrow = today.add(1, 'day');
-    const dayAfterTomorrow = today.add(2, 'day');
-    const weekLater = today.add(7, 'day');
+  const formatDayLabel = useCallback(
+    (time) => {
+      const today = dayjs().startOf('day');
+      const tomorrow = today.add(1, 'day');
+      const weekLater = today.add(7, 'day');
 
-    const day = time.startOf('day');
+      const day = time.startOf('day');
 
-    if (day.isSame(today, 'day')) {
-      return 'Today';
-    } else if (day.isSame(tomorrow, 'day')) {
-      return 'Tomorrow';
-    } else if (day.isBefore(weekLater)) {
-      // Within a week, show day name
-      return time.format('dddd');
-    } else {
-      // Beyond a week, show month and day
-      return time.format(dateFormat);
-    }
-  };
+      if (day.isSame(today, 'day')) {
+        return 'Today';
+      } else if (day.isSame(tomorrow, 'day')) {
+        return 'Tomorrow';
+      } else if (day.isBefore(weekLater)) {
+        // Within a week, show day name
+        return time.format('dddd');
+      } else {
+        // Beyond a week, show month and day
+        return time.format(dateFormat);
+      }
+    },
+    [dateFormat]
+  );
 
   // Hourly marks with day labels
   const hourTimeline = useMemo(() => {
@@ -238,34 +498,42 @@ export default function TVChannelGuide({ startDate, endDate }) {
       current = current.add(1, 'hour');
     }
     return hours;
-  }, [start, end]);
+  }, [start, end, formatDayLabel]);
 
-  // Scroll to the nearest half-hour mark ONLY on initial load
   useEffect(() => {
-    if (
-      guideRef.current &&
-      timelineRef.current &&
-      programs.length > 0 &&
-      !initialScrollComplete
-    ) {
-      // Round the current time to the nearest half-hour mark
-      const roundedNow =
-        now.minute() < 30
-          ? now.startOf('hour')
-          : now.startOf('hour').add(30, 'minute');
-      const nowOffset = roundedNow.diff(start, 'minute');
-      const scrollPosition =
-        (nowOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH -
-        MINUTE_BLOCK_WIDTH;
+    const node = guideRef.current;
+    if (!node) return undefined;
 
-      const scrollPos = Math.max(scrollPosition, 0);
-      guideRef.current.scrollLeft = scrollPos;
-      timelineRef.current.scrollLeft = scrollPos; // Sync timeline scroll
+    const handleScroll = () => {
+      const { scrollLeft } = node;
+      if (scrollLeft === guideScrollLeftRef.current) {
+        return;
+      }
 
-      // Mark initial scroll as complete
-      setInitialScrollComplete(true);
-    }
-  }, [programs, start, now, initialScrollComplete]);
+      guideScrollLeftRef.current = scrollLeft;
+      setGuideScrollLeft(scrollLeft);
+
+      if (isSyncingScroll.current) {
+        return;
+      }
+
+      if (
+        timelineRef.current &&
+        timelineRef.current.scrollLeft !== scrollLeft
+      ) {
+        isSyncingScroll.current = true;
+        timelineRef.current.scrollLeft = scrollLeft;
+        requestAnimationFrame(() => {
+          isSyncingScroll.current = false;
+        });
+      }
+    };
+
+    node.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      node.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
 
   // Update “now” every second
   useEffect(() => {
@@ -282,179 +550,39 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return (minutesSinceStart / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
   }, [now, start, end]);
 
-  // Helper: find channel by tvg_id
-  function findChannelByTvgId(tvgId) {
-    return guideChannels.find(
-      (ch) =>
-        tvgsById[ch.epg_data_id]?.tvg_id === tvgId ||
-        (!ch.epg_data_id && ch.uuid === tvgId)
-    );
-  }
+  const syncScrollLeft = useCallback((nextLeft, behavior = 'auto') => {
+    const guideNode = guideRef.current;
+    const timelineNode = timelineRef.current;
 
-  const openRecordChoice = async (program) => {
-    setRecordChoiceProgram(program);
-    setRecordChoiceOpen(true);
-    try {
-      const rules = await API.listSeriesRules();
-      // Only treat as existing if the rule matches this specific show's title (or has no title constraint)
-      const rule = (rules || []).find(
-        (r) => String(r.tvg_id) === String(program.tvg_id) && (!r.title || r.title === program.title)
-      );
-      setExistingRuleMode(rule ? rule.mode : null);
-    } catch {}
-    // Also detect if this program already has a scheduled recording
-    try {
-      const rec = (recordings || []).find((r) => r?.custom_properties?.program?.id == program.id);
-      setRecordingForProgram(rec || null);
-    } catch {}
-  };
+    isSyncingScroll.current = true;
 
-  const recordOne = async (program) => {
-    const channel = findChannelByTvgId(program.tvg_id);
-    await API.createRecording({
-      channel: `${channel.id}`,
-      start_time: program.start_time,
-      end_time: program.end_time,
-      custom_properties: { program },
-    });
-    notifications.show({ title: 'Recording scheduled' });
-  };
-
-  const saveSeriesRule = async (program, mode) => {
-    await API.createSeriesRule({ tvg_id: program.tvg_id, mode, title: program.title });
-    await API.evaluateSeriesRules(program.tvg_id);
-    // Refresh recordings so icons and DVR reflect new schedules
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (e) {
-      console.warn('Failed to refresh recordings after saving series rule', e);
-    }
-    notifications.show({ title: mode === 'new' ? 'Record new episodes' : 'Record all episodes' });
-  };
-
-  const openRules = async () => {
-    setRulesOpen(true);
-    try {
-      const r = await API.listSeriesRules();
-      setRules(r);
-    } catch (e) {
-      // handled by API
-    }
-  };
-
-  const deleteAllUpcoming = async () => {
-    const ok = window.confirm('Delete ALL upcoming recordings?');
-    if (!ok) return;
-    await API.deleteAllUpcomingRecordings();
-    try { await useChannelsStore.getState().fetchRecordings(); } catch {}
-  };
-
-  // The “Watch Now” click => show floating video
-  const showVideo = useVideoStore((s) => s.showVideo);
-  function handleWatchStream(program) {
-    const matched = findChannelByTvgId(program.tvg_id);
-    if (!matched) {
-      console.warn(`No channel found for tvg_id=${program.tvg_id}`);
-      return;
-    }
-    // Build a playable stream URL for that channel
-    let vidUrl = `/proxy/ts/stream/${matched.uuid}`;
-    if (env_mode == 'dev') {
-      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-    }
-
-    showVideo(vidUrl);
-  }
-
-  // Function to handle logo click to play channel
-  function handleLogoClick(channel, event) {
-    // Prevent event from bubbling up
-    event.stopPropagation();
-
-    // Build a playable stream URL for the channel
-    let vidUrl = `/proxy/ts/stream/${channel.uuid}`;
-    if (env_mode === 'dev') {
-      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-    }
-
-    // Use the existing showVideo function
-    showVideo(vidUrl);
-  }
-
-  // On program click, toggle the expanded state
-  function handleProgramClick(program, event) {
-    // Prevent event from bubbling up to parent elements
-    event.stopPropagation();
-
-    // Get the program's start time and calculate its position
-    const programStart = dayjs(program.start_time);
-    const startOffsetMinutes = programStart.diff(start, 'minute');
-    const leftPx = (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
-
-    // Calculate desired scroll position (account for channel column width)
-    const desiredScrollPosition = Math.max(0, leftPx - 20); // 20px buffer
-
-    // If already expanded, collapse it
-    if (expandedProgramId === program.id) {
-      setExpandedProgramId(null);
-      setRecordingForProgram(null);
-      return;
-    }
-
-    // Otherwise expand this program
-    setExpandedProgramId(program.id);
-
-    // Check if this program has a recording
-    const programRecording = recordings.find((recording) => {
-      if (recording.custom_properties) {
-        const customProps = recording.custom_properties || {};
-        if (customProps.program && customProps.program.id == program.id) {
-          return true;
-        }
-      }
-      return false;
-    });
-
-    setRecordingForProgram(programRecording);
-
-    // Scroll to show the start of the program if it's not already fully visible
-    if (guideRef.current && timelineRef.current) {
-      const currentScrollPosition = guideRef.current.scrollLeft;
-
-      // Check if we need to scroll (if program start is before current view or too close to edge)
-      if (
-        desiredScrollPosition < currentScrollPosition ||
-        leftPx - currentScrollPosition < 100
-      ) {
-        // 100px from left edge
-
-        // Smooth scroll to the program's start
-        guideRef.current.scrollTo({
-          left: desiredScrollPosition,
-          behavior: 'smooth',
-        });
-
-        // Also sync the timeline scroll
-        timelineRef.current.scrollTo({
-          left: desiredScrollPosition,
-          behavior: 'smooth',
-        });
+    if (guideNode) {
+      if (typeof guideNode.scrollTo === 'function') {
+        guideNode.scrollTo({ left: nextLeft, behavior });
+      } else {
+        guideNode.scrollLeft = nextLeft;
       }
     }
-  }
 
-  // Close the expanded program when clicking elsewhere
-  const handleClickOutside = () => {
-    if (expandedProgramId) {
-      setExpandedProgramId(null);
-      setRecordingForProgram(null);
+    if (timelineNode) {
+      if (typeof timelineNode.scrollTo === 'function') {
+        timelineNode.scrollTo({ left: nextLeft, behavior });
+      } else {
+        timelineNode.scrollLeft = nextLeft;
+      }
     }
-  };
 
-  // Function to scroll to current time - matches initial loading position
-  const scrollToNow = () => {
-    if (guideRef.current && timelineRef.current && nowPosition >= 0) {
-      // Round the current time to the nearest half-hour mark
+    guideScrollLeftRef.current = nextLeft;
+    setGuideScrollLeft(nextLeft);
+
+    requestAnimationFrame(() => {
+      isSyncingScroll.current = false;
+    });
+  }, []);
+
+  // Scroll to the nearest half-hour mark ONLY on initial load
+  useEffect(() => {
+    if (programs.length > 0 && !initialScrollComplete) {
       const roundedNow =
         now.minute() < 30
           ? now.startOf('hour')
@@ -465,61 +593,236 @@ export default function TVChannelGuide({ startDate, endDate }) {
         MINUTE_BLOCK_WIDTH;
 
       const scrollPos = Math.max(scrollPosition, 0);
-      guideRef.current.scrollLeft = scrollPos;
-      timelineRef.current.scrollLeft = scrollPos; // Sync timeline scroll
+      syncScrollLeft(scrollPos);
+
+      setInitialScrollComplete(true);
+    }
+  }, [programs, start, now, initialScrollComplete, syncScrollLeft]);
+
+  const findChannelByTvgId = useCallback(
+    (tvgId) => {
+      const channelIds = channelIdByTvgId.get(String(tvgId));
+      if (!channelIds || channelIds.length === 0) {
+        return null;
+      }
+      // Return the first channel that matches this TVG ID
+      return channelById.get(channelIds[0]) || null;
+    },
+    [channelById, channelIdByTvgId]
+  );
+
+  const openRecordChoice = useCallback(
+    async (program) => {
+      setRecordChoiceProgram(program);
+      setRecordChoiceOpen(true);
+      try {
+        const rules = await API.listSeriesRules();
+        const rule = (rules || []).find(
+          (r) =>
+            String(r.tvg_id) === String(program.tvg_id) &&
+            (!r.title || r.title === program.title)
+        );
+        setExistingRuleMode(rule ? rule.mode : null);
+      } catch (error) {
+        console.warn('Failed to fetch series rules metadata', error);
+      }
+
+      const existingRecording = recordingsByProgramId.get(program.id) || null;
+      setRecordingForProgram(existingRecording);
+    },
+    [recordingsByProgramId]
+  );
+
+  const recordOne = useCallback(
+    async (program) => {
+      const channel = findChannelByTvgId(program.tvg_id);
+      if (!channel) {
+        notifications.show({
+          title: 'Unable to schedule recording',
+          message: 'No channel found for this program.',
+          color: 'red.6',
+        });
+        return;
+      }
+
+      await API.createRecording({
+        channel: `${channel.id}`,
+        start_time: program.start_time,
+        end_time: program.end_time,
+        custom_properties: { program },
+      });
+      notifications.show({ title: 'Recording scheduled' });
+    },
+    [findChannelByTvgId]
+  );
+
+  const saveSeriesRule = useCallback(async (program, mode) => {
+    await API.createSeriesRule({
+      tvg_id: program.tvg_id,
+      mode,
+      title: program.title,
+    });
+    await API.evaluateSeriesRules(program.tvg_id);
+    try {
+      await useChannelsStore.getState().fetchRecordings();
+    } catch (error) {
+      console.warn(
+        'Failed to refresh recordings after saving series rule',
+        error
+      );
+    }
+    notifications.show({
+      title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
+    });
+  }, []);
+
+  const openRules = useCallback(async () => {
+    setRulesOpen(true);
+    try {
+      const r = await API.listSeriesRules();
+      setRules(r);
+    } catch (error) {
+      console.warn('Failed to load series rules', error);
+    }
+  }, []);
+
+  // The “Watch Now” click => show floating video
+  const showVideo = useVideoStore((s) => s.showVideo);
+  const handleWatchStream = useCallback(
+    (program) => {
+      const matched = findChannelByTvgId(program.tvg_id);
+      if (!matched) {
+        console.warn(`No channel found for tvg_id=${program.tvg_id}`);
+        return;
+      }
+
+      let vidUrl = `/proxy/ts/stream/${matched.uuid}`;
+      if (env_mode === 'dev') {
+        vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
+      }
+
+      showVideo(vidUrl);
+    },
+    [env_mode, findChannelByTvgId, showVideo]
+  );
+
+  const handleLogoClick = useCallback(
+    (channel, event) => {
+      event.stopPropagation();
+
+      let vidUrl = `/proxy/ts/stream/${channel.uuid}`;
+      if (env_mode === 'dev') {
+        vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
+      }
+
+      showVideo(vidUrl);
+    },
+    [env_mode, showVideo]
+  );
+
+  const handleProgramClick = useCallback(
+    (program, event) => {
+      event.stopPropagation();
+
+      const programStartMs =
+        program.startMs ?? dayjs(program.start_time).valueOf();
+      const startOffsetMinutes = (programStartMs - start.valueOf()) / 60000;
+      const leftPx =
+        (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
+      const desiredScrollPosition = Math.max(0, leftPx - 20);
+
+      if (expandedProgramId === program.id) {
+        setExpandedProgramId(null);
+        setRecordingForProgram(null);
+      } else {
+        setExpandedProgramId(program.id);
+        setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
+      }
+
+      const guideNode = guideRef.current;
+      if (guideNode) {
+        const currentScrollPosition = guideNode.scrollLeft;
+        if (
+          desiredScrollPosition < currentScrollPosition ||
+          leftPx - currentScrollPosition < 100
+        ) {
+          syncScrollLeft(desiredScrollPosition, 'smooth');
+        }
+      }
+    },
+    [expandedProgramId, recordingsByProgramId, start, syncScrollLeft]
+  );
+
+  // Close the expanded program when clicking elsewhere
+  const handleClickOutside = () => {
+    if (expandedProgramId) {
+      setExpandedProgramId(null);
+      setRecordingForProgram(null);
     }
   };
 
-  // Sync scrolling between timeline and main content
-  const handleTimelineScroll = () => {
-    if (timelineRef.current && guideRef.current) {
-      guideRef.current.scrollLeft = timelineRef.current.scrollLeft;
+  const scrollToNow = useCallback(() => {
+    if (nowPosition < 0) {
+      return;
     }
-  };
 
-  // Sync scrolling between main content and timeline
-  const handleGuideScroll = () => {
-    if (guideRef.current && timelineRef.current) {
-      timelineRef.current.scrollLeft = guideRef.current.scrollLeft;
+    const roundedNow =
+      now.minute() < 30
+        ? now.startOf('hour')
+        : now.startOf('hour').add(30, 'minute');
+    const nowOffset = roundedNow.diff(start, 'minute');
+    const scrollPosition =
+      (nowOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH - MINUTE_BLOCK_WIDTH;
+
+    const scrollPos = Math.max(scrollPosition, 0);
+    syncScrollLeft(scrollPos, 'smooth');
+  }, [now, nowPosition, start, syncScrollLeft]);
+
+  const handleTimelineScroll = useCallback(() => {
+    if (!timelineRef.current) {
+      return;
     }
-  };
 
-  // Handle wheel events on the timeline for horizontal scrolling
-  const handleTimelineWheel = (e) => {
-    if (timelineRef.current) {
-      // Prevent the default vertical scroll
-      e.preventDefault();
+    const nextLeft = timelineRef.current.scrollLeft;
+    guideScrollLeftRef.current = nextLeft;
+    setGuideScrollLeft(nextLeft);
 
-      // Determine scroll amount (with shift key for faster scrolling)
-      const scrollAmount = e.shiftKey ? 250 : 125;
+    if (isSyncingScroll.current) {
+      return;
+    }
 
-      // Scroll horizontally based on wheel direction
-      timelineRef.current.scrollLeft +=
-        e.deltaY > 0 ? scrollAmount : -scrollAmount;
-
-      // Sync the main content scroll position
-      if (guideRef.current) {
-        guideRef.current.scrollLeft = timelineRef.current.scrollLeft;
+    isSyncingScroll.current = true;
+    if (guideRef.current) {
+      if (typeof guideRef.current.scrollTo === 'function') {
+        guideRef.current.scrollTo({ left: nextLeft });
+      } else {
+        guideRef.current.scrollLeft = nextLeft;
       }
     }
-  };
 
-  // Function to handle timeline time clicks with 15-minute snapping
-  const handleTimeClick = (clickedTime, event) => {
-    if (timelineRef.current && guideRef.current) {
-      // Calculate where in the hour block the click happened
-      const hourBlockElement = event.currentTarget;
-      const rect = hourBlockElement.getBoundingClientRect();
-      const clickPositionX = event.clientX - rect.left; // Position within the hour block
-      const percentageAcross = clickPositionX / rect.width; // 0 to 1 value
+    requestAnimationFrame(() => {
+      isSyncingScroll.current = false;
+    });
+  }, []);
 
-      // Calculate the minute within the hour based on click position
+  const handleTimelineWheel = useCallback((event) => {
+    if (!timelineRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    const scrollAmount = event.shiftKey ? 250 : 125;
+    const delta = event.deltaY > 0 ? scrollAmount : -scrollAmount;
+    timelineRef.current.scrollBy({ left: delta, behavior: 'smooth' });
+  }, []);
+
+  const handleTimeClick = useCallback(
+    (clickedTime, event) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const clickPositionX = event.clientX - rect.left;
+      const percentageAcross = clickPositionX / rect.width;
       const minuteWithinHour = Math.floor(percentageAcross * 60);
 
-      // Create a new time object with the calculated minute
-      const exactTime = clickedTime.minute(minuteWithinHour);
-
-      // Determine the nearest 15-minute interval (0, 15, 30, 45)
       let snappedMinute;
       if (minuteWithinHour < 7.5) {
         snappedMinute = 0;
@@ -530,176 +833,106 @@ export default function TVChannelGuide({ startDate, endDate }) {
       } else if (minuteWithinHour < 52.5) {
         snappedMinute = 45;
       } else {
-        // If we're past 52.5 minutes, snap to the next hour
         snappedMinute = 0;
         clickedTime = clickedTime.add(1, 'hour');
       }
 
-      // Create the snapped time
       const snappedTime = clickedTime.minute(snappedMinute);
-
-      // Calculate the offset from the start of the timeline to the snapped time
       const snappedOffset = snappedTime.diff(start, 'minute');
-
-      // Convert to pixels
       const scrollPosition =
         (snappedOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
 
-      // Scroll both containers to the snapped position
-      timelineRef.current.scrollLeft = scrollPosition;
-      guideRef.current.scrollLeft = scrollPosition;
-    }
-  };
-  // Renders each program block
-  function renderProgram(program, channelStart) {
-    const programKey = `${program.tvg_id}-${program.start_time}`;
-    const programStart = dayjs(program.start_time);
-    const programEnd = dayjs(program.end_time);
-    const startOffsetMinutes = programStart.diff(channelStart, 'minute');
-    const durationMinutes = programEnd.diff(programStart, 'minute');
-    const leftPx = (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
+      syncScrollLeft(scrollPosition, 'smooth');
+    },
+    [start, syncScrollLeft]
+  );
+  const renderProgram = useCallback(
+    (program, channelStart = start, channel = null) => {
+      const programStartMs =
+        program.startMs ?? dayjs(program.start_time).valueOf();
+      const programEndMs = program.endMs ?? dayjs(program.end_time).valueOf();
+      const programStart = dayjs(programStartMs);
+      const programEnd = dayjs(programEndMs);
 
-    // Calculate width with a small gap (2px on each side)
-    const gapSize = 2;
-    const widthPx =
-      (durationMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH - gapSize * 2;
+      const startOffsetMinutes =
+        (programStartMs - channelStart.valueOf()) / 60000;
+      const durationMinutes = (programEndMs - programStartMs) / 60000;
+      const leftPx =
+        (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
 
-    // Check if we have a recording for this program
-    const recording = recordings.find((recording) => {
-      if (recording.custom_properties) {
-        const customProps = recording.custom_properties || {};
-        if (customProps.program && customProps.program.id == program.id) {
-          return recording;
-        }
+      const gapSize = 2;
+      const widthPx =
+        (durationMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH - gapSize * 2;
+
+      const recording = recordingsByProgramId.get(program.id);
+
+      const isLive = now.isAfter(programStart) && now.isBefore(programEnd);
+      const isPast = now.isAfter(programEnd);
+      const isExpanded = expandedProgramId === program.id;
+
+      const rowHeight = isExpanded ? EXPANDED_PROGRAM_HEIGHT : PROGRAM_HEIGHT;
+      const MIN_EXPANDED_WIDTH = 450;
+      const expandedWidthPx = Math.max(widthPx, MIN_EXPANDED_WIDTH);
+
+      const programStartInView = leftPx + gapSize;
+      const programEndInView = leftPx + gapSize + widthPx;
+      const viewportLeft = guideScrollLeft;
+      const startsBeforeView = programStartInView < viewportLeft;
+      const extendsIntoView = programEndInView > viewportLeft;
+
+      let textOffsetLeft = 0;
+      if (startsBeforeView && extendsIntoView) {
+        const visibleStart = Math.max(viewportLeft - programStartInView, 0);
+        const maxOffset = widthPx - 200;
+        textOffsetLeft = Math.min(visibleStart, maxOffset);
       }
-      return null;
-    });
 
-    // Highlight if currently live
-    const isLive = now.isAfter(programStart) && now.isBefore(programEnd);
-
-    // Determine if the program has ended
-    const isPast = now.isAfter(programEnd); // Check if this program is expanded
-    const isExpanded = expandedProgramId === program.id;
-
-    // Set the height based on expanded state
-    const rowHeight = isExpanded ? EXPANDED_PROGRAM_HEIGHT : PROGRAM_HEIGHT;
-
-    // Determine expanded width - if program is short, ensure it has a minimum expanded width
-    // This will allow it to overlap programs to the right
-    const MIN_EXPANDED_WIDTH = 450; // Minimum width in pixels when expanded
-    const expandedWidthPx = Math.max(widthPx, MIN_EXPANDED_WIDTH);
-
-    // Calculate text positioning for long programs that start before the visible area
-    const currentScrollLeft = guideRef.current?.scrollLeft || 0;
-    const programStartInView = leftPx + gapSize;
-    const programEndInView = leftPx + gapSize + widthPx;
-    const viewportLeft = currentScrollLeft;
-
-    // Check if program starts before viewport but extends into it
-    const startsBeforeView = programStartInView < viewportLeft;
-    const extendsIntoView = programEndInView > viewportLeft;
-
-    // Calculate text offset to position it at the visible portion
-    let textOffsetLeft = 0;
-    if (startsBeforeView && extendsIntoView) {
-      // Position text at the start of the visible area, but not beyond the program end
-      const visibleStart = Math.max(viewportLeft - programStartInView, 0);
-      const maxOffset = widthPx - 200; // Leave some space for text, don't push to very end
-      textOffsetLeft = Math.min(visibleStart, maxOffset);
-    }
-
-    return (
-      <Box
-        className="guide-program-container"
-        key={programKey}
-        style={{
-          position: 'absolute',
-          left: leftPx + gapSize, // Add gap to left position
-          top: 0,
-          width: isExpanded ? expandedWidthPx : widthPx, // Width already has gap factored in
-          height: rowHeight - 4, // Adjust for the parent row padding
-          cursor: 'pointer',
-          zIndex: isExpanded ? 25 : 5, // Increase z-index when expanded
-          transition: isExpanded
-            ? 'height 0.2s ease, width 0.2s ease'
-            : 'height 0.2s ease',
-        }}
-        onClick={(e) => handleProgramClick(program, e)}
-      >
-        <Paper
-          elevation={isExpanded ? 4 : 2}
-          className={`guide-program ${isLive ? 'live' : isPast ? 'past' : 'not-live'} ${isExpanded ? 'expanded' : ''}`}
+      return (
+        <Box
+          className="guide-program-container"
+          key={`${channel?.id || 'unknown'}-${program.id || `${program.tvg_id}-${program.start_time}`}`}
           style={{
-            width: '100%', // Fill container width (which may be expanded)
-            height: '100%',
-            overflow: 'hidden',
-            position: 'relative',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: isExpanded ? 'flex-start' : 'space-between',
-            padding: isExpanded ? '12px' : '8px',
-            backgroundColor: isExpanded
-              ? isLive
-                ? '#1a365d' // Darker blue when expanded and live
-                : isPast
-                  ? '#18181B' // Darker gray when expanded and past
-                  : '#1e40af' // Darker blue when expanded and upcoming
-              : isLive
-                ? '#18181B' // Default live program color
-                : isPast
-                  ? '#27272A' // Slightly darker color for past programs
-                  : '#2c5282', // Default color for upcoming programs
-            color: isPast ? '#a0aec0' : '#fff', // Dim text color for past programs
-            boxShadow: isExpanded ? '0 4px 8px rgba(0,0,0,0.4)' : 'none',
-            transition: 'all 0.2s ease',
+            position: 'absolute',
+            left: leftPx + gapSize,
+            top: 0,
+            width: isExpanded ? expandedWidthPx : widthPx,
+            height: rowHeight - 4,
+            cursor: 'pointer',
+            zIndex: isExpanded ? 25 : 5,
+            transition: isExpanded
+              ? 'height 0.2s ease, width 0.2s ease'
+              : 'height 0.2s ease',
           }}
+          onClick={(event) => handleProgramClick(program, event)}
         >
-          <Box
+          <Paper
+            elevation={isExpanded ? 4 : 2}
+            className={`guide-program ${isLive ? 'live' : isPast ? 'past' : 'not-live'} ${isExpanded ? 'expanded' : ''}`}
             style={{
-              transform: `translateX(${textOffsetLeft}px)`,
-              transition: 'transform 0.1s ease-out',
+              width: '100%',
+              height: '100%',
+              overflow: 'hidden',
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: isExpanded ? 'flex-start' : 'space-between',
+              padding: isExpanded ? '12px' : '8px',
+              backgroundColor: isExpanded
+                ? isLive
+                  ? '#1a365d'
+                  : isPast
+                    ? '#18181B'
+                    : '#1e40af'
+                : isLive
+                  ? '#18181B'
+                  : isPast
+                    ? '#27272A'
+                    : '#2c5282',
+              color: isPast ? '#a0aec0' : '#fff',
+              boxShadow: isExpanded ? '0 4px 8px rgba(0,0,0,0.4)' : 'none',
+              transition: 'all 0.2s ease',
             }}
           >
-            <Text
-              component="div"
-              size={isExpanded ? 'lg' : 'md'}
-              style={{
-                fontWeight: 'bold',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-                overflow: 'hidden',
-              }}
-            >
-              <Group gap="xs">
-                {recording && (
-                  <div
-                    style={{
-                      borderRadius: '50%',
-                      width: '10px',
-                      height: '10px',
-                      display: 'flex',
-                      backgroundColor: 'red',
-                    }}
-                  ></div>
-                )}
-                {program.title}
-              </Group>
-            </Text>
-            <Text
-              size="sm"
-              style={{
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-                overflow: 'hidden',
-              }}
-            >
-              {programStart.format(timeFormat)} -{' '}
-              {programEnd.format(timeFormat)}
-            </Text>
-          </Box>{' '}
-          {/* Description is always shown but expands when row is expanded */}
-          {program.description && (
             <Box
               style={{
                 transform: `translateX(${textOffsetLeft}px)`,
@@ -707,61 +940,178 @@ export default function TVChannelGuide({ startDate, endDate }) {
               }}
             >
               <Text
-                size="xs"
+                component="div"
+                size={isExpanded ? 'lg' : 'md'}
                 style={{
-                  marginTop: '4px',
-                  whiteSpace: isExpanded ? 'normal' : 'nowrap',
-                  textOverflow: isExpanded ? 'clip' : 'ellipsis',
-                  overflow: isExpanded ? 'auto' : 'hidden',
-                  color: isPast ? '#718096' : '#cbd5e0',
-                  maxHeight: isExpanded ? '80px' : 'unset',
+                  fontWeight: 'bold',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  overflow: 'hidden',
                 }}
               >
-                {program.description}
+                <Group gap="xs">
+                  {recording && (
+                    <div
+                      style={{
+                        borderRadius: '50%',
+                        width: '10px',
+                        height: '10px',
+                        display: 'flex',
+                        backgroundColor: 'red',
+                      }}
+                    ></div>
+                  )}
+                  {program.title}
+                </Group>
+              </Text>
+              <Text
+                size="sm"
+                style={{
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  overflow: 'hidden',
+                }}
+              >
+                {programStart.format(timeFormat)} -{' '}
+                {programEnd.format(timeFormat)}
               </Text>
             </Box>
-          )}
-          {/* Expanded content */}
-          {isExpanded && (
-            <Box style={{ marginTop: 'auto' }}>
-              <Flex gap="md" justify="flex-end" mt={8}>
-                {/* Always show Record for not-past; it opens options (schedule/remove) */}
-                {!isPast && (
-                  <Button
-                    leftSection={<Calendar size={14} />}
-                    variant="filled"
-                    color="red"
-                    size="xs"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openRecordChoice(program);
-                    }}
-                  >
-                    Record
-                  </Button>
-                )}
 
-                {isLive && (
-                  <Button
-                    leftSection={<Video size={14} />}
-                    variant="filled"
-                    color="blue"
-                    size="xs"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleWatchStream(program);
-                    }}
-                  >
-                    Watch Now
-                  </Button>
-                )}
-              </Flex>
-            </Box>
-          )}
-        </Paper>
-      </Box>
-    );
-  }
+            {program.description && (
+              <Box
+                style={{
+                  transform: `translateX(${textOffsetLeft}px)`,
+                  transition: 'transform 0.1s ease-out',
+                }}
+              >
+                <Text
+                  size="xs"
+                  style={{
+                    marginTop: '4px',
+                    whiteSpace: isExpanded ? 'normal' : 'nowrap',
+                    textOverflow: isExpanded ? 'clip' : 'ellipsis',
+                    overflow: isExpanded ? 'auto' : 'hidden',
+                    color: isPast ? '#718096' : '#cbd5e0',
+                    maxHeight: isExpanded ? '80px' : 'unset',
+                  }}
+                >
+                  {program.description}
+                </Text>
+              </Box>
+            )}
+
+            {isExpanded && (
+              <Box style={{ marginTop: 'auto' }}>
+                <Flex gap="md" justify="flex-end" mt={8}>
+                  {!isPast && (
+                    <Button
+                      leftSection={<Calendar size={14} />}
+                      variant="filled"
+                      color="red"
+                      size="xs"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openRecordChoice(program);
+                      }}
+                    >
+                      Record
+                    </Button>
+                  )}
+
+                  {isLive && (
+                    <Button
+                      leftSection={<Video size={14} />}
+                      variant="filled"
+                      color="blue"
+                      size="xs"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleWatchStream(program);
+                      }}
+                    >
+                      Watch Now
+                    </Button>
+                  )}
+                </Flex>
+              </Box>
+            )}
+          </Paper>
+        </Box>
+      );
+    },
+    [
+      expandedProgramId,
+      guideScrollLeft,
+      handleProgramClick,
+      handleWatchStream,
+      now,
+      openRecordChoice,
+      recordingsByProgramId,
+      start,
+      timeFormat,
+    ]
+  );
+
+  const contentWidth = useMemo(
+    () => hourTimeline.length * HOUR_WIDTH + CHANNEL_WIDTH,
+    [hourTimeline]
+  );
+
+  const virtualizedHeight = useMemo(() => guideHeight || 600, [guideHeight]);
+
+  const virtualizedWidth = useMemo(() => {
+    if (guideWidth) {
+      return guideWidth;
+    }
+    if (typeof window !== 'undefined') {
+      return Math.min(window.innerWidth, contentWidth);
+    }
+    return contentWidth;
+  }, [guideWidth, contentWidth]);
+
+  const itemKey = useCallback(
+    (index) => filteredChannels[index]?.id ?? index,
+    [filteredChannels]
+  );
+
+  const listData = useMemo(
+    () => ({
+      filteredChannels,
+      programsByChannelId,
+      expandedProgramId,
+      rowHeights,
+      logos,
+      hoveredChannelId,
+      setHoveredChannelId,
+      renderProgram,
+      handleLogoClick,
+      contentWidth,
+    }),
+    [
+      filteredChannels,
+      programsByChannelId,
+      expandedProgramId,
+      rowHeights,
+      logos,
+      hoveredChannelId,
+      renderProgram,
+      handleLogoClick,
+      contentWidth,
+      setHoveredChannelId,
+    ]
+  );
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.resetAfterIndex(0, true);
+    }
+  }, [rowHeights]);
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollToItem(0);
+    }
+  }, [searchQuery, selectedGroupId, selectedProfileId]);
 
   // Create group options for dropdown - but only include groups used by guide channels
   const groupOptions = useMemo(() => {
@@ -824,12 +1174,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const handleProfileChange = (value) => {
     setSelectedProfileId(value || 'all');
   };
-
-  // Handle date-time formats
-  const [timeFormatSetting] = useLocalStorage('time-format', '12h');
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const timeFormat = timeFormatSetting === '12h' ? 'h:mm A' : 'HH:mm';
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MMMM D' : 'D MMMM';
 
   return (
     <Box
@@ -1108,263 +1452,59 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
         {/* Main scrollable container for program content */}
         <Box
-          ref={guideRef}
+          ref={guideContainerRef}
           style={{
             flex: 1,
-            overflowY: 'auto',
-            overflowX: 'hidden',
             position: 'relative',
+            overflow: 'hidden',
           }}
-          onScroll={handleGuideScroll}
         >
-          {/* Content wrapper with min-width to ensure scroll range */}
-          <Box
-            style={{
-              width: hourTimeline.length * HOUR_WIDTH + CHANNEL_WIDTH,
-              position: 'relative',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {/* Now line - positioned absolutely within content */}
-            {nowPosition >= 0 && (
-              <Box
-                style={{
-                  position: 'absolute',
-                  left: nowPosition + CHANNEL_WIDTH,
-                  top: 0,
-                  height: '100%',
-                  width: '2px',
-                  backgroundColor: '#38b2ac',
-                  zIndex: 15,
-                  pointerEvents: 'none', // Allow clicking through the line
-                }}
-              />
-            )}
+          {nowPosition >= 0 && (
+            <Box
+              style={{
+                position: 'absolute',
+                left: nowPosition + CHANNEL_WIDTH - guideScrollLeft,
+                top: 0,
+                bottom: 0,
+                width: '2px',
+                backgroundColor: '#38b2ac',
+                zIndex: 15,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
 
-            {/* Channel rows with logos and programs */}
-            {filteredChannels.length > 0 ? (
-              filteredChannels.map((channel) => {
-                const channelPrograms = programs.filter(
-                  (p) =>
-                    (channel.epg_data_id &&
-                      p.tvg_id === tvgsById[channel.epg_data_id].tvg_id) ||
-                    (!channel.epg_data_id && p.tvg_id === channel.uuid)
-                );
-                // Check if any program in this channel is expanded
-                const hasExpandedProgram = channelPrograms.some(
-                  (prog) => prog.id === expandedProgramId
-                );
-                const rowHeight = hasExpandedProgram
-                  ? EXPANDED_PROGRAM_HEIGHT
-                  : PROGRAM_HEIGHT;
-
-                return (
-                  <Box
-                    key={channel.id}
-                    style={{
-                      display: 'flex',
-                      height: rowHeight,
-                      borderBottom: '0px solid #27272A', // Increased border width for better visibility
-                      transition: 'height 0.2s ease',
-                      position: 'relative', // Added for proper stacking
-                      overflow: 'visible', // Changed from 'hidden' to 'visible' to allow expanded programs to overflow
-                    }}
-                  >
-                    {/* Channel logo - sticky horizontally */}
-                    <Box
-                      className="channel-logo"
-                      style={{
-                        width: CHANNEL_WIDTH,
-                        minWidth: CHANNEL_WIDTH,
-                        flexShrink: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: '#18181B',
-                        borderRight: '1px solid #27272A', // Increased border width for visibility
-                        borderBottom: '1px solid #27272A', // Match the row border
-                        boxShadow: '2px 0 5px rgba(0,0,0,0.2)', // Added shadow for depth
-                        //position: 'sticky',
-                        left: 0,
-                        zIndex: 30, // Higher than expanded programs to prevent overlap
-                        height: rowHeight,
-                        transition: 'height 0.2s ease',
-                        cursor: 'pointer', // Add cursor pointer to indicate clickable
-                        position: 'relative', // Remove duplicate, keep only this one
-                      }}
-                      onClick={(e) => handleLogoClick(channel, e)}
-                      onMouseEnter={() => setHoveredChannelId(channel.id)}
-                      onMouseLeave={() => setHoveredChannelId(null)}
-                    >
-                      {/* Play icon overlay - visible on hover (moved outside to cover entire box) */}
-                      {hoveredChannelId === channel.id && (
-                        <Flex
-                          align="center"
-                          justify="center"
-                          style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            width: '100%',
-                            height: '100%',
-                            backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                            zIndex: 10,
-                            animation: 'fadeIn 0.2s',
-                          }}
-                        >
-                          <Play size={32} color="#fff" fill="#fff" />{' '}
-                          {/* Changed from Video to Play and increased size */}
-                        </Flex>
-                      )}
-
-                      {/* Logo content - restructured for better positioning */}
-                      <Flex
-                        direction="column"
-                        align="center"
-                        justify="space-between"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          padding: '4px',
-                          boxSizing: 'border-box',
-                          zIndex: 5,
-                          position: 'relative', // Add this for absolute positioning
-                        }}
-                      >
-                        {/* Logo container with padding */}
-                        <Box
-                          style={{
-                            width: '100%',
-                            height: `${rowHeight - 32}px`, // Height minus channel number height
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            overflow: 'hidden',
-                            padding: '4px',
-                            marginBottom: '4px',
-                          }}
-                        >
-                          <img
-                            src={logos[channel.logo_id]?.cache_url || logo}
-                            alt={channel.name}
-                            style={{
-                              maxWidth: '100%',
-                              maxHeight: '100%',
-                              objectFit: 'contain',
-                            }}
-                          />
-                        </Box>
-
-                        {/* Channel number - fixed position at bottom with consistent height */}
-                        <Text
-                          size="sm"
-                          weight={600}
-                          style={{
-                            position: 'absolute',
-                            bottom: '4px',
-                            left: '50%',
-                            transform: 'translateX(-50%)',
-                            backgroundColor: '#18181B',
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            fontSize: '0.85em',
-                            border: '1px solid #27272A',
-                            height: '24px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            minWidth: '36px',
-                          }}
-                        >
-                          {channel.channel_number || '-'}
-                        </Text>
-                      </Flex>
-                    </Box>
-
-                    {/* Programs for this channel */}
-                    <Box
-                      style={{
-                        flex: 1,
-                        position: 'relative',
-                        height: rowHeight,
-                        transition: 'height 0.2s ease',
-                        paddingLeft: 0, // Remove any padding that might push content
-                      }}
-                    >
-                      {channelPrograms.length > 0 ? (
-                        channelPrograms.map((program) => (
-                          <div
-                            key={`${channel.id}-${program.id}-${program.start_time}`}
-                          >
-                            {renderProgram(program, start)}
-                          </div>
-                        ))
-                      ) : (
-                        // Simple placeholder for channels with no program data - 2 hour blocks
-                        <>
-                          {/* Generate repeating placeholder blocks every 2 hours across the timeline */}
-                          {Array.from({
-                            length: Math.ceil(hourTimeline.length / 2),
-                          }).map((_, index) => (
-                            <Box
-                              key={`placeholder-${channel.id}-${index}`}
-                              style={{
-                                position: 'absolute',
-                                left: index * 2 * HOUR_WIDTH + 2,
-                                top: 0,
-                                width: 2 * HOUR_WIDTH - 4,
-                                height: rowHeight - 4,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                              }}
-                            >
-                              <Paper
-                                style={{
-                                  width: '100%',
-                                  height: '100%',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  backgroundColor: '#2D3748',
-                                  color: '#A0AEC0',
-                                  opacity: 0.8,
-                                  border: '1px dashed #718096',
-                                }}
-                              >
-                                <Text size="sm" align="center">
-                                  No Program Information Available
-                                </Text>
-                              </Paper>
-                            </Box>
-                          ))}
-                        </>
-                      )}
-                    </Box>
-                  </Box>
-                );
-              })
-            ) : (
-              <Box
-                style={{
-                  padding: '30px',
-                  textAlign: 'center',
-                  color: '#a0aec0',
-                }}
-              >
-                <Text size="lg">No channels match your filters</Text>
-                <Button variant="subtle" onClick={clearFilters} mt={10}>
-                  Clear Filters
-                </Button>
-              </Box>
-            )}
-          </Box>
+          {filteredChannels.length > 0 ? (
+            <VariableSizeList
+              height={virtualizedHeight}
+              width={virtualizedWidth}
+              itemCount={filteredChannels.length}
+              itemSize={getItemSize}
+              estimatedItemSize={PROGRAM_HEIGHT}
+              itemKey={itemKey}
+              itemData={listData}
+              ref={listRef}
+              outerRef={guideRef}
+              overscanCount={8}
+            >
+              {GuideRow}
+            </VariableSizeList>
+          ) : (
+            <Box
+              style={{
+                padding: '30px',
+                textAlign: 'center',
+                color: '#a0aec0',
+              }}
+            >
+              <Text size="lg">No channels match your filters</Text>
+              <Button variant="subtle" onClick={clearFilters} mt={10}>
+                Clear Filters
+              </Button>
+            </Box>
+          )}
         </Box>
       </Box>
-
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
         <Modal
@@ -1382,28 +1522,104 @@ export default function TVChannelGuide({ startDate, endDate }) {
           }}
         >
           <Flex direction="column" gap="sm">
-            <Button onClick={() => { recordOne(recordChoiceProgram); setRecordChoiceOpen(false); }}>Just this one</Button>
-            <Button variant="light" onClick={() => { saveSeriesRule(recordChoiceProgram, 'all'); setRecordChoiceOpen(false); }}>Every episode</Button>
-            <Button variant="light" onClick={() => { saveSeriesRule(recordChoiceProgram, 'new'); setRecordChoiceOpen(false); }}>New episodes only</Button>
+            <Button
+              onClick={() => {
+                recordOne(recordChoiceProgram);
+                setRecordChoiceOpen(false);
+              }}
+            >
+              Just this one
+            </Button>
+            <Button
+              variant="light"
+              onClick={() => {
+                saveSeriesRule(recordChoiceProgram, 'all');
+                setRecordChoiceOpen(false);
+              }}
+            >
+              Every episode
+            </Button>
+            <Button
+              variant="light"
+              onClick={() => {
+                saveSeriesRule(recordChoiceProgram, 'new');
+                setRecordChoiceOpen(false);
+              }}
+            >
+              New episodes only
+            </Button>
             {recordingForProgram && (
               <>
-                <Button color="orange" variant="light" onClick={async () => {
-                  try { await API.deleteRecording(recordingForProgram.id); } catch {}
-                  try { await useChannelsStore.getState().fetchRecordings(); } catch {}
-                  setRecordChoiceOpen(false);
-                }}>Remove this recording</Button>
-                <Button color="red" variant="light" onClick={async () => {
-                  try {
-                    await API.bulkRemoveSeriesRecordings({ tvg_id: recordChoiceProgram.tvg_id, title: recordChoiceProgram.title, scope: 'title' });
-                  } catch {}
-                  try { await API.deleteSeriesRule(recordChoiceProgram.tvg_id); } catch {}
-                  try { await useChannelsStore.getState().fetchRecordings(); } catch {}
-                  setRecordChoiceOpen(false);
-                }}>Remove this series (scheduled)</Button>
+                <Button
+                  color="orange"
+                  variant="light"
+                  onClick={async () => {
+                    try {
+                      await API.deleteRecording(recordingForProgram.id);
+                    } catch (error) {
+                      console.warn('Failed to delete recording', error);
+                    }
+                    try {
+                      await useChannelsStore.getState().fetchRecordings();
+                    } catch (error) {
+                      console.warn(
+                        'Failed to refresh recordings after delete',
+                        error
+                      );
+                    }
+                    setRecordChoiceOpen(false);
+                  }}
+                >
+                  Remove this recording
+                </Button>
+                <Button
+                  color="red"
+                  variant="light"
+                  onClick={async () => {
+                    try {
+                      await API.bulkRemoveSeriesRecordings({
+                        tvg_id: recordChoiceProgram.tvg_id,
+                        title: recordChoiceProgram.title,
+                        scope: 'title',
+                      });
+                    } catch (error) {
+                      console.warn(
+                        'Failed to remove scheduled series recordings',
+                        error
+                      );
+                    }
+                    try {
+                      await API.deleteSeriesRule(recordChoiceProgram.tvg_id);
+                    } catch (error) {
+                      console.warn('Failed to delete series rule', error);
+                    }
+                    try {
+                      await useChannelsStore.getState().fetchRecordings();
+                    } catch (error) {
+                      console.warn(
+                        'Failed to refresh recordings after series delete',
+                        error
+                      );
+                    }
+                    setRecordChoiceOpen(false);
+                  }}
+                >
+                  Remove this series (scheduled)
+                </Button>
               </>
             )}
             {existingRuleMode && (
-              <Button color="red" variant="subtle" onClick={async () => { await API.deleteSeriesRule(recordChoiceProgram.tvg_id); setExistingRuleMode(null); setRecordChoiceOpen(false); }}>Remove series rule ({existingRuleMode})</Button>
+              <Button
+                color="red"
+                variant="subtle"
+                onClick={async () => {
+                  await API.deleteSeriesRule(recordChoiceProgram.tvg_id);
+                  setExistingRuleMode(null);
+                  setRecordChoiceOpen(false);
+                }}
+              >
+                Remove series rule ({existingRuleMode})
+              </Button>
             )}
           </Flex>
         </Modal>
@@ -1427,27 +1643,78 @@ export default function TVChannelGuide({ startDate, endDate }) {
         >
           <Stack gap="sm">
             {(!rules || rules.length === 0) && (
-              <Text size="sm" c="dimmed">No series rules configured</Text>
+              <Text size="sm" c="dimmed">
+                No series rules configured
+              </Text>
             )}
-            {rules && rules.map((r) => (
-              <Flex key={`${r.tvg_id}-${r.mode}`} justify="space-between" align="center">
-                <Text size="sm">{r.title || r.tvg_id} — {r.mode === 'new' ? 'New episodes' : 'Every episode'}</Text>
-                <Group gap="xs">
-                  <Button size="xs" variant="subtle" onClick={async () => {
-                    await API.evaluateSeriesRules(r.tvg_id);
-                    try { await useChannelsStore.getState().fetchRecordings(); } catch {}
-                    notifications.show({ title: 'Evaluated', message: 'Checked for episodes' });
-                  }}>Evaluate Now</Button>
-                  <Button size="xs" variant="light" color="orange" onClick={async () => {
-                    await API.bulkRemoveSeriesRecordings({ tvg_id: r.tvg_id, title: r.title, scope: 'title' });
-                    try { await API.deleteSeriesRule(r.tvg_id); } catch {}
-                    try { await useChannelsStore.getState().fetchRecordings(); } catch {}
-                    const updated = await API.listSeriesRules();
-                    setRules(updated);
-                  }}>Remove this series (scheduled)</Button>
-                </Group>
-              </Flex>
-            ))}
+            {rules &&
+              rules.map((r) => (
+                <Flex
+                  key={`${r.tvg_id}-${r.mode}`}
+                  justify="space-between"
+                  align="center"
+                >
+                  <Text size="sm">
+                    {r.title || r.tvg_id} —{' '}
+                    {r.mode === 'new' ? 'New episodes' : 'Every episode'}
+                  </Text>
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      onClick={async () => {
+                        await API.evaluateSeriesRules(r.tvg_id);
+                        try {
+                          await useChannelsStore.getState().fetchRecordings();
+                        } catch (error) {
+                          console.warn(
+                            'Failed to refresh recordings after evaluation',
+                            error
+                          );
+                        }
+                        notifications.show({
+                          title: 'Evaluated',
+                          message: 'Checked for episodes',
+                        });
+                      }}
+                    >
+                      Evaluate Now
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="orange"
+                      onClick={async () => {
+                        await API.bulkRemoveSeriesRecordings({
+                          tvg_id: r.tvg_id,
+                          title: r.title,
+                          scope: 'title',
+                        });
+                        try {
+                          await API.deleteSeriesRule(r.tvg_id);
+                        } catch (error) {
+                          console.warn(
+                            'Failed to delete series rule during removal',
+                            error
+                          );
+                        }
+                        try {
+                          await useChannelsStore.getState().fetchRecordings();
+                        } catch (error) {
+                          console.warn(
+                            'Failed to refresh recordings after bulk removal',
+                            error
+                          );
+                        }
+                        const updated = await API.listSeriesRules();
+                        setRules(updated);
+                      }}
+                    >
+                      Remove this series (scheduled)
+                    </Button>
+                  </Group>
+                </Flex>
+              ))}
           </Stack>
         </Modal>
       )}

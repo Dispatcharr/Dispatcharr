@@ -119,11 +119,11 @@ class Stream(models.Model):
         return self.name or self.url or f"Stream ID {self.id}"
 
     @classmethod
-    def generate_hash_key(cls, name, url, tvg_id, keys=None):
+    def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None):
         if keys is None:
             keys = CoreSettings.get_m3u_hash_key().split(",")
 
-        stream_parts = {"name": name, "url": url, "tvg_id": tvg_id}
+        stream_parts = {"name": name, "url": url, "tvg_id": tvg_id, "m3u_id": m3u_id}
 
         hash_parts = {key: stream_parts[key] for key in keys if key in stream_parts}
 

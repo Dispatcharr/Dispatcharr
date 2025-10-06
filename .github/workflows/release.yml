@@ -15,16 +15,21 @@ on:
 
 # Add explicit permissions for the workflow
 permissions:
-  contents: write    # For managing releases and pushing tags
-  packages: write    # For publishing to GitHub Container Registry
+  contents: write # For managing releases and pushing tags
+  packages: write # For publishing to GitHub Container Registry
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      new_version: ${{ steps.update_version.outputs.new_version }}
+      repo_owner: ${{ steps.meta.outputs.repo_owner }}
+      repo_name: ${{ steps.meta.outputs.repo_name }}
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -38,14 +43,45 @@ jobs:
           NEW_VERSION=$(python -c "import version; print(f'{version.__version__}')")
           echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Set lowercase repo owner
-        id: repo_owner
+      - name: Set repository metadata
+        id: meta
         run: |
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "lowercase=${REPO_OWNER}" >> $GITHUB_OUTPUT
+          echo "repo_owner=${REPO_OWNER}" >> $GITHUB_OUTPUT
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Commit and Tag
+        run: |
+          git add version.py
+          git commit -m "Release v${{ steps.update_version.outputs.new_version }}"
+          git tag -a "v${{ steps.update_version.outputs.new_version }}" -m "Release v${{ steps.update_version.outputs.new_version }}"
+          git push origin main --tags
+
+  docker:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -57,36 +93,88 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit and Tag
-        run: |
-          git add version.py
-          git commit -m "Release v${{ steps.update_version.outputs.new_version }}"
-          git tag -a "v${{ steps.update_version.outputs.new_version }}" -m "Release v${{ steps.update_version.outputs.new_version }}"
-          git push origin main --tags
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and Push Release Image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64, #linux/arm/v7  # Multi-arch support for releases
+          platforms: linux/${{ matrix.platform }}
           tags: |
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:latest
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:${{ steps.update_version.outputs.new_version }}
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:latest-amd64
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:latest-arm64
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:${{ steps.update_version.outputs.new_version }}-amd64
-            ghcr.io/${{ steps.repo_owner.outputs.lowercase }}/dispatcharr:${{ steps.update_version.outputs.new_version }}-arm64
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
           build-args: |
+            REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
+            REPO_NAME=${{ needs.prepare.outputs.repo_name }}
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
           file: ./docker/Dockerfile
 
+  create-manifest:
+    needs: [prepare, docker]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch manifest tags
+        run: |
+          set -euo pipefail
+          OWNER=${{ needs.prepare.outputs.repo_owner }}
+          REPO=${{ needs.prepare.outputs.repo_name }}
+          VERSION=${{ needs.prepare.outputs.new_version }}
+
+          echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
+
+          # GitHub Container Registry manifests
+          # latest tag
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:latest \
+            ghcr.io/${OWNER}/${REPO}:latest-amd64 ghcr.io/${OWNER}/${REPO}:latest-arm64
+
+          # version tag
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION} \
+            ghcr.io/${OWNER}/${REPO}:${VERSION}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-arm64
+
+          # Docker Hub manifests
+          # latest tag
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-arm64
+
+          # version tag
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION} \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-arm64
+
+  create-release:
+    needs: [prepare, create-manifest]
+    runs-on: ubuntu-24.04
+    steps:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.update_version.outputs.new_version }}
-          name: Release v${{ steps.update_version.outputs.new_version }}
+          tag_name: v${{ needs.prepare.outputs.new_version }}
+          name: Release v${{ needs.prepare.outputs.new_version }}
           draft: false
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}

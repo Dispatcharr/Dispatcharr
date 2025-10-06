@@ -562,6 +562,29 @@ export default class API {
     }
   }
 
+  static async setChannelTvgIdsFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-tvg-ids-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG TVG-ID setting task', e);
+      throw e;
+    }
+  }
+
   static async assignChannelNumbers(channelIds, startingNum = 1) {
     try {
       const response = await request(`${host}/api/channels/channels/assign/`, {
