@@ -1038,6 +1038,11 @@ def xc_get_vod_categories(user):
 
     return response
 
+def safe_float(value):
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
 
 def xc_get_vod_streams(request, user, category_id=None):
     """Get VOD streams (movies) for XtreamCodes API"""
@@ -1087,8 +1092,8 @@ def xc_get_vod_streams(request, user, category_id=None):
             ),
             #'stream_icon': movie.logo.url if movie.logo else '',
             "rating": movie.rating or "0",
-            "rating_5based": round(float(movie.rating or 0) / 2, 2) if movie.rating else 0,
-            "added": str(int(movie.created_at.timestamp())),
+            "rating_5based": round(safe_float(movie.rating) / 2, 2) if movie.rating else 0,
+	    "added": str(int(movie.created_at.timestamp())),
             "is_adult": 0,
             "tmdb_id": movie.tmdb_id or "",
             "imdb_id": movie.imdb_id or "",
@@ -1515,7 +1520,6 @@ def xc_get_vod_info(request, user, vod_id):
     }
 
     return info
-
 
 def xc_movie_stream(request, username, password, stream_id, extension):
     """Handle XtreamCodes movie streaming requests"""
