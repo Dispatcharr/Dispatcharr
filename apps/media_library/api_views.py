@@ -21,7 +21,10 @@ from apps.media_library.tasks import (
     cancel_library_scan,
     revoke_scan_task,
     start_next_library_scan,
+    sync_library_to_vod_task,
+    unsync_library_from_vod_task,
 )
+from apps.media_library.vod_sync import unsync_library_from_vod
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +113,19 @@ class LibraryViewSet(viewsets.ModelViewSet):
             enqueue_library_scan(library_id=library.id, user_id=self.request.user.id)
 
     def perform_update(self, serializer):
+        previous_use_as_vod = bool(serializer.instance.use_as_vod_source)
         library = serializer.save()
+        if previous_use_as_vod != library.use_as_vod_source:
+            if library.use_as_vod_source:
+                sync_library_to_vod_task.delay(library.id)
+            else:
+                unsync_library_from_vod_task.delay(library.id)
         if library.auto_scan_enabled and self.request.data.get("trigger_scan"):
             enqueue_library_scan(library_id=library.id, user_id=self.request.user.id)
 
     def perform_destroy(self, instance):
         # Explicitly clean up related media items and files before removing the library
+        unsync_library_from_vod(instance)
         instance.items.all().delete()
         instance.files.all().delete()
         super().perform_destroy(instance)

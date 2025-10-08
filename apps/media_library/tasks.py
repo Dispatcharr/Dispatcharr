@@ -20,6 +20,11 @@ from apps.media_library.utils import (
     probe_media_file,
     resolve_media_item,
 )
+from apps.media_library.vod_sync import (
+    sync_library_to_vod,
+    sync_media_item_to_vod,
+    unsync_library_from_vod,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +430,9 @@ def _identify_media_file(
                     if not parent.metadata_last_synced_at or not parent.poster_url:
                         sync_metadata_task.delay(parent.id)
             matched = 1
+
+        # Synchronize to VOD catalog when configured.
+        sync_media_item_to_vod(media_item)
     else:
         unmatched = 1
 
@@ -512,6 +520,24 @@ def schedule_auto_scans():
         next_scan_due = library.last_scan_at + timedelta(minutes=library.scan_interval_minutes)
         if next_scan_due <= now:
             enqueue_library_scan(library_id=library.id, user_id=None)
+
+
+@shared_task(name="media_library.sync_library_vod")
+def sync_library_to_vod_task(library_id: int):
+    try:
+        library = Library.objects.get(pk=library_id)
+    except Library.DoesNotExist:
+        return
+    sync_library_to_vod(library)
+
+
+@shared_task(name="media_library.unsync_library_vod")
+def unsync_library_from_vod_task(library_id: int):
+    try:
+        library = Library.objects.get(pk=library_id)
+    except Library.DoesNotExist:
+        return
+    unsync_library_from_vod(library)
 
 
 def refresh_metadata_for_item(media_item_id: int, user_id: int | None = None):

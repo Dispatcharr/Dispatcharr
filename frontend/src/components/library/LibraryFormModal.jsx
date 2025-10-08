@@ -43,6 +43,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
       metadata_country: 'US',
       scan_interval_minutes: 1440,
       auto_scan_enabled: true,
+      use_as_vod_source: false,
       metadata_options: {},
       locations: [defaultLocation()],
     },
@@ -71,6 +72,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
         metadata_country: library.metadata_country || 'US',
         scan_interval_minutes: library.scan_interval_minutes || 1440,
         auto_scan_enabled: library.auto_scan_enabled ?? true,
+        use_as_vod_source: library.use_as_vod_source ?? false,
         metadata_options: library.metadata_options || {},
         locations:
           library.locations?.length > 0
@@ -241,6 +243,15 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
             checked={form.values.auto_scan_enabled}
             onChange={(event) =>
               form.setFieldValue('auto_scan_enabled', event.currentTarget.checked)
+            }
+          />
+
+          <Switch
+            label="Use as VOD source"
+            description="Automatically add matched movies and TV shows from this library to VOD."
+            checked={form.values.use_as_vod_source}
+            onChange={(event) =>
+              form.setFieldValue('use_as_vod_source', event.currentTarget.checked)
             }
           />
 

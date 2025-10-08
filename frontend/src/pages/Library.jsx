@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ActionIcon, Box, Button, Divider, Group, Paper, Portal, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
+import { ActionIcon, Box, Button, Divider, Group, Paper, Portal, Select, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDebouncedValue } from '@mantine/hooks';
 import { ListChecks, Play, RefreshCcw, Search, Trash2 } from 'lucide-react';

@@ -33,6 +33,7 @@ class VODCategorySerializer(serializers.ModelSerializer):
 class SeriesSerializer(serializers.ModelSerializer):
     logo = LogoSerializer(read_only=True)
     episode_count = serializers.SerializerMethodField()
+    library_sources = serializers.SerializerMethodField()
 
     class Meta:
         model = Series
@@ -41,21 +42,62 @@ class SeriesSerializer(serializers.ModelSerializer):
     def get_episode_count(self, obj):
         return obj.episodes.count()
 
+    def get_library_sources(self, obj):
+        sources = []
+        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
+            library = item.library
+            sources.append(
+                {
+                    "library_id": library.id,
+                    "library_name": library.name,
+                    "media_item_id": item.id,
+                }
+            )
+        return sources
+
 
 class MovieSerializer(serializers.ModelSerializer):
     logo = LogoSerializer(read_only=True)
+    library_sources = serializers.SerializerMethodField()
 
     class Meta:
         model = Movie
         fields = '__all__'
 
+    def get_library_sources(self, obj):
+        sources = []
+        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
+            library = item.library
+            sources.append(
+                {
+                    "library_id": library.id,
+                    "library_name": library.name,
+                    "media_item_id": item.id,
+                }
+            )
+        return sources
+
 
 class EpisodeSerializer(serializers.ModelSerializer):
     series = SeriesSerializer(read_only=True)
+    library_sources = serializers.SerializerMethodField()
 
     class Meta:
         model = Episode
         fields = '__all__'
+
+    def get_library_sources(self, obj):
+        sources = []
+        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
+            library = item.library
+            sources.append(
+                {
+                    "library_id": library.id,
+                    "library_name": library.name,
+                    "media_item_id": item.id,
+                }
+            )
+        return sources
 
 
 class M3USeriesRelationSerializer(serializers.ModelSerializer):

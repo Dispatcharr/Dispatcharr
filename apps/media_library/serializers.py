@@ -34,6 +34,7 @@ class LibrarySerializer(serializers.ModelSerializer):
             "scan_interval_minutes",
             "metadata_language",
             "metadata_country",
+            "use_as_vod_source",
             "metadata_options",
             "last_scan_at",
             "last_successful_scan_at",

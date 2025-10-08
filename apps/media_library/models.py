@@ -62,6 +62,10 @@ class Library(models.Model):
         default="US",
         help_text="Primary country/region for metadata lookups (ISO-3166-1 alpha-2).",
     )
+    use_as_vod_source = models.BooleanField(
+        default=False,
+        help_text="When enabled, media matched in this library syncs into the VOD catalog.",
+    )
     metadata_options = models.JSONField(
         blank=True,
         null=True,

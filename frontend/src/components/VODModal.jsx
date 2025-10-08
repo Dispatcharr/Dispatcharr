@@ -17,6 +17,7 @@ import { Play } from 'lucide-react';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
+import API from '../api';
 
 const imdbUrl = (imdb_id) =>
   imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
@@ -31,9 +32,17 @@ const formatDuration = (seconds) => {
 };
 
 const formatStreamLabel = (relation) => {
+  if (relation?.provider_type === 'library' || relation?.type === 'library') {
+    const libraryName =
+      relation?.library?.name ||
+      relation?.m3u_account?.name ||
+      'Library';
+    return `${libraryName} - Local Library`;
+  }
+
   // Create a label for the stream that includes provider name and stream-specific info
-  const provider = relation.m3u_account.name;
-  const streamId = relation.stream_id;
+  const provider = relation?.m3u_account?.name || 'Provider';
+  const streamId = relation?.stream_id;
 
   // Try to extract quality info - prioritizing the new quality_info field from backend
   let qualityInfo = '';
@@ -232,9 +241,50 @@ const VODModal = ({ vod, opened, onClose }) => {
     }
   }, [opened]);
 
-  const handlePlayVOD = () => {
+  const resolveLibraryMediaItemId = () => {
+    if (selectedProvider?.library_item_id) return selectedProvider.library_item_id;
+    if (selectedProvider?.custom_properties?.media_item_id) {
+      return selectedProvider.custom_properties.media_item_id;
+    }
+    const fallback = detailedVOD?.library_sources || vod?.library_sources || [];
+    if (fallback.length > 0) {
+      return fallback[0].media_item_id;
+    }
+    return null;
+  };
+
+  const handlePlayVOD = async () => {
     const vodToPlay = detailedVOD || vod;
     if (!vodToPlay) return;
+
+    if (
+      selectedProvider?.provider_type === 'library' ||
+      selectedProvider?.type === 'library' ||
+      (vodToPlay.library_sources && vodToPlay.library_sources.length > 0)
+    ) {
+      const mediaItemId = resolveLibraryMediaItemId();
+      if (!mediaItemId) {
+        console.warn('No library media item available for playback');
+        return;
+      }
+
+      try {
+        const streamInfo = await API.streamMediaItem(mediaItemId);
+        if (!streamInfo?.url) {
+          console.error('Library stream did not return a URL');
+          return;
+        }
+        const playbackMeta = {
+          ...vodToPlay,
+          provider_type: 'library',
+          library_media_item_id: mediaItemId,
+        };
+        showVideo(streamInfo.url, 'library', playbackMeta);
+      } catch (error) {
+        console.error('Failed to start library stream:', error);
+      }
+      return;
+    }
 
     let streamUrl = `/proxy/vod/movie/${vod.uuid}`;
 
@@ -243,7 +293,7 @@ const VODModal = ({ vod, opened, onClose }) => {
       // Use stream_id for most specific selection, fallback to account_id
       if (selectedProvider.stream_id) {
         streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
-      } else {
+      } else if (selectedProvider?.m3u_account?.id) {
         streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
       }
     }
@@ -504,7 +554,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                     {providers.length === 1 ? (
                       <Group spacing="md">
                         <Badge color="blue" variant="light">
-                          {providers[0].m3u_account.name}
+                          {formatStreamLabel(providers[0])}
                         </Badge>
                       </Group>
                     ) : (
@@ -531,14 +581,16 @@ const VODModal = ({ vod, opened, onClose }) => {
                 {/* Fallback provider info if no providers loaded yet */}
                 {providers.length === 0 &&
                   !loadingProviders &&
-                  vod?.m3u_account && (
+                  (vod?.m3u_account || (vod?.library_sources?.length ?? 0) > 0) && (
                     <Box>
                       <Text size="sm" weight={500} mb={8}>
                         Stream Selection
                       </Text>
                       <Group spacing="md">
                         <Badge color="blue" variant="light">
-                          {vod.m3u_account.name}
+                          {vod?.m3u_account?.name ||
+                            vod?.library_sources?.[0]?.library_name ||
+                            'Library'}
                         </Badge>
                       </Group>
                     </Box>
