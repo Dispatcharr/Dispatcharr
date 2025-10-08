@@ -207,6 +207,9 @@ def scan_library_task(
     matched = 0
     unmatched = 0
     media_item_ids: Set[int] = set()
+    last_progress_emit = timezone.now()
+    progress_step = 5
+    progress_interval = 0.4  # seconds
     _send_scan_event(
         {
             "status": "started",
@@ -244,6 +247,7 @@ def scan_library_task(
         scanner.mark_missing_files()
 
         total_files = len(discoveries)
+        progress_step = max(1, total_files // 200)
 
         for result in discoveries:
             identify_result = _identify_media_file(
@@ -257,25 +261,32 @@ def scan_library_task(
             parent_media_id = identify_result.get("parent_media_item_id")
             candidate_ids = {
                 candidate_id
-                for candidate_id in (media_id, parent_media_id)
-                if candidate_id
-            }
-            for candidate_id in candidate_ids:
-                is_new_media = candidate_id not in media_item_ids
-                media_item_ids.add(candidate_id)
-                if is_new_media:
-                    try:
-                        media_obj = MediaItem.objects.select_related("library").get(pk=candidate_id)
-                    except MediaItem.DoesNotExist:
-                        continue
-                    else:
-                        _send_media_item_update(media_obj, status="progress")
+            for candidate_id in (media_id, parent_media_id)
+            if candidate_id
+        }
+        for candidate_id in candidate_ids:
+            is_new_media = candidate_id not in media_item_ids
+            media_item_ids.add(candidate_id)
+            if is_new_media:
+                try:
+                    media_obj = MediaItem.objects.select_related("library").get(pk=candidate_id)
+                except MediaItem.DoesNotExist:
+                    continue
+                else:
+                    _send_media_item_update(media_obj, status="progress")
 
-            if result.requires_probe:
-                probe_media_task.delay(result.file_id)
+        if result.requires_probe:
+            probe_media_task.delay(result.file_id)
 
-            processed += 1
-            scan.record_progress(processed=processed, matched=matched, unmatched=unmatched)
+        processed += 1
+        scan.record_progress(processed=processed, matched=matched, unmatched=unmatched)
+        now = timezone.now()
+        if (
+            processed == total_files
+            or processed % progress_step == 0
+            or (now - last_progress_emit).total_seconds() >= progress_interval
+        ):
+            last_progress_emit = now
             _send_scan_event(
                 {
                     "status": "progress",
@@ -289,6 +300,12 @@ def scan_library_task(
                 }
             )
 
+        summary = (
+            f"Processed {scan.total_files} files; "
+            f"new={scan.new_files}, updated={scan.updated_files}, "
+            f"removed={scan.removed_files}, matched={matched}, "
+            f"unmatched={unmatched}"
+        )
         if media_item_ids:
             metadata_qs = MediaItem.objects.filter(pk__in=media_item_ids).filter(
                 Q(metadata_last_synced_at__isnull=True)
@@ -298,12 +315,6 @@ def scan_library_task(
             for item in metadata_qs:
                 sync_metadata_task.delay(item.id)
 
-        summary = (
-            f"Processed {scan.total_files} files; "
-            f"new={scan.new_files}, updated={scan.updated_files}, "
-            f"removed={scan.removed_files}, matched={matched}, "
-            f"unmatched={unmatched}"
-        )
         scanner.finalize(matched=matched, unmatched=unmatched, summary=summary)
         logger.info("Completed scan for library %s", library.name)
         _send_scan_event(
@@ -417,9 +428,6 @@ def _identify_media_file(
     else:
         unmatched = 1
 
-    if not file_record.checksum:
-        compute_checksum_task.delay(file_record.id)
-
     return {
         "file_id": file_id,
         "media_item_id": media_item.id if media_item else None,
@@ -446,30 +454,15 @@ def _probe_media_file(*, file_id: int) -> None:
     probe_data = probe_media_file(file_record.absolute_path)
     apply_probe_metadata(file_record, probe_data)
 
-
-@shared_task(name="media_library.probe_media")
-def probe_media_task(file_id: int):
-    _probe_media_file(file_id=file_id)
-
-
-def _compute_checksum(file_id: int) -> None:
-    try:
-        file_record = MediaFile.objects.get(pk=file_id)
-    except MediaFile.DoesNotExist:
-        return
-
     checksum = file_record.calculate_checksum()
-    if not checksum:
-        return
-
-    if file_record.checksum != checksum:
+    if checksum and checksum != file_record.checksum:
         file_record.checksum = checksum
         file_record.save(update_fields=["checksum", "updated_at"])
 
 
-@shared_task(name="media_library.compute_checksum")
-def compute_checksum_task(file_id: int):
-    _compute_checksum(file_id)
+@shared_task(name="media_library.probe_media")
+def probe_media_task(file_id: int):
+    _probe_media_file(file_id=file_id)
 
 
 def _sync_metadata(media_item_id: int) -> None:

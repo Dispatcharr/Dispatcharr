@@ -1,34 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import {
-  ActionIcon,
-  Box,
-  Button,
-  Divider,
-  Group,
-  Paper,
-  Portal,
-  Select,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-  SegmentedControl,
-} from '@mantine/core';
+import { ActionIcon, Box, Button, Divider, Group, Paper, Portal, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDebouncedValue } from '@mantine/hooks';
-import {
-  ListChecks,
-  Play,
-  Plus,
-  RefreshCcw,
-  Search,
-  Trash2,
-} from 'lucide-react';
+import { ListChecks, Play, RefreshCcw, Search, Trash2 } from 'lucide-react';
 
 import useLibraryStore from '../store/library';
 import useMediaLibraryStore from '../store/mediaLibrary';
-import LibraryFormModal from '../components/library/LibraryFormModal';
 import MediaDetailModal from '../components/library/MediaDetailModal';
 import LibraryScanDrawer from '../components/library/LibraryScanDrawer';
 import MediaCarousel from '../components/library/MediaCarousel';
@@ -71,7 +49,6 @@ const LibraryPage = () => {
   const isMovies = normalizedMediaType !== 'shows';
   const itemTypeFilter = isMovies ? 'movie' : 'show';
 
-  const [formOpen, setFormOpen] = useState(false);
   const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
   const [playbackModalOpen, setPlaybackModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('recommended');
@@ -93,14 +70,10 @@ const LibraryPage = () => {
 
   // Library store hooks
   const libraries = useLibraryStore((s) => s.libraries);
-  const librariesLoading = useLibraryStore((s) => s.loading);
   const fetchLibraries = useLibraryStore((s) => s.fetchLibraries);
-  const createLibrary = useLibraryStore((s) => s.createLibrary);
   const triggerScan = useLibraryStore((s) => s.triggerScan);
   const upsertScan = useLibraryStore((s) => s.upsertScan);
   const removeScan = useLibraryStore((s) => s.removeScan);
-  const selectedLibraryId = useLibraryStore((s) => s.selectedLibraryId);
-  const setSelectedLibrary = useLibraryStore((s) => s.setSelectedLibrary);
 
   // Media store hooks
   const items = useMediaLibraryStore((s) => s.items);
@@ -118,26 +91,16 @@ const LibraryPage = () => {
     fetchLibraries();
   }, [fetchLibraries]);
 
-  // Ensure a library is selected for the current media type
-  useEffect(() => {
-    if (!libraries || libraries.length === 0) return;
-    if (selectedLibraryId) {
-      const current = libraries.find((lib) => lib.id === selectedLibraryId);
-      if (current) return;
-    }
-
-    const preferred = libraries.find((lib) =>
-      isMovies
-        ? lib.library_type === 'movies' || lib.library_type === 'mixed'
-        : lib.library_type === 'shows' || lib.library_type === 'mixed'
-    );
-
-    if (preferred) {
-      setSelectedLibrary(preferred.id);
-    } else if (libraries.length > 0) {
-      setSelectedLibrary(libraries[0].id);
-    }
-  }, [libraries, selectedLibraryId, setSelectedLibrary, isMovies]);
+  const relevantLibraryIds = useMemo(() => {
+    if (!libraries || libraries.length === 0) return [];
+    return libraries
+      .filter((lib) =>
+        isMovies
+          ? lib.library_type === 'movies'
+          : lib.library_type === 'shows'
+      )
+      .map((lib) => lib.id);
+  }, [libraries, isMovies]);
 
   // Sync media filters with current type and search
   useEffect(() => {
@@ -149,15 +112,15 @@ const LibraryPage = () => {
 
   // Fetch items when library changes or filters update
   useEffect(() => {
-    if (!selectedLibraryId) return;
-    setSelectedMediaLibrary(selectedLibraryId);
-    fetchItems(selectedLibraryId);
-  }, [selectedLibraryId, fetchItems, setSelectedMediaLibrary, debouncedSearch, itemTypeFilter]);
-
-  const selectedLibrary = useMemo(
-    () => libraries.find((lib) => lib.id === selectedLibraryId) || null,
-    [libraries, selectedLibraryId]
-  );
+    if (!libraries || libraries.length === 0) {
+      setSelectedMediaLibrary(null);
+      fetchItems([]);
+      return;
+    }
+    const ids = relevantLibraryIds;
+    setSelectedMediaLibrary(ids.length === 1 ? ids[0] : null);
+    fetchItems(ids);
+  }, [libraries, relevantLibraryIds, fetchItems, setSelectedMediaLibrary, debouncedSearch, itemTypeFilter]);
 
   const filteredItems = useMemo(() => {
     const typeFiltered = items.filter((item) => item.item_type === itemTypeFilter);
@@ -226,6 +189,29 @@ const LibraryPage = () => {
       .slice(0, 12);
   }, [genresMap]);
 
+  const primaryLibraryId = useMemo(
+    () => (relevantLibraryIds.length === 1 ? relevantLibraryIds[0] : null),
+    [relevantLibraryIds]
+  );
+
+  const hasLibraries = relevantLibraryIds.length > 0;
+
+  const aggregatedSubtitle = useMemo(() => {
+    if (!libraries || libraries.length === 0) {
+      return 'No libraries configured yet.';
+    }
+    if (!hasLibraries) {
+      return isMovies
+        ? 'No movie libraries configured.'
+        : 'No TV show libraries configured.';
+    }
+    const label = isMovies ? 'movie' : 'TV show';
+    const count = relevantLibraryIds.length;
+    return `Aggregating ${count} ${label} librar${count === 1 ? 'y' : 'ies'}.`;
+  }, [libraries, hasLibraries, relevantLibraryIds, isMovies]);
+
+  const canManageSingleLibrary = Boolean(primaryLibraryId);
+
   const sortedLibraryItems = useMemo(() => {
     switch (sortOption) {
       case 'alpha':
@@ -264,17 +250,17 @@ const LibraryPage = () => {
     }
   };
 
-  const handleOpenItem = async (item) => {
-    try {
-      await openItem(item.id);
-      setPlaybackModalOpen(true);
-    } catch (error) {
+  const handleOpenItem = (item) => {
+    setPlaybackModalOpen(true);
+    openItem(item.id).catch((error) => {
+      console.error('Failed to open media item', error);
+      setPlaybackModalOpen(false);
       notifications.show({
         title: 'Error loading media',
         message: 'Unable to open media details.',
         color: 'red',
       });
-    }
+    });
   };
 
   const refreshItem = async (id) => {
@@ -394,13 +380,46 @@ const LibraryPage = () => {
   // --- SCAN CONTROLS ---
 
   // Open the drawer only (do NOT start a scan)
-  const handleOpenScanDrawer = () => setScanDrawerOpen(true);
+  const handleOpenScanDrawer = () => {
+    if (!hasLibraries) {
+      notifications.show({
+        title: 'No libraries configured',
+        message: 'Add a library to manage scans.',
+        color: 'yellow',
+      });
+      return;
+    }
+    if (!canManageSingleLibrary) {
+      notifications.show({
+        title: 'Multiple libraries detected',
+        message: 'Open the Libraries page to manage individual scans.',
+        color: 'yellow',
+      });
+      return;
+    }
+    setScanDrawerOpen(true);
+  };
 
   // Explicitly start a scan (quick or full)
   const handleStartScan = async (full = false) => {
-    if (!selectedLibraryId) return;
+    if (!hasLibraries) {
+      notifications.show({
+        title: 'Scan unavailable',
+        message: 'Add a library before starting a scan.',
+        color: 'yellow',
+      });
+      return;
+    }
+    if (!primaryLibraryId) {
+      notifications.show({
+        title: 'Scan unavailable',
+        message: 'Choose a specific library from the Libraries page to start a scan.',
+        color: 'yellow',
+      });
+      return;
+    }
     try {
-      await triggerScan(selectedLibraryId, { full });
+      await triggerScan(primaryLibraryId, { full });
       notifications.show({
         title: full ? 'Full scan started' : 'Scan started',
         message: full
@@ -503,7 +522,7 @@ const LibraryPage = () => {
             <Button
               variant="subtle"
               leftSection={<RefreshCcw size={16} />}
-              onClick={() => fetchItems(selectedLibraryId)}
+              onClick={() => fetchItems(relevantLibraryIds)}
             >
               Refresh
             </Button>
@@ -571,26 +590,10 @@ const LibraryPage = () => {
           <Stack spacing={4}>
             <Title order={2}>{isMovies ? 'Movies' : 'TV Shows'}</Title>
             <Text c="dimmed" size="sm">
-              {selectedLibrary ? selectedLibrary.name : 'Select a library to begin.'}
+              {aggregatedSubtitle}
             </Text>
           </Stack>
           <Group align="center" gap="sm">
-            <Select
-              placeholder={librariesLoading ? 'Loading libraries...' : 'Choose library'}
-              data={libraries.map((library) => ({
-                value: String(library.id),
-                label: library.name,
-              }))}
-              value={selectedLibraryId ? String(selectedLibraryId) : null}
-              onChange={(value) => setSelectedLibrary(Number(value))}
-              w={220}
-              disabled={librariesLoading || libraries.length === 0}
-            />
-            <Button leftSection={<Plus size={16} />} onClick={() => setFormOpen(true)}>
-              Add Library
-            </Button>
-
-            {/* Open scan drawer ONLY */}
             <ActionIcon
               variant="light"
               color="blue"
@@ -599,8 +602,6 @@ const LibraryPage = () => {
             >
               <ListChecks size={18} />
             </ActionIcon>
-
-            {/* Start a scan explicitly */}
             <ActionIcon
               variant="filled"
               color="blue"
@@ -625,7 +626,7 @@ const LibraryPage = () => {
           </Group>
         </Group>
 
-        {selectedLibrary ? (
+        {relevantLibraryIds.length > 0 ? (
           <div>
             {activeTab === 'recommended' && recommendedView}
             {activeTab === 'library' && libraryView}
@@ -633,39 +634,15 @@ const LibraryPage = () => {
           </div>
         ) : (
           <Stack align="center" py="xl" spacing="md">
-            <Text c="dimmed">Select or create a media library to get started.</Text>
+            <Text c="dimmed">Add a media library to begin importing content.</Text>
           </Stack>
         )}
       </Stack>
 
-      <LibraryFormModal
-        opened={formOpen}
-        onClose={() => setFormOpen(false)}
-        library={null}
-        onSubmit={async (payload) => {
-          try {
-            const created = await createLibrary(payload);
-            notifications.show({
-              title: 'Library created',
-              message: 'New library added successfully.',
-              color: 'green',
-            });
-            setFormOpen(false);
-            fetchLibraries();
-            if (created?.id) {
-              setSelectedLibrary(created.id);
-            }
-          } catch (error) {
-            console.error('Failed to create library', error);
-          }
-        }}
-        submitting={false}
-      />
-
       <LibraryScanDrawer
-        opened={scanDrawerOpen}
+        opened={scanDrawerOpen && canManageSingleLibrary}
         onClose={() => setScanDrawerOpen(false)}
-        libraryId={selectedLibraryId}
+        libraryId={primaryLibraryId}
         // NEW: enable controls inside the drawer
         onCancelJob={handleCancelScanJob}
         onDeleteQueuedJob={handleDeleteQueuedScan}

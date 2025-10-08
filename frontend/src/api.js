@@ -2432,6 +2432,23 @@ export default class API {
     }
   }
 
+  static async browseLibraryPath(path = '') {
+    try {
+      const params = new URLSearchParams();
+      if (path) {
+        params.append('path', path);
+      }
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/libraries/browse/${query ? `?${query}` : ''}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to browse server directories', e);
+      throw e;
+    }
+  }
+
   static async triggerLibraryScan(id, { full = false } = {}) {
     try {
       const response = await request(

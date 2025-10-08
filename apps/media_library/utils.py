@@ -52,6 +52,32 @@ def _json_safe(value):
     return str(value)
 
 
+def _first_numeric(value):
+    """Extract the first integer-like value from guessit responses."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            normalized = _first_numeric(item)
+            if normalized is not None:
+                return normalized
+        return None
+    if isinstance(value, dict):
+        # Some guessit versions wrap values (e.g. {"season": 1})
+        for key in ("season", "episode", "number"):
+            if key in value:
+                normalized = _first_numeric(value[key])
+                if normalized is not None:
+                    return normalized
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class DiscoveredFile:
     file_id: int
@@ -290,9 +316,9 @@ def classify_media_file(file_name: str) -> ClassificationResult:
     classification = ClassificationResult(
         detected_type=detected_type,
         title=title,
-        year=data.get("year"),
-        season=data.get("season"),
-        episode=data.get("episode"),
+        year=_first_numeric(data.get("year")),
+        season=_first_numeric(data.get("season")),
+        episode=_first_numeric(data.get("episode")),
         episode_title=data.get("episode_title"),
         data=data,
     )

@@ -1,4 +1,6 @@
 import logging
+import os
+from pathlib import Path
 
 from django.conf import settings
 from django.core.signing import TimestampSigner
@@ -33,6 +35,74 @@ class LibraryViewSet(viewsets.ModelViewSet):
     search_fields = ["name", "description"]
     ordering_fields = ["name", "created_at", "updated_at", "last_scan_at"]
     ordering = ["name"]
+
+    @action(detail=False, methods=["get"], url_path="browse")
+    def browse(self, request):
+        raw_path = request.query_params.get("path")
+
+        if not raw_path:
+            if os.name == "nt":
+                import string
+
+                entries = []
+                for letter in string.ascii_uppercase:
+                    drive = Path(f"{letter}:/")
+                    if drive.exists():
+                        entries.append(
+                            {
+                                "name": f"{letter}:",
+                                "path": str(drive.resolve()),
+                            }
+                        )
+                return Response({"path": "", "parent": None, "entries": entries})
+
+            root = Path("/").resolve()
+            entries = []
+            try:
+                for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                    if child.is_dir():
+                        entries.append(
+                            {
+                                "name": child.name or str(child),
+                                "path": str(child),
+                            }
+                        )
+            except PermissionError:
+                entries = []
+
+            return Response({"path": str(root), "parent": None, "entries": entries})
+
+        try:
+            target = Path(raw_path).expanduser()
+            if not target.exists():
+                raise ValidationError({"detail": "Directory not found."})
+            if not target.is_dir():
+                target = target.parent
+            target = target.resolve()
+        except (ValueError, OSError, RuntimeError):
+            raise ValidationError({"detail": "Invalid path."})
+
+        entries = []
+        try:
+            for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+                if child.is_dir():
+                    entries.append(
+                        {
+                            "name": child.name or str(child),
+                            "path": str(child),
+                        }
+                    )
+        except PermissionError:
+            entries = []
+
+        parent = str(target.parent) if target != target.parent else None
+        return Response(
+            {
+                "path": str(target),
+                "parent": parent,
+                "entries": entries,
+            }
+        )
 
     def perform_create(self, serializer):
         library = serializer.save()

@@ -56,6 +56,7 @@ const resetStateForUser = (state, userId) => {
   state.activeItemLoading = false;
   state.resumePrompt = null;
   state.selectedLibraryId = null;
+  state.activeLibraryIds = [];
   state.filters = { ...initialFilters };
   state.ownerUserId = userId ?? null;
 };
@@ -72,6 +73,7 @@ const useMediaLibraryStore = create(
     activeItemLoading: false,
     resumePrompt: null,
     selectedLibraryId: null,
+    activeLibraryIds: [],
     filters: { ...initialFilters },
 
     applyUserContext: (userId) =>
@@ -97,6 +99,7 @@ const useMediaLibraryStore = create(
           resetStateForUser(state, userId);
         }
         state.selectedLibraryId = libraryId;
+        state.activeLibraryIds = libraryId != null ? [Number(libraryId)] : [];
       }),
 
     resetFilters: () =>
@@ -119,10 +122,8 @@ const useMediaLibraryStore = create(
           return;
         }
 
-        const selectedLibraryId = get().selectedLibraryId;
-        if (!selectedLibraryId) {
-          return;
-        }
+        const activeLibraryIds = get().activeLibraryIds || [];
+        const filterByLibrary = activeLibraryIds.length > 0;
 
         const byId = new Map();
         state.items.forEach((item) => {
@@ -134,8 +135,9 @@ const useMediaLibraryStore = create(
             return;
           }
           if (
+            filterByLibrary &&
             incoming.library &&
-            Number(incoming.library) !== Number(selectedLibraryId)
+            !activeLibraryIds.includes(Number(incoming.library))
           ) {
             return;
           }
@@ -169,10 +171,10 @@ const useMediaLibraryStore = create(
         state.total = state.items.length;
       }),
 
-    fetchItems: async (libraryId) => {
+    fetchItems: async (libraryIds) => {
       const { isAuthenticated, userId } = getAuthSnapshot();
 
-      if (!libraryId || !isAuthenticated || !userId) {
+      if (!isAuthenticated || !userId) {
         set((state) => {
           if (state.ownerUserId == null) {
             state.ownerUserId = userId ?? null;
@@ -180,13 +182,21 @@ const useMediaLibraryStore = create(
             resetStateForUser(state, userId);
             return;
           }
-          state.items = [];
-          state.total = 0;
-          state.loading = false;
-          state.error = null;
         });
         return;
       }
+
+      const normalizedIds = Array.isArray(libraryIds)
+        ? Array.from(
+            new Set(
+              libraryIds
+                .map((id) => Number(id))
+                .filter((id) => Number.isFinite(id))
+            )
+          )
+        : libraryIds != null
+          ? [Number(libraryIds)].filter((id) => Number.isFinite(id))
+          : [];
 
       set((state) => {
         if (state.ownerUserId == null) {
@@ -196,12 +206,14 @@ const useMediaLibraryStore = create(
         }
         state.loading = true;
         state.error = null;
+        state.activeLibraryIds = normalizedIds;
+        state.selectedLibraryId = normalizedIds.length > 0 ? normalizedIds[0] : null;
       });
 
       try {
         const { filters } = get();
         const params = new URLSearchParams();
-        params.append('library', libraryId);
+        normalizedIds.forEach((id) => params.append('library', id));
         if (filters.type !== 'all') {
           params.append('item_type', filters.type);
         }
@@ -221,6 +233,8 @@ const useMediaLibraryStore = create(
           if (state.ownerUserId !== userId) {
             return;
           }
+          state.activeLibraryIds = normalizedIds;
+          state.selectedLibraryId = normalizedIds.length > 0 ? normalizedIds[0] : null;
           state.items = itemsArray;
           state.total = response.count || itemsArray.length || 0;
           state.loading = false;

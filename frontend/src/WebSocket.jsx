@@ -236,11 +236,16 @@ export const WebsocketProvider = ({ children }) => {
 
               if (parsedEvent.data.status === 'completed') {
                 const { library_id: libraryId } = parsedEvent.data;
-                if (
-                  libraryId &&
-                  useMediaLibraryStore.getState().selectedLibraryId === libraryId
-                ) {
-                  useMediaLibraryStore.getState().fetchItems(libraryId);
+                const mediaStore = useMediaLibraryStore.getState();
+                const activeLibraryIds = mediaStore.activeLibraryIds || [];
+                const shouldRefresh =
+                  activeLibraryIds.length === 0 ||
+                  (libraryId != null &&
+                    activeLibraryIds.includes(Number(libraryId)));
+                if (shouldRefresh) {
+                  mediaStore.fetchItems(
+                    activeLibraryIds.length > 0 ? activeLibraryIds : undefined
+                  );
                 }
                 notifications.show({
                   title: 'Library scan complete',
