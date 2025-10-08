@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.media_library.models import Library, MediaFile, MediaItem
@@ -226,6 +227,16 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
         if not movie and media_item.imdb_id:
             movie = Movie.objects.filter(imdb_id=media_item.imdb_id).first()
         if not movie:
+            fallback_filters = Q(tmdb_id__isnull=True) & Q(imdb_id__isnull=True)
+            title = media_item.title or "Untitled Movie"
+            fallback_filters &= Q(name=title)
+            if media_item.release_year:
+                fallback_filters &= Q(year=media_item.release_year)
+            fallback_candidate = Movie.objects.filter(fallback_filters).first()
+            if fallback_candidate:
+                movie = fallback_candidate
+
+        if not movie:
             movie = Movie.objects.create(
                 name=media_item.title or "Untitled Movie",
                 description=media_item.synopsis or "",
@@ -256,6 +267,16 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
             series = Series.objects.filter(tmdb_id=media_item.tmdb_id).first()
         if not series and media_item.imdb_id:
             series = Series.objects.filter(imdb_id=media_item.imdb_id).first()
+        if not series:
+            fallback_filters = Q(tmdb_id__isnull=True) & Q(imdb_id__isnull=True)
+            title = media_item.title or "Untitled Series"
+            fallback_filters &= Q(name=title)
+            if media_item.release_year:
+                fallback_filters &= Q(year=media_item.release_year)
+            fallback_candidate = Series.objects.filter(fallback_filters).first()
+            if fallback_candidate:
+                series = fallback_candidate
+
         if not series:
             series = Series.objects.create(
                 name=media_item.title or "Untitled Series",
@@ -303,6 +324,16 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
             episode = Episode.objects.filter(tmdb_id=media_item.tmdb_id).first()
         if not episode and media_item.imdb_id:
             episode = Episode.objects.filter(imdb_id=media_item.imdb_id).first()
+        if not episode:
+            episode_filters = Q(series=series)
+            if media_item.season_number is not None:
+                episode_filters &= Q(season_number=media_item.season_number)
+            if media_item.episode_number is not None:
+                episode_filters &= Q(episode_number=media_item.episode_number)
+            fallback_episode = Episode.objects.filter(episode_filters).first()
+            if fallback_episode:
+                episode = fallback_episode
+
         if not episode:
             episode = Episode.objects.create(
                 series=series,
@@ -369,3 +400,23 @@ def unsync_library_from_vod(library: Library) -> None:
     """Remove all VOD links for items in a library."""
     for media_item in library.items.all():
         remove_media_item_from_vod(media_item)
+
+    # Remove any orphaned VOD entries that were created from this library.
+    Movie.objects.filter(
+        Q(custom_properties__source="library"),
+        Q(custom_properties__library_id=library.id),
+        library_items__isnull=True,
+        m3u_relations__isnull=True,
+    ).delete()
+    Series.objects.filter(
+        Q(custom_properties__source="library"),
+        Q(custom_properties__library_id=library.id),
+        library_items__isnull=True,
+        m3u_relations__isnull=True,
+    ).delete()
+    Episode.objects.filter(
+        Q(custom_properties__source="library"),
+        Q(custom_properties__library_id=library.id),
+        library_items__isnull=True,
+        m3u_relations__isnull=True,
+    ).delete()
