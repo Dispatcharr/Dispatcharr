@@ -4,14 +4,23 @@ Helpers for synchronizing local media library items with the VOD catalog.
 
 from __future__ import annotations
 
+import mimetypes
+import os
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import urlparse
 
+import requests
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.text import slugify
 
-from apps.media_library.models import Library, MediaFile, MediaItem
+from apps.channels.models import Logo
+from apps.media_library.models import ArtworkAsset, Library, MediaFile, MediaItem
 from apps.vod.models import Episode, Movie, Series
 
 
@@ -68,6 +77,132 @@ def _collect_quality_info(media_item: MediaItem) -> dict[str, Any] | None:
     return payload
 
 
+def _infer_image_extension(content_type: str | None, source_url: str | None) -> str:
+    """Return a sensible file extension for downloaded artwork."""
+    if content_type:
+        guess = mimetypes.guess_extension(content_type.split(";")[0].strip())
+        if guess:
+            return guess
+    if source_url:
+        path = urlparse(source_url).path
+        _, ext = os.path.splitext(path)
+        if ext:
+            return ext
+    return ".jpg"
+
+
+def _build_media_url(stored_path: str) -> str:
+    media_url = getattr(settings, "MEDIA_URL", "/media/") or "/media/"
+    return f"{media_url.rstrip('/')}/{stored_path.lstrip('/')}"
+
+
+def _download_poster(media_item: MediaItem, source_url: str) -> tuple[str, str] | None:
+    """Persist poster art to Django storage, returning (path, media_url)."""
+
+    content: bytes | None = None
+    content_type: str | None = None
+
+    if source_url.lower().startswith(("http://", "https://")):
+        try:
+            response = requests.get(source_url, timeout=10)
+            response.raise_for_status()
+        except Exception:
+            return None
+        content = response.content
+        content_type = response.headers.get("Content-Type")
+    else:
+        candidate_path = source_url
+        media_url = getattr(settings, "MEDIA_URL", "/media/") or "/media/"
+        media_root = getattr(settings, "MEDIA_ROOT", "")
+        if candidate_path.startswith(media_url) and media_root:
+            candidate_path = os.path.join(media_root, candidate_path[len(media_url.rstrip("/")) + 1 :])
+        if os.path.isabs(candidate_path) and os.path.exists(candidate_path):
+            try:
+                with open(candidate_path, "rb") as handle:
+                    content = handle.read()
+                content_type = mimetypes.guess_type(candidate_path)[0]
+            except Exception:
+                return None
+        else:
+            return None
+
+    if not content:
+        return None
+
+    extension = _infer_image_extension(content_type, source_url)
+    slug = slugify(media_item.title or "library-item") or str(media_item.id)
+    relative_path = f"vod/posters/{media_item.id}-{slug}{extension}"
+
+    if default_storage.exists(relative_path):
+        try:
+            default_storage.delete(relative_path)
+        except Exception:
+            pass
+
+    stored_path = default_storage.save(relative_path, ContentFile(content))
+    return stored_path, _build_media_url(stored_path)
+
+
+def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dict[str, Any] | None]:
+    metadata = dict(media_item.metadata or {})
+
+    poster_source = media_item.poster_url or None
+    if not poster_source:
+        poster_asset = media_item.artwork.filter(asset_type=ArtworkAsset.TYPE_POSTER).first()
+        if poster_asset:
+            poster_source = poster_asset.local_path or poster_asset.external_url
+
+    if not poster_source:
+        return None, None
+
+    stored_path = metadata.get("vod_poster_path")
+    stored_url = metadata.get("vod_poster_url")
+    stored_source = metadata.get("vod_poster_source_url")
+
+    needs_refresh = (
+        not stored_path
+        or not default_storage.exists(stored_path or "")
+        or stored_source != poster_source
+    )
+
+    if needs_refresh:
+        download_result = _download_poster(media_item, poster_source)
+        if not download_result:
+            return None, None
+        stored_path, stored_url = download_result
+        stored_source = poster_source
+
+    if not stored_path or not stored_url:
+        return None, None
+
+    metadata_updates = metadata.copy()
+    metadata_updates.update(
+        {
+            "vod_poster_path": stored_path,
+            "vod_poster_url": stored_url,
+            "vod_poster_source_url": stored_source,
+        }
+    )
+
+    logo_name = (media_item.title or "Library Asset")[:255]
+    logo, _ = Logo.objects.get_or_create(url=stored_url, defaults={"name": logo_name})
+    return logo, metadata_updates
+
+
+def _clean_local_poster(media_item: MediaItem) -> None:
+    metadata = dict(media_item.metadata or {})
+    stored_path = metadata.pop("vod_poster_path", None)
+    metadata.pop("vod_poster_url", None)
+    metadata.pop("vod_poster_source_url", None)
+    if stored_path and default_storage.exists(stored_path):
+        try:
+            default_storage.delete(stored_path)
+        except Exception:
+            pass
+    media_item.metadata = metadata
+    media_item.save(update_fields=["metadata", "updated_at"])
+
+
 def _merge_custom_properties(existing: dict[str, Any] | None, updates: dict[str, Any]) -> dict[str, Any]:
     data = dict(existing or {})
     data.update({key: value for key, value in updates.items() if value is not None})
@@ -100,11 +235,20 @@ def _update_movie_from_media_item(movie: Movie, media_item: MediaItem) -> Movie:
         fields_to_update.append("imdb_id")
 
     quality_info = _collect_quality_info(media_item) or {}
+    logo, metadata_updates = _ensure_logo_for_media_item(media_item)
+    if metadata_updates is not None:
+        current_metadata = media_item.metadata or {}
+        if metadata_updates != current_metadata:
+            media_item.metadata = metadata_updates
+            media_item.save(update_fields=["metadata", "updated_at"])
+    poster_media_url = (
+        metadata_updates.get("vod_poster_url") if metadata_updates else None
+    )
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
-        "poster_url": media_item.poster_url,
+        "poster_url": poster_media_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
         "quality": quality_info,
     }
@@ -112,6 +256,10 @@ def _update_movie_from_media_item(movie: Movie, media_item: MediaItem) -> Movie:
     if merged_custom != movie.custom_properties:
         movie.custom_properties = merged_custom
         fields_to_update.append("custom_properties")
+
+    if logo and (movie.logo_id != logo.id):
+        movie.logo = logo
+        fields_to_update.append("logo")
 
     if fields_to_update:
         movie.save(update_fields=fields_to_update + ["updated_at"])
@@ -141,17 +289,31 @@ def _update_series_from_media_item(series: Series, media_item: MediaItem) -> Ser
         series.imdb_id = media_item.imdb_id
         fields_to_update.append("imdb_id")
 
+    logo, metadata_updates = _ensure_logo_for_media_item(media_item)
+    if metadata_updates is not None:
+        current_metadata = media_item.metadata or {}
+        if metadata_updates != current_metadata:
+            media_item.metadata = metadata_updates
+            media_item.save(update_fields=["metadata", "updated_at"])
+    poster_media_url = (
+        metadata_updates.get("vod_poster_url") if metadata_updates else None
+    )
+
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
-        "poster_url": media_item.poster_url,
+        "poster_url": poster_media_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
     }
     merged_custom = _merge_custom_properties(series.custom_properties, custom_updates)
     if merged_custom != series.custom_properties:
         series.custom_properties = merged_custom
         fields_to_update.append("custom_properties")
+
+    if logo and (series.logo_id != logo.id):
+        series.logo = logo
+        fields_to_update.append("logo")
 
     if fields_to_update:
         series.save(update_fields=fields_to_update + ["updated_at"])
@@ -361,6 +523,9 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
 @transaction.atomic
 def remove_media_item_from_vod(media_item: MediaItem) -> None:
     """Detach a media item from the VOD catalog and prune orphaned entries."""
+    if (media_item.metadata or {}).get("vod_poster_path"):
+        _clean_local_poster(media_item)
+
     if media_item.vod_movie_id:
         movie = Movie.objects.filter(pk=media_item.vod_movie_id).first()
         media_item.vod_movie = None
