@@ -36,6 +36,9 @@ const VODCard = ({ vod, onClick }) => {
   const isEpisode = vod.type === 'episode';
   const posterSrc =
     vod.movie_image || vod.logo?.cache_url || vod.logo?.url || null;
+  const fallbackPoster =
+    vod.custom_properties?.poster_url || vod.custom_properties?.cover || null;
+  const imageSrc = posterSrc || fallbackPoster;
 
   const getDisplayTitle = () => {
     if (isEpisode && vod.series) {
@@ -73,9 +76,9 @@ const VODCard = ({ vod, onClick }) => {
     >
       <Card.Section>
         <Box style={{ position: 'relative', height: 300 }}>
-          {posterSrc ? (
+          {imageSrc ? (
             <Image
-              src={posterSrc}
+              src={imageSrc}
               height={300}
               alt={vod.name}
               fit="contain"
@@ -166,7 +169,11 @@ const VODCard = ({ vod, onClick }) => {
 
 const SeriesCard = ({ series, onClick }) => {
   const seriesCover =
-    series.series_image || series.logo?.cache_url || series.logo?.url || null;
+    series.series_image ||
+    series.logo?.cache_url ||
+    series.logo?.url ||
+    series.custom_properties?.poster_url ||
+    null;
   return (
     <Card
       shadow="sm"

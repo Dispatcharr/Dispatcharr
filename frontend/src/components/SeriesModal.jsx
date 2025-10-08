@@ -341,6 +341,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
     displaySeries?.series_image ||
     displaySeries?.logo?.cache_url ||
     displaySeries?.logo?.url ||
+    displaySeries?.custom_properties?.poster_url ||
     null;
 
   return (
@@ -706,10 +707,16 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                       {/* Episode Image and Description Row */}
                                       <Flex gap="md">
                                         {/* Episode Image */}
-                                        {episode.movie_image && (
-                                          <Box style={{ flexShrink: 0 }}>
-                                            <Image
-                                              src={episode.movie_image}
+                                        {(() => {
+                                          const episodeImage =
+                                            episode.movie_image || seriesPoster;
+                                          if (!episodeImage) {
+                                            return null;
+                                          }
+                                          return (
+                                            <Box style={{ flexShrink: 0 }}>
+                                              <Image
+                                              src={episodeImage}
                                               width={120}
                                               height={160}
                                               alt={episode.name}
@@ -717,7 +724,8 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                               style={{ borderRadius: '4px' }}
                                             />
                                           </Box>
-                                        )}
+                                          );
+                                        })()}
 
                                         {/* Episode Description */}
                                         <Box style={{ flex: 1 }}>

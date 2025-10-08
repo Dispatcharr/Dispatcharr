@@ -323,6 +323,7 @@ const VODModal = ({ vod, opened, onClose }) => {
     displayVOD?.movie_image ||
     displayVOD?.logo?.cache_url ||
     displayVOD?.logo?.url ||
+    displayVOD?.custom_properties?.poster_url ||
     null;
 
   return (

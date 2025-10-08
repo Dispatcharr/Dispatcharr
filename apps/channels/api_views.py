@@ -1463,6 +1463,22 @@ class LogoViewSet(viewsets.ModelViewSet):
 
         return super().destroy(request, *args, **kwargs)
 
+    def list(self, request, *args, **kwargs):
+        """Support optional no_pagination flag for convenience queries."""
+        queryset = self.filter_queryset(self.get_queryset())
+
+        if request.query_params.get("no_pagination", "").lower() == "true":
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     @action(detail=False, methods=["post"])
     def upload(self, request):
         if "file" not in request.FILES:
