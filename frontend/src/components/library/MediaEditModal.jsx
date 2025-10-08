@@ -93,6 +93,38 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
       .finally(() => setLoading(false));
   }, [opened, mediaItemId]);
 
+  const applyMediaItemUpdate = async (data) => {
+    let normalized = data;
+    if (!normalized || typeof normalized !== 'object') {
+      try {
+        normalized = await API.getMediaItem(mediaItemId);
+      } catch (error) {
+        notifications.show({
+          color: 'red',
+          title: 'Failed to refresh item',
+          message: error.message || 'Unable to refresh media item after update.',
+        });
+        return false;
+      }
+    }
+
+    setMediaItem(normalized);
+    populateForm(normalized);
+
+    try {
+      await useMediaLibraryStore.getState().openItem(mediaItemId);
+    } catch (error) {
+      // Log but do not block success UX
+      console.debug('Failed to refresh active item state', error);
+    }
+
+    if (typeof onSaved === 'function') {
+      await onSaved(normalized);
+    }
+
+    return true;
+  };
+
   const handleApplyTmdb = async () => {
     if (!form.values.tmdb_id) {
       notifications.show({
@@ -109,14 +141,14 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
         mediaItemId,
         form.values.tmdb_id
       );
-      setMediaItem(updated);
-      populateForm(updated);
-      await useMediaLibraryStore.getState().openItem(mediaItemId);
-      notifications.show({
-        color: 'green',
-        title: 'Metadata updated',
-        message: 'TMDB details applied successfully.',
-      });
+      const applied = await applyMediaItemUpdate(updated);
+      if (applied) {
+        notifications.show({
+          color: 'green',
+          title: 'Metadata updated',
+          message: 'TMDB details applied successfully.',
+        });
+      }
     } catch (error) {
       // errorNotification already handled in API helper
     } finally {
@@ -194,20 +226,16 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
     setSaving(true);
     try {
       const updated = await API.updateMediaItem(mediaItemId, payload);
-      setMediaItem(updated);
-      populateForm(updated);
-      await useMediaLibraryStore.getState().openItem(mediaItemId);
+      const applied = await applyMediaItemUpdate(updated);
 
-      if (typeof onSaved === 'function') {
-        await onSaved(updated);
+      if (applied) {
+        notifications.show({
+          color: 'green',
+          title: 'Media item saved',
+          message: 'Changes were applied successfully.',
+        });
+        onClose();
       }
-
-      notifications.show({
-        color: 'green',
-        title: 'Media item saved',
-        message: 'Changes were applied successfully.',
-      });
-      onClose();
     } catch (error) {
       // errorNotification already displayed
     } finally {
