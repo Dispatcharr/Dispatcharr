@@ -319,6 +319,11 @@ const VODModal = ({ vod, opened, onClose }) => {
 
   // Use detailed data if available, otherwise use basic vod data
   const displayVOD = detailedVOD || vod;
+  const posterSrc =
+    displayVOD?.movie_image ||
+    displayVOD?.logo?.cache_url ||
+    displayVOD?.logo?.url ||
+    null;
 
   return (
     <>
@@ -380,10 +385,10 @@ const VODModal = ({ vod, opened, onClose }) => {
               {/* Movie poster and basic info */}
               <Flex gap="md">
                 {/* Use movie_image or logo */}
-                {displayVOD.movie_image || displayVOD.logo?.url ? (
+                {posterSrc ? (
                   <Box style={{ flexShrink: 0 }}>
                     <Image
-                      src={displayVOD.movie_image || displayVOD.logo.url}
+                      src={posterSrc}
                       width={200}
                       height={300}
                       alt={displayVOD.name}

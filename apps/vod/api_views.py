@@ -5,6 +5,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 import django_filters
 from django.db.models import Q
 import logging
@@ -30,6 +31,15 @@ from django.utils import timezone
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def build_logo_cache_url(request, logo_id):
+    if not logo_id:
+        return None
+    cache_path = reverse("api:channels:logo-cache", args=[logo_id])
+    if request:
+        return request.build_absolute_uri(cache_path)
+    return cache_path
 
 
 class VODPagination(PageNumberPagination):
@@ -152,6 +162,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         if library_item:
             library = library_item.library
             custom_props = movie.custom_properties or {}
+            logo_cache_url = build_logo_cache_url(request, movie.logo_id)
             response_data = {
                 'id': movie.id,
                 'uuid': movie.uuid,
@@ -165,7 +176,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
                 'tmdb_id': movie.tmdb_id,
                 'imdb_id': movie.imdb_id,
                 'duration_secs': movie.duration_secs,
-                'movie_image': movie.logo.url if movie.logo else custom_props.get('poster_url'),
+                'movie_image': logo_cache_url or (movie.logo.url if movie.logo else custom_props.get('poster_url')),
                 'backdrop_path': [custom_props.get('backdrop_url')] if custom_props.get('backdrop_url') else [],
                 'video': (custom_props.get('quality') or {}).get('video'),
                 'audio': (custom_props.get('quality') or {}).get('audio'),
@@ -186,6 +197,12 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
                     'name': library.name,
                     'account_type': 'library',
                 },
+                'logo': {
+                    'id': movie.logo_id,
+                    'name': movie.logo.name if movie.logo else None,
+                    'url': movie.logo.url if movie.logo else custom_props.get('poster_url'),
+                    'cache_url': logo_cache_url,
+                } if movie.logo else None,
             }
             return Response(response_data)
 
@@ -217,6 +234,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             # Refresh objects from database after task completion
             movie.refresh_from_db()
             relation.refresh_from_db()
+            logo_cache_url = build_logo_cache_url(request, movie.logo_id)
 
         # Use refreshed data from database
         custom_props = relation.custom_properties or {}
@@ -247,7 +265,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             'backdrop_path': (movie.custom_properties or {}).get('backdrop_path') or info.get('backdrop_path', []),
             'cover': info.get('cover_big', ''),
             'cover_big': info.get('cover_big', ''),
-            'movie_image': movie.logo.url if movie.logo else info.get('movie_image', ''),
+            'movie_image': logo_cache_url or (movie.logo.url if movie.logo else info.get('movie_image', '')),
             'bitrate': info.get('bitrate', 0),
             'video': info.get('video', {}),
             'audio': info.get('audio', {}),
@@ -259,7 +277,13 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
                 'id': relation.m3u_account.id,
                 'name': relation.m3u_account.name,
                 'account_type': relation.m3u_account.account_type
-            }
+            },
+            'logo': {
+                'id': movie.logo_id,
+                'name': movie.logo.name if movie.logo else None,
+                'url': movie.logo.url if movie.logo else info.get('movie_image', ''),
+                'cache_url': logo_cache_url,
+            } if movie.logo_id else None
         }
         return Response(response_data)
 
@@ -474,6 +498,7 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
         ).first()
         if library_item:
             library = library_item.library
+            series_logo_cache_url = build_logo_cache_url(request, series.logo_id)
             episodes_by_season: dict[str, list[dict]] = {}
             for episode in series.episodes.all().prefetch_related("library_items__library").order_by('season_number', 'episode_number'):
                 if not episode.library_items.filter(library__use_as_vod_source=True).exists():
@@ -513,8 +538,9 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 'category_name': None,
                 'cover': {
                     'id': series.logo.id,
-                    'url': series.logo.url,
+                    'url': series_logo_cache_url or series.logo.url,
                     'name': series.logo.name,
+                    'cache_url': series_logo_cache_url,
                 } if series.logo else None,
                 'custom_properties': series.custom_properties or {},
                 'm3u_account': {
@@ -861,14 +887,15 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     # Build logo object in the format expected by frontend
                     logo_data = None
                     if item_dict['logo_id']:
+                        cache_url = build_logo_cache_url(request, item_dict['logo_id'])
                         logo_data = {
                             'id': item_dict['logo_id'],
                             'name': item_dict['logo_name'],
                             'url': item_dict['logo_url'],
-                            'cache_url': f"/media/logo_cache/{item_dict['logo_id']}.png" if item_dict['logo_id'] else None,
-                            'channel_count': 0,  # We don't need this for VOD
+                            'cache_url': cache_url,
+                            'channel_count': 0,
                             'is_used': True,
-                            'channel_names': []  # We don't need this for VOD
+                            'channel_names': []
                         }
 
                     rating_value = item_dict['rating']

@@ -337,6 +337,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   // Use detailed data if available, otherwise use basic series data
   const displaySeries = detailedSeries || series;
+  const seriesPoster =
+    displaySeries?.series_image ||
+    displaySeries?.logo?.cache_url ||
+    displaySeries?.logo?.url ||
+    null;
 
   return (
     <>
@@ -399,10 +404,10 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
               {/* Series poster and basic info */}
               <Flex gap="md">
-                {displaySeries.series_image || displaySeries.logo?.url ? (
+                {seriesPoster ? (
                   <Box style={{ flexShrink: 0 }}>
                     <Image
-                      src={displaySeries.series_image || displaySeries.logo.url}
+                      src={seriesPoster}
                       width={200}
                       height={300}
                       alt={displaySeries.name}

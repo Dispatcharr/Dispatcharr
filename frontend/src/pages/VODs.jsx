@@ -34,6 +34,8 @@ const formatDuration = (seconds) => {
 
 const VODCard = ({ vod, onClick }) => {
   const isEpisode = vod.type === 'episode';
+  const posterSrc =
+    vod.movie_image || vod.logo?.cache_url || vod.logo?.url || null;
 
   const getDisplayTitle = () => {
     if (isEpisode && vod.series) {
@@ -71,9 +73,9 @@ const VODCard = ({ vod, onClick }) => {
     >
       <Card.Section>
         <Box style={{ position: 'relative', height: 300 }}>
-          {vod.logo?.url ? (
+          {posterSrc ? (
             <Image
-              src={vod.logo.url}
+              src={posterSrc}
               height={300}
               alt={vod.name}
               fit="contain"
@@ -163,6 +165,8 @@ const VODCard = ({ vod, onClick }) => {
 };
 
 const SeriesCard = ({ series, onClick }) => {
+  const seriesCover =
+    series.series_image || series.logo?.cache_url || series.logo?.url || null;
   return (
     <Card
       shadow="sm"
@@ -174,9 +178,9 @@ const SeriesCard = ({ series, onClick }) => {
     >
       <Card.Section>
         <Box style={{ position: 'relative', height: 300 }}>
-          {series.logo?.url ? (
+          {seriesCover ? (
             <Image
-              src={series.logo.url}
+              src={seriesCover}
               height={300}
               alt={series.name}
               fit="contain"
