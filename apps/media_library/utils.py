@@ -209,9 +209,11 @@ class LibraryScanner:
         )
 
         requires_probe = False
+        checksum_reset = False
         if created:
             self.stats["new"] += 1
             requires_probe = True
+            checksum_reset = True
         else:
             should_update = (
                 self.force_full
@@ -223,13 +225,14 @@ class LibraryScanner:
                 file_record.last_modified_at = last_modified
                 self.stats["updated"] += 1
                 requires_probe = True
+                checksum_reset = True
 
         file_record.last_seen_at = self.now
         file_record.location = location
         file_record.relative_path = relative_path
         file_record.file_name = file_path.name
         file_record.missing_since = None
-        file_record.save(update_fields=[
+        update_fields = [
             "location",
             "relative_path",
             "file_name",
@@ -238,7 +241,13 @@ class LibraryScanner:
             "last_seen_at",
             "missing_since",
             "updated_at",
-        ])
+        ]
+
+        if checksum_reset and file_record.checksum:
+            file_record.checksum = ""
+            update_fields.append("checksum")
+
+        file_record.save(update_fields=update_fields)
 
         # Always probe on forced scans or if checksum missing
         if self.force_full or not file_record.checksum:

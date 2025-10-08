@@ -418,8 +418,7 @@ def _identify_media_file(
         unmatched = 1
 
     if not file_record.checksum:
-        file_record.checksum = file_record.calculate_checksum()
-        file_record.save(update_fields=["checksum", "updated_at"])
+        compute_checksum_task.delay(file_record.id)
 
     return {
         "file_id": file_id,
@@ -451,6 +450,26 @@ def _probe_media_file(*, file_id: int) -> None:
 @shared_task(name="media_library.probe_media")
 def probe_media_task(file_id: int):
     _probe_media_file(file_id=file_id)
+
+
+def _compute_checksum(file_id: int) -> None:
+    try:
+        file_record = MediaFile.objects.get(pk=file_id)
+    except MediaFile.DoesNotExist:
+        return
+
+    checksum = file_record.calculate_checksum()
+    if not checksum:
+        return
+
+    if file_record.checksum != checksum:
+        file_record.checksum = checksum
+        file_record.save(update_fields=["checksum", "updated_at"])
+
+
+@shared_task(name="media_library.compute_checksum")
+def compute_checksum_task(file_id: int):
+    _compute_checksum(file_id)
 
 
 def _sync_metadata(media_item_id: int) -> None:
