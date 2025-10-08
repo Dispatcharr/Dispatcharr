@@ -168,7 +168,7 @@ def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dic
     if needs_refresh:
         download_result = _download_poster(media_item, poster_source)
         if not download_result:
-            return None, None
+            return None, None, None
         stored_path, stored_url = download_result
         stored_source = poster_source
 

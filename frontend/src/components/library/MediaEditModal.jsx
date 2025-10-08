@@ -111,7 +111,7 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
       );
       setMediaItem(updated);
       populateForm(updated);
-      useMediaLibraryStore.getState().openItem(mediaItemId);
+      await useMediaLibraryStore.getState().openItem(mediaItemId);
       notifications.show({
         color: 'green',
         title: 'Metadata updated',
@@ -196,7 +196,7 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
       const updated = await API.updateMediaItem(mediaItemId, payload);
       setMediaItem(updated);
       populateForm(updated);
-      useMediaLibraryStore.getState().openItem(mediaItemId);
+      await useMediaLibraryStore.getState().openItem(mediaItemId);
 
       if (typeof onSaved === 'function') {
         await onSaved(updated);
@@ -283,6 +283,7 @@ const MediaEditModal = ({ opened, onClose, mediaItemId, onSaved }) => {
                 leftSection={<RefreshCcw size={14} />}
                 onClick={handleApplyTmdb}
                 loading={applyingTmdb}
+                type="button"
               >
                 Apply TMDB Metadata
               </Button>
