@@ -81,11 +81,23 @@ class LibrarySerializer(serializers.ModelSerializer):
             if entry_data["is_primary"]:
                 primary_set = True
             if location_id:
-                models.LibraryLocation.objects.filter(pk=location_id, library=library).update(**entry_data)
-                seen_location_ids.add(location_id)
-            else:
-                location = models.LibraryLocation.objects.create(library=library, **entry_data)
-                seen_location_ids.add(location.id)
+                updated = models.LibraryLocation.objects.filter(pk=location_id, library=library).update(**entry_data)
+                if updated:
+                    seen_location_ids.add(location_id)
+                    continue
+
+            defaults = {
+                "include_subdirectories": entry_data["include_subdirectories"],
+                "is_primary": entry_data["is_primary"],
+            }
+            location, _ = models.LibraryLocation.objects.update_or_create(
+                library=library,
+                path=entry_data["path"],
+                defaults=defaults,
+            )
+            seen_location_ids.add(location.id)
+            if location.is_primary:
+                primary_set = True
 
         # Remove locations not present in payload
         models.LibraryLocation.objects.filter(library=library).exclude(id__in=seen_location_ids).delete()

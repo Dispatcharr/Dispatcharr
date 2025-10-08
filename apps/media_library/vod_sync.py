@@ -37,8 +37,9 @@ def _collect_quality_info(media_item: MediaItem) -> dict[str, Any] | None:
     if not file_record:
         return None
     payload: dict[str, Any] = {}
-    if file_record.bitrate:
-        payload["bitrate"] = file_record.bitrate
+    bit_rate_value = getattr(file_record, "bit_rate", None)
+    if bit_rate_value:
+        payload["bitrate"] = bit_rate_value
     video_payload: dict[str, Any] = {}
     if file_record.width and file_record.height:
         video_payload["width"] = file_record.width
