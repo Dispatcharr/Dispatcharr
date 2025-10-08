@@ -26,11 +26,15 @@ import {
   RefreshCcw,
   Undo2,
   Trash2,
+  Pencil,
 } from 'lucide-react';
 
 import API from '../../api';
 import useMediaLibraryStore from '../../store/mediaLibrary';
 import useVideoStore from '../../store/useVideoStore';
+import useAuthStore from '../../store/auth';
+import { USER_LEVELS } from '../../constants';
+import MediaEditModal from './MediaEditModal';
 
 // ---- quick tuning knobs ----
 const CAST_TILE_WIDTH = 96;     // was 116
@@ -59,10 +63,13 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const clearResumePrompt = useMediaLibraryStore((s) => s.clearResumePrompt);
   const setActiveProgress = useMediaLibraryStore((s) => s.setActiveProgress);
   const showVideo = useVideoStore((s) => s.showVideo);
+  const userLevel = useAuthStore((s) => s.user?.user_level ?? 0);
+  const canEditMetadata = userLevel >= USER_LEVELS.ADMIN;
 
   const [startingPlayback, setStartingPlayback] = useState(false);
   const [resumeModalOpen, setResumeModalOpen] = useState(false);
   const [resumeMode, setResumeMode] = useState('start');
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   const [episodes, setEpisodes] = useState([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -108,6 +115,10 @@ const MediaDetailModal = ({ opened, onClose }) => {
     if (!activeItem) return null;
     return useMediaLibraryStore.getState().openItem(activeItem.id);
   }, [activeItem]);
+
+  const handleEditSaved = useCallback(async () => {
+    await refreshActiveItem();
+  }, [refreshActiveItem]);
 
   const orderedEpisodes = useMemo(() => {
     if (!episodes || episodes.length === 0) return [];
@@ -171,6 +182,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
       setEpisodes([]);
       setEpisodesLoading(false);
       setEpisodePlayLoadingId(null);
+      setEditModalOpen(false);
       return;
     }
     if (activeItem?.item_type === 'show') {
@@ -491,7 +503,23 @@ const MediaDetailModal = ({ opened, onClose }) => {
         size="xl"
         overlayProps={{ backgroundOpacity: 0.55, blur: 4 }}
         padding="md"
-        title={activeItem ? activeItem.title : 'Media details'}
+        title={
+          <Group justify="space-between" align="center" gap="xs">
+            <Text fw={600} truncate>
+              {activeItem ? activeItem.title : 'Media details'}
+            </Text>
+            {canEditMetadata && activeItem && (
+              <ActionIcon
+                variant="subtle"
+                color="blue"
+                title="Edit metadata"
+                onClick={() => setEditModalOpen(true)}
+              >
+                <Pencil size={16} />
+              </ActionIcon>
+            )}
+          </Group>
+        }
       >
         {activeItemLoading ? (
           <Group justify="center" py="xl">
@@ -893,6 +921,14 @@ const MediaDetailModal = ({ opened, onClose }) => {
           </ScrollArea>
         )}
       </Modal>
+      {canEditMetadata && activeItem && (
+        <MediaEditModal
+          opened={editModalOpen}
+          onClose={() => setEditModalOpen(false)}
+          mediaItemId={activeItem.id}
+          onSaved={handleEditSaved}
+        />
+      )}
 
       <Modal
         opened={resumeModalOpen}

@@ -143,7 +143,7 @@ def _download_poster(media_item: MediaItem, source_url: str) -> tuple[str, str] 
     return stored_path, _build_media_url(stored_path)
 
 
-def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dict[str, Any] | None]:
+def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dict[str, Any] | None, str | None]:
     metadata = dict(media_item.metadata or {})
 
     poster_source = media_item.poster_url or None
@@ -153,7 +153,7 @@ def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dic
             poster_source = poster_asset.local_path or poster_asset.external_url
 
     if not poster_source:
-        return None, None
+        return None, None, None
 
     stored_path = metadata.get("vod_poster_path")
     stored_url = metadata.get("vod_poster_url")
@@ -173,7 +173,7 @@ def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dic
         stored_source = poster_source
 
     if not stored_path or not stored_url:
-        return None, None
+        return None, None, None
 
     metadata_updates = metadata.copy()
     metadata_updates.update(
@@ -186,7 +186,7 @@ def _ensure_logo_for_media_item(media_item: MediaItem) -> tuple[Logo | None, dic
 
     logo_name = (media_item.title or "Library Asset")[:255]
     logo, _ = Logo.objects.get_or_create(url=stored_url, defaults={"name": logo_name})
-    return logo, metadata_updates
+    return logo, metadata_updates, poster_source
 
 
 def _clean_local_poster(media_item: MediaItem) -> None:
@@ -235,7 +235,7 @@ def _update_movie_from_media_item(movie: Movie, media_item: MediaItem) -> Movie:
         fields_to_update.append("imdb_id")
 
     quality_info = _collect_quality_info(media_item) or {}
-    logo, metadata_updates = _ensure_logo_for_media_item(media_item)
+    logo, metadata_updates, poster_source = _ensure_logo_for_media_item(media_item)
     if metadata_updates is not None:
         current_metadata = media_item.metadata or {}
         if metadata_updates != current_metadata:
@@ -244,11 +244,14 @@ def _update_movie_from_media_item(movie: Movie, media_item: MediaItem) -> Movie:
     poster_media_url = (
         metadata_updates.get("vod_poster_url") if metadata_updates else None
     )
+    poster_source_url = (
+        metadata_updates.get("vod_poster_source_url") if metadata_updates else poster_source
+    )
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
-        "poster_url": poster_media_url or media_item.poster_url,
+        "poster_url": poster_media_url or poster_source_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
         "quality": quality_info,
     }
@@ -289,7 +292,7 @@ def _update_series_from_media_item(series: Series, media_item: MediaItem) -> Ser
         series.imdb_id = media_item.imdb_id
         fields_to_update.append("imdb_id")
 
-    logo, metadata_updates = _ensure_logo_for_media_item(media_item)
+    logo, metadata_updates, poster_source = _ensure_logo_for_media_item(media_item)
     if metadata_updates is not None:
         current_metadata = media_item.metadata or {}
         if metadata_updates != current_metadata:
@@ -298,12 +301,15 @@ def _update_series_from_media_item(series: Series, media_item: MediaItem) -> Ser
     poster_media_url = (
         metadata_updates.get("vod_poster_url") if metadata_updates else None
     )
+    poster_source_url = (
+        metadata_updates.get("vod_poster_source_url") if metadata_updates else poster_source
+    )
 
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
-        "poster_url": poster_media_url or media_item.poster_url,
+        "poster_url": poster_media_url or poster_source_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
     }
     merged_custom = _merge_custom_properties(series.custom_properties, custom_updates)
