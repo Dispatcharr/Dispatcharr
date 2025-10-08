@@ -2525,6 +2525,35 @@ export default class API {
     }
   }
 
+  static async updateMediaItem(id, payload) {
+    try {
+      const response = await request(`${host}/api/media/items/${id}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update media item', e);
+      throw e;
+    }
+  }
+
+  static async setMediaItemTMDB(id, tmdbId) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/set-tmdb/`,
+        {
+          method: 'POST',
+          body: { tmdb_id: tmdbId },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply TMDB metadata', e);
+      throw e;
+    }
+  }
+
   static async getMediaItemEpisodes(parentId) {
     try {
       const params = new URLSearchParams();

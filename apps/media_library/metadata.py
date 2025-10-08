@@ -64,48 +64,87 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         return None
 
     normalized = (media_item.normalized_title or "").replace(" ", "_")
-    cache_key = f"media-metadata:{media_item.item_type}:{normalized}:{media_item.release_year}"
+    cache_key_parts = [
+        str(media_item.item_type),
+        normalized,
+        str(media_item.release_year or ""),
+    ]
+    if media_item.tmdb_id:
+        cache_key_parts.append(f"id:{media_item.tmdb_id}")
+    cache_key = f"media-metadata:{':'.join(cache_key_parts)}"
     cached = cache.get(cache_key)
     if cached:
         return cached
 
-    search = tmdb.Search()
-    try:
-        if media_item.is_movie:
-            response = search.movie(query=media_item.title, year=media_item.release_year)
-            results = response.get("results", [])
-        elif media_item.item_type == MediaItem.TYPE_SHOW:
-            response = search.tv(query=media_item.title, first_air_date_year=media_item.release_year)
-            results = response.get("results", [])
-        else:
-            results = []
-    except Exception:  # noqa: BLE001
-        logger.exception("TMDB lookup failed for %s", media_item)
-        return None
+    info = None
+    credits = None
+    tmdb_id = media_item.tmdb_id
 
-    if not results:
-        logger.debug("No TMDB matches found for %s", media_item.title)
-        return None
+    if tmdb_id:
+        try:
+            lookup_id = int(tmdb_id)
+        except (TypeError, ValueError):
+            lookup_id = tmdb_id
 
-    best_match = results[0]
-    tmdb_id = best_match.get("id")
-    if not tmdb_id:
-        return None
+        try:
+            if media_item.is_movie:
+                movie = tmdb.Movies(lookup_id)
+                info = movie.info()
+                credits = movie.credits()
+            elif media_item.item_type == MediaItem.TYPE_SHOW:
+                tv = tmdb.TV(lookup_id)
+                info = tv.info()
+                credits = tv.credits()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to retrieve TMDB info for %s using id %s", media_item, tmdb_id
+            )
+            info = None
+            credits = None
 
-    try:
-        if media_item.is_movie:
-            movie = tmdb.Movies(tmdb_id)
-            info = movie.info()
-            credits = movie.credits()
-        elif media_item.item_type == MediaItem.TYPE_SHOW:
-            tv = tmdb.TV(tmdb_id)
-            info = tv.info()
-            credits = tv.credits()
-        else:
+    if info is None or credits is None:
+        search = tmdb.Search()
+        try:
+            if media_item.is_movie:
+                response = search.movie(query=media_item.title, year=media_item.release_year)
+                results = response.get("results", [])
+            elif media_item.item_type == MediaItem.TYPE_SHOW:
+                response = search.tv(
+                    query=media_item.title, first_air_date_year=media_item.release_year
+                )
+                results = response.get("results", [])
+            else:
+                results = []
+        except Exception:  # noqa: BLE001
+            logger.exception("TMDB lookup failed for %s", media_item)
             return None
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to retrieve TMDB info for %s", media_item)
-        return None
+
+        if not results:
+            logger.debug("No TMDB matches found for %s", media_item.title)
+            return None
+
+        best_match = results[0]
+        tmdb_id = best_match.get("id")
+        if not tmdb_id:
+            return None
+
+        try:
+            if media_item.is_movie:
+                movie = tmdb.Movies(tmdb_id)
+                info = movie.info()
+                credits = movie.credits()
+            elif media_item.item_type == MediaItem.TYPE_SHOW:
+                tv = tmdb.TV(tmdb_id)
+                info = tv.info()
+                credits = tv.credits()
+            else:
+                return None
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to retrieve TMDB info for %s", media_item)
+            return None
+
+    if not tmdb_id and info:
+        tmdb_id = info.get("id")
 
     genres = [g.get("name") for g in info.get("genres", []) if g.get("name")]
     runtime = None
@@ -153,19 +192,19 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
 
     metadata = _to_serializable(
         {
-        "tmdb_id": str(tmdb_id),
-        "imdb_id": info.get("imdb_id") or media_item.imdb_id,
-        "title": info.get("title") or info.get("name") or media_item.title,
-        "synopsis": info.get("overview") or media_item.synopsis,
-        "tagline": info.get("tagline") or media_item.tagline,
-        "release_year": release_year,
-        "genres": genres,
-        "runtime_minutes": runtime,
-        "poster": build_image_url(info.get("poster_path")),
-        "backdrop": build_image_url(info.get("backdrop_path")),
-        "cast": cast,
-        "crew": crew,
-    }
+            "tmdb_id": str(tmdb_id) if tmdb_id is not None else media_item.tmdb_id,
+            "imdb_id": info.get("imdb_id") or media_item.imdb_id,
+            "title": info.get("title") or info.get("name") or media_item.title,
+            "synopsis": info.get("overview") or media_item.synopsis,
+            "tagline": info.get("tagline") or media_item.tagline,
+            "release_year": release_year,
+            "genres": genres,
+            "runtime_minutes": runtime,
+            "poster": build_image_url(info.get("poster_path")),
+            "backdrop": build_image_url(info.get("backdrop_path")),
+            "cast": cast,
+            "crew": crew,
+        }
     )
 
     cache.set(cache_key, metadata, METADATA_CACHE_TIMEOUT)

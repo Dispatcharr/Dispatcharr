@@ -15,6 +15,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.accounts.permissions import Authenticated
 from apps.media_library import models, serializers
+from apps.media_library.metadata import sync_metadata
 from apps.media_library.tasks import (
     enqueue_library_scan,
     sync_metadata_task,
@@ -278,15 +279,19 @@ class MediaItemViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         allowed_fields = {
             "title",
+            "release_year",
             "synopsis",
             "tagline",
             "genres",
+            "studios",
             "cast",
             "crew",
             "tags",
             "poster_url",
             "backdrop_url",
             "rating",
+            "tmdb_id",
+            "imdb_id",
             "runtime_ms",
             "metadata",
             "status",
@@ -303,6 +308,30 @@ class MediaItemViewSet(viewsets.ModelViewSet):
         item = self.get_object()
         sync_metadata_task.delay(item.id)
         return Response({"status": "queued"}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"], url_path="set-tmdb")
+    def set_tmdb(self, request, pk=None):
+        item = self.get_object()
+        tmdb_id = request.data.get("tmdb_id")
+        if tmdb_id in (None, ""):
+            raise ValidationError({"tmdb_id": "TMDB ID is required."})
+
+        tmdb_id_str = str(tmdb_id).strip()
+        if not tmdb_id_str:
+            raise ValidationError({"tmdb_id": "TMDB ID is required."})
+
+        if item.tmdb_id != tmdb_id_str:
+            item.tmdb_id = tmdb_id_str
+            item.save(update_fields=["tmdb_id", "updated_at"])
+
+        refreshed = sync_metadata(item)
+        if not refreshed:
+            raise ValidationError(
+                {"detail": "Unable to fetch TMDB metadata for this item."}
+            )
+
+        serializer = self.get_serializer(refreshed)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["get"], url_path="stream")
     def stream(self, request, pk=None):
