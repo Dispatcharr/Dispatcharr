@@ -124,11 +124,13 @@ class LibraryViewSet(viewsets.ModelViewSet):
             enqueue_library_scan(library_id=library.id, user_id=self.request.user.id)
 
     def perform_destroy(self, instance):
-        # Explicitly clean up related media items and files before removing the library
-        unsync_library_from_vod(instance)
-        instance.items.all().delete()
-        instance.files.all().delete()
-        super().perform_destroy(instance)
+        from django.db import transaction
+
+        with transaction.atomic():
+            unsync_library_from_vod(instance)
+            models.MediaItem.objects.filter(library=instance).delete()
+            models.MediaFile.objects.filter(library=instance).delete()
+            super().perform_destroy(instance)
 
     @action(detail=True, methods=["post"], url_path="scan")
     def scan(self, request, pk=None):
