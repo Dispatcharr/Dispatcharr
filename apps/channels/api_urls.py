@@ -13,12 +13,14 @@ from .api_views import (
     UpdateChannelMembershipAPIView,
     BulkUpdateChannelMembershipAPIView,
     RecordingViewSet,
+    RecurringRecordingRuleViewSet,
     GetChannelStreamsAPIView,
     SeriesRulesAPIView,
     DeleteSeriesRuleAPIView,
     EvaluateSeriesRulesAPIView,
     BulkRemoveSeriesRecordingsAPIView,
     BulkDeleteUpcomingRecordingsAPIView,
+    ComskipConfigAPIView,
 )
 
 app_name = 'channels'  # for DRF routing
@@ -30,6 +32,7 @@ router.register(r'channels', ChannelViewSet, basename='channel')
 router.register(r'logos', LogoViewSet, basename='logo')
 router.register(r'profiles', ChannelProfileViewSet, basename='profile')
 router.register(r'recordings', RecordingViewSet, basename='recording')
+router.register(r'recurring-rules', RecurringRecordingRuleViewSet, basename='recurring-rule')
 
 urlpatterns = [
     # Bulk delete is a single APIView, not a ViewSet
@@ -46,6 +49,7 @@ urlpatterns = [
     path('series-rules/bulk-remove/', BulkRemoveSeriesRecordingsAPIView.as_view(), name='bulk_remove_series_recordings'),
     path('series-rules/<str:tvg_id>/', DeleteSeriesRuleAPIView.as_view(), name='delete_series_rule'),
     path('recordings/bulk-delete-upcoming/', BulkDeleteUpcomingRecordingsAPIView.as_view(), name='bulk_delete_upcoming_recordings'),
+    path('dvr/comskip-config/', ComskipConfigAPIView.as_view(), name='comskip_config'),
 ]
 
 urlpatterns += router.urls

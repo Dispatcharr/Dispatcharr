@@ -127,9 +127,9 @@ def stream_ts(request, channel_id):
                 )
                 ChannelService.stop_channel(channel_id)
 
-            # Use max retry attempts and connection timeout from config
-            max_retries = ConfigHelper.max_retries()
-            retry_timeout = ConfigHelper.connection_timeout()
+            # Use fixed retry interval and timeout
+            retry_timeout = 1.5  # 1.5 seconds total timeout
+            retry_interval = 0.1  # 100ms between attempts
             wait_start_time = time.time()
 
             stream_url = None
@@ -137,16 +137,18 @@ def stream_ts(request, channel_id):
             transcode = False
             profile_value = None
             error_reason = None
+            attempt = 0
 
-            # Try to get a stream with configured retries
-            for attempt in range(max_retries):
+            # Try to get a stream with fixed interval retries
+            while time.time() - wait_start_time < retry_timeout:
+                attempt += 1
                 stream_url, stream_user_agent, transcode, profile_value = (
                     generate_stream_url(channel_id)
                 )
 
                 if stream_url is not None:
                     logger.info(
-                        f"[{client_id}] Successfully obtained stream for channel {channel_id}"
+                        f"[{client_id}] Successfully obtained stream for channel {channel_id} after {attempt} attempts"
                     )
                     break
 
@@ -158,21 +160,15 @@ def stream_ts(request, channel_id):
                     )
                     break
 
-                # Don't exceed the overall connection timeout
-                if time.time() - wait_start_time > retry_timeout:
-                    logger.warning(
-                        f"[{client_id}] Connection wait timeout exceeded ({retry_timeout}s)"
+                # Wait 100ms before retrying
+                elapsed_time = time.time() - wait_start_time
+                remaining_time = retry_timeout - elapsed_time
+                if remaining_time > retry_interval:
+                    logger.info(
+                        f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
                     )
-                    break
-
-                # Wait before retrying (using exponential backoff with a cap)
-                wait_time = min(0.5 * (2**attempt), 2.0)  # Caps at 2 seconds
-                logger.info(
-                    f"[{client_id}] Waiting {wait_time:.1f}s for a connection to become available (attempt {attempt+1}/{max_retries})"
-                )
-                gevent.sleep(
-                    wait_time
-                )  # FIXED: Using gevent.sleep instead of time.sleep
+                    gevent.sleep(retry_interval)
+                    retry_interval += 0.025  # Increase wait time by 25ms for next attempt
 
             if stream_url is None:
                 # Make sure to release any stream locks that might have been acquired

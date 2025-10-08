@@ -8,7 +8,7 @@ def preload_core_settings(apps, schema_editor):
     CoreSettings.objects.create(
         key=slugify("M3U Hash Key"),
         name="M3U Hash Key",
-        value="name,url,tvg_id",
+        value="url",
     )
 
 class Migration(migrations.Migration):

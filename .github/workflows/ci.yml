@@ -2,19 +2,84 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [ dev ]
+    branches: [dev]
   pull_request:
-    branches: [ dev ]
-  workflow_dispatch:  # Allow manual triggering
+    branches: [dev]
+  workflow_dispatch:
 
-# Add explicit permissions for the workflow
 permissions:
-  contents: write    # For managing releases and pushing tags
-  packages: write    # For publishing to GitHub Container Registry
+  contents: write
+  packages: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-24.04
+    # compute a single timestamp, version, and repo metadata for the entire workflow
+    outputs:
+      repo_owner: ${{ steps.meta.outputs.repo_owner }}
+      repo_name: ${{ steps.meta.outputs.repo_name }}
+      branch_tag: ${{ steps.meta.outputs.branch_tag }}
+      version: ${{ steps.version.outputs.version }}
+      timestamp: ${{ steps.timestamp.outputs.timestamp }}
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate timestamp for build
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date -u +'%Y%m%d%H%M%S')
+          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+      - name: Extract version info
+        id: version
+        run: |
+          VERSION=$(python -c "import version; print(version.__version__)")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Set repository and image metadata
+        id: meta
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "repo_owner=${REPO_OWNER}" >> $GITHUB_OUTPUT
+
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "branch_tag=latest" >> $GITHUB_OUTPUT
+            echo "is_main=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            echo "branch_tag=dev" >> $GITHUB_OUTPUT
+            echo "is_main=false" >> $GITHUB_OUTPUT
+          else
+            BRANCH=$(echo "${{ github.ref }}" | sed 's/refs\/heads\///' | sed 's/[^a-zA-Z0-9]/-/g')
+            echo "branch_tag=${BRANCH}" >> $GITHUB_OUTPUT
+            echo "is_main=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [[ "${{ github.event.pull_request.head.repo.fork }}" == "true" ]]; then
+            echo "is_fork=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_fork=false" >> $GITHUB_OUTPUT
+          fi
+
+  docker:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # no per-job outputs here; shared metadata comes from the `prepare` job
     steps:
       - uses: actions/checkout@v3
         with:
@@ -45,66 +110,85 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate timestamp for build
-        id: timestamp
-        run: |
-          TIMESTAMP=$(date -u +'%Y%m%d%H%M%S')
-          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract version info
-        id: version
-        run: |
-          VERSION=$(python -c "import version; print(version.__version__)")
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "sha_short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-
-      - name: Set repository and image metadata
-        id: meta
-        run: |
-          # Get lowercase repository owner
-          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "repo_owner=${REPO_OWNER}" >> $GITHUB_OUTPUT
-
-          # Get repository name
-          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
-          echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
-
-          # Determine branch name
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "branch_tag=latest" >> $GITHUB_OUTPUT
-            echo "is_main=true" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "branch_tag=dev" >> $GITHUB_OUTPUT
-            echo "is_main=false" >> $GITHUB_OUTPUT
-          else
-            # For other branches, use the branch name
-            BRANCH=$(echo "${{ github.ref }}" | sed 's/refs\/heads\///' | sed 's/[^a-zA-Z0-9]/-/g')
-            echo "branch_tag=${BRANCH}" >> $GITHUB_OUTPUT
-            echo "is_main=false" >> $GITHUB_OUTPUT
-          fi
-
-          # Determine if this is from a fork
-          if [[ "${{ github.event.pull_request.head.repo.fork }}" == "true" ]]; then
-            echo "is_fork=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_fork=false" >> $GITHUB_OUTPUT
-          fi
+      # use metadata from the prepare job
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          platforms: linux/amd64,linux/arm64
+          # Build only the platform for this matrix job to avoid running amd64
+          # stages under qemu on an arm64 runner (and vice-versa). This makes
+          # the matrix runner's platform the one built by buildx.
+          platforms: linux/${{ matrix.platform }}
+          # push arch-specific tags from each matrix job (they will be combined
+          # into a multi-arch manifest in a follow-up job)
           tags: |
-            ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:${{ steps.meta.outputs.branch_tag }}
-            ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:${{ steps.version.outputs.version }}-${{ steps.timestamp.outputs.timestamp }}
-            ghcr.io/${{ steps.meta.outputs.repo_owner }}/${{ steps.meta.outputs.repo_name }}:${{ steps.version.outputs.sha_short }}
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
+            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           build-args: |
-            REPO_OWNER=${{ steps.meta.outputs.repo_owner }}
-            REPO_NAME=${{ steps.meta.outputs.repo_name }}
+            REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
+            REPO_NAME=${{ needs.prepare.outputs.repo_name }}
             BASE_TAG=base
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
-            TIMESTAMP=${{ steps.timestamp.outputs.timestamp }}
+            TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
           file: ./docker/Dockerfile
+
+  create-manifest:
+    # wait for prepare and all matrix builds to finish
+    needs: [prepare, docker]
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch manifest tags
+        run: |
+          set -euo pipefail
+          OWNER=${{ needs.prepare.outputs.repo_owner }}
+          REPO=${{ needs.prepare.outputs.repo_name }}
+          BRANCH_TAG=${{ needs.prepare.outputs.branch_tag }}
+          VERSION=${{ needs.prepare.outputs.version }}
+          TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
+
+          echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
+
+          # branch tag (e.g. latest or dev)
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
+            ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
+
+          # version + timestamp tag
+          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
+            ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
+
+          # also create Docker Hub manifests using the same username
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
+
+          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP} \
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-arm64

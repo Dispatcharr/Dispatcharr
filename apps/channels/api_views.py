@@ -28,6 +28,7 @@ from .models import (
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
+    RecurringRecordingRule,
 )
 from .serializers import (
     StreamSerializer,
@@ -38,8 +39,17 @@ from .serializers import (
     BulkChannelProfileMembershipSerializer,
     ChannelProfileSerializer,
     RecordingSerializer,
+    RecurringRecordingRuleSerializer,
 )
-from .tasks import match_epg_channels, evaluate_series_rules, evaluate_series_rules_impl
+from .tasks import (
+    match_epg_channels,
+    evaluate_series_rules,
+    evaluate_series_rules_impl,
+    match_single_channel_epg,
+    match_selected_channels_epg,
+    sync_recurring_rule_impl,
+    purge_recurring_rule_impl,
+)
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -49,8 +59,10 @@ from django.db.models import Q
 from django.http import StreamingHttpResponse, FileResponse, Http404
 from django.utils import timezone
 import mimetypes
+from django.conf import settings
 
 from rest_framework.pagination import PageNumberPagination
+
 
 
 logger = logging.getLogger(__name__)
@@ -493,6 +505,99 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channels": serialized_channels
         })
 
+    @action(detail=False, methods=["post"], url_path="set-names-from-epg")
+    def set_names_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel names from EPG data
+        """
+        from .tasks import set_channels_names_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_names_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG name setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
+    @action(detail=False, methods=["post"], url_path="set-logos-from-epg")
+    def set_logos_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel logos from EPG data
+        """
+        from .tasks import set_channels_logos_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_logos_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG logo setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
+    @action(detail=False, methods=["post"], url_path="set-tvg-ids-from-epg")
+    def set_tvg_ids_from_epg(self, request):
+        """
+        Trigger a Celery task to set channel TVG-IDs from EPG data
+        """
+        from .tasks import set_channels_tvg_ids_from_epg
+
+        data = request.data
+        channel_ids = data.get("channel_ids", [])
+
+        if not channel_ids:
+            return Response(
+                {"error": "channel_ids is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {"error": "channel_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Start the Celery task
+        task = set_channels_tvg_ids_from_epg.delay(channel_ids)
+
+        return Response({
+            "message": f"Started EPG TVG-ID setting task for {len(channel_ids)} channels",
+            "task_id": task.id,
+            "channel_count": len(channel_ids)
+        })
+
     @action(detail=False, methods=["get"], url_path="ids")
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
@@ -642,10 +747,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel_data["channel_group_id"] = channel_group.id
 
         if stream.logo_url:
-            logo, _ = Logo.objects.get_or_create(
-                url=stream.logo_url, defaults={"name": stream.name or stream.tvg_id}
-            )
-            channel_data["logo_id"] = logo.id
+            # Import validation function
+            from apps.channels.tasks import validate_logo_url
+            validated_logo_url = validate_logo_url(stream.logo_url)
+            if validated_logo_url:
+                logo, _ = Logo.objects.get_or_create(
+                    url=validated_logo_url, defaults={"name": stream.name or stream.tvg_id}
+                )
+                channel_data["logo_id"] = logo.id
 
         # Attempt to find existing EPGs with the same tvg-id
         epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
@@ -779,15 +888,64 @@ class ChannelViewSet(viewsets.ModelViewSet):
     # ─────────────────────────────────────────────────────────
     @swagger_auto_schema(
         method="post",
-        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data.",
+        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data. If channel_ids are provided, only those channels will be processed.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'channel_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                    description='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.'
+                )
+            }
+        ),
         responses={202: "EPG matching task initiated"},
     )
     @action(detail=False, methods=["post"], url_path="match-epg")
     def match_epg(self, request):
-        match_epg_channels.delay()
+        # Get channel IDs from request body if provided
+        channel_ids = request.data.get('channel_ids', [])
+
+        if channel_ids:
+            # Process only selected channels
+            from .tasks import match_selected_channels_epg
+            match_selected_channels_epg.delay(channel_ids)
+            message = f"EPG matching task initiated for {len(channel_ids)} selected channel(s)."
+        else:
+            # Process all channels without EPG (original behavior)
+            match_epg_channels.delay()
+            message = "EPG matching task initiated for all channels without EPG."
+
         return Response(
-            {"message": "EPG matching task initiated."}, status=status.HTTP_202_ACCEPTED
+            {"message": message}, status=status.HTTP_202_ACCEPTED
         )
+
+    @swagger_auto_schema(
+        method="post",
+        operation_description="Try to auto-match this specific channel with EPG data.",
+        responses={200: "EPG matching completed", 202: "EPG matching task initiated"},
+    )
+    @action(detail=True, methods=["post"], url_path="match-epg")
+    def match_channel_epg(self, request, pk=None):
+        channel = self.get_object()
+
+        # Import the matching logic
+        from apps.channels.tasks import match_single_channel_epg
+
+        try:
+            # Try to match this specific channel - call synchronously for immediate response
+            result = match_single_channel_epg.apply_async(args=[channel.id]).get(timeout=30)
+
+            # Refresh the channel from DB to get any updates
+            channel.refresh_from_db()
+
+            return Response({
+                "message": result.get("message", "Channel matching completed"),
+                "matched": result.get("matched", False),
+                "channel": self.get_serializer(channel).data
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
     # ─────────────────────────────────────────────────────────
     # 7) Set EPG and Refresh
@@ -1542,6 +1700,41 @@ class BulkUpdateChannelMembershipAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
+    queryset = RecurringRecordingRule.objects.all().select_related("channel")
+    serializer_class = RecurringRecordingRuleSerializer
+
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def perform_create(self, serializer):
+        rule = serializer.save()
+        try:
+            sync_recurring_rule_impl(rule.id, drop_existing=True)
+        except Exception as err:
+            logger.warning(f"Failed to initialize recurring rule {rule.id}: {err}")
+        return rule
+
+    def perform_update(self, serializer):
+        rule = serializer.save()
+        try:
+            if rule.enabled:
+                sync_recurring_rule_impl(rule.id, drop_existing=True)
+            else:
+                purge_recurring_rule_impl(rule.id)
+        except Exception as err:
+            logger.warning(f"Failed to resync recurring rule {rule.id}: {err}")
+        return rule
+
+    def perform_destroy(self, instance):
+        rule_id = instance.id
+        super().perform_destroy(instance)
+        try:
+            purge_recurring_rule_impl(rule_id)
+        except Exception as err:
+            logger.warning(f"Failed to purge recordings for rule {rule_id}: {err}")
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -1719,6 +1912,49 @@ class RecordingViewSet(viewsets.ModelViewSet):
         _safe_remove(temp_ts_path)
 
         return response
+
+
+class ComskipConfigAPIView(APIView):
+    """Upload or inspect the custom comskip.ini used by DVR processing."""
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def get(self, request):
+        path = CoreSettings.get_dvr_comskip_custom_path()
+        exists = bool(path and os.path.exists(path))
+        return Response({"path": path, "exists": exists})
+
+    def post(self, request):
+        uploaded = request.FILES.get("file") or request.FILES.get("comskip_ini")
+        if not uploaded:
+            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = (uploaded.name or "").lower()
+        if not name.endswith(".ini"):
+            return Response({"error": "Only .ini files are allowed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if uploaded.size and uploaded.size > 1024 * 1024:
+            return Response({"error": "File too large (limit 1MB)"}, status=status.HTTP_400_BAD_REQUEST)
+
+        dest_dir = os.path.join(settings.MEDIA_ROOT, "comskip")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, "comskip.ini")
+
+        try:
+            with open(dest_path, "wb") as dest:
+                for chunk in uploaded.chunks():
+                    dest.write(chunk)
+        except Exception as e:
+            logger.error(f"Failed to save uploaded comskip.ini: {e}")
+            return Response({"error": "Unable to save file"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Persist path setting so DVR processing picks it up immediately
+        CoreSettings.set_dvr_comskip_custom_path(dest_path)
+
+        return Response({"success": True, "path": dest_path, "exists": os.path.exists(dest_path)})
 
 
 class BulkDeleteUpcomingRecordingsAPIView(APIView):

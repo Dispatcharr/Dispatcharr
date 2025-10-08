@@ -225,6 +225,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "core.tasks.scan_and_process_files",  # Direct task call
         "schedule": 20.0,  # Every 20 seconds
     },
+    "maintain-recurring-recordings": {
+        "task": "apps.channels.tasks.maintain_recurring_recordings",
+        "schedule": 3600.0,  # Once an hour ensure recurring schedules stay ahead
+    },
 }
 
 MEDIA_ROOT = BASE_DIR / "media"

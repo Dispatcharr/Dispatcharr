@@ -516,6 +516,75 @@ export default class API {
     }
   }
 
+  static async setChannelNamesFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-names-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG name setting task', e);
+      throw e;
+    }
+  }
+
+  static async setChannelLogosFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-logos-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG logo setting task', e);
+      throw e;
+    }
+  }
+
+  static async setChannelTvgIdsFromEpg(channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/set-tvg-ids-from-epg/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      notifications.show({
+        title: 'Task Started',
+        message: response.message,
+        color: 'blue',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start EPG TVG-ID setting task', e);
+      throw e;
+    }
+  }
+
   static async assignChannelNumbers(channelIds, startingNum = 1) {
     try {
       const response = await request(`${host}/api/channels/channels/assign/`, {
@@ -1437,18 +1506,44 @@ export default class API {
     }
   }
 
-  static async matchEpg() {
+  static async matchEpg(channelIds = null) {
     try {
+      const requestBody = channelIds ? { channel_ids: channelIds } : {};
+
       const response = await request(
         `${host}/api/channels/channels/match-epg/`,
         {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
         }
       );
 
       return response;
     } catch (e) {
       errorNotification('Failed to run EPG auto-match', e);
+    }
+  }
+
+  static async matchChannelEpg(channelId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/match-epg/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the channel in the store with the refreshed data if provided
+      if (response.channel) {
+        useChannelsStore.getState().updateChannel(response.channel);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to run EPG auto-match for channel', e);
     }
   }
 
@@ -1798,6 +1893,83 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to create recording', e);
+    }
+  }
+
+  static async updateRecording(id, values) {
+    try {
+      const response = await request(`${host}/api/channels/recordings/${id}/`, {
+        method: 'PATCH',
+        body: values,
+      });
+      useChannelsStore.getState().fetchRecordings();
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to update recording ${id}`, e);
+    }
+  }
+
+  static async getComskipConfig() {
+    try {
+      return await request(`${host}/api/channels/dvr/comskip-config/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve comskip configuration', e);
+    }
+  }
+
+  static async uploadComskipIni(file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      return await request(`${host}/api/channels/dvr/comskip-config/`, {
+        method: 'POST',
+        body: formData,
+      });
+    } catch (e) {
+      errorNotification('Failed to upload comskip.ini', e);
+    }
+  }
+
+  static async listRecurringRules() {
+    try {
+      const response = await request(`${host}/api/channels/recurring-rules/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve recurring DVR rules', e);
+    }
+  }
+
+  static async createRecurringRule(payload) {
+    try {
+      const response = await request(`${host}/api/channels/recurring-rules/`, {
+        method: 'POST',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create recurring DVR rule', e);
+    }
+  }
+
+  static async updateRecurringRule(ruleId, payload) {
+    try {
+      const response = await request(`${host}/api/channels/recurring-rules/${ruleId}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to update recurring rule ${ruleId}`, e);
+    }
+  }
+
+  static async deleteRecurringRule(ruleId) {
+    try {
+      await request(`${host}/api/channels/recurring-rules/${ruleId}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification(`Failed to delete recurring rule ${ruleId}`, e);
     }
   }
 

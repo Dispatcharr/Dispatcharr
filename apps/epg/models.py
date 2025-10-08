@@ -28,7 +28,7 @@ class EPGSource(models.Model):
 
     name = models.CharField(max_length=255, unique=True)
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES)
-    url = models.URLField(blank=True, null=True)  # For XMLTV
+    url = models.URLField(max_length=1000, blank=True, null=True)  # For XMLTV
     api_key = models.CharField(max_length=255, blank=True, null=True)  # For Schedules Direct
     is_active = models.BooleanField(default=True)
     file_path = models.CharField(max_length=1024, blank=True, null=True)
@@ -127,6 +127,7 @@ class EPGData(models.Model):
     # and a name (which might simply be the tvg_id if no real channel exists).
     tvg_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     name = models.CharField(max_length=255)
+    icon_url = models.URLField(max_length=500, null=True, blank=True)
     epg_source = models.ForeignKey(
         EPGSource,
         on_delete=models.CASCADE,

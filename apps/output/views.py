@@ -45,45 +45,48 @@ def generate_m3u(request, profile_name=None, user=None):
     The stream URL now points to the new stream_view that uses StreamProfile.
     Supports both GET and POST methods for compatibility with IPTVSmarters.
     """
+    logger.debug("Generating M3U for profile: %s, user: %s", profile_name, user.username if user else "Anonymous")
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         return HttpResponseForbidden("POST requests with content are not allowed")
 
     if user is not None:
         if user.user_level == 0:
-            filters = {
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-            }
+            user_profile_count = user.channel_profiles.count()
 
-            if user.channel_profiles.count() != 0:
-                channel_profiles = user.channel_profiles.all()
-                filters["channelprofilemembership__channel_profile__in"] = (
-                    channel_profiles
-                )
-
-            channels = Channel.objects.filter(**filters).order_by("channel_number")
+            # If user has ALL profiles or NO profiles, give unrestricted access
+            if user_profile_count == 0:
+                # No profile filtering - user sees all channels based on user_level
+                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+            else:
+                # User has specific limited profiles assigned
+                filters = {
+                    "channelprofilemembership__enabled": True,
+                    "user_level__lte": user.user_level,
+                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                }
+                channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
         else:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
                 "channel_number"
             )
 
-
-    if profile_name is not None:
-        channel_profile = ChannelProfile.objects.get(name=profile_name)
-        channels = Channel.objects.filter(
-            channelprofilemembership__channel_profile=channel_profile,
-            channelprofilemembership__enabled=True
-        ).order_by('channel_number')
     else:
         if profile_name is not None:
             channel_profile = ChannelProfile.objects.get(name=profile_name)
             channels = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
-                channelprofilemembership__enabled=True,
-            ).order_by("channel_number")
+                channelprofilemembership__enabled=True
+            ).order_by('channel_number')
         else:
-            channels = Channel.objects.order_by("channel_number")
+            if profile_name is not None:
+                channel_profile = ChannelProfile.objects.get(name=profile_name)
+                channels = Channel.objects.filter(
+                    channelprofilemembership__channel_profile=channel_profile,
+                    channelprofilemembership__enabled=True,
+                ).order_by("channel_number")
+            else:
+                channels = Channel.objects.order_by("channel_number")
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -95,7 +98,22 @@ def generate_m3u(request, profile_name=None, user=None):
     # Options: 'channel_number' (default), 'tvg_id', 'gracenote'
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
-    m3u_content = "#EXTM3U\n"
+    # Build EPG URL with query parameters if needed
+    epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+
+    # Optionally preserve certain query parameters
+    preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+    query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
+    if query_params:
+        from urllib.parse import urlencode
+        epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+    else:
+        epg_url = epg_base_url
+
+    # Add x-tvg-url and url-tvg attribute for EPG URL
+    m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
+
+    # Start building M3U content
     for channel in channels:
         group_title = channel.channel_group.name if channel.channel_group else "Default"
 
@@ -148,7 +166,7 @@ def generate_m3u(request, profile_name=None, user=None):
         # Determine the stream URL based on the direct parameter
         if use_direct_urls:
             # Try to get the first stream's direct URL
-            first_stream = channel.streams.first()
+            first_stream = channel.streams.order_by('channelstream__order').first()
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
@@ -300,18 +318,20 @@ def generate_epg(request, profile_name=None, user=None):
         # Get channels based on user/profile
         if user is not None:
             if user.user_level == 0:
-                filters = {
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                }
+                user_profile_count = user.channel_profiles.count()
 
-                if user.channel_profiles.count() != 0:
-                    channel_profiles = user.channel_profiles.all()
-                    filters["channelprofilemembership__channel_profile__in"] = (
-                        channel_profiles
-                    )
-
-                channels = Channel.objects.filter(**filters).order_by("channel_number")
+                # If user has ALL profiles or NO profiles, give unrestricted access
+                if user_profile_count == 0:
+                    # No profile filtering - user sees all channels based on user_level
+                    channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                else:
+                    # User has specific limited profiles assigned
+                    filters = {
+                        "channelprofilemembership__enabled": True,
+                        "user_level__lte": user.user_level,
+                        "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                    }
+                    channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
                 channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
                     "channel_number"
@@ -848,19 +868,22 @@ def xc_get_live_categories(user):
     response = []
 
     if user.user_level == 0:
-        filters = {
-            "channels__channelprofilemembership__enabled": True,
-            "channels__user_level": 0,
-        }
+        user_profile_count = user.channel_profiles.count()
 
-        if user.channel_profiles.count() != 0:
-            # Only get data from active profile
-            channel_profiles = user.channel_profiles.all()
-            filters["channels__channelprofilemembership__channel_profile__in"] = (
-                channel_profiles
-            )
-
-        channel_groups = ChannelGroup.objects.filter(**filters).distinct().order_by(Lower("name"))
+        # If user has ALL profiles or NO profiles, give unrestricted access
+        if user_profile_count == 0:
+            # No profile filtering - user sees all channel groups
+            channel_groups = ChannelGroup.objects.filter(
+                channels__isnull=False, channels__user_level__lte=user.user_level
+            ).distinct().order_by(Lower("name"))
+        else:
+            # User has specific limited profiles assigned
+            filters = {
+                "channels__channelprofilemembership__enabled": True,
+                "channels__user_level": 0,
+                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            channel_groups = ChannelGroup.objects.filter(**filters).distinct().order_by(Lower("name"))
     else:
         channel_groups = ChannelGroup.objects.filter(
             channels__isnull=False, channels__user_level__lte=user.user_level
@@ -882,20 +905,25 @@ def xc_get_live_streams(request, user, category_id=None):
     streams = []
 
     if user.user_level == 0:
-        filters = {
-            "channelprofilemembership__enabled": True,
-            "user_level__lte": user.user_level,
-        }
+        user_profile_count = user.channel_profiles.count()
 
-        if user.channel_profiles.count() > 0:
-            # Only get data from active profile
-            channel_profiles = user.channel_profiles.all()
-            filters["channelprofilemembership__channel_profile__in"] = channel_profiles
-
-        if category_id is not None:
-            filters["channel_group__id"] = category_id
-
-        channels = Channel.objects.filter(**filters).order_by("channel_number")
+        # If user has ALL profiles or NO profiles, give unrestricted access
+        if user_profile_count == 0:
+            # No profile filtering - user sees all channels based on user_level
+            filters = {"user_level__lte": user.user_level}
+            if category_id is not None:
+                filters["channel_group__id"] = category_id
+            channels = Channel.objects.filter(**filters).order_by("channel_number")
+        else:
+            # User has specific limited profiles assigned
+            filters = {
+                "channelprofilemembership__enabled": True,
+                "user_level__lte": user.user_level,
+                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            if category_id is not None:
+                filters["channel_group__id"] = category_id
+            channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
     else:
         if not category_id:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
@@ -920,7 +948,7 @@ def xc_get_live_streams(request, user, category_id=None):
                     )
                 ),
                 "epg_channel_id": str(int(channel.channel_number)) if channel.channel_number.is_integer() else str(channel.channel_number),
-                "added": int(time.time()),  # @TODO: make this the actual created date
+                "added": int(channel.created_at.timestamp()),
                 "is_adult": 0,
                 "category_id": str(channel.channel_group.id),
                 "category_ids": [channel.channel_group.id],
@@ -941,17 +969,27 @@ def xc_get_epg(request, user, short=False):
 
     channel = None
     if user.user_level < 10:
-        filters = {
-            "id": channel_id,
-            "channelprofilemembership__enabled": True,
-            "user_level__lte": user.user_level,
-        }
+        user_profile_count = user.channel_profiles.count()
 
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            filters["channelprofilemembership__channel_profile__in"] = channel_profiles
+        # If user has ALL profiles or NO profiles, give unrestricted access
+        if user_profile_count == 0:
+            # No profile filtering - user sees all channels based on user_level
+            channel = Channel.objects.filter(
+                id=channel_id,
+                user_level__lte=user.user_level
+            ).first()
+        else:
+            # User has specific limited profiles assigned
+            filters = {
+                "id": channel_id,
+                "channelprofilemembership__enabled": True,
+                "user_level__lte": user.user_level,
+                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            channel = Channel.objects.filter(**filters).distinct().first()
 
-        channel = get_object_or_404(Channel, **filters)
+        if not channel:
+            raise Http404()
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 
@@ -1008,31 +1046,11 @@ def xc_get_vod_categories(user):
 
     response = []
 
-    # Filter categories based on user's M3U accounts
-    if user.user_level == 0:
-        # For regular users, get categories from their accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            # Get M3U accounts accessible through user's profiles
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-        else:
-            m3u_accounts = []
-
-        # Get categories that have movie relations with these accounts
-        categories = VODCategory.objects.filter(
-            category_type='movie',
-            m3umovierelation__m3u_account__in=m3u_accounts
-        ).distinct().order_by(Lower("name"))
-    else:
-        # Admins can see all categories that have active movie relations
-        categories = VODCategory.objects.filter(
-            category_type='movie',
-            m3umovierelation__m3u_account__is_active=True
-        ).distinct().order_by(Lower("name"))
+    # All authenticated users get access to VOD from all active M3U accounts
+    categories = VODCategory.objects.filter(
+        category_type='movie',
+        m3umovierelation__m3u_account__is_active=True
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1051,21 +1069,8 @@ def xc_get_vod_streams(request, user, category_id=None):
 
     streams = []
 
-    # Build filters for movies based on user access
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"m3u_relations__m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_relations__m3u_account__in"] = m3u_accounts
-        else:
-            return []  # No accessible accounts
 
     if category_id:
         filters["m3u_relations__category_id"] = category_id
@@ -1127,28 +1132,11 @@ def xc_get_series_categories(user):
 
     response = []
 
-    # Similar filtering as VOD categories but for series
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-        else:
-            m3u_accounts = []
-
-        # Get categories that have series relations with these accounts
-        categories = VODCategory.objects.filter(
-            category_type='series',
-            m3useriesrelation__m3u_account__in=m3u_accounts
-        ).distinct().order_by(Lower("name"))
-    else:
-        categories = VODCategory.objects.filter(
-            category_type='series',
-            m3useriesrelation__m3u_account__is_active=True
-        ).distinct().order_by(Lower("name"))
+    # All authenticated users get access to series from all active M3U accounts
+    categories = VODCategory.objects.filter(
+        category_type='series',
+        m3useriesrelation__m3u_account__is_active=True
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -1166,20 +1154,8 @@ def xc_get_series(request, user, category_id=None):
 
     series_list = []
 
-    # Build filters based on user access
+    # All authenticated users get access to series from all active M3U accounts
     filters = {"m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return []
 
     if category_id:
         filters["category_id"] = category_id
@@ -1228,20 +1204,8 @@ def xc_get_series_info(request, user, series_id):
     if not series_id:
         raise Http404()
 
-    # Get series relation with user access filtering
+    # All authenticated users get access to series from all active M3U accounts
     filters = {"id": series_id, "m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            raise Http404()
 
     try:
         series_relation = M3USeriesRelation.objects.select_related('series', 'series__logo').get(**filters)
@@ -1439,20 +1403,8 @@ def xc_get_vod_info(request, user, vod_id):
     if not vod_id:
         raise Http404()
 
-    # Get movie relation with user access filtering - use movie ID instead of relation ID
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": vod_id, "m3u_account__is_active": True}
-
-    if user.user_level == 0:
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            raise Http404()
 
     try:
         # Order by account priority to get the best relation when multiple exist
@@ -1602,21 +1554,8 @@ def xc_movie_stream(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    # Get movie relation based on user access level - use movie ID instead of relation ID
+    # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
-    if user.user_level < 10:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return JsonResponse({"error": "No accessible content"}, status=403)
 
     try:
         # Order by account priority to get the best relation when multiple exist
@@ -1652,21 +1591,8 @@ def xc_series_stream(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    # Get episode relation based on user access level - use episode ID instead of stream_id
+    # All authenticated users get access to series/episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
-    if user.user_level < 10:
-        # For regular users, filter by accessible M3U accounts
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            from apps.m3u.models import M3UAccount
-            m3u_accounts = M3UAccount.objects.filter(
-                is_active=True,
-                profiles__in=channel_profiles
-            ).distinct()
-            filters["m3u_account__in"] = m3u_accounts
-        else:
-            return JsonResponse({"error": "No accessible content"}, status=403)
 
     try:
         episode_relation = M3UEpisodeRelation.objects.select_related('episode').get(**filters)

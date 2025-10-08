@@ -355,9 +355,7 @@ const M3UTable = () => {
   };
 
   const editPlaylist = async (playlist = null) => {
-    if (playlist) {
-      setPlaylist(playlist);
-    }
+    setPlaylist(playlist);
     setPlaylistModalOpen(true);
   };
 

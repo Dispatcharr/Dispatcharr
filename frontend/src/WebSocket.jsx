@@ -38,7 +38,6 @@ export const WebsocketProvider = ({ children }) => {
   const updateEPG = useEPGsStore((s) => s.updateEPG);
   const updateEPGProgress = useEPGsStore((s) => s.updateEPGProgress);
 
-  const playlists = usePlaylistsStore((s) => s.playlists);
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
   const applyMediaScanUpdate = useLibraryStore((s) => s.applyScanUpdate);
 
@@ -288,10 +287,14 @@ export const WebsocketProvider = ({ children }) => {
               // Update the playlist status whenever we receive a status update
               // Not just when progress is 100% or status is pending_setup
               if (parsedEvent.data.status && parsedEvent.data.account) {
-                // Check if playlists is an object with IDs as keys or an array
-                const playlist = Array.isArray(playlists)
-                  ? playlists.find((p) => p.id === parsedEvent.data.account)
-                  : playlists[parsedEvent.data.account];
+                // Get fresh playlists from store to avoid stale state from React render cycle
+                const currentPlaylists = usePlaylistsStore.getState().playlists;
+                const isArray = Array.isArray(currentPlaylists);
+                const playlist = isArray
+                  ? currentPlaylists.find(
+                      (p) => p.id === parsedEvent.data.account
+                    )
+                  : currentPlaylists[parsedEvent.data.account];
 
                 if (playlist) {
                   // When we receive a "success" status with 100% progress, this is a completed refresh
@@ -314,19 +317,19 @@ export const WebsocketProvider = ({ children }) => {
                       'M3U refresh completed successfully:',
                       updateData
                     );
+                    fetchPlaylists(); // Refresh playlists to ensure UI is up-to-date
+                    fetchChannelProfiles(); // Ensure channel profiles are updated
                   }
 
                   updatePlaylist(updateData);
-                  fetchPlaylists(); // Refresh playlists to ensure UI is up-to-date
-                  fetchChannelProfiles(); // Ensure channel profiles are updated
                 } else {
-                  // Log when playlist can't be found for debugging purposes
-                  console.warn(
-                    `Received update for unknown playlist ID: ${parsedEvent.data.account}`,
-                    Array.isArray(playlists)
-                      ? 'playlists is array'
-                      : 'playlists is object',
-                    Object.keys(playlists).length
+                  // Playlist not in store yet - this happens when backend sends websocket
+                  // updates immediately after creating the playlist, before the API response
+                  // returns. The frontend will receive a 'playlist_created' event shortly
+                  // which will trigger a fetchPlaylists() to sync the store.
+                  console.log(
+                    `Received update for playlist ID ${parsedEvent.data.account} not yet in store. ` +
+                      `Waiting for playlist_created event to sync...`
                   );
                 }
               }
@@ -370,6 +373,173 @@ export const WebsocketProvider = ({ children }) => {
                 API.batchSetEPG(parsedEvent.data.associations);
               }
               break;
+
+            case 'epg_matching_progress': {
+              const progress = parsedEvent.data;
+              const id = 'epg-matching-progress';
+
+              if (progress.stage === 'starting') {
+                notifications.show({
+                  id,
+                  title: 'EPG Matching in Progress',
+                  message: `Starting to match ${progress.total} channels...`,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.stage === 'matching') {
+                let message = `Matched ${progress.matched} of ${progress.total} channels`;
+                if (progress.remaining > 0) {
+                  message += ` (${progress.remaining} remaining)`;
+                }
+                if (progress.current_channel) {
+                  message += `\nCurrently processing: ${progress.current_channel}`;
+                }
+
+                notifications.update({
+                  id,
+                  title: 'EPG Matching in Progress',
+                  message,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.stage === 'completed') {
+                notifications.update({
+                  id,
+                  title: 'EPG Matching Complete',
+                  message: `Successfully matched ${progress.matched} of ${progress.total} channels (${progress.progress_percent}%)`,
+                  color: progress.matched > 0 ? 'green.5' : 'orange',
+                  loading: false,
+                  autoClose: 6000,
+                });
+              }
+              break;
+            }
+
+            case 'epg_logo_setting_progress': {
+              const progress = parsedEvent.data;
+              const id = 'epg-logo-setting-progress';
+
+              if (progress.status === 'running' && progress.progress === 0) {
+                // Initial message
+                notifications.show({
+                  id,
+                  title: 'Setting Logos from EPG',
+                  message: `Processing ${progress.total} channels...`,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.status === 'running') {
+                // Progress update
+                let message = `Processed ${progress.progress} of ${progress.total} channels`;
+                if (progress.updated_count !== undefined) {
+                  message += ` (${progress.updated_count} updated)`;
+                }
+                if (progress.created_logos_count !== undefined) {
+                  message += `, created ${progress.created_logos_count} logos`;
+                }
+
+                notifications.update({
+                  id,
+                  title: 'Setting Logos from EPG',
+                  message,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.status === 'completed') {
+                notifications.update({
+                  id,
+                  title: 'Logo Setting Complete',
+                  message: `Successfully updated ${progress.updated_count || 0} channel logos${progress.created_logos_count ? `, created ${progress.created_logos_count} new logos` : ''}`,
+                  color: progress.updated_count > 0 ? 'green.5' : 'orange',
+                  loading: false,
+                  autoClose: 6000,
+                });
+                // Refresh channels data and logos
+                try {
+                  await API.requeryChannels();
+                  await useChannelsStore.getState().fetchChannels();
+
+                  // Get updated channel data and extract logo IDs to load
+                  const channels = useChannelsStore.getState().channels;
+                  const logoIds = Object.values(channels)
+                    .filter((channel) => channel.logo_id)
+                    .map((channel) => channel.logo_id);
+
+                  // Fetch the specific logos that were just assigned
+                  if (logoIds.length > 0) {
+                    await useLogosStore.getState().fetchLogosByIds(logoIds);
+                  }
+                } catch (e) {
+                  console.warn(
+                    'Failed to refresh channels after logo setting:',
+                    e
+                  );
+                }
+              }
+              break;
+            }
+
+            case 'epg_name_setting_progress': {
+              const progress = parsedEvent.data;
+              const id = 'epg-name-setting-progress';
+
+              if (progress.status === 'running' && progress.progress === 0) {
+                // Initial message
+                notifications.show({
+                  id,
+                  title: 'Setting Names from EPG',
+                  message: `Processing ${progress.total} channels...`,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.status === 'running') {
+                // Progress update
+                let message = `Processed ${progress.progress} of ${progress.total} channels`;
+                if (progress.updated_count !== undefined) {
+                  message += ` (${progress.updated_count} updated)`;
+                }
+
+                notifications.update({
+                  id,
+                  title: 'Setting Names from EPG',
+                  message,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.status === 'completed') {
+                notifications.update({
+                  id,
+                  title: 'Name Setting Complete',
+                  message: `Successfully updated ${progress.updated_count || 0} channel names from EPG data`,
+                  color: progress.updated_count > 0 ? 'green.5' : 'orange',
+                  loading: false,
+                  autoClose: 6000,
+                });
+                // Refresh channels data
+                try {
+                  await API.requeryChannels();
+                  await useChannelsStore.getState().fetchChannels();
+                } catch (e) {
+                  console.warn(
+                    'Failed to refresh channels after name setting:',
+                    e
+                  );
+                }
+              }
+              break;
+            }
 
             case 'm3u_profile_test':
               setProfilePreview(
@@ -611,6 +781,14 @@ export const WebsocketProvider = ({ children }) => {
                 );
               }
 
+              break;
+
+            case 'playlist_created':
+              // Backend signals that a new playlist has been created and we should refresh
+              console.log(
+                'Playlist created event received, refreshing playlists...'
+              );
+              fetchPlaylists();
               break;
 
             case 'bulk_channel_creation_progress': {

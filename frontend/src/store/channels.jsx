@@ -15,6 +15,7 @@ const useChannelsStore = create((set, get) => ({
   activeChannels: {},
   activeClients: {},
   recordings: [],
+  recurringRules: [],
   isLoading: false,
   error: null,
   forceUpdate: 0,
@@ -407,6 +408,23 @@ const useChannelsStore = create((set, get) => ({
       set({ error: 'Failed to load recordings.', isLoading: false });
     }
   },
+
+  fetchRecurringRules: async () => {
+    try {
+      const rules = await api.listRecurringRules();
+      set({ recurringRules: Array.isArray(rules) ? rules : [] });
+    } catch (error) {
+      console.error('Failed to fetch recurring DVR rules:', error);
+      set({ error: 'Failed to load recurring DVR rules.' });
+    }
+  },
+
+  removeRecurringRule: (id) =>
+    set((state) => ({
+      recurringRules: Array.isArray(state.recurringRules)
+        ? state.recurringRules.filter((rule) => String(rule?.id) !== String(id))
+        : [],
+    })),
 
   // Optimistically remove a single recording from the local store
   removeRecording: (id) =>

@@ -9,7 +9,9 @@ import ChannelGroupForm from './ChannelGroup';
 import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import useLogosStore from '../../store/logos';
 import LazyLogo from '../LazyLogo';
+import LogoForm from './Logo';
 import {
   Box,
   Button,
@@ -34,9 +36,9 @@ import {
   UnstyledButton,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ListOrdered, SquarePlus, SquareX, X } from 'lucide-react';
+import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
-import { Dropzone } from '@mantine/dropzone';
+
 import { FixedSizeList as List } from 'react-window';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 
@@ -51,10 +53,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
 
   const {
-    logos,
+    logos: channelLogos,
     ensureLogosLoaded,
     isLoading: logosLoading,
   } = useChannelLogoSelection();
+
+  // Import the full logos store for duplicate checking
+  const allLogos = useLogosStore((s) => s.logos);
 
   // Ensure logos are loaded when component mounts
   useEffect(() => {
@@ -67,7 +72,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
 
-  const [logoPreview, setLogoPreview] = useState(null);
+  const [logoModalOpen, setLogoModalOpen] = useState(false);
   const [channelStreams, setChannelStreams] = useState([]);
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
@@ -78,6 +83,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
   const [groupFilter, setGroupFilter] = useState('');
+  const [autoMatchLoading, setAutoMatchLoading] = useState(false);
   const groupOptions = Object.values(channelGroups);
 
   const addStream = (stream) => {
@@ -92,32 +98,196 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     setChannelStreams(Array.from(streamSet));
   };
 
-  const handleLogoChange = async (files) => {
-    if (files.length === 1) {
-      const file = files[0];
+  const handleLogoSuccess = ({ logo }) => {
+    if (logo && logo.id) {
+      formik.setFieldValue('logo_id', logo.id);
+      ensureLogosLoaded(); // Refresh logos
+    }
+    setLogoModalOpen(false);
+  };
 
-      // Validate file size on frontend first
-      if (file.size > 5 * 1024 * 1024) {
-        // 5MB
+  const handleAutoMatchEpg = async () => {
+    // Only attempt auto-match for existing channels (editing mode)
+    if (!channel || !channel.id) {
+      notifications.show({
+        title: 'Info',
+        message: 'Auto-match is only available when editing existing channels.',
+        color: 'blue',
+      });
+      return;
+    }
+
+    setAutoMatchLoading(true);
+    try {
+      const response = await API.matchChannelEpg(channel.id);
+
+      if (response.matched) {
+        // Update the form with the new EPG data
+        if (response.channel && response.channel.epg_data_id) {
+          formik.setFieldValue('epg_data_id', response.channel.epg_data_id);
+        }
+
         notifications.show({
-          title: 'Error',
-          message: 'File too large. Maximum size is 5MB.',
-          color: 'red',
+          title: 'Success',
+          message: response.message,
+          color: 'green',
         });
-        return;
+      } else {
+        notifications.show({
+          title: 'No Match Found',
+          message: response.message,
+          color: 'orange',
+        });
       }
+    } catch (error) {
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to auto-match EPG data',
+        color: 'red',
+      });
+      console.error('Auto-match error:', error);
+    } finally {
+      setAutoMatchLoading(false);
+    }
+  };
 
-      try {
-        const retval = await API.uploadLogo(file);
-        // Note: API.uploadLogo already adds the logo to the store, no need to fetch
-        setLogoPreview(retval.cache_url);
-        formik.setFieldValue('logo_id', retval.id);
-      } catch (error) {
-        console.error('Logo upload failed:', error);
-        // Error notification is already handled in API.uploadLogo
-      }
+  const handleSetNameFromEpg = () => {
+    const epgDataId = formik.values.epg_data_id;
+    if (!epgDataId) {
+      notifications.show({
+        title: 'No EPG Selected',
+        message: 'Please select an EPG source first.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    const tvg = tvgsById[epgDataId];
+    if (tvg && tvg.name) {
+      formik.setFieldValue('name', tvg.name);
+      notifications.show({
+        title: 'Success',
+        message: `Channel name set to "${tvg.name}"`,
+        color: 'green',
+      });
     } else {
-      setLogoPreview(null);
+      notifications.show({
+        title: 'No Name Available',
+        message: 'No name found in the selected EPG data.',
+        color: 'orange',
+      });
+    }
+  };
+
+  const handleSetLogoFromEpg = async () => {
+    const epgDataId = formik.values.epg_data_id;
+    if (!epgDataId) {
+      notifications.show({
+        title: 'No EPG Selected',
+        message: 'Please select an EPG source first.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    const tvg = tvgsById[epgDataId];
+    if (!tvg || !tvg.icon_url) {
+      notifications.show({
+        title: 'No EPG Icon',
+        message: 'EPG data does not have an icon URL.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    try {
+      // Try to find a logo that matches the EPG icon URL - check ALL logos to avoid duplicates
+      let matchingLogo = Object.values(allLogos).find(
+        (logo) => logo.url === tvg.icon_url
+      );
+
+      if (matchingLogo) {
+        formik.setFieldValue('logo_id', matchingLogo.id);
+        notifications.show({
+          title: 'Success',
+          message: `Logo set to "${matchingLogo.name}"`,
+          color: 'green',
+        });
+      } else {
+        // Logo doesn't exist - create it
+        notifications.show({
+          id: 'creating-logo',
+          title: 'Creating Logo',
+          message: `Creating new logo from EPG icon URL...`,
+          loading: true,
+        });
+
+        try {
+          const newLogoData = {
+            name: tvg.name || `Logo for ${tvg.icon_url}`,
+            url: tvg.icon_url,
+          };
+
+          // Create logo by calling the Logo API directly
+          const newLogo = await API.createLogo(newLogoData);
+
+          formik.setFieldValue('logo_id', newLogo.id);
+
+          notifications.update({
+            id: 'creating-logo',
+            title: 'Success',
+            message: `Created and assigned new logo "${newLogo.name}"`,
+            loading: false,
+            color: 'green',
+            autoClose: 5000,
+          });
+        } catch (createError) {
+          notifications.update({
+            id: 'creating-logo',
+            title: 'Error',
+            message: 'Failed to create logo from EPG icon URL',
+            loading: false,
+            color: 'red',
+            autoClose: 5000,
+          });
+          throw createError;
+        }
+      }
+    } catch (error) {
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to set logo from EPG data',
+        color: 'red',
+      });
+      console.error('Set logo from EPG error:', error);
+    }
+  };
+
+  const handleSetTvgIdFromEpg = () => {
+    const epgDataId = formik.values.epg_data_id;
+    if (!epgDataId) {
+      notifications.show({
+        title: 'No EPG Selected',
+        message: 'Please select an EPG source first.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    const tvg = tvgsById[epgDataId];
+    if (tvg && tvg.tvg_id) {
+      formik.setFieldValue('tvg_id', tvg.tvg_id);
+      notifications.show({
+        title: 'Success',
+        message: `TVG-ID set to "${tvg.tvg_id}"`,
+        color: 'green',
+      });
+    } else {
+      notifications.show({
+        title: 'No TVG-ID Available',
+        message: 'No TVG-ID found in the selected EPG data.',
+        color: 'orange',
+      });
     }
   };
 
@@ -248,9 +418,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
-    const options = [{ id: '0', name: 'Default' }].concat(Object.values(logos));
+    const options = [{ id: '0', name: 'Default' }].concat(
+      Object.values(channelLogos)
+    );
     return options;
-  }, [logos]); // Only depend on logos object
+  }, [channelLogos]); // Only depend on channelLogos object
 
   // Update the handler for when channel group modal is closed
   const handleChannelGroupModalClose = (newGroup) => {
@@ -306,11 +478,28 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
               <TextInput
                 id="name"
                 name="name"
-                label="Channel Name"
+                label={
+                  <Group gap="xs">
+                    <span>Channel Name</span>
+                    {formik.values.epg_data_id && (
+                      <Button
+                        size="xs"
+                        variant="transparent"
+                        onClick={handleSetNameFromEpg}
+                        title="Set channel name from EPG data"
+                        p={0}
+                        h="auto"
+                      >
+                        Use EPG Name
+                      </Button>
+                    )}
+                  </Group>
+                }
                 value={formik.values.name}
                 onChange={formik.handleChange}
                 error={formik.errors.name ? formik.touched.name : ''}
                 size="xs"
+                style={{ flex: 1 }}
               />
 
               <Flex gap="sm">
@@ -492,9 +681,27 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     <TextInput
                       id="logo_id"
                       name="logo_id"
-                      label="Logo"
+                      label={
+                        <Group gap="xs">
+                          <span>Logo</span>
+                          {formik.values.epg_data_id && (
+                            <Button
+                              size="xs"
+                              variant="transparent"
+                              onClick={handleSetLogoFromEpg}
+                              title="Find matching logo based on EPG icon URL"
+                              p={0}
+                              h="auto"
+                            >
+                              Use EPG Logo
+                            </Button>
+                          )}
+                        </Group>
+                      }
                       readOnly
-                      value={logos[formik.values.logo_id]?.name || 'Default'}
+                      value={
+                        channelLogos[formik.values.logo_id]?.name || 'Default'
+                      }
                       onClick={() => {
                         console.log(
                           'Logo input clicked, setting popover opened to true'
@@ -601,42 +808,22 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   </Popover.Dropdown>
                 </Popover>
 
-                <LazyLogo
-                  logoId={formik.values.logo_id}
-                  alt="channel logo"
-                  style={{ height: 40 }}
-                />
+                <Stack gap="xs" align="center">
+                  <LazyLogo
+                    logoId={formik.values.logo_id}
+                    alt="channel logo"
+                    style={{ height: 40 }}
+                  />
+                </Stack>
               </Group>
 
-              <Group>
-                <Divider size="xs" style={{ flex: 1 }} />
-                <Text size="xs" c="dimmed">
-                  OR
-                </Text>
-                <Divider size="xs" style={{ flex: 1 }} />
-              </Group>
-
-              <Stack>
-                <Text size="sm">Upload Logo</Text>
-                <Dropzone
-                  onDrop={handleLogoChange}
-                  onReject={(files) => console.log('rejected files', files)}
-                  maxSize={5 * 1024 ** 2}
-                >
-                  <Group
-                    justify="center"
-                    gap="xl"
-                    mih={40}
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <Text size="sm" inline>
-                      Drag images here or click to select files
-                    </Text>
-                  </Group>
-                </Dropzone>
-
-                <Center></Center>
-              </Stack>
+              <Button
+                onClick={() => setLogoModalOpen(true)}
+                fullWidth
+                variant="default"
+              >
+                Upload or Create Logo
+              </Button>
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -664,7 +851,23 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
               <TextInput
                 id="tvg_id"
                 name="tvg_id"
-                label="TVG-ID"
+                label={
+                  <Group gap="xs">
+                    <span>TVG-ID</span>
+                    {formik.values.epg_data_id && (
+                      <Button
+                        size="xs"
+                        variant="transparent"
+                        onClick={handleSetTvgIdFromEpg}
+                        title="Set TVG-ID from EPG data"
+                        p={0}
+                        h="auto"
+                      >
+                        Use EPG TVG-ID
+                      </Button>
+                    )}
+                  </Group>
+                }
                 value={formik.values.tvg_id}
                 onChange={formik.handleChange}
                 error={formik.errors.tvg_id ? formik.touched.tvg_id : ''}
@@ -706,6 +909,25 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                           }
                         >
                           Use Dummy
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="transparent"
+                          color="blue"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAutoMatchEpg();
+                          }}
+                          disabled={!channel || !channel.id}
+                          loading={autoMatchLoading}
+                          title={
+                            !channel || !channel.id
+                              ? 'Auto-match is only available for existing channels'
+                              : 'Automatically match EPG data'
+                          }
+                          leftSection={<Zap size="14" />}
+                        >
+                          Auto Match
                         </Button>
                       </Group>
                     }
@@ -767,6 +989,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       }
                       mb="xs"
                       size="xs"
+                      autoFocus
                     />
                   </Group>
 
@@ -835,6 +1058,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       <ChannelGroupForm
         isOpen={channelGroupModelOpen}
         onClose={handleChannelGroupModalClose}
+      />
+
+      <LogoForm
+        isOpen={logoModalOpen}
+        onClose={() => setLogoModalOpen(false)}
+        onSuccess={handleLogoSuccess}
       />
     </>
   );

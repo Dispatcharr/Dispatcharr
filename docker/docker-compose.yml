@@ -53,7 +53,7 @@ services:
     command: >
       bash -c "
       cd /app &&
-      celery -A dispatcharr worker -l info
+      nice -n 5 celery -A dispatcharr worker -l info
       "
 
   db:

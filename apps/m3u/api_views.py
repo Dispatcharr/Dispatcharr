@@ -81,6 +81,13 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         account_type = response.data.get("account_type")
         account_id = response.data.get("id")
 
+        # Notify frontend that a new playlist was created
+        from core.utils import send_websocket_update
+        send_websocket_update('updates', 'update', {
+            'type': 'playlist_created',
+            'playlist_id': account_id
+        })
+
         if account_type == M3UAccount.Types.XC:
             refresh_m3u_groups(account_id)
 

@@ -774,7 +774,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         group_title = group_name
 
                         stream_hash = Stream.generate_hash_key(
-                            name, url, tvg_id, hash_keys
+                            name, url, tvg_id, hash_keys, m3u_id=account_id
                         )
                         stream_props = {
                             "name": name,
@@ -903,6 +903,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     stream_hashes = {}
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
+    if compiled_filters:
+        logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
@@ -912,10 +914,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-
+            logger.debug(f"Processing stream: {name} - {url} in group {group_title}")
             include = True
             for pattern, filter in compiled_filters:
-                logger.debug(f"Checking filter patterh {pattern}")
+                logger.trace(f"Checking filter pattern {pattern}")
                 target = name
                 if filter.filter_type == "url":
                     target = url
@@ -940,7 +942,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 )
                 continue
 
-            stream_hash = Stream.generate_hash_key(name, url, tvg_id, hash_keys)
+            stream_hash = Stream.generate_hash_key(name, url, tvg_id, hash_keys, m3u_id=account_id)
             stream_props = {
                 "name": name,
                 "url": url,
@@ -2071,13 +2073,13 @@ def get_transformed_credentials(account, profile=None):
     base_url = account.server_url
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
-    # Format: http://server.com:port/username/password/rest_of_path
+    # Format: http://server.com:port/live/username/password/1234.ts
     if base_url and base_username and base_password:
         # Remove trailing slash from server URL if present
         clean_server_url = base_url.rstrip('/')
 
         # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/{base_username}/{base_password}/"
+        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
         logger.debug(f"Built complete URL: {complete_url}")
 
         # Apply profile-specific transformations if profile is provided
@@ -2091,14 +2093,14 @@ def get_transformed_credentials(account, profile=None):
                 logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
 
                 # Extract components from the transformed URL
-                # Pattern: http://server.com:port/username/password/
+                # Pattern: http://server.com:port/live/username/password/1234.ts
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
                 path_parts = [part for part in parsed_url.path.split('/') if part]
 
                 if len(path_parts) >= 2:
                     # Extract username and password from path
-                    transformed_username = path_parts[0]
-                    transformed_password = path_parts[1]
+                    transformed_username = path_parts[1]
+                    transformed_password = path_parts[2]
 
                     # Rebuild server URL without the username/password path
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -2521,76 +2523,75 @@ def refresh_single_m3u_account(account_id):
 
             if not all_xc_streams:
                 logger.warning("No streams collected from XC groups")
-                return f"No streams found for XC account {account_id}", None
+            else:
+                # Now batch by stream count (like standard M3U processing)
+                batches = [
+                    all_xc_streams[i : i + BATCH_SIZE]
+                    for i in range(0, len(all_xc_streams), BATCH_SIZE)
+                ]
 
-            # Now batch by stream count (like standard M3U processing)
-            batches = [
-                all_xc_streams[i : i + BATCH_SIZE]
-                for i in range(0, len(all_xc_streams), BATCH_SIZE)
-            ]
+                logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
 
-            logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
+                # Use threading for XC stream processing - now with consistent batch sizes
+                max_workers = min(4, len(batches))
+                logger.debug(f"Using {max_workers} threads for XC stream processing")
 
-            # Use threading for XC stream processing - now with consistent batch sizes
-            max_workers = min(4, len(batches))
-            logger.debug(f"Using {max_workers} threads for XC stream processing")
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit stream batch processing tasks (reuse standard M3U processing)
+                    future_to_batch = {
+                        executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                        for i, batch in enumerate(batches)
+                    }
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit stream batch processing tasks (reuse standard M3U processing)
-                future_to_batch = {
-                    executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
-                    for i, batch in enumerate(batches)
-                }
+                    completed_batches = 0
+                    total_batches = len(batches)
 
-                completed_batches = 0
-                total_batches = len(batches)
+                    # Process completed batches as they finish
+                    for future in as_completed(future_to_batch):
+                        batch_idx = future_to_batch[future]
+                        try:
+                            result = future.result()
+                            completed_batches += 1
 
-                # Process completed batches as they finish
-                for future in as_completed(future_to_batch):
-                    batch_idx = future_to_batch[future]
-                    try:
-                        result = future.result()
-                        completed_batches += 1
+                            # Extract stream counts from result
+                            if isinstance(result, str):
+                                try:
+                                    created_match = re.search(r"(\d+) created", result)
+                                    updated_match = re.search(r"(\d+) updated", result)
+                                    if created_match and updated_match:
+                                        created_count = int(created_match.group(1))
+                                        updated_count = int(updated_match.group(1))
+                                        streams_created += created_count
+                                        streams_updated += updated_count
+                                except (AttributeError, ValueError):
+                                    pass
 
-                        # Extract stream counts from result
-                        if isinstance(result, str):
-                            try:
-                                created_match = re.search(r"(\d+) created", result)
-                                updated_match = re.search(r"(\d+) updated", result)
-                                if created_match and updated_match:
-                                    created_count = int(created_match.group(1))
-                                    updated_count = int(updated_match.group(1))
-                                    streams_created += created_count
-                                    streams_updated += updated_count
-                            except (AttributeError, ValueError):
-                                pass
+                            # Send progress update
+                            progress = int((completed_batches / total_batches) * 100)
+                            current_elapsed = time.time() - start_time
 
-                        # Send progress update
-                        progress = int((completed_batches / total_batches) * 100)
-                        current_elapsed = time.time() - start_time
+                            if progress > 0:
+                                estimated_total = (current_elapsed / progress) * 100
+                                time_remaining = max(0, estimated_total - current_elapsed)
+                            else:
+                                time_remaining = 0
 
-                        if progress > 0:
-                            estimated_total = (current_elapsed / progress) * 100
-                            time_remaining = max(0, estimated_total - current_elapsed)
-                        else:
-                            time_remaining = 0
+                            send_m3u_update(
+                                account_id,
+                                "parsing",
+                                progress,
+                                elapsed_time=current_elapsed,
+                                time_remaining=time_remaining,
+                                streams_processed=streams_created + streams_updated,
+                            )
 
-                        send_m3u_update(
-                            account_id,
-                            "parsing",
-                            progress,
-                            elapsed_time=current_elapsed,
-                            time_remaining=time_remaining,
-                            streams_processed=streams_created + streams_updated,
-                        )
+                            logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
 
-                        logger.debug(f"XC thread batch {completed_batches}/{total_batches} completed")
+                        except Exception as e:
+                            logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
+                            completed_batches += 1  # Still count it to avoid hanging
 
-                    except Exception as e:
-                        logger.error(f"Error in XC thread batch {batch_idx}: {str(e)}")
-                        completed_batches += 1  # Still count it to avoid hanging
-
-            logger.info(f"XC thread-based processing completed for account {account_id}")
+                logger.info(f"XC thread-based processing completed for account {account_id}")
 
         # Ensure all database transactions are committed before cleanup
         logger.info(
@@ -2671,7 +2672,16 @@ def refresh_single_m3u_account(account_id):
     release_task_lock("refresh_single_m3u_account", account_id)
 
     # Aggressive garbage collection
-    del existing_groups, extinf_data, groups, batches
+    # Only delete variables if they exist
+    if 'existing_groups' in locals():
+        del existing_groups
+    if 'extinf_data' in locals():
+        del extinf_data
+    if 'groups' in locals():
+        del groups
+    if 'batches' in locals():
+        del batches
+
     from core.utils import cleanup_memory
 
     cleanup_memory(log_usage=True, force_collection=True)

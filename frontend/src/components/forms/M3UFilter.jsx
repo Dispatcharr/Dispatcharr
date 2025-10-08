@@ -51,8 +51,7 @@ const M3UFilter = ({ filter = null, m3u, isOpen, onClose }) => {
     values.custom_properties = setCustomProperty(
       filter ? filter.custom_properties : {},
       'case_sensitive',
-      values.case_sensitive,
-      true
+      values.case_sensitive
     );
 
     delete values.case_sensitive;

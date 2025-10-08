@@ -27,20 +27,36 @@ import {
 import { ListOrdered, SquarePlus, SquareX, X } from 'lucide-react';
 import { FixedSizeList as List } from 'react-window';
 import { useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import LazyLogo from '../LazyLogo';
+import logo from '../../images/logo.png';
+import ConfirmationDialog from '../ConfirmationDialog';
+import useWarningsStore from '../../store/warnings';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
   const groupListRef = useRef(null);
+  const logoListRef = useRef(null);
 
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
+  const {
+    logos: channelLogos,
+    ensureLogosLoaded,
+    isLoading: logosLoading,
+  } = useChannelLogoSelection();
+
+  useEffect(() => {
+    ensureLogosLoaded();
+  }, [ensureLogosLoaded]);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
 
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [selectedChannelGroup, setSelectedChannelGroup] = useState('-1');
+  const [selectedLogoId, setSelectedLogoId] = useState('-1');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regexFind, setRegexFind] = useState('');
   const [regexReplace, setRegexReplace] = useState('');
@@ -49,10 +65,21 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [groupFilter, setGroupFilter] = useState('');
   const groupOptions = Object.values(channelGroups);
 
+  const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
+  const [logoFilter, setLogoFilter] = useState('');
+  // Confirmation dialog states
+  const [confirmSetNamesOpen, setConfirmSetNamesOpen] = useState(false);
+  const [confirmSetLogosOpen, setConfirmSetLogosOpen] = useState(false);
+  const [confirmSetTvgIdsOpen, setConfirmSetTvgIdsOpen] = useState(false);
+  const [confirmClearEpgsOpen, setConfirmClearEpgsOpen] = useState(false);
+  const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
       channel_group: '(no change)',
+      logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
     },
@@ -69,6 +96,15 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     } else {
       delete values.channel_group_id;
     }
+
+    if (selectedLogoId && selectedLogoId !== '-1') {
+      if (selectedLogoId === '0') {
+        values.logo_id = null;
+      } else {
+        values.logo_id = parseInt(selectedLogoId);
+      }
+    }
+    delete values.logo;
 
     // Handle stream profile ID - convert special values
     if (!values.stream_profile_id || values.stream_profile_id === '-1') {
@@ -134,6 +170,184 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     }
   };
 
+  const handleSetNamesFromEpg = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    // Skip warning if suppressed
+    if (isWarningSuppressed('batch-set-names-from-epg')) {
+      return executeSetNamesFromEpg();
+    }
+
+    setConfirmSetNamesOpen(true);
+  };
+
+  const executeSetNamesFromEpg = async () => {
+    try {
+      // Start the backend task
+      await API.setChannelNamesFromEpg(channelIds);
+
+      // The task will send WebSocket updates for progress
+      // Just show that it started successfully
+      notifications.show({
+        title: 'Task Started',
+        message: `Started setting names from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
+        color: 'blue',
+      });
+
+      // Close the modal since the task is now running in background
+      setConfirmSetNamesOpen(false);
+      onClose();
+    } catch (error) {
+      console.error('Failed to start EPG name setting task:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to start EPG name setting task.',
+        color: 'red',
+      });
+      setConfirmSetNamesOpen(false);
+    }
+  };
+
+  const handleSetLogosFromEpg = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    // Skip warning if suppressed
+    if (isWarningSuppressed('batch-set-logos-from-epg')) {
+      return executeSetLogosFromEpg();
+    }
+
+    setConfirmSetLogosOpen(true);
+  };
+
+  const executeSetLogosFromEpg = async () => {
+    try {
+      // Start the backend task
+      await API.setChannelLogosFromEpg(channelIds);
+
+      // The task will send WebSocket updates for progress
+      // Just show that it started successfully
+      notifications.show({
+        title: 'Task Started',
+        message: `Started setting logos from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
+        color: 'blue',
+      });
+
+      // Close the modal since the task is now running in background
+      setConfirmSetLogosOpen(false);
+      onClose();
+    } catch (error) {
+      console.error('Failed to start EPG logo setting task:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to start EPG logo setting task.',
+        color: 'red',
+      });
+      setConfirmSetLogosOpen(false);
+    }
+  };
+
+  const handleSetTvgIdsFromEpg = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    // Skip warning if suppressed
+    if (isWarningSuppressed('batch-set-tvg-ids-from-epg')) {
+      return executeSetTvgIdsFromEpg();
+    }
+
+    setConfirmSetTvgIdsOpen(true);
+  };
+
+  const executeSetTvgIdsFromEpg = async () => {
+    try {
+      // Start the backend task
+      await API.setChannelTvgIdsFromEpg(channelIds);
+
+      // The task will send WebSocket updates for progress
+      // Just show that it started successfully
+      notifications.show({
+        title: 'Task Started',
+        message: `Started setting TVG-IDs from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
+        color: 'blue',
+      });
+
+      // Close the modal since the task is now running in background
+      setConfirmSetTvgIdsOpen(false);
+      onClose();
+    } catch (error) {
+      console.error('Failed to start EPG TVG-ID setting task:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to start EPG TVG-ID setting task.',
+        color: 'red',
+      });
+      setConfirmSetTvgIdsOpen(false);
+    }
+  };
+
+  const handleClearEpgs = async () => {
+    if (!channelIds || channelIds.length === 0) {
+      notifications.show({
+        title: 'No Channels Selected',
+        message: 'No channels to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    // Skip warning if suppressed
+    if (isWarningSuppressed('batch-clear-epgs')) {
+      return executeClearEpgs();
+    }
+
+    setConfirmClearEpgsOpen(true);
+  };
+
+  const executeClearEpgs = async () => {
+    try {
+      // Clear EPG assignments (set to null/dummy) using existing batchSetEPG API
+      const associations = channelIds.map((id) => ({
+        channel_id: id,
+        epg_data_id: null,
+      }));
+
+      await API.batchSetEPG(associations);
+
+      // batchSetEPG already shows a notification and refreshes channels
+      // Close the modal
+      setConfirmClearEpgsOpen(false);
+      onClose();
+    } catch (error) {
+      console.error('Failed to clear EPG assignments:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to clear EPG assignments.',
+        color: 'red',
+      });
+      setConfirmClearEpgsOpen(false);
+    }
+  };
+
   // useEffect(() => {
   //   // const sameStreamProfile = channels.every(
   //   //   (channel) => channel.stream_profile_id == channels[0].stream_profile_id
@@ -174,6 +388,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     ),
   ];
 
+  const logoOptions = useMemo(() => {
+    return [
+      { id: '-1', name: '(no change)' },
+      { id: '0', name: 'Use Default', isDefault: true },
+      ...Object.values(channelLogos),
+    ];
+  }, [channelLogos]);
+
+  const filteredLogos = logoOptions.filter((logo) =>
+    logo.name.toLowerCase().includes(logoFilter.toLowerCase())
+  );
+
   if (!isOpen) {
     return <></>;
   }
@@ -183,7 +409,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       <Modal
         opened={isOpen}
         onClose={onClose}
-        size={"lg"}
+        size={'lg'}
         title={
           <Group gap="5">
             <ListOrdered size="20" />
@@ -197,7 +423,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
             <Stack gap="5" style={{ flex: 1 }}>
               <Paper withBorder p="xs" radius="md">
                 <Group justify="space-between" align="center" mb={6}>
-                  <Text size="sm" fw={600}>Channel Name</Text>
+                  <Text size="sm" fw={600}>
+                    Channel Name
+                  </Text>
                 </Group>
                 <Group align="end" gap="xs" wrap="nowrap">
                   <TextInput
@@ -222,6 +450,55 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   find={regexFind}
                   replace={regexReplace}
                 />
+              </Paper>
+
+              <Paper withBorder p="xs" radius="md">
+                <Group justify="space-between" align="center" mb={6}>
+                  <Text size="sm" fw={600}>
+                    EPG Operations
+                  </Text>
+                </Group>
+                <Group gap="xs" wrap="nowrap">
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={handleSetNamesFromEpg}
+                    style={{ flex: 1 }}
+                  >
+                    Set Names from EPG
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={handleSetLogosFromEpg}
+                    style={{ flex: 1 }}
+                  >
+                    Set Logos from EPG
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={handleSetTvgIdsFromEpg}
+                    style={{ flex: 1 }}
+                  >
+                    Set TVG-IDs from EPG
+                  </Button>
+                </Group>
+                <Group gap="xs" wrap="nowrap" mt="xs">
+                  <Button
+                    size="xs"
+                    variant="light"
+                    color="red"
+                    onClick={handleClearEpgs}
+                    style={{ flex: 1 }}
+                  >
+                    Clear EPG (Set to Dummy)
+                  </Button>
+                </Group>
+                <Text size="xs" c="dimmed" mt="xs">
+                  Updates channel names, logos, and TVG-IDs based on their
+                  assigned EPG data, or clear EPG assignments to use dummy EPG
+                </Text>
               </Paper>
 
               <Popover
@@ -345,6 +622,163 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                 </Popover.Dropdown>
               </Popover>
 
+              <Group style={{ width: '100%' }} align="flex-end" gap="xs">
+                <Popover
+                  opened={logoPopoverOpened}
+                  onChange={setLogoPopoverOpened}
+                  withArrow
+                >
+                  <Popover.Target>
+                    <TextInput
+                      label="Logo"
+                      readOnly
+                      {...form.getInputProps('logo')}
+                      key={form.key('logo')}
+                      onClick={() => setLogoPopoverOpened(true)}
+                      size="xs"
+                      style={{ flex: 1 }}
+                      rightSection={
+                        selectedLogoId !== '-1' && (
+                          <ActionIcon
+                            size="xs"
+                            variant="subtle"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLogoId('-1');
+                              form.setValues({ logo: '(no change)' });
+                            }}
+                          >
+                            <X size={12} />
+                          </ActionIcon>
+                        )
+                      }
+                    />
+                  </Popover.Target>
+                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                    <Group>
+                      <TextInput
+                        placeholder="Filter"
+                        value={logoFilter}
+                        onChange={(event) =>
+                          setLogoFilter(event.currentTarget.value)
+                        }
+                        mb="xs"
+                        size="xs"
+                      />
+                      {logosLoading && (
+                        <Text size="xs" c="dimmed">
+                          Loading...
+                        </Text>
+                      )}
+                    </Group>
+                    <ScrollArea style={{ height: 200 }}>
+                      {filteredLogos.length === 0 ? (
+                        <Center style={{ height: 200 }}>
+                          <Text size="sm" c="dimmed">
+                            {logoFilter
+                              ? 'No logos match your filter'
+                              : 'No logos available'}
+                          </Text>
+                        </Center>
+                      ) : (
+                        <List
+                          height={200}
+                          itemCount={filteredLogos.length}
+                          itemSize={55}
+                          style={{ width: '100%' }}
+                          ref={logoListRef}
+                        >
+                          {({ index, style }) => {
+                            const item = filteredLogos[index];
+                            return (
+                              <div
+                                style={{
+                                  ...style,
+                                  cursor: 'pointer',
+                                  padding: '5px',
+                                  borderRadius: '4px',
+                                }}
+                                onClick={() => {
+                                  setSelectedLogoId(item.id);
+                                  form.setValues({
+                                    logo: item.name,
+                                  });
+                                  setLogoPopoverOpened(false);
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor =
+                                    'rgb(68, 68, 68)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor =
+                                    'transparent';
+                                }}
+                              >
+                                <Center
+                                  style={{
+                                    flexDirection: 'column',
+                                    gap: '2px',
+                                  }}
+                                >
+                                  {item.isDefault ? (
+                                    <img
+                                      src={logo}
+                                      height="30"
+                                      style={{
+                                        maxWidth: 80,
+                                        objectFit: 'contain',
+                                      }}
+                                      alt="Default Logo"
+                                    />
+                                  ) : item.id > 0 ? (
+                                    <img
+                                      src={item.cache_url || logo}
+                                      height="30"
+                                      style={{
+                                        maxWidth: 80,
+                                        objectFit: 'contain',
+                                      }}
+                                      alt={item.name || 'Logo'}
+                                      onError={(e) => {
+                                        if (e.target.src !== logo) {
+                                          e.target.src = logo;
+                                        }
+                                      }}
+                                    />
+                                  ) : (
+                                    <Box h={30} />
+                                  )}
+                                  <Text
+                                    size="xs"
+                                    c="dimmed"
+                                    ta="center"
+                                    style={{
+                                      maxWidth: 80,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {item.name}
+                                  </Text>
+                                </Center>
+                              </div>
+                            );
+                          }}
+                        </List>
+                      )}
+                    </ScrollArea>
+                  </Popover.Dropdown>
+                </Popover>
+                {selectedLogoId > 0 && (
+                  <LazyLogo
+                    logoId={selectedLogoId}
+                    alt="channel logo"
+                    style={{ height: 24, marginBottom: 5 }}
+                  />
+                )}
+              </Group>
+
               <Select
                 id="stream_profile_id"
                 label="Stream Profile"
@@ -396,6 +830,90 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         isOpen={channelGroupModelOpen}
         onClose={handleChannelGroupModalClose}
       />
+
+      <ConfirmationDialog
+        opened={confirmSetNamesOpen}
+        onClose={() => setConfirmSetNamesOpen(false)}
+        onConfirm={executeSetNamesFromEpg}
+        title="Confirm Set Names from EPG"
+        message={
+          <div style={{ whiteSpace: 'pre-line' }}>
+            {`Are you sure you want to set names from EPG for ${channelIds?.length || 0} selected channels?
+
+This will replace the current channel names with the names from their assigned EPG data.
+
+This action cannot be undone.`}
+          </div>
+        }
+        confirmLabel="Set Names"
+        cancelLabel="Cancel"
+        actionKey="batch-set-names-from-epg"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
+
+      <ConfirmationDialog
+        opened={confirmSetLogosOpen}
+        onClose={() => setConfirmSetLogosOpen(false)}
+        onConfirm={executeSetLogosFromEpg}
+        title="Confirm Set Logos from EPG"
+        message={
+          <div style={{ whiteSpace: 'pre-line' }}>
+            {`Are you sure you want to set logos from EPG for ${channelIds?.length || 0} selected channels?
+
+This will replace the current channel logos with logos from their assigned EPG data. New logos will be created if needed.
+
+This action cannot be undone.`}
+          </div>
+        }
+        confirmLabel="Set Logos"
+        cancelLabel="Cancel"
+        actionKey="batch-set-logos-from-epg"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
+
+      <ConfirmationDialog
+        opened={confirmSetTvgIdsOpen}
+        onClose={() => setConfirmSetTvgIdsOpen(false)}
+        onConfirm={executeSetTvgIdsFromEpg}
+        title="Confirm Set TVG-IDs from EPG"
+        message={
+          <div style={{ whiteSpace: 'pre-line' }}>
+            {`Are you sure you want to set TVG-IDs from EPG for ${channelIds?.length || 0} selected channels?
+
+This will replace the current TVG-IDs with the TVG-IDs from their assigned EPG data.
+
+This action cannot be undone.`}
+          </div>
+        }
+        confirmLabel="Set TVG-IDs"
+        cancelLabel="Cancel"
+        actionKey="batch-set-tvg-ids-from-epg"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
+
+      <ConfirmationDialog
+        opened={confirmClearEpgsOpen}
+        onClose={() => setConfirmClearEpgsOpen(false)}
+        onConfirm={executeClearEpgs}
+        title="Confirm Clear EPG Assignments"
+        message={
+          <div style={{ whiteSpace: 'pre-line' }}>
+            {`Are you sure you want to clear EPG assignments for ${channelIds?.length || 0} selected channels?
+
+This will set all selected channels to use dummy EPG data.
+
+This action cannot be undone.`}
+          </div>
+        }
+        confirmLabel="Clear EPGs"
+        cancelLabel="Cancel"
+        actionKey="batch-clear-epgs"
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
     </>
   );
 };
@@ -403,7 +921,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 export default ChannelBatchForm;
 
 // Lightweight inline preview component to visualize rename results for a subset
-const RegexPreview = ({ channelIds, find, replace}) => {
+const RegexPreview = ({ channelIds, find, replace }) => {
   const channelsMap = useChannelsStore((s) => s.channels);
   const previewItems = useMemo(() => {
     const items = [];
@@ -412,7 +930,8 @@ const RegexPreview = ({ channelIds, find, replace}) => {
     let re;
     try {
       re = new RegExp(find, flags);
-    } catch (e) {
+    } catch (error) {
+      console.error('Invalid regex:', error);
       return [{ before: 'Invalid regex', after: '' }];
     }
     for (let i = 0; i < Math.min(channelIds.length, 25); i++) {
@@ -431,20 +950,41 @@ const RegexPreview = ({ channelIds, find, replace}) => {
   return (
     <Box mt={8}>
       <Text size="xs" c="dimmed" mb={4}>
-        Preview (first {Math.min(channelIds.length, 25)} of {channelIds.length} selected)
+        Preview (first {Math.min(channelIds.length, 25)} of {channelIds.length}{' '}
+        selected)
       </Text>
       <ScrollArea h={120} offsetScrollbars>
         <Stack gap={4}>
           {previewItems.length === 0 ? (
-            <Text size="xs" c="dimmed">No changes with current pattern.</Text>
+            <Text size="xs" c="dimmed">
+              No changes with current pattern.
+            </Text>
           ) : (
             previewItems.map((row, idx) => (
               <Group key={idx} gap={8} wrap="nowrap" align="center">
-                <Text size="xs" style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <Text
+                  size="xs"
+                  style={{
+                    flex: 1,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {row.before}
                 </Text>
-                <Text size="xs" c="gray.6">→</Text>
-                <Text size="xs" style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <Text size="xs" c="gray.6">
+                  →
+                </Text>
+                <Text
+                  size="xs"
+                  style={{
+                    flex: 1,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {row.after}
                 </Text>
               </Group>

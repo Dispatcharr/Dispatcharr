@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+
 from rest_framework import serializers
 from .models import (
     Stream,
@@ -10,6 +12,7 @@ from .models import (
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
+    RecurringRecordingRule,
 )
 from apps.epg.serializers import EPGDataSerializer
 from core.models import StreamProfile
@@ -454,6 +457,13 @@ class RecordingSerializer(serializers.ModelSerializer):
         start_time = data.get("start_time")
         end_time = data.get("end_time")
 
+        if start_time and timezone.is_naive(start_time):
+            start_time = timezone.make_aware(start_time, timezone.get_current_timezone())
+            data["start_time"] = start_time
+        if end_time and timezone.is_naive(end_time):
+            end_time = timezone.make_aware(end_time, timezone.get_current_timezone())
+            data["end_time"] = end_time
+
         # If this is an EPG-based recording (program provided), apply global pre/post offsets
         try:
             cp = data.get("custom_properties") or {}
@@ -497,3 +507,56 @@ class RecordingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("End time must be after start time.")
 
         return data
+
+
+class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecurringRecordingRule
+        fields = "__all__"
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate_days_of_week(self, value):
+        if not value:
+            raise serializers.ValidationError("Select at least one day of the week")
+        cleaned = []
+        for entry in value:
+            try:
+                iv = int(entry)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("Days of week must be integers 0-6")
+            if iv < 0 or iv > 6:
+                raise serializers.ValidationError("Days of week must be between 0 (Monday) and 6 (Sunday)")
+            cleaned.append(iv)
+        return sorted(set(cleaned))
+
+    def validate(self, attrs):
+        start = attrs.get("start_time") or getattr(self.instance, "start_time", None)
+        end = attrs.get("end_time") or getattr(self.instance, "end_time", None)
+        start_date = attrs.get("start_date") if "start_date" in attrs else getattr(self.instance, "start_date", None)
+        end_date = attrs.get("end_date") if "end_date" in attrs else getattr(self.instance, "end_date", None)
+        if start_date is None:
+            existing_start = getattr(self.instance, "start_date", None)
+            if existing_start is None:
+                raise serializers.ValidationError("Start date is required")
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError("End date must be on or after start date")
+        if end_date is None:
+            existing_end = getattr(self.instance, "end_date", None)
+            if existing_end is None:
+                raise serializers.ValidationError("End date is required")
+        if start and end and start_date and end_date:
+            start_dt = datetime.combine(start_date, start)
+            end_dt = datetime.combine(end_date, end)
+            if end_dt <= start_dt:
+                raise serializers.ValidationError("End datetime must be after start datetime")
+        elif start and end and end == start:
+            raise serializers.ValidationError("End time must be different from start time")
+        # Normalize empty strings to None for dates
+        if attrs.get("end_date") == "":
+            attrs["end_date"] = None
+        if attrs.get("start_date") == "":
+            attrs["start_date"] = None
+        return super().validate(attrs)
+
+    def create(self, validated_data):
+        return super().create(validated_data)
