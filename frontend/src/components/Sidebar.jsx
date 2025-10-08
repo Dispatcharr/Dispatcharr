@@ -92,6 +92,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const closeUserForm = () => setUserFormOpen(false);
 
   // Navigation Items
+  const mediaLibraryNav = {
+    label: 'Media Library',
+    icon: <Library size={20} />,
+    children: [
+      { label: 'Movies', path: '/library/movies' },
+      { label: 'TV Shows', path: '/library/shows' },
+    ],
+  };
+
   const navItems =
     authUser && authUser.user_level == USER_LEVELS.ADMIN
       ? [
@@ -106,14 +115,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/vods',
             icon: <Video size={20} />,
           },
-          {
-            label: 'Media Library',
-            icon: <Library size={20} />,
-            children: [
-              { label: 'Movies', path: '/library/movies' },
-              { label: 'TV Shows', path: '/library/shows' },
-            ],
-          },
+          ...(isAuthenticated ? [mediaLibraryNav] : []),
           {
             label: 'M3U & EPG Manager',
             icon: <Play size={20} />,
@@ -147,14 +149,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             badge: `(${Object.keys(channels).length})`,
           },
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          {
-            label: 'Media Library',
-            icon: <Library size={20} />,
-            children: [
-              { label: 'Movies', path: '/library/movies' },
-              { label: 'TV Shows', path: '/library/shows' },
-            ],
-          },
+          ...(isAuthenticated ? [mediaLibraryNav] : []),
           {
             label: 'Settings',
             icon: <LucideSettings size={20} />,

@@ -13,6 +13,7 @@ import {
   Accordion,
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Box,
   Button,
@@ -21,6 +22,8 @@ import {
   Group,
   Loader,
   FileInput,
+  List,
+  Modal,
   MultiSelect,
   Select,
   Stack,
@@ -45,7 +48,6 @@ import {
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
 import { shallow } from 'zustand/shallow';
-import { notifications } from '@mantine/notifications';
 import useLibraryStore from '../store/library';
 import LibraryFormModal from '../components/library/LibraryFormModal';
 import { Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react';
@@ -222,6 +224,7 @@ const SettingsPage = () => {
   const tmdbSetting = settings['tmdb-api-key'];
   const [tmdbKey, setTmdbKey] = useState('');
   const [savingTmdbKey, setSavingTmdbKey] = useState(false);
+  const [tmdbHintOpen, setTmdbHintOpen] = useState(false);
   // Store pending changed settings when showing the dialog
   const [pendingChangedSettings, setPendingChangedSettings] = useState(null);
   const [comskipFile, setComskipFile] = useState(null);
@@ -850,44 +853,52 @@ const SettingsPage = () => {
                   <Stack spacing="md">
                     <Group justify="space-between" align="center">
                       <Text c="dimmed" size="sm">
-                  Configure local media libraries used for scanning and playback.
-                </Text>
-                <Button
-                  size="xs"
-                  leftSection={<Plus size={14} />}
+                        Configure local media libraries used for scanning and playback.
+                      </Text>
+                      <Button
+                        size="xs"
+                        leftSection={<Plus size={14} />}
                         onClick={() => {
                           setEditingLibrarySettings(null);
                           setLibraryModalOpen(true);
                         }}
                       >
                         Add Library
-                  </Button>
-                </Group>
+                      </Button>
+                    </Group>
 
-                <Stack spacing="xs">
-                  <TextInput
-                    label="TMDB API Key"
-                    placeholder="Enter TMDB API key"
-                    value={tmdbKey}
-                    onChange={(event) => setTmdbKey(event.currentTarget.value)}
-                    description="Used for metadata and artwork lookups."
-                  />
-                  <Group justify="flex-end">
-                    <Button
-                      size="xs"
-                      variant="light"
-                      onClick={handleSaveTmdbKey}
-                      loading={savingTmdbKey}
-                    >
-                      Save Metadata Settings
-                    </Button>
-                  </Group>
-                </Stack>
+                    <Stack spacing="xs">
+                      <TextInput
+                        label="TMDB API Key"
+                        placeholder="Enter TMDB API key"
+                        value={tmdbKey}
+                        onChange={(event) => setTmdbKey(event.currentTarget.value)}
+                        description="Used for metadata and artwork lookups."
+                      />
+                      <Group justify="space-between" align="center">
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          color="gray"
+                          onClick={() => setTmdbHintOpen(true)}
+                        >
+                          Where do I get this?
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={handleSaveTmdbKey}
+                          loading={savingTmdbKey}
+                        >
+                          Save Metadata Settings
+                        </Button>
+                      </Group>
+                    </Stack>
 
-                {librariesLoading ? (
-                  <Group justify="center" py="md">
-                    <Loader size="sm" />
-                  </Group>
+                    {librariesLoading ? (
+                      <Group justify="center" py="md">
+                        <Loader size="sm" />
+                      </Group>
                     ) : mediaLibraries.length === 0 ? (
                       <Text c="dimmed" size="sm">
                         No libraries configured yet.
@@ -1441,9 +1452,55 @@ const SettingsPage = () => {
                 </Accordion.Panel>
               </Accordion.Item>
             </>
-          )}
-        </Accordion>
-      </Box>
+        )}
+       </Accordion>
+     </Box>
+
+      <Modal
+        opened={tmdbHintOpen}
+        onClose={() => setTmdbHintOpen(false)}
+        title="How to get a TMDB API key"
+        size="lg"
+        overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
+      >
+        <Stack spacing="sm">
+          <Text size="sm">
+            Dispatcharr uses TMDB (The Movie Database) for artwork and metadata. You can create
+            a key in just a couple of minutes:
+          </Text>
+          <List size="sm" spacing="xs">
+            <List.Item>
+              Visit{' '}
+              <Anchor
+                href="https://www.themoviedb.org/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                themoviedb.org
+              </Anchor>{' '}
+              and sign in or create a free account.
+            </List.Item>
+            <List.Item>
+              Open your{' '}
+              <Anchor
+                href="https://www.themoviedb.org/settings/api"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                TMDB account settings
+              </Anchor>{' '}
+              and choose <Text component="span" fw={500}>API</Text> from the sidebar.
+            </List.Item>
+            <List.Item>
+              Complete the short API application and copy the generated v3 API key into the field
+              above.
+            </List.Item>
+          </List>
+          <Text size="sm" c="dimmed">
+            TMDB issues separate v3 and v4 keys—Dispatcharr only needs the v3 key for metadata lookups.
+          </Text>
+        </Stack>
+      </Modal>
 
       <LibraryFormModal
         opened={libraryModalOpen}
