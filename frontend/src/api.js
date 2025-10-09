@@ -2703,6 +2703,18 @@ export default class API {
       if (options.fileId) {
         params.append('file', options.fileId);
       }
+      const startCandidate =
+        options.startMs ??
+        options.resumeMs ??
+        (typeof options.startSeconds === 'number'
+          ? Math.round(options.startSeconds * 1000)
+          : null);
+      if (startCandidate != null) {
+        const normalized = Math.floor(Number(startCandidate));
+        if (!Number.isNaN(normalized) && normalized > 0) {
+          params.append('start_ms', String(normalized));
+        }
+      }
       const query = params.toString();
       const response = await request(
         `${host}/api/media/items/${id}/stream/${query ? `?${query}` : ''}`

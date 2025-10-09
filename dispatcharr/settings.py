@@ -4,6 +4,16 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _env_int(key: str, default: int) -> int:
+    value = os.environ.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 SECRET_KEY = "REPLACE_ME_WITH_A_REAL_SECRET"
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_DB = os.environ.get("REDIS_DB", "0")
@@ -233,6 +243,25 @@ CELERY_BEAT_SCHEDULE = {
 
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
+MEDIA_LIBRARY_TRANSCODE_DIR = Path(
+    os.environ.get("MEDIA_LIBRARY_TRANSCODE_DIR", MEDIA_ROOT / "transcoded")
+)
+MEDIA_LIBRARY_FFMPEG_PATH = os.environ.get("MEDIA_LIBRARY_FFMPEG_PATH", "ffmpeg")
+MEDIA_LIBRARY_TRANSCODE_PRESET = os.environ.get(
+    "MEDIA_LIBRARY_TRANSCODE_PRESET", "veryfast"
+)
+MEDIA_LIBRARY_TRANSCODE_VIDEO_BITRATE = _env_int(
+    "MEDIA_LIBRARY_TRANSCODE_VIDEO_BITRATE", 4500
+)
+MEDIA_LIBRARY_TRANSCODE_AUDIO_BITRATE = _env_int(
+    "MEDIA_LIBRARY_TRANSCODE_AUDIO_BITRATE", 192
+)
+MEDIA_LIBRARY_TRANSCODE_VIDEO_CODEC = os.environ.get(
+    "MEDIA_LIBRARY_TRANSCODE_VIDEO_CODEC", "libx264"
+)
+MEDIA_LIBRARY_TRANSCODE_AUDIO_CODEC = os.environ.get(
+    "MEDIA_LIBRARY_TRANSCODE_AUDIO_CODEC", "aac"
+)
 
 
 SERVER_IP = "127.0.0.1"

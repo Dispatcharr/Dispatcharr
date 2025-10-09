@@ -246,7 +246,15 @@ const MediaDetailModal = ({ opened, onClose }) => {
     setResumeMode(mode);
     setStartingPlayback(true);
     try {
-      const streamInfo = await API.streamMediaItem(activeItem.id, { fileId });
+      const resumePositionMs =
+        mode === 'resume'
+          ? resumePrompt?.position_ms || activeProgress?.position_ms || 0
+          : 0;
+
+      const streamInfo = await API.streamMediaItem(activeItem.id, {
+        fileId,
+        startMs: resumePositionMs,
+      });
       const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
       if (!playbackUrl) {
         notifications.show({
@@ -257,10 +265,11 @@ const MediaDetailModal = ({ opened, onClose }) => {
         return;
       }
 
-      const resumePositionMs =
-        mode === 'resume'
-          ? resumePrompt?.position_ms || activeProgress?.position_ms || 0
-          : 0;
+      const startOffsetMs = streamInfo?.start_offset_ms ?? 0;
+      const resumeHandledByServer = startOffsetMs > 0;
+      const primaryFile = activeItem.files?.[0];
+      const requiresTranscode = Boolean(streamInfo?.requires_transcode);
+      const transcodeStatus = streamInfo?.transcode_status ?? null;
 
       showVideo(playbackUrl, 'library', {
         mediaItemId: activeItem.id,
@@ -270,8 +279,17 @@ const MediaDetailModal = ({ opened, onClose }) => {
         logo: activeItem.poster_url ? { url: activeItem.poster_url } : undefined,
         progressId: activeProgress?.id,
         resumePositionMs,
+        resumeHandledByServer,
+        startOffsetMs,
+        requiresTranscode,
+        transcodeStatus,
         durationMs:
-          resumePrompt?.duration_ms || activeProgress?.duration_ms || activeItem.runtime_ms,
+          streamInfo?.duration_ms ??
+          resumePrompt?.duration_ms ??
+          activeProgress?.duration_ms ??
+          activeItem.runtime_ms ??
+          primaryFile?.duration_ms ??
+          null,
         fileId,
       });
 
@@ -344,17 +362,6 @@ const MediaDetailModal = ({ opened, onClose }) => {
         return;
       }
 
-      const streamInfo = await API.streamMediaItem(episodeDetail.id, { fileId: episodeFileId });
-      const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
-      if (!playbackUrl) {
-        notifications.show({
-          title: 'Playback error',
-          message: 'Streaming endpoint did not return a playable URL.',
-          color: 'red',
-        });
-        return;
-      }
-
       const resolvedSequence = Array.isArray(sequence) ? sequence : [];
       const episodeIds = resolvedSequence.length
         ? resolvedSequence.map((ep) => ep.id)
@@ -372,8 +379,29 @@ const MediaDetailModal = ({ opened, onClose }) => {
           ? episodeSummary.position_ms || 0
           : episodeProgress?.position_ms || 0;
 
+      const streamInfo = await API.streamMediaItem(episodeDetail.id, {
+        fileId: episodeFileId,
+        startMs: resumePositionMs,
+      });
+      const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
+      if (!playbackUrl) {
+        notifications.show({
+          title: 'Playback error',
+          message: 'Streaming endpoint did not return a playable URL.',
+          color: 'red',
+        });
+        return;
+      }
+
+      const resumeHandledByServer = Boolean(streamInfo?.start_offset_ms);
+
       const durationMs =
-        episodeSummary?.duration_ms || episodeProgress?.duration_ms || episodeDetail.runtime_ms;
+        streamInfo?.duration_ms ??
+        episodeSummary?.duration_ms ??
+        episodeProgress?.duration_ms ??
+        episodeDetail.runtime_ms ??
+        episodeDetail.files?.[0]?.duration_ms ??
+        null;
 
       showVideo(playbackUrl, 'library', {
         mediaItemId: episodeDetail.id,
@@ -391,6 +419,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
         showPoster: activeItem?.poster_url,
         progressId: episodeProgress?.id,
         resumePositionMs,
+        resumeHandledByServer,
         durationMs,
         fileId: episodeFileId,
         playbackSequence,

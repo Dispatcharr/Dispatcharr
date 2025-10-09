@@ -279,7 +279,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             return (
               <Stack key={item.label} spacing={4}>
                 <UnstyledButton
-                  className={`navlink ${expanded ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
+                  className={`navlink ${childActive ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
                   onClick={() => setLibraryExpanded((prev) => !prev)}
                 >
                   {item.icon}

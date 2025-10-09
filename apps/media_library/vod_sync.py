@@ -247,12 +247,17 @@ def _update_movie_from_media_item(movie: Movie, media_item: MediaItem) -> Movie:
     poster_source_url = (
         metadata_updates.get("vod_poster_source_url") if metadata_updates else poster_source
     )
+    backdrop_entries: list[str] = []
+    if media_item.backdrop_url:
+        backdrop_entries.append(media_item.backdrop_url)
+
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
         "poster_url": poster_media_url or poster_source_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
+        "backdrop_path": backdrop_entries,
         "quality": quality_info,
     }
     merged_custom = _merge_custom_properties(movie.custom_properties, custom_updates)
@@ -305,12 +310,17 @@ def _update_series_from_media_item(series: Series, media_item: MediaItem) -> Ser
         metadata_updates.get("vod_poster_source_url") if metadata_updates else poster_source
     )
 
+    backdrop_entries: list[str] = []
+    if media_item.backdrop_url:
+        backdrop_entries.append(media_item.backdrop_url)
+
     custom_updates = {
         "source": "library",
         "library_id": media_item.library_id,
         "library_item_id": media_item.id,
         "poster_url": poster_media_url or poster_source_url or media_item.poster_url,
         "backdrop_url": media_item.backdrop_url,
+        "backdrop_path": backdrop_entries,
     }
     merged_custom = _merge_custom_properties(series.custom_properties, custom_updates)
     if merged_custom != series.custom_properties:

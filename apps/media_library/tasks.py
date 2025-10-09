@@ -20,6 +20,7 @@ from apps.media_library.utils import (
     probe_media_file,
     resolve_media_item,
 )
+from apps.media_library.transcode import ensure_browser_ready_source
 from apps.media_library.vod_sync import (
     sync_library_to_vod,
     sync_media_item_to_vod,
@@ -467,6 +468,16 @@ def _probe_media_file(*, file_id: int) -> None:
         file_record.checksum = checksum
         file_record.save(update_fields=["checksum", "updated_at"])
 
+    if file_record.requires_transcode and (
+        file_record.transcode_status
+        in (
+            MediaFile.TRANSCODE_STATUS_PENDING,
+            MediaFile.TRANSCODE_STATUS_FAILED,
+        )
+        or not file_record.transcoded_path
+    ):
+        transcode_media_file_task.delay(file_record.id)
+
 
 @shared_task(name="media_library.probe_media")
 def probe_media_task(file_id: int):
@@ -508,6 +519,23 @@ def prune_stale_scans(max_age_hours: int = 72):
     ).delete()
     if deleted:
         logger.info("Pruned %s stale library scan records", deleted)
+
+
+@shared_task(name="media_library.transcode_media_file")
+def transcode_media_file_task(file_id: int, force: bool = False):
+    try:
+        media_file = MediaFile.objects.get(pk=file_id)
+    except MediaFile.DoesNotExist:
+        logger.warning("Media file %s not found for transcoding", file_id)
+        return
+
+    try:
+        ensure_browser_ready_source(media_file, force=force)
+    except FileNotFoundError:
+        logger.warning("Source file missing for media file %s", file_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Transcode failed for media file %s: %s", file_id, exc)
+        raise
 
 
 @shared_task(name="media_library.schedule_auto_scans")

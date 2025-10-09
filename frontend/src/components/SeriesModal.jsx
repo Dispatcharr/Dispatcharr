@@ -294,6 +294,18 @@ const SeriesModal = ({ series, opened, onClose }) => {
           ...episode,
           provider_type: 'library',
           library_media_item_id: mediaItemId,
+          mediaItemId,
+          fileId: streamInfo?.file_id,
+          resumePositionMs: 0,
+          resumeHandledByServer: Boolean(streamInfo?.start_offset_ms),
+          startOffsetMs: streamInfo?.start_offset_ms ?? 0,
+          requiresTranscode: Boolean(streamInfo?.requires_transcode),
+          transcodeStatus: streamInfo?.transcode_status ?? null,
+          durationMs:
+            streamInfo?.duration_ms ??
+            episode?.runtime_ms ??
+            episode?.files?.[0]?.duration_ms ??
+            null,
         };
         showVideo(streamInfo.url, 'library', playbackMeta);
       } catch (error) {

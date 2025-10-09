@@ -350,7 +350,32 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        start_ms = 0
+        start_ms_param = request.query_params.get("start_ms")
+        if start_ms_param not in (None, "", "0"):
+            try:
+                start_ms = max(0, int(start_ms_param))
+            except (TypeError, ValueError):
+                raise ValidationError({"start_ms": "Start offset must be an integer number of milliseconds."})
+
+        applied_start_ms = 0
+        should_embed_start = False
+        if start_ms > 0 and file.requires_transcode:
+            cached_ready = (
+                file.transcode_status == models.MediaFile.TRANSCODE_STATUS_READY
+                and file.transcoded_path
+                and os.path.exists(file.transcoded_path)
+            )
+            if not cached_ready:
+                applied_start_ms = start_ms
+                should_embed_start = True
+
+        duration_ms = file.effective_duration_ms or item.runtime_ms or 0
+
         payload = {"file_id": file.id, "user_id": request.user.id}
+        if should_embed_start:
+            payload["start_ms"] = applied_start_ms
+
         token = self._stream_signer.sign_object(payload)
         stream_url = request.build_absolute_uri(
             reverse("api:media:stream-file", args=[token])
@@ -362,9 +387,12 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 "file_id": file.id,
                 "expires_in": ttl,
                 "type": "direct",
-                "duration_ms": file.duration_ms,
+                "duration_ms": duration_ms,
                 "bit_rate": file.bit_rate,
                 "container": file.container,
+                "requires_transcode": file.requires_transcode,
+                "transcode_status": file.transcode_status,
+                "start_offset_ms": applied_start_ms,
             }
         )
 

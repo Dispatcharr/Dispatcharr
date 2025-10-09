@@ -1,3 +1,4 @@
+import json
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -177,7 +178,11 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
                 'imdb_id': movie.imdb_id,
                 'duration_secs': movie.duration_secs,
                 'movie_image': logo_cache_url or (movie.logo.url if movie.logo else custom_props.get('poster_url')),
-                'backdrop_path': [custom_props.get('backdrop_url')] if custom_props.get('backdrop_url') else [],
+                'backdrop_path': (
+                    custom_props.get('backdrop_path')
+                    if isinstance(custom_props.get('backdrop_path'), list)
+                    else ([custom_props.get('backdrop_url')] if custom_props.get('backdrop_url') else [])
+                ),
                 'video': (custom_props.get('quality') or {}).get('video'),
                 'audio': (custom_props.get('quality') or {}).get('audio'),
                 'bitrate': (custom_props.get('quality') or {}).get('bitrate'),
@@ -884,10 +889,19 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 for row in cursor.fetchall():
                     item_dict = dict(zip(columns, row))
 
+                    custom_props = item_dict.get('custom_properties') or {}
+                    if isinstance(custom_props, str):
+                        try:
+                            custom_props = json.loads(custom_props)
+                        except json.JSONDecodeError:
+                            custom_props = {}
+
                     # Build logo object in the format expected by frontend
                     logo_data = None
+                    poster_candidate = None
                     if item_dict['logo_id']:
                         cache_url = build_logo_cache_url(request, item_dict['logo_id'])
+                        poster_candidate = cache_url or item_dict.get('logo_url')
                         logo_data = {
                             'id': item_dict['logo_id'],
                             'name': item_dict['logo_name'],
@@ -897,6 +911,14 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                             'is_used': True,
                             'channel_names': []
                         }
+                    if not poster_candidate:
+                        poster_candidate = custom_props.get('poster_url') or custom_props.get('cover')
+
+                    backdrop_values = []
+                    if isinstance(custom_props.get('backdrop_path'), list):
+                        backdrop_values = custom_props['backdrop_path']
+                    elif custom_props.get('backdrop_url'):
+                        backdrop_values = [custom_props['backdrop_url']]
 
                     rating_value = item_dict['rating']
                     try:
@@ -914,10 +936,14 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'rating': rating_parsed,
                         'genre': item_dict['genre'] or '',
                         'duration': item_dict['duration'],
+                        'duration_secs': item_dict['duration'],
                         'created_at': item_dict['created_at'].isoformat() if item_dict['created_at'] else None,
                         'updated_at': item_dict['updated_at'].isoformat() if item_dict['updated_at'] else None,
-                        'custom_properties': item_dict['custom_properties'] or {},
+                        'custom_properties': custom_props,
                         'logo': logo_data,
+                        'movie_image': poster_candidate if item_dict['content_type'] == 'movie' else None,
+                        'series_image': poster_candidate if item_dict['content_type'] == 'series' else None,
+                        'backdrop_path': backdrop_values,
                         'content_type': item_dict['content_type']
                     }
                     results.append(formatted_item)

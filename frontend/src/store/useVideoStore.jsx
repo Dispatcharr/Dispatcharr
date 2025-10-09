@@ -15,7 +15,14 @@ const useVideoStore = create((set) => ({
       isVisible: true,
       streamUrl: url,
       contentType: type,
-      metadata: metadata,
+      metadata: metadata
+        ? {
+            startOffsetMs: 0,
+            requiresTranscode: false,
+            transcodeStatus: null,
+            ...metadata,
+          }
+        : null,
     }),
 
   hideVideo: () =>

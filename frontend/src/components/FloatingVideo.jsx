@@ -3,10 +3,37 @@ import React, { useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import mpegts from 'mpegts.js';
-import { CloseButton, Flex, Loader, Text, Box, Button, Progress, Group } from '@mantine/core';
-import { Play } from 'lucide-react';
+import {
+  CloseButton,
+  Flex,
+  Loader,
+  Text,
+  Box,
+  Button,
+  Progress,
+  Group,
+  Slider,
+  ActionIcon,
+} from '@mantine/core';
+import { Play, Pause } from 'lucide-react';
 import API from '../api';
 import useAuthStore from '../store/auth';
+
+const CONTROL_HIDE_DELAY = 2500;
+
+const formatTime = (value) => {
+  if (!Number.isFinite(value)) {
+    return '0:00';
+  }
+  const totalSeconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
 
 export default function FloatingVideo() {
   const isVisible = useVideoStore((s) => s.isVisible);
@@ -28,21 +55,248 @@ export default function FloatingVideo() {
   const countdownIntervalRef = useRef(null);
   const AUTOPLAY_SECONDS = 10;
   const authUser = useAuthStore((s) => s.user);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTimeSeconds, setCurrentTimeSeconds] = useState(
+    (metadata?.startOffsetMs ?? 0) / 1000
+  );
+  const [durationSeconds, setDurationSeconds] = useState(
+    metadata?.durationMs ? metadata.durationMs / 1000 : 0
+  );
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubValueSeconds, setScrubValueSeconds] = useState(
+    (metadata?.startOffsetMs ?? 0) / 1000
+  );
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef(null);
+  const serverSeekInProgressRef = useRef(false);
+  const lastServerSeekAbsoluteRef = useRef((metadata?.startOffsetMs ?? 0) / 1000);
+  const wasPlayingBeforeScrubRef = useRef(false);
+
+  const clearControlsTimeout = () => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+  };
+
+  const handlePointerActivity = () => {
+    setShowControls(true);
+    clearControlsTimeout();
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (!isScrubbing && !serverSeekInProgressRef.current) {
+        setShowControls(false);
+      }
+    }, CONTROL_HIDE_DELAY);
+  };
+
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video || serverSeekInProgressRef.current || isLoading) return;
+    handlePointerActivity();
+    if (video.paused) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  };
+
+  const performSeek = (targetSeconds) => {
+    if (!Number.isFinite(targetSeconds)) {
+      return;
+    }
+
+    const sanitized = Math.max(0, targetSeconds);
+    const startOffsetSeconds = (metadata?.startOffsetMs ?? 0) / 1000;
+    const video = videoRef.current;
+
+    const isLocalSeek =
+      !metadata?.requiresTranscode || metadata?.transcodeStatus === 'ready' || !metadata?.mediaItemId;
+
+    if (isLocalSeek) {
+      if (video) {
+        const shouldResume = wasPlayingBeforeScrubRef.current || !video.paused;
+        try {
+          video.currentTime = Math.max(0, sanitized - startOffsetSeconds);
+        } catch (err) {
+          console.debug('Failed to adjust local playback position', err);
+        }
+        if (shouldResume) {
+          video.play().catch(() => {});
+        }
+        setIsPlaying(!video.paused);
+      }
+      setCurrentTimeSeconds(sanitized);
+      setScrubValueSeconds(sanitized);
+      lastServerSeekAbsoluteRef.current = sanitized;
+      serverSeekInProgressRef.current = false;
+      setIsLoading(false);
+      handlePointerActivity();
+      wasPlayingBeforeScrubRef.current = false;
+      return;
+    }
+
+    if (!metadata?.fileId) {
+      console.debug('Seek requested without file identifier; aborting');
+      serverSeekInProgressRef.current = false;
+      setIsLoading(false);
+      return;
+    }
+
+    serverSeekInProgressRef.current = true;
+    lastServerSeekAbsoluteRef.current = sanitized;
+    setIsLoading(true);
+    setLoadError(null);
+    setShowControls(true);
+    clearControlsTimeout();
+
+    if (video) {
+      try {
+        video.pause();
+      } catch (pauseError) {
+        console.debug('Failed to pause prior to server seek', pauseError);
+      }
+    }
+    setIsPlaying(false);
+
+    const startMs = Math.round(sanitized * 1000);
+
+    API.streamMediaItem(metadata.mediaItemId, {
+      fileId: metadata.fileId,
+      startMs,
+    })
+      .then((streamInfo) => {
+        const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
+        if (!playbackUrl) {
+          throw new Error('Streaming endpoint did not return a playable URL.');
+        }
+
+        const startOffsetMs = streamInfo?.start_offset_ms ?? 0;
+        const resumeHandledByServer = startOffsetMs > 0;
+        const requiresTranscode = Boolean(streamInfo?.requires_transcode);
+        const transcodeStatus = streamInfo?.transcode_status ?? metadata?.transcodeStatus ?? null;
+        const derivedDurationMs =
+          streamInfo?.duration_ms ??
+          metadata?.durationMs ??
+          (videoRef.current?.duration
+            ? Math.round(
+                ((metadata?.startOffsetMs ?? 0) / 1000 + videoRef.current.duration) * 1000
+              )
+            : undefined);
+
+        const nextMetadata = {
+          ...metadata,
+          resumePositionMs: startMs,
+          resumeHandledByServer,
+          startOffsetMs:
+            startOffsetMs || (resumeHandledByServer ? startMs : metadata?.startOffsetMs ?? 0),
+          requiresTranscode,
+          transcodeStatus,
+          durationMs: derivedDurationMs,
+        };
+
+        wasPlayingBeforeScrubRef.current = false;
+        useVideoStore.getState().showVideo(playbackUrl, 'library', nextMetadata);
+      })
+      .catch((err) => {
+        console.error('Failed to perform server-side seek', err);
+        setLoadError('Unable to seek in this stream.');
+        setIsLoading(false);
+        serverSeekInProgressRef.current = false;
+        if (video) {
+          try {
+            video.play();
+          } catch (playErr) {
+            console.debug('Failed to resume after seek failure', playErr);
+          }
+        }
+        wasPlayingBeforeScrubRef.current = false;
+      });
+  };
+
+  const handleScrubChange = (value) => {
+    const video = videoRef.current;
+    if (!isScrubbing) {
+      setIsScrubbing(true);
+      wasPlayingBeforeScrubRef.current = video ? !video.paused : false;
+    }
+    if (video) {
+      try {
+        video.pause();
+      } catch (pauseError) {
+        console.debug('Failed to pause video while scrubbing', pauseError);
+      }
+      setIsPlaying(false);
+    }
+    setScrubValueSeconds(value);
+    handlePointerActivity();
+  };
+
+  const handleScrubEnd = (value) => {
+    setIsScrubbing(false);
+    performSeek(value);
+  };
 
   const sendLibraryProgress = (positionSeconds, durationSeconds, completed = false) => {
     if (contentType !== 'library') return;
     if (!metadata?.mediaItemId || !authUser?.id) return;
+    const startOffsetMs = metadata?.startOffsetMs ?? 0;
+    const relativePosition = Number.isFinite(positionSeconds) ? positionSeconds : 0;
+    const absolutePositionSeconds = Math.max(0, startOffsetMs / 1000 + relativePosition);
+
+    let totalDurationMs;
+    if (metadata?.durationMs) {
+      totalDurationMs = metadata.durationMs;
+    } else {
+      const relativeDuration = Number.isFinite(durationSeconds) ? durationSeconds : 0;
+      const fallbackDurationSeconds =
+        relativeDuration > 0
+          ? relativeDuration
+          : videoRef.current?.duration
+          ? videoRef.current.duration
+          : 0;
+      totalDurationMs = Math.round(
+        Math.max(absolutePositionSeconds, startOffsetMs / 1000 + fallbackDurationSeconds) * 1000
+      );
+    }
+
+    let positionMs = Math.round(absolutePositionSeconds * 1000);
+    if (completed) {
+      positionMs = totalDurationMs;
+    } else {
+      positionMs = Math.min(positionMs, totalDurationMs);
+    }
+
     const payload = {
       user: authUser.id,
       media_item: metadata.mediaItemId,
-      position_ms: Math.max(0, Math.floor(positionSeconds * 1000)),
-      duration_ms: Math.max(0, Math.floor(durationSeconds * 1000)),
+      position_ms: Math.max(0, positionMs),
+      duration_ms: Math.max(0, totalDurationMs),
       completed,
     };
     API.setMediaWatchProgress(payload).catch((error) => {
       console.debug('Failed to update watch progress', error);
     });
   };
+
+  useEffect(() => {
+    const start = (metadata?.startOffsetMs ?? 0) / 1000;
+    setCurrentTimeSeconds(start);
+    setScrubValueSeconds(start);
+    if (metadata?.durationMs) {
+      setDurationSeconds(metadata.durationMs / 1000);
+    }
+    wasPlayingBeforeScrubRef.current = false;
+  }, [metadata?.mediaItemId, metadata?.startOffsetMs, metadata?.durationMs]);
+
+  useEffect(() => {
+    if (isScrubbing) {
+      setShowControls(true);
+      clearControlsTimeout();
+    }
+  }, [isScrubbing]);
+
+
+  useEffect(() => () => clearControlsTimeout(), []);
 
   const clearAutoPlayTimers = () => {
     if (autoPlayTimerRef.current) {
@@ -63,6 +317,9 @@ export default function FloatingVideo() {
       if (playerRef.current) {
         setIsLoading(false);
         setLoadError(null);
+        setIsPlaying(false);
+        clearControlsTimeout();
+        setShowControls(true);
 
         if (videoRef.current) {
           videoRef.current.removeAttribute('src');
@@ -131,8 +388,21 @@ export default function FloatingVideo() {
         setLoadError('Next episode is missing media files.');
         return;
       }
+      const summary = episodeDetail.watch_summary;
+      const resumePositionMs =
+        summary?.status === 'in_progress'
+          ? summary.position_ms || 0
+          : episodeDetail.watch_progress?.position_ms || 0;
+      const initialDurationMs =
+        summary?.duration_ms ??
+        episodeDetail.watch_progress?.duration_ms ??
+        episodeDetail.runtime_ms ??
+        episodeDetail.files?.[0]?.duration_ms ??
+        null;
+
       const streamInfo = await API.streamMediaItem(episodeDetail.id, {
         fileId,
+        startMs: resumePositionMs,
       });
       const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
       if (!playbackUrl) {
@@ -140,13 +410,12 @@ export default function FloatingVideo() {
         return;
       }
 
-      const summary = episodeDetail.watch_summary;
-      const resumePositionMs =
-        summary?.status === 'in_progress'
-          ? summary.position_ms || 0
-          : episodeDetail.watch_progress?.position_ms || 0;
+      const startOffsetMs = streamInfo?.start_offset_ms ?? 0;
+      const resumeHandledByServer = startOffsetMs > 0;
+      const requiresTranscode = Boolean(streamInfo?.requires_transcode);
+      const transcodeStatus = streamInfo?.transcode_status ?? null;
       const durationMs =
-        summary?.duration_ms || episodeDetail.watch_progress?.duration_ms || episodeDetail.runtime_ms;
+        streamInfo?.duration_ms ?? initialDurationMs;
 
       const playbackSequence = {
         episodeIds,
@@ -166,6 +435,10 @@ export default function FloatingVideo() {
             : metadata?.logo || (metadata?.showPoster ? { url: metadata.showPoster } : undefined),
         progressId: episodeDetail.watch_progress?.id,
         resumePositionMs,
+        resumeHandledByServer,
+        startOffsetMs,
+        requiresTranscode,
+        transcodeStatus,
         durationMs,
         fileId,
         playbackSequence,
@@ -230,8 +503,28 @@ export default function FloatingVideo() {
     video.crossOrigin = 'anonymous';
 
     // Set up event listeners
-    const handleLoadStart = () => setIsLoading(true);
-    const handleLoadedData = () => setIsLoading(false);
+    const handleLoadStart = () => {
+      setIsLoading(true);
+      handlePointerActivity();
+    };
+    const handleLoadedData = () => {
+      setIsLoading(false);
+      handlePointerActivity();
+    };
+    const handleLoadedMetadata = () => {
+      const startOffsetSeconds = (metadata?.startOffsetMs ?? 0) / 1000;
+      const videoDuration = Number.isFinite(video.duration) ? video.duration : 0;
+      const resolvedDuration = metadata?.durationMs
+        ? Math.max(videoDuration + startOffsetSeconds, metadata.durationMs / 1000)
+        : videoDuration + startOffsetSeconds;
+      if (resolvedDuration > 0) {
+        setDurationSeconds(resolvedDuration);
+      }
+      const absolutePosition = startOffsetSeconds + video.currentTime;
+      setCurrentTimeSeconds(absolutePosition);
+      setScrubValueSeconds(absolutePosition);
+    };
+
     const handleCanPlay = () => {
       setIsLoading(false);
       // Auto-play for VOD content
@@ -242,6 +535,7 @@ export default function FloatingVideo() {
       if (
         contentType === 'library' &&
         metadata?.resumePositionMs &&
+        !metadata?.resumeHandledByServer &&
         !resumeApplied
       ) {
         try {
@@ -251,8 +545,24 @@ export default function FloatingVideo() {
           console.debug('Failed to set resume position', error);
         }
       }
+      const startOffsetSeconds = (metadata?.startOffsetMs ?? 0) / 1000;
+      const absolutePosition = startOffsetSeconds + video.currentTime;
+      setCurrentTimeSeconds(absolutePosition);
+      setScrubValueSeconds(absolutePosition);
+      setIsPlaying(!video.paused);
+      handlePointerActivity();
       // Start overlay timer when video is ready
       startOverlayTimer();
+    };
+
+    const handlePlay = () => {
+      setIsPlaying(true);
+      handlePointerActivity();
+    };
+
+    const handlePause = () => {
+      setIsPlaying(false);
+      handlePointerActivity();
     };
     const handleError = (e) => {
       setIsLoading(false);
@@ -295,7 +605,25 @@ export default function FloatingVideo() {
 
     const handleTimeUpdate = () => {
       if (contentType !== 'library') return;
-      if (!video.duration || Number.isNaN(video.duration)) return;
+      const startOffsetSeconds = (metadata?.startOffsetMs ?? 0) / 1000;
+      const relativePosition = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      const absolutePosition = startOffsetSeconds + relativePosition;
+      setCurrentTimeSeconds(absolutePosition);
+      if (!isScrubbing) {
+        setScrubValueSeconds(absolutePosition);
+      }
+
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        const potentialDuration = Math.max(
+          durationSeconds,
+          startOffsetSeconds + video.duration,
+          metadata?.durationMs ? metadata.durationMs / 1000 : 0
+        );
+        if (potentialDuration > durationSeconds) {
+          setDurationSeconds(potentialDuration);
+        }
+      }
+
       const now = Date.now();
       if (now - lastProgressSentRef.current < 5000) {
         return;
@@ -307,6 +635,10 @@ export default function FloatingVideo() {
     const handleEnded = () => {
       if (contentType !== 'library') return;
       if (!video.duration || Number.isNaN(video.duration)) return;
+      const startOffsetSeconds = (metadata?.startOffsetMs ?? 0) / 1000;
+      const totalSeconds = Math.max(durationSeconds, startOffsetSeconds + video.duration);
+      setCurrentTimeSeconds(totalSeconds);
+      setScrubValueSeconds(totalSeconds);
       sendLibraryProgress(video.duration, video.duration, true);
       const sequence = metadata?.playbackSequence;
       if (sequence?.episodeIds?.length) {
@@ -319,8 +651,11 @@ export default function FloatingVideo() {
 
     // Add event listeners
     video.addEventListener('loadstart', handleLoadStart);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('loadeddata', handleLoadedData);
     video.addEventListener('canplay', handleCanPlay);
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
     video.addEventListener('error', handleError);
     video.addEventListener('progress', handleProgress);
     video.addEventListener('timeupdate', handleTimeUpdate);
@@ -334,8 +669,11 @@ export default function FloatingVideo() {
     playerRef.current = {
       destroy: () => {
         video.removeEventListener('loadstart', handleLoadStart);
+        video.removeEventListener('loadedmetadata', handleLoadedMetadata);
         video.removeEventListener('loadeddata', handleLoadedData);
         video.removeEventListener('canplay', handleCanPlay);
+        video.removeEventListener('play', handlePlay);
+        video.removeEventListener('pause', handlePause);
         video.removeEventListener('error', handleError);
         video.removeEventListener('progress', handleProgress);
         video.removeEventListener('timeupdate', handleTimeUpdate);
@@ -484,6 +822,23 @@ export default function FloatingVideo() {
     };
   }, [isVisible, streamUrl, contentType]);
 
+
+  useEffect(() => {
+    if (isVisible) {
+      setShowControls(true);
+      handlePointerActivity();
+    } else {
+      clearControlsTimeout();
+    }
+  }, [isVisible]);
+  useEffect(() => {
+    serverSeekInProgressRef.current = false;
+  }, [streamUrl]);
+
+  useEffect(() => {
+    lastServerSeekAbsoluteRef.current = (metadata?.startOffsetMs ?? 0) / 1000;
+  }, [metadata?.startOffsetMs]);
+
   useEffect(() => {
     clearAutoPlayTimers();
   }, [metadata?.mediaItemId]);
@@ -504,6 +859,26 @@ export default function FloatingVideo() {
   if (!isVisible || !streamUrl) {
     return null;
   }
+
+  const baseDurationSeconds =
+    Number.isFinite(durationSeconds) && durationSeconds > 0
+      ? durationSeconds
+      : metadata?.durationMs
+      ? metadata.durationMs / 1000
+      : 0;
+  const sliderMaxValue = Number.isFinite(baseDurationSeconds) && baseDurationSeconds > 0
+    ? baseDurationSeconds
+    : Math.max(scrubValueSeconds, currentTimeSeconds + 1);
+  const sliderValue = Math.min(
+    Math.max(isScrubbing ? scrubValueSeconds : currentTimeSeconds, 0),
+    Math.max(sliderMaxValue, 1)
+  );
+  const formattedDurationLabel =
+    Number.isFinite(baseDurationSeconds) && baseDurationSeconds > 0
+      ? formatTime(sliderMaxValue)
+      : '--:--';
+  const formattedCurrentTime = sliderMaxValue > 0 ? formatTime(sliderValue) : '--:--';
+  const showPlaybackControls = contentType !== 'live';
 
   return (
     <Draggable nodeRef={videoContainerRef}>
@@ -545,6 +920,8 @@ export default function FloatingVideo() {
         {/* Video container with relative positioning for the overlay */}
         <Box
           style={{ position: 'relative' }}
+          onMouseMove={handlePointerActivity}
+          onTouchStart={handlePointerActivity}
           onMouseEnter={() => {
             if (contentType !== 'live' && !isLoading) {
               setShowOverlay(true);
@@ -562,17 +939,15 @@ export default function FloatingVideo() {
           {/* Enhanced video element with better controls for VOD */}
           <video
             ref={videoRef}
-            controls
             style={{
               width: '100%',
               height: '180px',
               backgroundColor: '#000',
-              // Better controls styling for VOD
-              ...(contentType !== 'live' && {
-                controlsList: 'nodownload',
-                playsInline: true,
-              }),
             }}
+            playsInline
+            controls={contentType === 'live'}
+            controlsList={contentType === 'live' ? undefined : 'nodownload'}
+            onClick={togglePlayback}
             // Add poster for VOD if available
             {...(contentType !== 'live' && {
               poster: metadata?.logo?.url, // Use poster if available
@@ -638,11 +1013,65 @@ export default function FloatingVideo() {
             </Box>
           )}
 
+          {showPlaybackControls && (
+            <Box
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                padding: '10px 14px',
+                background: 'linear-gradient(transparent, rgba(0,0,0,0.85))',
+                transition: 'opacity 0.2s ease-in-out',
+                opacity: showControls ? 1 : 0,
+                pointerEvents:
+                  showControls && !serverSeekInProgressRef.current && !isLoading
+                    ? 'auto'
+                    : 'none',
+                zIndex: 4,
+              }}
+            >
+              <Group gap="sm" align="center" justify="space-between">
+                <ActionIcon
+                  variant="filled"
+                  color="gray"
+                  radius="xl"
+                  size="lg"
+                  onClick={togglePlayback}
+                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  disabled={serverSeekInProgressRef.current || isLoading}
+                >
+                  {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                </ActionIcon>
+                <Text size="xs" c="gray.1" style={{ width: 44 }}>{formattedCurrentTime}</Text>
+                <Slider
+                  style={{ flexGrow: 1 }}
+                  min={0}
+                  max={Math.max(sliderMaxValue, 1)}
+                  step={0.1}
+                  value={Math.min(Math.max(sliderValue, 0), Math.max(sliderMaxValue, 1))}
+                  onChange={handleScrubChange}
+                  onChangeEnd={handleScrubEnd}
+                  size="sm"
+                  label={null}
+                  aria-label="Seek"
+                  disabled={sliderMaxValue <= 0 || serverSeekInProgressRef.current || isLoading}
+                  styles={{
+                    track: { backgroundColor: 'rgba(255,255,255,0.2)' },
+                    bar: { backgroundColor: '#1abc9c' },
+                    thumb: { borderColor: '#1abc9c', backgroundColor: '#1abc9c' },
+                  }}
+                />
+                <Text size="xs" c="gray.1" style={{ width: 44, textAlign: 'right' }}>{formattedDurationLabel}</Text>
+              </Group>
+            </Box>
+          )}
+
           {nextAutoplay && autoplayCountdown !== null && (
             <Box
               style={{
                 position: 'absolute',
-                bottom: 12,
+                bottom: showPlaybackControls ? 70 : 12,
                 left: 12,
                 backgroundColor: 'rgba(15, 23, 42, 0.85)',
                 padding: '10px 12px',

@@ -408,6 +408,24 @@ class ArtworkAsset(models.Model):
 class MediaFile(models.Model):
     """Physical file on disk that is associated with a media item."""
 
+    TRANSCODE_STATUS_NOT_REQUIRED = "not_required"
+    TRANSCODE_STATUS_PENDING = "pending"
+    TRANSCODE_STATUS_PROCESSING = "processing"
+    TRANSCODE_STATUS_READY = "ready"
+    TRANSCODE_STATUS_FAILED = "failed"
+
+    TRANSCODE_STATUS_CHOICES = [
+        (TRANSCODE_STATUS_NOT_REQUIRED, "Not Required"),
+        (TRANSCODE_STATUS_PENDING, "Pending"),
+        (TRANSCODE_STATUS_PROCESSING, "Processing"),
+        (TRANSCODE_STATUS_READY, "Ready"),
+        (TRANSCODE_STATUS_FAILED, "Failed"),
+    ]
+
+    BROWSER_SAFE_CONTAINERS = {"mp4", "m4v"}
+    BROWSER_SAFE_VIDEO_CODECS = {"h264", "avc1"}
+    BROWSER_SAFE_AUDIO_CODECS = {"aac", "mp3", "mp4a", "libmp3lame"}
+
     library = models.ForeignKey(
         Library,
         on_delete=models.CASCADE,
@@ -446,6 +464,16 @@ class MediaFile(models.Model):
     checksum = models.CharField(max_length=64, blank=True, db_index=True)
     fingerprint = models.CharField(max_length=64, blank=True, db_index=True)
     last_modified_at = models.DateTimeField(blank=True, null=True)
+    requires_transcode = models.BooleanField(default=False)
+    transcode_status = models.CharField(
+        max_length=20,
+        choices=TRANSCODE_STATUS_CHOICES,
+        default=TRANSCODE_STATUS_NOT_REQUIRED,
+    )
+    transcoded_path = models.CharField(max_length=4096, blank=True)
+    transcoded_mime_type = models.CharField(max_length=128, blank=True)
+    transcode_error = models.TextField(blank=True)
+    transcoded_at = models.DateTimeField(blank=True, null=True)
     last_seen_at = models.DateTimeField(blank=True, null=True)
     missing_since = models.DateTimeField(blank=True, null=True)
     notes = models.TextField(blank=True)
@@ -467,6 +495,75 @@ class MediaFile(models.Model):
     @property
     def extension(self):
         return os.path.splitext(self.file_name)[1].lower()
+
+    def _normalized_container(self) -> str:
+        container = (self.container or "").split(",")[0].strip().lower()
+        if container:
+            return container
+        ext = self.extension
+        return ext[1:] if ext.startswith(".") else ext
+
+    @staticmethod
+    def _normalized_codec(codec_value: str) -> str:
+        return (codec_value or "").split(".")[0].strip().lower()
+
+    def is_browser_playable(self) -> bool:
+        container = self._normalized_container()
+        if container not in self.BROWSER_SAFE_CONTAINERS:
+            return False
+
+        video_codec = self._normalized_codec(self.video_codec)
+        if video_codec and video_codec not in self.BROWSER_SAFE_VIDEO_CODECS:
+            return False
+
+        audio_codec = self._normalized_codec(self.audio_codec)
+        if audio_codec and audio_codec not in self.BROWSER_SAFE_AUDIO_CODECS:
+            return False
+
+        return True
+
+    @property
+    def effective_duration_ms(self) -> int | None:
+        """
+        Return the best-known duration (ms). Falls back to probe metadata and
+        associated media item runtime when the direct field is missing.
+        """
+        if self.duration_ms:
+            try:
+                return int(self.duration_ms)
+            except (TypeError, ValueError):
+                pass
+
+        extra = self.extra_streams or {}
+        format_info = extra.get("format") or {}
+
+        candidates: list[tuple[object, float]] = []
+        if "duration_ms" in format_info:
+            candidates.append((format_info.get("duration_ms"), 1.0))
+        if "duration" in format_info:
+            # ffprobe reports seconds in this field.
+            candidates.append((format_info.get("duration"), 1000.0))
+
+        for value, multiplier in candidates:
+            if value in (None, "", 0):
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric <= 0:
+                continue
+            return int(numeric * multiplier)
+
+        if self.media_item_id:
+            runtime_ms = self.media_item.runtime_ms
+            if runtime_ms:
+                try:
+                    return int(runtime_ms)
+                except (TypeError, ValueError):
+                    return None
+
+        return None
 
     def calculate_checksum(self, chunk_size: int = 1024 * 1024) -> str:
         """Calculate a SHA1 checksum for the file."""

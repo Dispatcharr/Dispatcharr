@@ -560,12 +560,26 @@ def apply_probe_metadata(file_record: MediaFile, probe_data: dict) -> None:
     format_info = probe_data.get("format", {})
     streams = probe_data.get("streams", [])
 
+    duration_ms: int | None = None
+
     duration = format_info.get("duration")
-    try:
-        if duration:
-            file_record.duration_ms = int(float(duration) * 1000)
-    except (TypeError, ValueError):  # noqa: PERF203
-        logger.debug("Unable to parse duration '%s' for %s", duration, file_record)
+    if duration not in (None, "", 0):
+        try:
+            duration_ms = int(float(duration) * 1000)
+            file_record.duration_ms = duration_ms
+        except (TypeError, ValueError):  # noqa: PERF203
+            logger.debug("Unable to parse duration '%s' for %s", duration, file_record)
+
+    if duration_ms is None:
+        raw_duration_ms = format_info.get("duration_ms")
+        if raw_duration_ms not in (None, "", 0):
+            try:
+                duration_ms = int(float(raw_duration_ms))
+                file_record.duration_ms = duration_ms
+            except (TypeError, ValueError):  # noqa: PERF203
+                logger.debug(
+                    "Unable to parse duration_ms '%s' for %s", raw_duration_ms, file_record
+                )
 
     bit_rate = format_info.get("bit_rate")
     try:
@@ -606,7 +620,10 @@ def apply_probe_metadata(file_record: MediaFile, probe_data: dict) -> None:
         "format": format_info,
         "streams": streams,
     }
-    file_record.save(update_fields=[
+    needs_transcode = not file_record.is_browser_playable()
+    file_record.requires_transcode = needs_transcode
+
+    update_fields = [
         "duration_ms",
         "bit_rate",
         "container",
@@ -619,8 +636,86 @@ def apply_probe_metadata(file_record: MediaFile, probe_data: dict) -> None:
         "has_subtitles",
         "subtitle_languages",
         "extra_streams",
+        "requires_transcode",
         "updated_at",
-    ])
+    ]
+
+    if not needs_transcode:
+        file_record.transcode_status = MediaFile.TRANSCODE_STATUS_NOT_REQUIRED
+        file_record.transcoded_path = ""
+        file_record.transcoded_mime_type = ""
+        file_record.transcode_error = ""
+        file_record.transcoded_at = None
+        update_fields.extend(
+            [
+                "transcode_status",
+                "transcoded_path",
+                "transcoded_mime_type",
+                "transcode_error",
+                "transcoded_at",
+            ]
+        )
+    else:
+        if file_record.transcode_status in (
+            MediaFile.TRANSCODE_STATUS_NOT_REQUIRED,
+            "",
+        ):
+            file_record.transcode_status = MediaFile.TRANSCODE_STATUS_PENDING
+            update_fields.append("transcode_status")
+
+        if (
+            file_record.transcode_status == MediaFile.TRANSCODE_STATUS_READY
+            and file_record.transcoded_path
+            and not os.path.exists(file_record.transcoded_path)
+        ):
+            file_record.transcode_status = MediaFile.TRANSCODE_STATUS_PENDING
+            file_record.transcoded_path = ""
+            file_record.transcoded_mime_type = ""
+            file_record.transcoded_at = None
+            update_fields.extend(
+                [
+                    "transcode_status",
+                    "transcoded_path",
+                    "transcoded_mime_type",
+                    "transcoded_at",
+                ]
+            )
+
+    file_record.save(update_fields=update_fields)
+
+    if file_record.media_item_id:
+        candidate_duration_ms = duration_ms or file_record.duration_ms
+        try:
+            media_item = file_record.media_item
+        except MediaFile.media_item.RelatedObjectDoesNotExist:  # type: ignore[attr-defined]
+            media_item = None
+
+        if not candidate_duration_ms:
+            extra = file_record.extra_streams or {}
+            format_info = extra.get("format") or {}
+            fallback_candidates: list[tuple[object, float]] = []
+            if "duration_ms" in format_info:
+                fallback_candidates.append((format_info.get("duration_ms"), 1.0))
+            if "duration" in format_info:
+                fallback_candidates.append((format_info.get("duration"), 1000.0))
+
+            for value, multiplier in fallback_candidates:
+                if value in (None, "", 0):
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):  # noqa: PERF203
+                    continue
+                if numeric <= 0:
+                    continue
+                candidate_duration_ms = int(numeric * multiplier)
+                break
+
+        if candidate_duration_ms and media_item and (
+            not media_item.runtime_ms or media_item.runtime_ms < candidate_duration_ms
+        ):
+            media_item.runtime_ms = int(candidate_duration_ms)
+            media_item.save(update_fields=["runtime_ms", "updated_at"])
 
 
 def _safe_frame_rate(stream: dict) -> Optional[float]:
