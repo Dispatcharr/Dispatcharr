@@ -169,6 +169,80 @@ def _send_scan_event(event: dict) -> None:
     )
 
 
+def _stage_snapshot(scan: LibraryScan) -> dict[str, dict[str, int | str]]:
+    return {
+        "discovery": {
+            "status": scan.discovery_status,
+            "processed": scan.discovery_processed,
+            "total": scan.discovery_total,
+        },
+        "metadata": {
+            "status": scan.metadata_status,
+            "processed": scan.metadata_processed,
+            "total": scan.metadata_total,
+        },
+        "artwork": {
+            "status": scan.artwork_status,
+            "processed": scan.artwork_processed,
+            "total": scan.artwork_total,
+        },
+    }
+
+
+def _emit_scan_update(scan: LibraryScan, *, status: str, extra: dict | None = None) -> None:
+    library_name = ""
+    if getattr(scan, "library", None):
+        library_name = scan.library.name
+    payload = {
+        "status": status,
+        "scan_id": str(scan.id),
+        "library_id": scan.library_id,
+        "library_name": library_name,
+        "processed": scan.processed_files,
+        "processed_files": scan.processed_files,
+        "total": scan.total_files,
+        "matched": scan.matched_items,
+        "unmatched": scan.unmatched_files,
+        "new_files": scan.new_files,
+        "updated_files": scan.updated_files,
+        "removed_files": scan.removed_files,
+        "stages": _stage_snapshot(scan),
+    }
+    if extra:
+        payload.update(extra)
+    _send_scan_event(payload)
+
+
+def _advance_metadata_stage(
+    scan: LibraryScan,
+    *,
+    metadata_increment: int = 0,
+    artwork_increment: int = 0,
+) -> None:
+    updated = False
+
+    if metadata_increment:
+        new_metadata_processed = scan.metadata_processed + metadata_increment
+        if scan.metadata_total:
+            new_metadata_processed = min(new_metadata_processed, scan.metadata_total)
+        scan.record_stage_progress("metadata", processed=new_metadata_processed)
+        if scan.metadata_total and new_metadata_processed >= scan.metadata_total:
+            scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
+        updated = True
+
+    if artwork_increment:
+        new_artwork_processed = scan.artwork_processed + artwork_increment
+        if scan.artwork_total:
+            new_artwork_processed = min(new_artwork_processed, scan.artwork_total)
+        scan.record_stage_progress("artwork", processed=new_artwork_processed)
+        if scan.artwork_total and new_artwork_processed >= scan.artwork_total:
+            scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
+        updated = True
+
+    if updated:
+        _emit_scan_update(scan, status="progress")
+
+
 def _send_media_item_update(media_item: MediaItem, *, status: str = "updated") -> None:
     try:
         channel_layer = get_channel_layer()
@@ -213,16 +287,37 @@ def scan_library_task(
     matched = 0
     unmatched = 0
     media_item_ids: Set[int] = set()
+    metadata_queue_ids: Set[int] = set()
     last_progress_emit = timezone.now()
-    progress_step = 5
     progress_interval = 0.4  # seconds
-    _send_scan_event(
-        {
-            "status": "started",
-            "scan_id": str(scan.id),
-            "library_id": library.id,
-            "library_name": library.name,
-        }
+
+    initial_total_estimate = (
+        MediaFile.objects.filter(library=library).count()
+    )
+    discovery_total_estimate = initial_total_estimate or 0
+
+    scan.record_progress(processed=0, matched=0, unmatched=0)
+    scan.record_stage_progress(
+        "discovery",
+        status=LibraryScan.STAGE_STATUS_RUNNING,
+        total=discovery_total_estimate,
+        processed=0,
+    )
+    scan.record_stage_progress(
+        "metadata",
+        status=LibraryScan.STAGE_STATUS_PENDING,
+        total=0,
+        processed=0,
+    )
+    scan.record_stage_progress(
+        "artwork",
+        status=LibraryScan.STAGE_STATUS_PENDING,
+        total=0,
+        processed=0,
+    )
+    _emit_scan_update(
+        scan,
+        status="started",
     )
 
     try:
@@ -233,29 +328,57 @@ def scan_library_task(
             rescan_item_id=rescan_item_id,
         )
 
-        discoveries = _discover_media(scan=scan, scanner=scanner)
-        logger.debug("Discovered %s files for library %s", len(discoveries), library.id)
-        scan.record_progress(processed=0, matched=0, unmatched=0)
-        _send_scan_event(
-            {
-                "status": "discovered",
-                "scan_id": str(scan.id),
-                "library_id": library.id,
-                "files": len(discoveries),
-                "new_files": scan.new_files,
-                "updated_files": scan.updated_files,
-                "processed": 0,
-                "processed_files": 0,
-                "total": len(discoveries),
-            }
-        )
+        discovery_processed = 0
+        total_files = discovery_total_estimate
+        progress_step = max(1, (discovery_total_estimate // 200) or 1)
 
-        scanner.mark_missing_files()
+        def update_progress_step() -> None:
+            nonlocal progress_step
+            baseline = max(discovery_total_estimate, discovery_processed)
+            if baseline <= 0:
+                progress_step = 1
+                return
+            progress_step = max(1, baseline // 200)
 
-        total_files = len(discoveries)
-        progress_step = max(1, total_files // 200)
+        def maybe_emit_progress(force: bool = False, status: str = "progress") -> None:
+            nonlocal last_progress_emit
+            now = timezone.now()
+            if (
+                force
+                or discovery_processed == 0
+                or discovery_processed % progress_step == 0
+                or (now - last_progress_emit).total_seconds() >= progress_interval
+            ):
+                last_progress_emit = now
+                _emit_scan_update(scan, status=status)
 
-        for result in discoveries:
+        def queue_metadata(item: MediaItem) -> None:
+            if item.id in metadata_queue_ids:
+                return
+            metadata_queue_ids.add(item.id)
+            current_total = len(metadata_queue_ids)
+            scan.record_stage_progress(
+                "metadata",
+                status=LibraryScan.STAGE_STATUS_RUNNING,
+                total=current_total,
+            )
+            scan.record_stage_progress(
+                "artwork",
+                status=LibraryScan.STAGE_STATUS_RUNNING,
+                total=current_total,
+            )
+            sync_metadata_task.delay(item.id, scan_id=str(scan.id))
+            maybe_emit_progress(force=True)
+
+        for result in scanner.discover_files_iter():
+            discovery_processed += 1
+            processed = discovery_processed
+            if discovery_processed > discovery_total_estimate:
+                discovery_total_estimate = discovery_processed
+                scan.record_stage_progress("discovery", total=discovery_total_estimate)
+                update_progress_step()
+
+            scan.record_stage_progress("discovery", processed=discovery_processed)
             identify_result = _identify_media_file(
                 library=library,
                 file_id=result.file_id,
@@ -267,44 +390,58 @@ def scan_library_task(
             parent_media_id = identify_result.get("parent_media_item_id")
             candidate_ids = {
                 candidate_id
-            for candidate_id in (media_id, parent_media_id)
-            if candidate_id
-        }
-        for candidate_id in candidate_ids:
-            is_new_media = candidate_id not in media_item_ids
-            media_item_ids.add(candidate_id)
-            if is_new_media:
+                for candidate_id in (media_id, parent_media_id)
+                if candidate_id
+            }
+            for candidate_id in candidate_ids:
+                is_new_media = candidate_id not in media_item_ids
+                media_item_ids.add(candidate_id)
                 try:
                     media_obj = MediaItem.objects.select_related("library").get(pk=candidate_id)
                 except MediaItem.DoesNotExist:
                     continue
                 else:
-                    _send_media_item_update(media_obj, status="progress")
+                    if is_new_media:
+                        _send_media_item_update(media_obj, status="progress")
+                    if (
+                        force_full
+                        or media_obj.metadata_last_synced_at is None
+                        or not media_obj.poster_url
+                    ):
+                        queue_metadata(media_obj)
 
-        if result.requires_probe:
-            probe_media_task.delay(result.file_id)
+            if result.requires_probe:
+                probe_media_task.delay(result.file_id)
 
-        processed += 1
-        scan.record_progress(processed=processed, matched=matched, unmatched=unmatched)
-        now = timezone.now()
-        if (
-            processed == total_files
-            or processed % progress_step == 0
-            or (now - last_progress_emit).total_seconds() >= progress_interval
-        ):
-            last_progress_emit = now
-            _send_scan_event(
-                {
-                    "status": "progress",
-                    "scan_id": str(scan.id),
-                    "library_id": library.id,
-                    "processed": processed,
-                    "processed_files": processed,
-                    "total": total_files,
-                    "matched": matched,
-                    "unmatched": unmatched,
-                }
+            total_files = max(total_files, discovery_total_estimate, discovery_processed)
+            scan.record_progress(processed=processed, matched=matched, unmatched=unmatched)
+            maybe_emit_progress()
+
+        scanner.mark_missing_files()
+
+        if media_item_ids:
+            metadata_qs = (
+                MediaItem.objects.filter(pk__in=media_item_ids)
+                .filter(
+                    Q(metadata_last_synced_at__isnull=True)
+                    | Q(poster_url__isnull=True)
+                    | Q(poster_url="")
+                )
             )
+            for item in metadata_qs:
+                queue_metadata(item)
+
+        scan.record_stage_progress(
+            "discovery",
+            status=LibraryScan.STAGE_STATUS_COMPLETED,
+            processed=discovery_processed,
+            total=discovery_total_estimate,
+        )
+        _emit_scan_update(
+            scan,
+            status="discovered",
+            extra={"files": discovery_processed},
+        )
 
         summary = (
             f"Processed {scan.total_files} files; "
@@ -312,32 +449,37 @@ def scan_library_task(
             f"removed={scan.removed_files}, matched={matched}, "
             f"unmatched={unmatched}"
         )
-        if media_item_ids:
-            metadata_qs = MediaItem.objects.filter(pk__in=media_item_ids).filter(
-                Q(metadata_last_synced_at__isnull=True)
-                | Q(poster_url__isnull=True)
-                | Q(poster_url="")
+
+        if not metadata_queue_ids:
+            scan.record_stage_progress(
+                "metadata",
+                status=LibraryScan.STAGE_STATUS_SKIPPED,
+                total=0,
+                processed=0,
             )
-            for item in metadata_qs:
-                sync_metadata_task.delay(item.id)
+            scan.record_stage_progress(
+                "artwork",
+                status=LibraryScan.STAGE_STATUS_SKIPPED,
+                total=0,
+                processed=0,
+            )
+        else:
+            scan.record_stage_progress("metadata", processed=0)
+            scan.record_stage_progress("artwork", processed=0)
 
         scanner.finalize(matched=matched, unmatched=unmatched, summary=summary)
         logger.info("Completed scan for library %s", library.name)
-        _send_scan_event(
-            {
-                "status": "completed",
-                "scan_id": str(scan.id),
-                "library_id": library.id,
+        _emit_scan_update(
+            scan,
+            status="completed",
+            extra={
                 "summary": summary,
                 "matched": matched,
                 "unmatched": unmatched,
                 "new_files": scan.new_files,
                 "updated_files": scan.updated_files,
                 "removed_files": scan.removed_files,
-                "processed": scan.total_files,
-                "processed_files": scan.total_files,
-                "total": scan.total_files,
-            }
+            },
         )
         _start_next_scan(library)
     except Exception as exc:  # noqa: BLE001
@@ -349,26 +491,23 @@ def scan_library_task(
             summary=str(exc),
         )
         scan.mark_failed(summary=str(exc))
-        _send_scan_event(
-            {
+        _emit_scan_update(
+            scan,
+            status="failed",
+            extra={
                 "success": False,
-                "status": "failed",
-                "scan_id": str(scan.id),
-                "library_id": library.id,
                 "message": str(exc),
                 "processed": processed,
                 "processed_files": processed,
                 "total": total_files,
-            }
+            },
         )
         _start_next_scan(library)
         raise
 
 
 def _discover_media(scan: LibraryScan, scanner: LibraryScanner):
-    with transaction.atomic():
-        discovered = scanner.discover_files()
-    return discovered
+    return list(scanner.discover_files_iter())
 
 
 @shared_task(name="media_library.discover_media")
@@ -484,19 +623,44 @@ def probe_media_task(file_id: int):
     _probe_media_file(file_id=file_id)
 
 
-def _sync_metadata(media_item_id: int) -> None:
+def _sync_metadata(media_item_id: int, scan_id: str | None = None) -> None:
     try:
         media_item = MediaItem.objects.get(pk=media_item_id)
     except MediaItem.DoesNotExist:
         return
+    scan: LibraryScan | None = None
+    if scan_id:
+        try:
+            scan = LibraryScan.objects.select_related("library").get(pk=scan_id)
+        except LibraryScan.DoesNotExist:
+            scan = None
+
     result = sync_metadata(media_item)
     if result:
         _send_media_item_update(result, status="metadata")
 
+    if not scan:
+        return
+
+    metadata_increment = 1 if scan.metadata_total else 0
+    artwork_increment = 1 if scan.artwork_total else 0
+
+    if scan.metadata_status == LibraryScan.STAGE_STATUS_PENDING and scan.metadata_total:
+        scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_RUNNING)
+    if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING and scan.artwork_total:
+        scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_RUNNING)
+
+    if metadata_increment or artwork_increment:
+        _advance_metadata_stage(
+            scan,
+            metadata_increment=metadata_increment,
+            artwork_increment=artwork_increment,
+        )
+
 
 @shared_task(name="media_library.sync_metadata")
-def sync_metadata_task(media_item_id: int):
-    _sync_metadata(media_item_id)
+def sync_metadata_task(media_item_id: int, scan_id: str | None = None):
+    _sync_metadata(media_item_id, scan_id=scan_id)
 
 
 @shared_task(name="media_library.cleanup_missing")

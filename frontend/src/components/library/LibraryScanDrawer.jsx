@@ -3,6 +3,8 @@ import {
   ActionIcon,
   Badge,
   Button,
+  Card,
+  Divider,
   Drawer,
   Group,
   Loader,
@@ -13,7 +15,6 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { Timeline } from '@mantine/core';
 import { Ban, Play, RefreshCcw, Trash2, ScanSearch } from 'lucide-react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -43,6 +44,32 @@ const isRunning = (s) =>
 
 const isQueued = (s) => s === 'pending' || s === 'queued' || s === 'scheduled';
 
+const stageStatusColor = {
+  pending: 'gray',
+  running: 'blue',
+  completed: 'green',
+  skipped: 'gray',
+};
+
+const stageStatusLabel = {
+  pending: 'Waiting',
+  running: 'In progress',
+  completed: 'Completed',
+  skipped: 'Skipped',
+};
+
+const stageOrder = [
+  { key: 'discovery', label: 'File scan' },
+  { key: 'metadata', label: 'Metadata fetch' },
+  { key: 'artwork', label: 'Artwork' },
+];
+
+const EMPTY_STAGE = {
+  status: 'pending',
+  processed: 0,
+  total: 0,
+};
+
 const LibraryScanDrawer = ({
   opened,
   onClose,
@@ -57,7 +84,9 @@ const LibraryScanDrawer = ({
   const scans =
     useLibraryStore((s) => s.scans[libraryId || 'all']) ?? EMPTY_SCAN_LIST;
   const fetchScans = useLibraryStore((s) => s.fetchScans);
+  const purgeCompletedScans = useLibraryStore((s) => s.purgeCompletedScans);
   const [loaderHold, setLoaderHold] = useState(false);
+  const [purgeLoading, setPurgeLoading] = useState(false);
   const hasRunningRef = useRef(false);
   const hasQueuedRef = useRef(false);
   const lastProcessedRef = useRef(0);
@@ -73,6 +102,13 @@ const LibraryScanDrawer = ({
   );
   const hasQueuedScan = useMemo(
     () => scans.some((scan) => isQueued(scan.status)),
+    [scans]
+  );
+  const hasFinishedScans = useMemo(
+    () =>
+      scans.some((scan) =>
+        ['completed', 'failed', 'cancelled'].includes(scan.status)
+      ),
     [scans]
   );
 
@@ -175,6 +211,52 @@ const LibraryScanDrawer = ({
 
   const showLoader = scansLoading || loaderHold;
 
+  const getStagePercent = (stage) => {
+    if (!stage) return 0;
+    if (stage.total > 0) {
+      const denominator = stage.total === 0 ? 1 : stage.total;
+      return Math.min(
+        100,
+        Math.round((stage.processed / denominator) * 100)
+      );
+    }
+    if (stage.status === 'completed') return 100;
+    if (stage.status === 'skipped') return 0;
+    if (stage.status === 'running') return 100;
+    return stage.processed > 0 ? 100 : 0;
+  };
+
+  const formatStageCount = (stage) => {
+    if (!stage) return '0';
+    if (stage.total > 0) {
+      return `${stage.processed} / ${stage.total}`;
+    }
+    if (stage.status === 'skipped') {
+      return 'Not required';
+    }
+    if (stage.status === 'completed' && stage.processed === 0) {
+      return 'Done';
+    }
+    return `${stage.processed} item${stage.processed === 1 ? '' : 's'}`;
+  };
+
+  const handleClearFinished = useCallback(async () => {
+    if (!hasFinishedScans) {
+      return;
+    }
+    setPurgeLoading(true);
+    try {
+      await purgeCompletedScans({
+        library: libraryId ?? undefined,
+      });
+      await fetchScans(libraryId, { background: true });
+    } catch (error) {
+      console.error('Failed to clear library scans', error);
+    } finally {
+      setPurgeLoading(false);
+    }
+  }, [hasFinishedScans, purgeCompletedScans, fetchScans, libraryId]);
+
   const header = useMemo(
     () => (
       <Group justify="space-between" align="center" mb="sm">
@@ -196,6 +278,16 @@ const LibraryScanDrawer = ({
               Full scan
             </Button>
           )}
+          {hasFinishedScans && (
+            <Button
+              variant="light"
+              size="xs"
+              onClick={handleClearFinished}
+              loading={purgeLoading}
+            >
+              Clear finished
+            </Button>
+          )}
           <Tooltip label="Refresh">
             <ActionIcon variant="light" onClick={handleRefresh}>
               <RefreshCcw size={16} />
@@ -204,7 +296,7 @@ const LibraryScanDrawer = ({
         </Group>
       </Group>
     ),
-    [onStartScan, onStartFullScan, handleRefresh]
+    [onStartScan, onStartFullScan, handleRefresh, hasFinishedScans, purgeLoading, handleClearFinished]
   );
 
   return (
@@ -232,31 +324,26 @@ const LibraryScanDrawer = ({
             )}
           </Stack>
         ) : (
-          <Timeline active={0} reverseActive bulletSize={18} lineWidth={2}>
+          <Stack gap="sm" py="xs">
             {scans.map((scan) => {
               const status = scan.status || 'pending';
-              const total = scan.total_files ?? scan.files ?? 0;
-              const processedRaw =
-                status === 'completed'
-                  ? scan.total_files ?? scan.processed_files ?? scan.processed ?? 0
-                  : scan.processed_files ?? scan.processed ?? 0;
-              const processed = Math.min(processedRaw || 0, total || 0);
-              const percent = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
-
               return (
-                <Timeline.Item
-                  key={scan.id}
-                  title={dayjs(scan.created_at).format('MMM D, YYYY HH:mm')}
-                  bullet={
-                    <Badge color={statusColor[status] || 'gray'} variant="filled">
-                      {status}
-                    </Badge>
-                  }
-                >
-                  <Stack gap={6} mt="xs">
-                    {/* Summary + row actions */}
-                    <Group justify="space-between" align="center">
-                      <Text size="sm" fw={500}>{scan.summary || 'Scan'}</Text>
+                <Card key={scan.id} withBorder shadow="sm" radius="md">
+                  <Stack gap="sm">
+                    <Group justify="space-between" align="flex-start">
+                      <Stack gap={4} style={{ flex: 1 }}>
+                        <Group gap="xs" align="center">
+                          <Badge color={statusColor[status] || 'gray'} variant="light">
+                            {status}
+                          </Badge>
+                          <Text size="sm" fw={600}>
+                            {scan.summary || 'Scan'}
+                          </Text>
+                        </Group>
+                        <Text size="xs" c="dimmed">
+                          {dayjs(scan.created_at).format('MMM D, YYYY HH:mm')}
+                        </Text>
+                      </Stack>
                       <Group gap="xs">
                         {isRunning(status) && (
                           <Tooltip label="Cancel running scan">
@@ -283,50 +370,74 @@ const LibraryScanDrawer = ({
                       </Group>
                     </Group>
 
-                    {/* Progress */}
-                    {total > 0 && (
-                      <Stack gap={2}>
-                        <Group justify="space-between">
-                          <Text size="xs" fw={500}>
-                            {processed} / {total} processed
-                          </Text>
-                          <Text size="xs" c="dimmed">
-                            {percent}%
-                          </Text>
-                        </Group>
-                        <Progress
-                          value={percent}
-                          size="md"
-                          striped
-                          animated={isRunning(status)}
-                        />
-                      </Stack>
-                    )}
+                    <Divider />
 
-                    {/* Meta */}
-                    <Text size="xs" c="dimmed">
-                      Started {scan.started_at ? dayjs(scan.started_at).fromNow() : 'n/a'} · Finished{' '}
-                      {scan.finished_at ? dayjs(scan.finished_at).fromNow() : 'n/a'}
-                    </Text>
-                    <Text size="xs" c="dimmed">
-                      Files {scan.total_files ?? '—'} · New {scan.new_files ?? '—'} · Updated{' '}
-                      {scan.updated_files ?? '—'} · Removed {scan.removed_files ?? '—'}
-                    </Text>
-                    {scan.unmatched_files > 0 && (
-                      <Text size="xs" c="yellow.4">
-                        Unmatched files: {scan.unmatched_files}
+                    <Stack gap="sm">
+                      {stageOrder.map(({ key, label }) => {
+                        const stage = scan.stages?.[key] || EMPTY_STAGE;
+                        const stageStatus = stage.status || 'pending';
+                        const percent = getStagePercent(stage);
+                        const color = stageStatusColor[stageStatus] || 'gray';
+                        const animated = stageStatus === 'running';
+                        return (
+                          <Stack gap={4} key={`${scan.id}-${key}`}>
+                            <Group justify="space-between" align="center">
+                              <Text size="xs" fw={500}>
+                                {label}
+                              </Text>
+                              <Badge color={color} variant="light" size="xs">
+                                {stageStatusLabel[stageStatus] || stageStatus}
+                              </Badge>
+                            </Group>
+                            <Group justify="space-between" align="center">
+                              <Text size="xs" c="dimmed">
+                                {formatStageCount(stage)}
+                              </Text>
+                              {stage.total > 0 && (
+                                <Text size="xs" c="dimmed">
+                                  {percent}%
+                                </Text>
+                              )}
+                            </Group>
+                            <Progress
+                              value={percent}
+                              size="sm"
+                              striped={animated}
+                              animated={animated}
+                              color={color}
+                            />
+                          </Stack>
+                        );
+                      })}
+                    </Stack>
+
+                    <Divider />
+
+                    <Stack gap={4}>
+                      <Text size="xs" c="dimmed">
+                        Started {scan.started_at ? dayjs(scan.started_at).fromNow() : 'n/a'} · Finished{' '}
+                        {scan.finished_at ? dayjs(scan.finished_at).fromNow() : 'n/a'}
                       </Text>
-                    )}
-                    {scan.log && (
-                      <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
-                        {scan.log}
+                      <Text size="xs" c="dimmed">
+                        Files {scan.total_files ?? '—'} · New {scan.new_files ?? '—'} · Updated{' '}
+                        {scan.updated_files ?? '—'} · Removed {scan.removed_files ?? '—'}
                       </Text>
-                    )}
+                      {scan.unmatched_files > 0 && (
+                        <Text size="xs" c="yellow.4">
+                          Unmatched files: {scan.unmatched_files}
+                        </Text>
+                      )}
+                      {scan.log && (
+                        <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+                          {scan.log}
+                        </Text>
+                      )}
+                    </Stack>
                   </Stack>
-                </Timeline.Item>
+                </Card>
               );
             })}
-          </Timeline>
+          </Stack>
         )}
       </ScrollArea>
     </Drawer>

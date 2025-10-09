@@ -2502,6 +2502,29 @@ export default class API {
     }
   }
 
+  static async purgeLibraryScans({ library, statuses } = {}) {
+    try {
+      const params = new URLSearchParams();
+      if (library !== undefined && library !== null) {
+        params.append('library', library);
+      }
+      if (Array.isArray(statuses) && statuses.length > 0) {
+        statuses.forEach((statusValue) => params.append('status', statusValue));
+      }
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/scans/purge/${query ? `?${query}` : ''}`,
+        {
+          method: 'DELETE',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to clear library scans', e);
+      throw e;
+    }
+  }
+
   static async getMediaItems(params = new URLSearchParams()) {
     try {
       const query = params.toString();

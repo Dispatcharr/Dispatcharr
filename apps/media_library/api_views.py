@@ -155,13 +155,17 @@ class LibraryScanViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet
     def destroy(self, request, *args, **kwargs):
         scan = self.get_object()
 
-        if scan.status != models.LibraryScan.STATUS_PENDING:
-            raise ValidationError({"detail": "Only pending scans can be removed from the queue."})
+        if scan.status == models.LibraryScan.STATUS_RUNNING:
+            raise ValidationError({"detail": "Cannot remove a running scan."})
 
-        revoke_scan_task(scan.task_id, terminate=False)
-        library = scan.library
+        if scan.status == models.LibraryScan.STATUS_PENDING:
+            revoke_scan_task(scan.task_id, terminate=False)
+            library = scan.library
+            response = super().destroy(request, *args, **kwargs)
+            start_next_library_scan(library)
+            return response
+
         response = super().destroy(request, *args, **kwargs)
-        start_next_library_scan(library)
         return response
 
     @action(detail=True, methods=["post"], url_path="cancel")
@@ -175,6 +179,31 @@ class LibraryScanViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet
 
         serializer = self.get_serializer(cancelled)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["delete"], url_path="purge")
+    def purge_completed(self, request):
+        valid_statuses = {
+            models.LibraryScan.STATUS_COMPLETED,
+            models.LibraryScan.STATUS_FAILED,
+            models.LibraryScan.STATUS_CANCELLED,
+        }
+        requested_statuses = request.query_params.getlist("status")
+        if requested_statuses:
+            statuses = [value for value in requested_statuses if value in valid_statuses]
+            if not statuses:
+                raise ValidationError({"detail": "No valid statuses provided."})
+        else:
+            statuses = list(valid_statuses)
+
+        queryset = self.filter_queryset(
+            self.get_queryset().filter(status__in=statuses)
+        )
+        library_id = request.query_params.get("library")
+        if library_id:
+            queryset = queryset.filter(library_id=library_id)
+
+        deleted, _ = queryset.delete()
+        return Response({"deleted": deleted}, status=status.HTTP_200_OK)
 
 
 class MediaItemViewSet(viewsets.ModelViewSet):

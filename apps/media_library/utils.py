@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone as dt_timezone
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 
 from django.db import transaction
 from django.utils import timezone
@@ -114,63 +114,69 @@ class LibraryScanner:
 
     def discover_files(self) -> List[DiscoveredFile]:
         """Walk library locations, ensure MediaFile records exist, and return the IDs."""
-        discovered: list[DiscoveredFile] = []
-        if not self.library.locations.exists():
-            self._log(f"Library '{self.library.name}' has no configured locations.")
-            return discovered
+        return list(self.discover_files_iter())
 
-        for location in self.library.locations.all():
-            path = Path(location.path).expanduser()
-            if not path.exists():
-                self._log(f"Path '{path}' does not exist for library '{self.library.name}'.")
-                continue
-            if not path.is_dir():
-                self._log(f"Path '{path}' is not a directory; skipping.")
-                continue
+    def discover_files_iter(self) -> Iterator[DiscoveredFile]:
+        """Yield discovered files one-at-a-time for incremental processing."""
+        discovered_count = 0
+        try:
+            if not self.library.locations.exists():
+                self._log(f"Library '{self.library.name}' has no configured locations.")
+                return
 
-            iterator = path.rglob("*") if location.include_subdirectories else path.iterdir()
-            for file_path in iterator:
-                if not file_path.is_file():
+            for location in self.library.locations.all():
+                path = Path(location.path).expanduser()
+                if not path.exists():
+                    self._log(
+                        f"Path '{path}' does not exist for library '{self.library.name}'."
+                    )
                     continue
-                if file_path.suffix.lower() not in MEDIA_EXTENSIONS:
-                    continue
-
-                absolute_path = str(file_path)
-                self._seen_paths.add(absolute_path)
-                try:
-                    record_data = self._ensure_file_record(location, file_path)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("Failed to process file %s", absolute_path)
-                    self._log(f"Failed to process '{absolute_path}': {exc}")
+                if not path.is_dir():
+                    self._log(f"Path '{path}' is not a directory; skipping.")
                     continue
 
-                if not record_data:
-                    continue
+                iterator = path.rglob("*") if location.include_subdirectories else path.iterdir()
+                for file_path in iterator:
+                    if not file_path.is_file():
+                        continue
+                    if file_path.suffix.lower() not in MEDIA_EXTENSIONS:
+                        continue
 
-                file_record, requires_probe = record_data
-                if (
-                    self.target_item
-                    and file_record.media_item_id not in {None, self.target_item.id}
-                ):
-                    continue
+                    absolute_path = str(file_path)
+                    self._seen_paths.add(absolute_path)
+                    try:
+                        record_data = self._ensure_file_record(location, file_path)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Failed to process file %s", absolute_path)
+                        self._log(f"Failed to process '{absolute_path}': {exc}")
+                        continue
 
-                discovered.append(
-                    DiscoveredFile(file_id=file_record.id, requires_probe=requires_probe)
-                )
+                    if not record_data:
+                        continue
 
-        self.stats["total"] = len(self._seen_paths)
-        self.scan.total_files = self.stats["total"]
-        self.scan.new_files = self.stats.get("new", 0)
-        self.scan.updated_files = self.stats.get("updated", 0)
-        self.scan.save(
-            update_fields=[
-                "total_files",
-                "new_files",
-                "updated_files",
-                "updated_at",
-            ]
-        )
-        return discovered
+                    file_record, requires_probe = record_data
+                    if (
+                        self.target_item
+                        and file_record.media_item_id not in {None, self.target_item.id}
+                    ):
+                        continue
+
+                    discovered_count += 1
+                    self.stats["total"] = discovered_count
+                    yield DiscoveredFile(file_id=file_record.id, requires_probe=requires_probe)
+        finally:
+            self.stats["total"] = discovered_count
+            self.scan.total_files = discovered_count
+            self.scan.new_files = self.stats.get("new", 0)
+            self.scan.updated_files = self.stats.get("updated", 0)
+            self.scan.save(
+                update_fields=[
+                    "total_files",
+                    "new_files",
+                    "updated_files",
+                    "updated_at",
+                ]
+            )
 
     def mark_missing_files(self) -> int:
         missing_qs = (
@@ -221,59 +227,60 @@ class LibraryScanner:
         stat = file_path.stat()
         last_modified = datetime.fromtimestamp(stat.st_mtime, tz=dt_timezone.utc)
 
-        file_record, created = MediaFile.objects.select_for_update().get_or_create(
-            library=self.library,
-            absolute_path=str(file_path),
-            defaults={
-                "location": location,
-                "relative_path": relative_path,
-                "file_name": file_path.name,
-                "size_bytes": stat.st_size,
-                "last_modified_at": last_modified,
-                "last_seen_at": self.now,
-            },
-        )
-
-        requires_probe = False
-        checksum_reset = False
-        if created:
-            self.stats["new"] += 1
-            requires_probe = True
-            checksum_reset = True
-        else:
-            should_update = (
-                self.force_full
-                or file_record.last_modified_at is None
-                or last_modified > file_record.last_modified_at
+        with transaction.atomic():
+            file_record, created = MediaFile.objects.select_for_update().get_or_create(
+                library=self.library,
+                absolute_path=str(file_path),
+                defaults={
+                    "location": location,
+                    "relative_path": relative_path,
+                    "file_name": file_path.name,
+                    "size_bytes": stat.st_size,
+                    "last_modified_at": last_modified,
+                    "last_seen_at": self.now,
+                },
             )
-            if should_update:
-                file_record.size_bytes = stat.st_size
-                file_record.last_modified_at = last_modified
-                self.stats["updated"] += 1
+
+            requires_probe = False
+            checksum_reset = False
+            if created:
+                self.stats["new"] += 1
                 requires_probe = True
                 checksum_reset = True
+            else:
+                should_update = (
+                    self.force_full
+                    or file_record.last_modified_at is None
+                    or last_modified > file_record.last_modified_at
+                )
+                if should_update:
+                    file_record.size_bytes = stat.st_size
+                    file_record.last_modified_at = last_modified
+                    self.stats["updated"] += 1
+                    requires_probe = True
+                    checksum_reset = True
 
-        file_record.last_seen_at = self.now
-        file_record.location = location
-        file_record.relative_path = relative_path
-        file_record.file_name = file_path.name
-        file_record.missing_since = None
-        update_fields = [
-            "location",
-            "relative_path",
-            "file_name",
-            "size_bytes",
-            "last_modified_at",
-            "last_seen_at",
-            "missing_since",
-            "updated_at",
-        ]
+            file_record.last_seen_at = self.now
+            file_record.location = location
+            file_record.relative_path = relative_path
+            file_record.file_name = file_path.name
+            file_record.missing_since = None
+            update_fields = [
+                "location",
+                "relative_path",
+                "file_name",
+                "size_bytes",
+                "last_modified_at",
+                "last_seen_at",
+                "missing_since",
+                "updated_at",
+            ]
 
-        if checksum_reset and file_record.checksum:
-            file_record.checksum = ""
-            update_fields.append("checksum")
+            if checksum_reset and file_record.checksum:
+                file_record.checksum = ""
+                update_fields.append("checksum")
 
-        file_record.save(update_fields=update_fields)
+            file_record.save(update_fields=update_fields)
 
         # Always probe on forced scans or if checksum missing
         if self.force_full or not file_record.checksum:

@@ -137,6 +137,18 @@ class LibraryScan(models.Model):
         (STATUS_CANCELLED, "Cancelled"),
     ]
 
+    STAGE_STATUS_PENDING = "pending"
+    STAGE_STATUS_RUNNING = "running"
+    STAGE_STATUS_COMPLETED = "completed"
+    STAGE_STATUS_SKIPPED = "skipped"
+
+    STAGE_STATUS_CHOICES = [
+        (STAGE_STATUS_PENDING, "Pending"),
+        (STAGE_STATUS_RUNNING, "Running"),
+        (STAGE_STATUS_COMPLETED, "Completed"),
+        (STAGE_STATUS_SKIPPED, "Skipped"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     library = models.ForeignKey(
         Library,
@@ -164,6 +176,30 @@ class LibraryScan(models.Model):
     summary = models.TextField(blank=True)
     log = models.TextField(blank=True)
     extra = models.JSONField(blank=True, null=True)
+
+    discovery_status = models.CharField(
+        max_length=16,
+        choices=STAGE_STATUS_CHOICES,
+        default=STAGE_STATUS_PENDING,
+    )
+    discovery_total = models.PositiveIntegerField(default=0)
+    discovery_processed = models.PositiveIntegerField(default=0)
+
+    metadata_status = models.CharField(
+        max_length=16,
+        choices=STAGE_STATUS_CHOICES,
+        default=STAGE_STATUS_PENDING,
+    )
+    metadata_total = models.PositiveIntegerField(default=0)
+    metadata_processed = models.PositiveIntegerField(default=0)
+
+    artwork_status = models.CharField(
+        max_length=16,
+        choices=STAGE_STATUS_CHOICES,
+        default=STAGE_STATUS_PENDING,
+    )
+    artwork_total = models.PositiveIntegerField(default=0)
+    artwork_processed = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -230,6 +266,48 @@ class LibraryScan(models.Model):
         if summary is not None:
             self.summary = summary
             updates["summary"] = summary
+
+        if not updates:
+            return
+
+        now = timezone.now()
+        updates["updated_at"] = now
+        self.__class__.objects.filter(pk=self.pk).update(**updates)
+        self.updated_at = now
+
+    _stage_field_map = {
+        "discovery": ("discovery_status", "discovery_total", "discovery_processed"),
+        "metadata": ("metadata_status", "metadata_total", "metadata_processed"),
+        "artwork": ("artwork_status", "artwork_total", "artwork_processed"),
+    }
+
+    def record_stage_progress(
+        self,
+        stage: str,
+        *,
+        status: str | None = None,
+        total: int | None = None,
+        processed: int | None = None,
+    ) -> None:
+        if stage not in self._stage_field_map:
+            raise ValueError(f"Unknown stage '{stage}'")
+
+        status_field, total_field, processed_field = self._stage_field_map[stage]
+        updates: dict[str, object] = {}
+
+        if status is not None:
+            if status not in dict(self.STAGE_STATUS_CHOICES):
+                raise ValueError(f"Invalid stage status '{status}' for stage '{stage}'")
+            setattr(self, status_field, status)
+            updates[status_field] = status
+        if total is not None:
+            total_value = max(0, int(total))
+            setattr(self, total_field, total_value)
+            updates[total_field] = total_value
+        if processed is not None:
+            processed_value = max(0, int(processed))
+            setattr(self, processed_field, processed_value)
+            updates[processed_field] = processed_value
 
         if not updates:
             return

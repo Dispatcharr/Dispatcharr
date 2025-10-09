@@ -113,6 +113,7 @@ class LibrarySerializer(serializers.ModelSerializer):
 class LibraryScanSerializer(serializers.ModelSerializer):
     library_name = serializers.CharField(source="library.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.username", read_only=True)
+    stages = serializers.SerializerMethodField()
 
     class Meta:
         model = models.LibraryScan
@@ -136,6 +137,16 @@ class LibraryScanSerializer(serializers.ModelSerializer):
             "summary",
             "log",
             "extra",
+            "discovery_status",
+            "discovery_total",
+            "discovery_processed",
+            "metadata_status",
+            "metadata_total",
+            "metadata_processed",
+            "artwork_status",
+            "artwork_total",
+            "artwork_processed",
+            "stages",
             "created_at",
             "updated_at",
         ]
@@ -157,9 +168,38 @@ class LibraryScanSerializer(serializers.ModelSerializer):
             "summary",
             "log",
             "extra",
+            "discovery_status",
+            "discovery_total",
+            "discovery_processed",
+            "metadata_status",
+            "metadata_total",
+            "metadata_processed",
+            "artwork_status",
+            "artwork_total",
+            "artwork_processed",
+            "stages",
             "created_at",
             "updated_at",
         ]
+
+    def get_stages(self, obj):
+        return {
+            "discovery": {
+                "status": obj.discovery_status,
+                "processed": obj.discovery_processed,
+                "total": obj.discovery_total,
+            },
+            "metadata": {
+                "status": obj.metadata_status,
+                "processed": obj.metadata_processed,
+                "total": obj.metadata_total,
+            },
+            "artwork": {
+                "status": obj.artwork_status,
+                "processed": obj.artwork_processed,
+                "total": obj.artwork_total,
+            },
+        }
 
 
 class ArtworkAssetSerializer(serializers.ModelSerializer):

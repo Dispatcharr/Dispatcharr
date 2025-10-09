@@ -3,6 +3,45 @@ import { immer } from 'zustand/middleware/immer';
 import API from '../api';
 import useMediaLibraryStore from './mediaLibrary';
 
+const DEFAULT_STAGE = {
+  status: 'pending',
+  processed: 0,
+  total: 0,
+};
+
+const toNumber = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+};
+
+const normalizeStage = (stage = {}, fallback = {}) => {
+  const source = {
+    ...DEFAULT_STAGE,
+    ...fallback,
+    ...stage,
+  };
+  return {
+    status: source.status || 'pending',
+    processed: toNumber(source.processed),
+    total: toNumber(source.total),
+  };
+};
+
+const normalizeStages = (scan = {}) => {
+  const stageFromFields = (prefix) => ({
+    status: scan?.[`${prefix}_status`],
+    processed: scan?.[`${prefix}_processed`],
+    total: scan?.[`${prefix}_total`],
+  });
+
+  const sourceStages = scan?.stages || {};
+  return {
+    discovery: normalizeStage(sourceStages.discovery, stageFromFields('discovery')),
+    metadata: normalizeStage(sourceStages.metadata, stageFromFields('metadata')),
+    artwork: normalizeStage(sourceStages.artwork, stageFromFields('artwork')),
+  };
+};
+
 const normalizeScanEntry = (scan) => {
   if (!scan) return scan;
   let processed = scan.processed_files ?? scan.processed;
@@ -12,10 +51,22 @@ const normalizeScanEntry = (scan) => {
   if (processed == null) {
     processed = 0;
   }
+  processed = toNumber(processed);
+  const stages = normalizeStages(scan);
   return {
     ...scan,
     processed,
     processed_files: processed,
+    stages,
+    discovery_status: stages.discovery.status,
+    discovery_processed: stages.discovery.processed,
+    discovery_total: stages.discovery.total,
+    metadata_status: stages.metadata.status,
+    metadata_processed: stages.metadata.processed,
+    metadata_total: stages.metadata.total,
+    artwork_status: stages.artwork.status,
+    artwork_processed: stages.artwork.processed,
+    artwork_total: stages.artwork.total,
   };
 };
 
@@ -104,6 +155,40 @@ const useLibraryStore = create(
       });
     },
 
+    purgeCompletedScans: async (options = {}) => {
+      const response = await API.purgeLibraryScans(options);
+      const statuses =
+        Array.isArray(options.statuses) && options.statuses.length > 0
+          ? options.statuses
+          : ['completed', 'failed', 'cancelled'];
+      const libraryFilter =
+        options.library !== undefined && options.library !== null
+          ? Number(options.library)
+          : null;
+
+      set((state) => {
+        const keysToUpdate = new Set(['all']);
+        if (libraryFilter !== null) {
+          keysToUpdate.add(libraryFilter);
+        } else {
+          Object.keys(state.scans).forEach((key) => keysToUpdate.add(key));
+        }
+
+        keysToUpdate.forEach((key) => {
+          const list = state.scans[key];
+          if (!Array.isArray(list)) return;
+          state.scans[key] = list.filter((scan) => {
+            const statusMatch = statuses.includes(scan.status);
+            const libraryMatch =
+              libraryFilter === null || Number(scan.library) === libraryFilter;
+            return !(statusMatch && libraryMatch);
+          });
+        });
+      });
+
+      return response;
+    },
+
     triggerScan: async (id, options = {}) => {
       const response = await API.triggerLibraryScan(id, options);
       set((state) => {
@@ -164,16 +249,24 @@ const useLibraryStore = create(
         const updateList = (list) => {
           const items = list ? [...list] : [];
           const index = items.findIndex((scan) => String(scan.id) === String(scanId));
-          const processedValue =
+          const existing = index >= 0 ? items[index] : undefined;
+          const processedValue = toNumber(
             event.processed_files ??
-            event.processed ??
-            items[index]?.processed_files ??
-            items[index]?.processed ??
-            0;
+              event.processed ??
+              existing?.processed_files ??
+              existing?.processed ??
+              0
+          );
+          const stageSource = {
+            ...(existing || {}),
+            ...event,
+            stages: event.stages ?? existing?.stages,
+          };
+          const stages = normalizeStages(stageSource);
           const updatedEntry = {
             id: scanId,
-            library: libraryId,
-            library_name: event.library_name || '',
+            library: libraryId ?? existing?.library ?? null,
+            library_name: event.library_name || existing?.library_name || '',
             status: event.status || 'running',
             summary: event.summary || event.message || items[index]?.summary || '',
             matched_items: event.matched ?? items[index]?.matched_items ?? null,
@@ -184,10 +277,20 @@ const useLibraryStore = create(
             removed_files: event.removed_files ?? items[index]?.removed_files ?? null,
             processed: processedValue,
             processed_files: processedValue,
+            stages,
+            discovery_status: stages.discovery.status,
+            discovery_processed: stages.discovery.processed,
+            discovery_total: stages.discovery.total,
+            metadata_status: stages.metadata.status,
+            metadata_processed: stages.metadata.processed,
+            metadata_total: stages.metadata.total,
+            artwork_status: stages.artwork.status,
+            artwork_processed: stages.artwork.processed,
+            artwork_total: stages.artwork.total,
             created_at:
               (items[index]?.created_at || new Date().toISOString()),
             finished_at:
-              event.status === 'completed'
+              ['completed', 'failed', 'cancelled'].includes(event.status)
                 ? new Date().toISOString()
                 : items[index]?.finished_at || null,
             updated_at: new Date().toISOString(),
