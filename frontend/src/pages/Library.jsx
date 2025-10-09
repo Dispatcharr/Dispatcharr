@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ActionIcon, Box, Button, Divider, Group, Paper, Portal, Select, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDebouncedValue } from '@mantine/hooks';
-import { ListChecks, Play, RefreshCcw, Search, Trash2 } from 'lucide-react';
+import { ListChecks, Play, RefreshCcw, Search, Trash2, XCircle } from 'lucide-react';
 
 import useLibraryStore from '../store/library';
 import useMediaLibraryStore from '../store/mediaLibrary';
@@ -711,15 +711,29 @@ const LibraryPage = () => {
                   Mark unwatched
                 </Button>
               ) : (
-                <Button
-                  variant="subtle"
-                  onClick={async () => {
-                    await handleMarkWatched(contextItem);
-                    setContextMenu(null);
-                  }}
-                >
-                  Mark watched
-                </Button>
+                <>
+                  <Button
+                    variant="subtle"
+                    onClick={async () => {
+                      await handleMarkWatched(contextItem);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Mark watched
+                  </Button>
+                  {contextStatus === 'in_progress' && (
+                    <Button
+                      variant="subtle"
+                      leftSection={<XCircle size={16} />}
+                      onClick={async () => {
+                        await handleMarkUnwatched(contextItem);
+                        setContextMenu(null);
+                      }}
+                    >
+                      Clear Watch Progress
+                    </Button>
+                  )}
+                </>
               )}
               <Button
                 variant="subtle"
