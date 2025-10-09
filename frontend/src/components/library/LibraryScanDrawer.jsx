@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -55,6 +55,7 @@ const LibraryScanDrawer = ({
   const scansLoading = useLibraryStore((s) => s.scansLoading);
   const scans = useLibraryStore((s) => s.scans[libraryId || 'all']) ?? EMPTY_SCAN_LIST;
   const fetchScans = useLibraryStore((s) => s.fetchScans);
+  const [loaderHold, setLoaderHold] = useState(false);
 
   // Fetch once when opened (WebSockets keep it live afterward)
   useEffect(() => {
@@ -77,10 +78,25 @@ const LibraryScanDrawer = ({
     if (!opened) return undefined;
     if (!hasRunningScan && !hasQueuedScan) return undefined;
     const interval = setInterval(() => {
-      void fetchScans(libraryId);
+      void fetchScans(libraryId, { background: true });
     }, hasRunningScan ? 2000 : 5000);
     return () => clearInterval(interval);
   }, [opened, hasRunningScan, hasQueuedScan, libraryId, fetchScans]);
+
+  useEffect(() => {
+    if (!opened) {
+      setLoaderHold(false);
+      return undefined;
+    }
+    if (!scansLoading) {
+      return undefined;
+    }
+    setLoaderHold(true);
+    const timeout = setTimeout(() => setLoaderHold(false), 800);
+    return () => clearTimeout(timeout);
+  }, [opened, scansLoading]);
+
+  const showLoader = scansLoading || loaderHold;
 
   const header = useMemo(
     () => (
@@ -111,7 +127,7 @@ const LibraryScanDrawer = ({
         </Group>
       </Group>
     ),
-    [onStartScan, onStartFullScan]
+    [onStartScan, onStartFullScan, handleRefresh]
   );
 
   return (
@@ -125,7 +141,7 @@ const LibraryScanDrawer = ({
       title={header}
     >
       <ScrollArea style={{ height: '100%' }}>
-        {scansLoading ? (
+        {showLoader ? (
           <Group justify="center" py="lg">
             <Loader />
           </Group>

@@ -117,10 +117,13 @@ const useLibraryStore = create(
       return response;
     },
 
-    fetchScans: async (libraryId) => {
-      set((state) => {
-        state.scansLoading = true;
-      });
+    fetchScans: async (libraryId, options = {}) => {
+      const { background = false } = options;
+      if (!background) {
+        set((state) => {
+          state.scansLoading = true;
+        });
+      }
       try {
         const params = new URLSearchParams();
         if (libraryId) {
@@ -131,14 +134,20 @@ const useLibraryStore = create(
           const payload = Array.isArray(response)
             ? response
             : response.results || [];
-          state.scans[libraryId || 'all'] = payload.map((scan) => normalizeScanEntry(scan));
-          state.scansLoading = false;
+          state.scans[libraryId || 'all'] = payload.map((scan) =>
+            normalizeScanEntry(scan)
+          );
+          if (!background) {
+            state.scansLoading = false;
+          }
         });
       } catch (error) {
         console.error('Failed to fetch scans', error);
-        set((state) => {
-          state.scansLoading = false;
-        });
+        if (!background) {
+          set((state) => {
+            state.scansLoading = false;
+          });
+        }
       }
     },
 
