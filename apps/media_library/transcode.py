@@ -46,6 +46,7 @@ AUDIO_BITRATE = _int_setting("MEDIA_LIBRARY_TRANSCODE_AUDIO_BITRATE", 192)
 PRESET = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_PRESET", "veryfast")
 TARGET_VIDEO_CODEC = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_VIDEO_CODEC", "libx264")
 TARGET_AUDIO_CODEC = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_AUDIO_CODEC", "aac")
+AUDIO_CHANNELS = _int_setting("MEDIA_LIBRARY_TRANSCODE_AUDIO_CHANNELS", 2)
 
 
 def _build_target_path(media_file: MediaFile) -> Path:
@@ -96,6 +97,8 @@ def _build_ffmpeg_command(
         TARGET_AUDIO_CODEC,
         "-b:a",
         f"{AUDIO_BITRATE}k",
+        "-ac",
+        str(max(1, AUDIO_CHANNELS)),
         "-sn",
         ]
     )
