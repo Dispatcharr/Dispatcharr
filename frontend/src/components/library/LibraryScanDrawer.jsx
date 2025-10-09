@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -19,6 +19,7 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
 import useLibraryStore from '../../store/library';
+import useMediaLibraryStore from '../../store/mediaLibrary';
 
 dayjs.extend(relativeTime);
 
@@ -53,18 +54,19 @@ const LibraryScanDrawer = ({
   onStartFullScan = null,  // () => void
 }) => {
   const scansLoading = useLibraryStore((s) => s.scansLoading);
-  const scans = useLibraryStore((s) => s.scans[libraryId || 'all']) ?? EMPTY_SCAN_LIST;
+  const scans =
+    useLibraryStore((s) => s.scans[libraryId || 'all']) ?? EMPTY_SCAN_LIST;
   const fetchScans = useLibraryStore((s) => s.fetchScans);
   const [loaderHold, setLoaderHold] = useState(false);
+  const hasRunningRef = useRef(false);
+  const hasQueuedRef = useRef(false);
+  const lastProcessedRef = useRef(0);
+  const lastLibraryRefreshRef = useRef(0);
 
-  // Fetch once when opened (WebSockets keep it live afterward)
-  useEffect(() => {
-    if (opened) {
-      fetchScans(libraryId);
-    }
-  }, [opened, libraryId, fetchScans]);
-
-  const handleRefresh = () => fetchScans(libraryId);
+  const handleRefresh = useCallback(
+    () => fetchScans(libraryId),
+    [fetchScans, libraryId]
+  );
   const hasRunningScan = useMemo(
     () => scans.some((scan) => isRunning(scan.status)),
     [scans]
@@ -74,14 +76,89 @@ const LibraryScanDrawer = ({
     [scans]
   );
 
+  // Keep refs in sync for polling loop
   useEffect(() => {
-    if (!opened) return undefined;
-    if (!hasRunningScan && !hasQueuedScan) return undefined;
-    const interval = setInterval(() => {
-      void fetchScans(libraryId, { background: true });
-    }, hasRunningScan ? 2000 : 5000);
-    return () => clearInterval(interval);
-  }, [opened, hasRunningScan, hasQueuedScan, libraryId, fetchScans]);
+    hasRunningRef.current = hasRunningScan;
+  }, [hasRunningScan]);
+  useEffect(() => {
+    hasQueuedRef.current = hasQueuedScan;
+  }, [hasQueuedScan]);
+
+  useEffect(() => {
+    if (!opened) {
+      lastProcessedRef.current = 0;
+      lastLibraryRefreshRef.current = 0;
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer;
+
+    const runFetch = async (background) => {
+      try {
+        await fetchScans(libraryId, { background });
+      } catch (error) {
+        if (!background) {
+          console.error('Failed to load library scans', error);
+        }
+      }
+    };
+
+    const loop = () => {
+      if (cancelled) return;
+      const delay = hasRunningRef.current
+        ? 2000
+        : hasQueuedRef.current
+          ? 4000
+          : 8000;
+      timer = setTimeout(async () => {
+        await runFetch(true);
+        loop();
+      }, delay);
+    };
+
+    void runFetch(false).then(loop);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [opened, libraryId, fetchScans]);
+
+  const totalProcessed = useMemo(
+    () =>
+      scans.reduce(
+        (sum, scan) => sum + (Number(scan.processed_files) || 0),
+        0
+      ),
+    [scans]
+  );
+
+  useEffect(() => {
+    if (!opened) return;
+    const now = Date.now();
+    const prevProcessed = lastProcessedRef.current;
+    const shouldRefreshLibrary =
+      (hasRunningScan || hasQueuedScan) &&
+      (totalProcessed > prevProcessed ||
+        now - lastLibraryRefreshRef.current > 15000);
+
+    if (!shouldRefreshLibrary) {
+      if (totalProcessed > prevProcessed) {
+        lastProcessedRef.current = totalProcessed;
+      }
+      return;
+    }
+
+    lastProcessedRef.current = totalProcessed;
+    lastLibraryRefreshRef.current = now;
+
+    const mediaStore = useMediaLibraryStore.getState();
+    const activeIds = mediaStore.activeLibraryIds || [];
+    void mediaStore.fetchItems(
+      activeIds.length > 0 ? activeIds : undefined
+    );
+  }, [opened, hasRunningScan, hasQueuedScan, totalProcessed]);
 
   useEffect(() => {
     if (!opened) {
