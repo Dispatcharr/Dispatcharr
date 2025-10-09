@@ -2515,12 +2515,15 @@ export default class API {
     }
   }
 
-  static async getMediaItem(id) {
+  static async getMediaItem(id, options = {}) {
+    const { suppressErrorNotification = false } = options;
     try {
       const response = await request(`${host}/api/media/items/${id}/`);
       return response;
     } catch (e) {
-      errorNotification('Failed to load media item details', e);
+      if (!suppressErrorNotification) {
+        errorNotification('Failed to load media item details', e);
+      }
       throw e;
     }
   }
@@ -2580,6 +2583,23 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to queue metadata refresh', e);
+      throw e;
+    }
+  }
+
+  static async getMediaItemFiles(mediaItemId, options = {}) {
+    const { suppressErrorNotification = false } = options;
+    try {
+      const params = new URLSearchParams();
+      params.append('media_item', mediaItemId);
+      const response = await request(
+        `${host}/api/media/files/?${params.toString()}`
+      );
+      return response.results || response;
+    } catch (e) {
+      if (!suppressErrorNotification) {
+        errorNotification('Failed to load media item files', e);
+      }
       throw e;
     }
   }

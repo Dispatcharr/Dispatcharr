@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   ActionIcon,
   Avatar,
   Badge,
@@ -19,6 +20,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import {
   CheckCircle2,
+  AlertCircle,
   Clock,
   DownloadCloud,
   Info,
@@ -58,6 +60,7 @@ const runtimeLabel = (runtimeMs) => {
 const MediaDetailModal = ({ opened, onClose }) => {
   const activeItem = useMediaLibraryStore((s) => s.activeItem);
   const activeItemLoading = useMediaLibraryStore((s) => s.activeItemLoading);
+  const activeItemError = useMediaLibraryStore((s) => s.activeItemError);
   const activeProgress = useMediaLibraryStore((s) => s.activeProgress);
   const resumePrompt = useMediaLibraryStore((s) => s.resumePrompt);
   const requestResume = useMediaLibraryStore((s) => s.requestResume);
@@ -236,6 +239,18 @@ const MediaDetailModal = ({ opened, onClose }) => {
     }
     return { sorted, resumeEpisode, nextEpisode };
   }, [activeItem, orderedEpisodes, showWatchSummary]);
+
+  const metadataPending = useMemo(() => {
+    if (!activeItem) return false;
+    if (activeItem.metadataPending) return true;
+    if (activeItemError === 'metadata_pending') return true;
+    if (activeItem.metadata_last_synced_at) return false;
+    const hasDescriptiveDetails =
+      Boolean(activeItem.synopsis) ||
+      Boolean(activeItem.poster_url) ||
+      (Array.isArray(activeItem.genres) && activeItem.genres.length > 0);
+    return !hasDescriptiveDetails;
+  }, [activeItem, activeItemError]);
 
   const canResume = useMemo(() => {
     if (!activeProgress || !activeProgress.position_ms || !activeProgress.duration_ms) return false;
@@ -425,7 +440,9 @@ const MediaDetailModal = ({ opened, onClose }) => {
     if (!episode) return;
     setEpisodePlayLoadingId(episode.id);
     try {
-      const episodeDetail = await API.getMediaItem(episode.id);
+      const episodeDetail = await API.getMediaItem(episode.id, {
+        suppressErrorNotification: true,
+      });
       const episodeFileId = episodeDetail.files?.[0]?.id;
       if (!episodeFileId) {
         notifications.show({
@@ -658,6 +675,16 @@ const MediaDetailModal = ({ opened, onClose }) => {
               ) : null}
 
               <Stack spacing={SECTION_STACK} style={{ flex: 1, minWidth: 0 }}>
+                {metadataPending && (
+                  <Alert
+                    color="yellow"
+                    variant="light"
+                    icon={<AlertCircle size={18} />}
+                    title="Metadata is still processing"
+                  >
+                    We&apos;re still gathering artwork and details for this title. Playback is available, but some information may be missing. Please check back in a few minutes for the full metadata.
+                  </Alert>
+                )}
                 <Stack spacing={STACK_TIGHT}>
                   <Group justify="space-between" align="center">
                     <Title order={3}>{activeItem.title}</Title>

@@ -64,6 +64,23 @@ const LibraryScanDrawer = ({
   }, [opened, libraryId, fetchScans]);
 
   const handleRefresh = () => fetchScans(libraryId);
+  const hasRunningScan = useMemo(
+    () => scans.some((scan) => isRunning(scan.status)),
+    [scans]
+  );
+  const hasQueuedScan = useMemo(
+    () => scans.some((scan) => isQueued(scan.status)),
+    [scans]
+  );
+
+  useEffect(() => {
+    if (!opened) return undefined;
+    if (!hasRunningScan && !hasQueuedScan) return undefined;
+    const interval = setInterval(() => {
+      void fetchScans(libraryId);
+    }, hasRunningScan ? 2000 : 5000);
+    return () => clearInterval(interval);
+  }, [opened, hasRunningScan, hasQueuedScan, libraryId, fetchScans]);
 
   const header = useMemo(
     () => (

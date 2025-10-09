@@ -52,6 +52,7 @@ const resetStateForUser = (state, userId) => {
   state.error = null;
   state.total = 0;
   state.activeItem = null;
+  state.activeItemError = null;
   state.activeProgress = null;
   state.activeItemLoading = false;
   state.resumePrompt = null;
@@ -69,6 +70,7 @@ const useMediaLibraryStore = create(
     error: null,
     total: 0,
     activeItem: null,
+    activeItemError: null,
     activeProgress: null,
     activeItemLoading: false,
     resumePrompt: null,
@@ -258,6 +260,10 @@ const useMediaLibraryStore = create(
         throw new Error('Authentication required');
       }
 
+      const currentItems = get().items || [];
+      const fallbackItem =
+        currentItems.find((item) => item.id === id) || null;
+
       set((state) => {
         if (state.ownerUserId == null) {
           state.ownerUserId = userId;
@@ -267,10 +273,14 @@ const useMediaLibraryStore = create(
         state.activeItemLoading = true;
         state.resumePrompt = null;
         state.activeProgress = null;
+        state.activeItemError = null;
+        state.activeItem = fallbackItem ? { ...fallbackItem } : null;
       });
 
       try {
-        const response = await API.getMediaItem(id);
+        const response = await API.getMediaItem(id, {
+          suppressErrorNotification: true,
+        });
         const progress = response.watch_progress || null;
         set((state) => {
           if (state.ownerUserId !== userId) {
@@ -279,15 +289,46 @@ const useMediaLibraryStore = create(
           state.activeItem = response;
           state.activeItemLoading = false;
           state.activeProgress = progress;
+          state.activeItemError = null;
         });
         get().upsertItems([response]);
         queueMetadataRefresh([response], { force: true });
         return response;
       } catch (error) {
         console.error('Failed to load media item', error);
+        if (fallbackItem) {
+          let files = [];
+          try {
+            files = await API.getMediaItemFiles(id, {
+              suppressErrorNotification: true,
+            });
+          } catch (fileError) {
+            console.error('Failed to load media files for fallback item', fileError);
+          }
+
+          const fallbackDetail = {
+            ...fallbackItem,
+            files,
+            metadataPending: true,
+          };
+
+          set((state) => {
+            if (state.ownerUserId !== userId) {
+              return;
+            }
+            state.activeItem = fallbackDetail;
+            state.activeItemLoading = false;
+            state.activeProgress = fallbackItem.watch_progress || null;
+            state.activeItemError = 'metadata_pending';
+          });
+          queueMetadataRefresh([fallbackItem]);
+          return fallbackDetail;
+        }
+
         set((state) => {
           if (state.ownerUserId === userId) {
             state.activeItemLoading = false;
+            state.activeItemError = 'load_failed';
           }
         });
         throw error;
@@ -297,6 +338,7 @@ const useMediaLibraryStore = create(
     closeItem: () =>
       set((state) => {
         state.activeItem = null;
+        state.activeItemError = null;
         state.resumePrompt = null;
         state.activeProgress = null;
       }),
