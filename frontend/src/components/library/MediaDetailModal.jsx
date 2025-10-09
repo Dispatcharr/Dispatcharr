@@ -27,6 +27,7 @@ import {
   Undo2,
   Trash2,
   Pencil,
+  XCircle,
 } from 'lucide-react';
 
 import API from '../../api';
@@ -75,6 +76,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const [episodesLoading, setEpisodesLoading] = useState(false);
   const [episodePlayLoadingId, setEpisodePlayLoadingId] = useState(null);
   const [episodeActionLoading, setEpisodeActionLoading] = useState({});
+  const [itemActionLoading, setItemActionLoading] = useState(null);
 
   const setEpisodeLoading = useCallback((episodeId, action) => {
     setEpisodeActionLoading((prev) => ({ ...prev, [episodeId]: action }));
@@ -134,6 +136,78 @@ const MediaDetailModal = ({ opened, onClose }) => {
   }, [episodes]);
 
   const showWatchSummary = activeItem?.watch_summary || null;
+  const itemWatchSummary =
+    activeItem?.item_type === 'show' ? showWatchSummary : activeItem?.watch_summary || null;
+  const itemStatus = itemWatchSummary?.status || 'unwatched';
+  const itemIsWatched = itemStatus === 'watched';
+  const itemInProgress = itemStatus === 'in_progress';
+
+  useEffect(() => {
+    setItemActionLoading(null);
+  }, [activeItem?.id]);
+
+  const handleMarkItemWatched = useCallback(async () => {
+    if (!activeItem) return;
+    setItemActionLoading('watch');
+    try {
+      if (activeItem.item_type === 'show') {
+        const response = await API.markSeriesWatched(activeItem.id);
+        if (response?.item) {
+          useMediaLibraryStore.getState().upsertItems([response.item]);
+        }
+      } else {
+        await API.markMediaItemWatched(activeItem.id);
+      }
+      await refreshActiveItem();
+      notifications.show({
+        title: 'Marked as watched',
+        message: `${activeItem.title} marked as watched.`,
+        color: 'green',
+      });
+    } catch (error) {
+      console.error('Failed to mark media watched', error);
+      notifications.show({
+        title: 'Action failed',
+        message: 'Unable to mark this item as watched right now.',
+        color: 'red',
+      });
+    } finally {
+      setItemActionLoading(null);
+    }
+  }, [activeItem, refreshActiveItem]);
+
+  const handleClearItemProgress = useCallback(async () => {
+    if (!activeItem) return;
+    setItemActionLoading('clear');
+    try {
+      if (activeItem.item_type === 'show') {
+        const response = await API.markSeriesUnwatched(activeItem.id);
+        if (response?.item) {
+          useMediaLibraryStore.getState().upsertItems([response.item]);
+        }
+      } else {
+        await API.clearMediaItemProgress(activeItem.id);
+      }
+      await refreshActiveItem();
+      notifications.show({
+        title: 'Progress cleared',
+        message:
+          activeItem.item_type === 'show'
+            ? 'Watch history cleared for this series.'
+            : 'This title has been removed from Continue Watching.',
+        color: 'blue',
+      });
+    } catch (error) {
+      console.error('Failed to clear media progress', error);
+      notifications.show({
+        title: 'Action failed',
+        message: 'Unable to update watch progress right now.',
+        color: 'red',
+      });
+    } finally {
+      setItemActionLoading(null);
+    }
+  }, [activeItem, refreshActiveItem]);
 
   const playbackPlan = useMemo(() => {
     if (!activeItem || activeItem.item_type !== 'show') return null;
@@ -677,6 +751,42 @@ const MediaDetailModal = ({ opened, onClose }) => {
                       <RefreshCcw size={18} />
                     </ActionIcon>
                   </Group>
+                  {activeItem && (
+                    <Group gap="sm" wrap="wrap">
+                      {!itemIsWatched && (
+                        <Button
+                          variant="light"
+                          color="green"
+                          leftSection={<CheckCircle2 size={16} />}
+                          loading={itemActionLoading === 'watch'}
+                          onClick={handleMarkItemWatched}
+                        >
+                          Mark as watched
+                        </Button>
+                      )}
+                      {itemInProgress && (
+                        <Button
+                          variant="subtle"
+                          color="yellow"
+                          leftSection={<XCircle size={16} />}
+                          loading={itemActionLoading === 'clear'}
+                          onClick={handleClearItemProgress}
+                        >
+                          Remove from Continue Watching
+                        </Button>
+                      )}
+                      {itemIsWatched && (
+                        <Button
+                          variant="subtle"
+                          leftSection={<Undo2 size={16} />}
+                          loading={itemActionLoading === 'clear'}
+                          onClick={handleClearItemProgress}
+                        >
+                          Mark unwatched
+                        </Button>
+                      )}
+                    </Group>
+                  )}
                 </Stack>
 
                 {activeItem.item_type === 'show' && (
