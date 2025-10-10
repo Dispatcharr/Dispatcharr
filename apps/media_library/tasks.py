@@ -607,7 +607,8 @@ def scan_library_task(
             pending_probe_ids.clear()
 
         def refresh_stage_counters() -> None:
-            nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count
+            nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count, total_files
+            progress_cap = max(scan.total_files, discovery_total_estimate, total_files)
             snapshot = (
                 LibraryScan.objects.filter(pk=scan.pk)
                 .values(
@@ -623,19 +624,22 @@ def scan_library_task(
             if not snapshot:
                 return
 
-            discovered_total = max(
-                scan.total_files,
-                snapshot.get("metadata_total") or 0,
-                snapshot.get("artwork_total") or 0,
-            )
+            metadata_snapshot_total = snapshot.get("metadata_total") or 0
+            artwork_snapshot_total = snapshot.get("artwork_total") or 0
 
-            metadata_total_count = max(metadata_total_count, discovered_total)
-            metadata_processed_count = max(
-                metadata_processed_count, snapshot.get("metadata_processed") or 0
+            metadata_total_count = min(
+                progress_cap, max(metadata_total_count, metadata_snapshot_total)
             )
-            artwork_total_count = max(artwork_total_count, discovered_total)
+            metadata_processed_count = max(
+                metadata_processed_count,
+                min(progress_cap, snapshot.get("metadata_processed") or 0),
+            )
+            artwork_total_count = min(
+                progress_cap, max(artwork_total_count, artwork_snapshot_total)
+            )
             artwork_processed_count = max(
-                artwork_processed_count, snapshot.get("artwork_processed") or 0
+                artwork_processed_count,
+                min(progress_cap, snapshot.get("artwork_processed") or 0),
             )
 
             scan.metadata_total = metadata_total_count
@@ -657,14 +661,21 @@ def scan_library_task(
 
             refresh_stage_counters()
 
-            discovered_total = max(scan.total_files, metadata_total_count, artwork_total_count)
+            progress_cap = max(scan.total_files, discovery_total_estimate, total_files)
 
-            metadata_total_count = max(metadata_total_count, discovered_total)
-            metadata_processed_count = max(metadata_processed_count, scan.metadata_processed or 0)
-            artwork_total_count = max(artwork_total_count, discovered_total)
-            artwork_processed_count = max(artwork_processed_count, scan.artwork_processed or 0)
+            metadata_total_count = min(
+                progress_cap, max(metadata_total_count, scan.metadata_total or 0) + 1
+            )
+            metadata_processed_count = min(
+                progress_cap, max(metadata_processed_count, scan.metadata_processed or 0)
+            )
+            artwork_total_count = min(
+                progress_cap, max(artwork_total_count, scan.artwork_total or 0) + 1
+            )
+            artwork_processed_count = min(
+                progress_cap, max(artwork_processed_count, scan.artwork_processed or 0)
+            )
 
-            metadata_total_count += 1
             if scan.metadata_status != LibraryScan.STAGE_STATUS_RUNNING:
                 scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_RUNNING)
 
