@@ -250,6 +250,27 @@ def _advance_metadata_stage(
 
     if updated:
         _emit_scan_update(scan, status="progress")
+        _maybe_mark_scan_completed(scan)
+
+
+def _maybe_mark_scan_completed(scan: LibraryScan) -> None:
+    if scan.status == LibraryScan.STATUS_COMPLETED:
+        return
+
+    metadata_done = scan.metadata_status in (
+        LibraryScan.STAGE_STATUS_COMPLETED,
+        LibraryScan.STAGE_STATUS_SKIPPED,
+    )
+    artwork_done = scan.artwork_status in (
+        LibraryScan.STAGE_STATUS_COMPLETED,
+        LibraryScan.STAGE_STATUS_SKIPPED,
+    )
+    discovery_done = scan.discovery_status == LibraryScan.STAGE_STATUS_COMPLETED
+
+    if discovery_done and metadata_done and artwork_done:
+        summary = scan.summary or ""
+        scan.mark_completed(summary=summary)
+        _emit_scan_update(scan, status="completed")
 
 
 def _send_media_item_update(media_item: MediaItem, *, status: str = "updated") -> None:
@@ -604,19 +625,35 @@ def scan_library_task(
                 )
 
         scanner.finalize(matched=matched, unmatched=unmatched, summary=summary)
-        logger.info("Completed scan for library %s", library.name)
-        _emit_scan_update(
-            scan,
-            status="completed",
-            extra={
-                "summary": summary,
-                "matched": matched,
-                "unmatched": unmatched,
-                "new_files": scan.new_files,
-                "updated_files": scan.updated_files,
-                "removed_files": scan.removed_files,
-            },
+        logger.info("Completed scan stage for library %s", library.name)
+
+        metadata_done = scan.metadata_status in (
+            LibraryScan.STAGE_STATUS_COMPLETED,
+            LibraryScan.STAGE_STATUS_SKIPPED,
         )
+        artwork_done = scan.artwork_status in (
+            LibraryScan.STAGE_STATUS_COMPLETED,
+            LibraryScan.STAGE_STATUS_SKIPPED,
+        )
+
+        if metadata_done and artwork_done:
+            _maybe_mark_scan_completed(scan)
+        else:
+            scan.status = LibraryScan.STATUS_RUNNING
+            scan.finished_at = None
+            scan.save(update_fields=["status", "finished_at", "updated_at"])
+            _emit_scan_update(
+                scan,
+                status="progress",
+                extra={
+                    "summary": summary,
+                    "matched": matched,
+                    "unmatched": unmatched,
+                    "new_files": scan.new_files,
+                    "updated_files": scan.updated_files,
+                    "removed_files": scan.removed_files,
+                },
+            )
         _start_next_scan(library)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Library scan failed for %s", library.name)
@@ -779,7 +816,7 @@ def _sync_metadata(media_item_id: int, scan_id: str | None = None) -> None:
 
     result = sync_metadata(media_item)
     if result:
-        _send_media_item_update(result, status="metadata")
+    _send_media_item_update(result, status="metadata")
 
     if not scan:
         return
@@ -798,6 +835,7 @@ def _sync_metadata(media_item_id: int, scan_id: str | None = None) -> None:
             metadata_increment=metadata_increment,
             artwork_increment=artwork_increment,
         )
+        _maybe_mark_scan_completed(scan)
 
 
 @shared_task(name="media_library.sync_metadata")
