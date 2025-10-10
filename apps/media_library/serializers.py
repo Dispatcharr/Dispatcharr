@@ -183,23 +183,7 @@ class LibraryScanSerializer(serializers.ModelSerializer):
         ]
 
     def get_stages(self, obj):
-        return {
-            "discovery": {
-                "status": obj.discovery_status,
-                "processed": obj.discovery_processed,
-                "total": obj.discovery_total,
-            },
-            "metadata": {
-                "status": obj.metadata_status,
-                "processed": obj.metadata_processed,
-                "total": obj.metadata_total,
-            },
-            "artwork": {
-                "status": obj.artwork_status,
-                "processed": obj.artwork_processed,
-                "total": obj.artwork_total,
-            },
-        }
+        return obj.stage_snapshot(normalize=True)
 
 
 class ArtworkAssetSerializer(serializers.ModelSerializer):

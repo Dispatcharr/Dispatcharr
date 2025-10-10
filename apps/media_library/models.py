@@ -286,6 +286,53 @@ class LibraryScan(models.Model):
         "artwork": ("artwork_status", "artwork_total", "artwork_processed"),
     }
 
+    def stage_snapshot(self, *, normalize: bool = False) -> dict[str, dict[str, int | str]]:
+        """
+        Return the current stage progress for the scan.
+
+        When `normalize` is True, metadata and artwork counts are scaled so that
+        their totals align with the overall `total_files` count. This keeps the
+        progress bars consistent in the UI without affecting the stored values
+        that drive the underlying workflow.
+        """
+        snapshot: dict[str, dict[str, int | str]] = {}
+        total_files = max(0, int(self.total_files or 0))
+
+        for stage, (status_field, total_field, processed_field) in self._stage_field_map.items():
+            status = getattr(self, status_field)
+            total_value = max(0, int(getattr(self, total_field) or 0))
+            processed_value = max(0, int(getattr(self, processed_field) or 0))
+
+            if (
+                normalize
+                and stage != "discovery"
+                and status != self.STAGE_STATUS_SKIPPED
+                and total_files > 0
+            ):
+                normalized_total = total_files
+                if total_value > 0:
+                    if processed_value >= total_value:
+                        normalized_processed = normalized_total
+                    else:
+                        ratio = processed_value / total_value
+                        normalized_processed = int(ratio * normalized_total)
+                        if processed_value > 0 and normalized_processed == 0:
+                            normalized_processed = 1
+                        normalized_processed = min(normalized_total, normalized_processed)
+                else:
+                    normalized_processed = 0
+
+                total_value = normalized_total
+                processed_value = normalized_processed
+
+            snapshot[stage] = {
+                "status": status,
+                "processed": processed_value,
+                "total": total_value,
+            }
+
+        return snapshot
+
     def record_stage_progress(
         self,
         stage: str,

@@ -286,23 +286,7 @@ def _send_scan_event(event: dict) -> None:
 
 
 def _stage_snapshot(scan: LibraryScan) -> dict[str, dict[str, int | str]]:
-    return {
-        "discovery": {
-            "status": scan.discovery_status,
-            "processed": scan.discovery_processed,
-            "total": scan.discovery_total,
-        },
-        "metadata": {
-            "status": scan.metadata_status,
-            "processed": scan.metadata_processed,
-            "total": scan.metadata_total,
-        },
-        "artwork": {
-            "status": scan.artwork_status,
-            "processed": scan.artwork_processed,
-            "total": scan.artwork_total,
-        },
-    }
+    return scan.stage_snapshot(normalize=True)
 
 
 def _emit_scan_update(scan: LibraryScan, *, status: str, extra: dict | None = None) -> None:
