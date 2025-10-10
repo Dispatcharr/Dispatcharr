@@ -13,6 +13,18 @@ const shouldRefreshMetadata = (item) => {
 
 const queueMetadataRefresh = (items, { force = false } = {}) => {
   if (!Array.isArray(items) || items.length === 0) return;
+
+  if (!force) {
+    // Discovery pipeline now queues metadata/artwork on the backend.
+    // Skip client-side batching to avoid flooding the API when large scans run.
+    items.forEach((item) => {
+      if (item?.id) {
+        metadataRequestCache.delete(item.id);
+      }
+    });
+    return;
+  }
+
   const now = Date.now();
   items.forEach((item) => {
     if (!shouldRefreshMetadata(item)) {

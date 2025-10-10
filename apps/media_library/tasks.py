@@ -511,8 +511,18 @@ def scan_library_task(
                 processed=0,
             )
         else:
-            scan.record_stage_progress("metadata", processed=0)
-            scan.record_stage_progress("artwork", processed=0)
+            if scan.metadata_status == LibraryScan.STAGE_STATUS_PENDING:
+                scan.record_stage_progress(
+                    "metadata",
+                    status=LibraryScan.STAGE_STATUS_RUNNING,
+                    processed=scan.metadata_processed,
+                )
+            if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING:
+                scan.record_stage_progress(
+                    "artwork",
+                    status=LibraryScan.STAGE_STATUS_RUNNING,
+                    processed=scan.artwork_processed,
+                )
 
         scanner.finalize(matched=matched, unmatched=unmatched, summary=summary)
         logger.info("Completed scan for library %s", library.name)
