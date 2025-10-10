@@ -440,6 +440,17 @@ def _maybe_mark_scan_completed(scan: LibraryScan) -> None:
     if discovery_done and metadata_done and artwork_done:
         summary = scan.summary or ""
         scan.mark_completed(summary=summary)
+        if scan.library_id:
+            now = timezone.now()
+            Library.objects.filter(pk=scan.library_id).update(
+                last_scan_at=now,
+                last_successful_scan_at=now,
+                updated_at=now,
+            )
+            if getattr(scan, "library", None):
+                scan.library.last_scan_at = now
+                scan.library.last_successful_scan_at = now
+                scan.library.updated_at = now
         _emit_scan_update(scan, status="completed")
 
 

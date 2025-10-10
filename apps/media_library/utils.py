@@ -200,25 +200,15 @@ class LibraryScanner:
         if summary:
             self.scan.summary = summary
         self.scan.log = "\n".join(self.log_messages)
-        self.scan.finished_at = timezone.now()
-        self.scan.status = LibraryScan.STATUS_COMPLETED
-        self.scan.processed_files = self.scan.total_files
         self.scan.save(
             update_fields=[
                 "matched_items",
                 "unmatched_files",
                 "summary",
                 "log",
-                "finished_at",
-                "status",
-                "processed_files",
                 "updated_at",
             ]
         )
-
-        self.library.last_scan_at = timezone.now()
-        self.library.last_successful_scan_at = timezone.now()
-        self.library.save(update_fields=["last_scan_at", "last_successful_scan_at", "updated_at"])
 
     def _ensure_file_record(
         self, location: LibraryLocation, file_path: Path
