@@ -3,7 +3,7 @@ from datetime import timedelta
 from typing import Optional, Set
 from collections import deque
 
-from celery import shared_task
+from celery import shared_task, states
 from celery.result import AsyncResult
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -35,6 +35,7 @@ METADATA_TASK_QUEUE = getattr(settings, "CELERY_METADATA_QUEUE", None)
 METADATA_TASK_PRIORITY = getattr(settings, "CELERY_METADATA_PRIORITY", None)
 PROBE_TASK_QUEUE = getattr(settings, "CELERY_MEDIA_PROBE_QUEUE", None)
 PROBE_TASK_PRIORITY = getattr(settings, "CELERY_MEDIA_PROBE_PRIORITY", None)
+STALE_SCAN_THRESHOLD_SECONDS = getattr(settings, "MEDIA_LIBRARY_STALE_SCAN_THRESHOLD_SECONDS", 180)
 
 
 def _start_next_scan(library: Library) -> None:
@@ -70,6 +71,71 @@ def _start_next_scan(library: Library) -> None:
     )
     pending_scan.task_id = async_result.id
     pending_scan.save(update_fields=["task_id", "updated_at"])
+
+
+def resume_orphaned_scans(*, library_id: int | None = None) -> int:
+    """
+    Ensure scans that were marked as running but lost their worker (e.g. due to a restart)
+    are re-queued so progress can continue.
+    """
+    qs = LibraryScan.objects.filter(status=LibraryScan.STATUS_RUNNING)
+    if library_id is not None:
+        qs = qs.filter(library_id=library_id)
+
+    now = timezone.now()
+    stale_before = now - timedelta(seconds=max(30, STALE_SCAN_THRESHOLD_SECONDS))
+    resumed = 0
+
+    for scan in qs.select_related("library"):
+        should_resume = False
+        task_state = None
+        if scan.task_id:
+            try:
+                task_result = AsyncResult(scan.task_id)
+                task_state = task_result.state
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Unable to inspect scan task %s: %s", scan.task_id, exc)
+                task_state = None
+
+        if not scan.task_id:
+            should_resume = True
+        elif task_state in states.READY_STATES or task_state in {states.RETRY, states.REVOKED}:
+            should_resume = True
+        elif scan.updated_at and scan.updated_at < stale_before:
+            should_resume = True
+
+        if not should_resume or not scan.library:
+            continue
+
+        logger.info(
+            "Resuming interrupted library scan %s for library %s (task=%s state=%s)",
+            scan.id,
+            scan.library_id,
+            scan.task_id,
+            task_state,
+        )
+
+        summary_note = "Resuming after interruption."
+        summary_text = scan.summary or ""
+        if summary_note not in summary_text:
+            if summary_text:
+                summary_text = f"{summary_text.strip()}\n{summary_note}"
+            else:
+                summary_text = summary_note
+        else:
+            summary_text = summary_text.strip()
+
+        scan.status = LibraryScan.STATUS_PENDING
+        scan.task_id = None
+        scan.finished_at = None
+        scan.summary = summary_text
+        scan.updated_at = now
+        scan.save(update_fields=["status", "task_id", "finished_at", "summary", "updated_at"])
+
+        _start_next_scan(scan.library)
+        resumed += 1
+
+    return resumed
 
 
 def enqueue_library_scan(

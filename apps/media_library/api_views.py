@@ -22,6 +22,7 @@ from apps.media_library.tasks import (
     cancel_library_scan,
     revoke_scan_task,
     start_next_library_scan,
+    resume_orphaned_scans,
     sync_library_to_vod_task,
     unsync_library_from_vod_task,
 )
@@ -151,6 +152,20 @@ class LibraryScanViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet
     ordering_fields = ["created_at", "started_at", "finished_at"]
     ordering = ["-created_at"]
     http_method_names = ["get", "head", "options", "delete", "post"]
+
+    def list(self, request, *args, **kwargs):
+        library_param = request.query_params.get("library")
+        library_id = None
+        if library_param:
+            try:
+                library_id = int(library_param)
+            except (TypeError, ValueError):
+                library_id = None
+        try:
+            resume_orphaned_scans(library_id=library_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to resume orphaned scans for library %s", library_param)
+        return super().list(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         scan = self.get_object()
