@@ -234,25 +234,80 @@ def _advance_metadata_stage(
     metadata_increment: int = 0,
     artwork_increment: int = 0,
 ) -> None:
+    if not metadata_increment and not artwork_increment:
+        return
+
     updated = False
 
-    if metadata_increment:
-        new_metadata_processed = scan.metadata_processed + metadata_increment
-        if scan.metadata_total:
-            new_metadata_processed = min(new_metadata_processed, scan.metadata_total)
-        scan.record_stage_progress("metadata", processed=new_metadata_processed)
-        if scan.metadata_total and new_metadata_processed >= scan.metadata_total:
-            scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
-        updated = True
+    with transaction.atomic():
+        locked = (
+            LibraryScan.objects.select_for_update()
+            .only(
+                "metadata_status",
+                "metadata_total",
+                "metadata_processed",
+                "artwork_status",
+                "artwork_total",
+                "artwork_processed",
+            )
+            .get(pk=scan.pk)
+        )
 
-    if artwork_increment:
-        new_artwork_processed = scan.artwork_processed + artwork_increment
-        if scan.artwork_total:
-            new_artwork_processed = min(new_artwork_processed, scan.artwork_total)
-        scan.record_stage_progress("artwork", processed=new_artwork_processed)
-        if scan.artwork_total and new_artwork_processed >= scan.artwork_total:
-            scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
-        updated = True
+        update_fields: list[str] = []
+        now = timezone.now()
+
+        if metadata_increment:
+            current_processed = locked.metadata_processed or 0
+            new_processed = current_processed + metadata_increment
+            if locked.metadata_total:
+                new_processed = min(new_processed, locked.metadata_total)
+
+            if new_processed != current_processed:
+                locked.metadata_processed = new_processed
+                update_fields.append("metadata_processed")
+
+            target_status = locked.metadata_status
+            if target_status == LibraryScan.STAGE_STATUS_PENDING:
+                target_status = LibraryScan.STAGE_STATUS_RUNNING
+            if locked.metadata_total and new_processed >= locked.metadata_total:
+                target_status = LibraryScan.STAGE_STATUS_COMPLETED
+
+            if target_status != locked.metadata_status:
+                locked.metadata_status = target_status
+                update_fields.append("metadata_status")
+
+        if artwork_increment:
+            current_processed = locked.artwork_processed or 0
+            new_processed = current_processed + artwork_increment
+            if locked.artwork_total:
+                new_processed = min(new_processed, locked.artwork_total)
+
+            if new_processed != current_processed:
+                locked.artwork_processed = new_processed
+                update_fields.append("artwork_processed")
+
+            target_status = locked.artwork_status
+            if target_status == LibraryScan.STAGE_STATUS_PENDING:
+                target_status = LibraryScan.STAGE_STATUS_RUNNING
+            if locked.artwork_total and new_processed >= locked.artwork_total:
+                target_status = LibraryScan.STAGE_STATUS_COMPLETED
+
+            if target_status != locked.artwork_status:
+                locked.artwork_status = target_status
+                update_fields.append("artwork_status")
+
+        if update_fields:
+            locked.updated_at = now
+            locked.save(update_fields=update_fields + ["updated_at"])
+            updated = True
+
+        # Sync original scan instance with locked values so future calls have fresh data.
+        scan.metadata_status = locked.metadata_status
+        scan.metadata_total = locked.metadata_total
+        scan.metadata_processed = locked.metadata_processed or 0
+        scan.artwork_status = locked.artwork_status
+        scan.artwork_total = locked.artwork_total
+        scan.artwork_processed = locked.artwork_processed or 0
 
     if updated:
         _emit_scan_update(scan, status="progress")
