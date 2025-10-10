@@ -450,6 +450,10 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                     movie = Movie.objects.filter(imdb_id=media_item.imdb_id).first()
                 if not movie:
                     raise
+        if movie and media_item.tmdb_id:
+            conflict_movie = Movie.objects.filter(tmdb_id=media_item.tmdb_id).exclude(pk=movie.pk).first()
+            if conflict_movie:
+                movie = conflict_movie
         movie = _update_movie_from_media_item(movie, media_item)
         if media_item.vod_movie_id != movie.id:
             media_item.vod_movie = movie
@@ -510,6 +514,10 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                     series = Series.objects.filter(imdb_id=media_item.imdb_id).first()
                 if not series:
                     raise
+        if series and media_item.tmdb_id:
+            conflict_series = Series.objects.filter(tmdb_id=media_item.tmdb_id).exclude(pk=series.pk).first()
+            if conflict_series:
+                series = conflict_series
         series = _update_series_from_media_item(series, media_item)
         if media_item.vod_series_id != series.id:
             media_item.vod_series = series
