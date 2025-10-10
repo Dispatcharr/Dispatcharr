@@ -373,11 +373,50 @@ def scan_library_task(
             sync_metadata_task.delay(item.id, scan_id=str(scan.id))
             return True
 
+        def refresh_stage_counters() -> None:
+            nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count
+            snapshot = (
+                LibraryScan.objects.filter(pk=scan.pk)
+                .values(
+                    "metadata_total",
+                    "metadata_processed",
+                    "artwork_total",
+                    "artwork_processed",
+                    "metadata_status",
+                    "artwork_status",
+                )
+                .first()
+            )
+            if not snapshot:
+                return
+
+            metadata_total_count = max(metadata_total_count, snapshot.get("metadata_total") or 0)
+            metadata_processed_count = max(
+                metadata_processed_count, snapshot.get("metadata_processed") or 0
+            )
+            artwork_total_count = max(artwork_total_count, snapshot.get("artwork_total") or 0)
+            artwork_processed_count = max(
+                artwork_processed_count, snapshot.get("artwork_processed") or 0
+            )
+
+            scan.metadata_total = metadata_total_count
+            scan.metadata_processed = metadata_processed_count
+            scan.artwork_total = artwork_total_count
+            scan.artwork_processed = artwork_processed_count
+            metadata_status = snapshot.get("metadata_status")
+            artwork_status = snapshot.get("artwork_status")
+            if metadata_status:
+                scan.metadata_status = metadata_status
+            if artwork_status:
+                scan.artwork_status = artwork_status
+
         def register_metadata_item(item: MediaItem | None, needs_metadata: bool) -> None:
             nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count
             if not item or not item.id or item.id in metadata_accounted_ids:
                 return
             metadata_accounted_ids.add(item.id)
+
+            refresh_stage_counters()
 
             metadata_total_count = max(metadata_total_count, scan.metadata_total or 0)
             metadata_processed_count = max(metadata_processed_count, scan.metadata_processed or 0)
