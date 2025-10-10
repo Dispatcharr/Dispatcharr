@@ -424,6 +424,7 @@ def scan_library_task(
             for file_id in sorted(pending_probe_ids):
                 probe_media_task.apply_async(args=(file_id,), **options)
             probes_scheduled = True
+            pending_probe_ids.clear()
 
         def refresh_stage_counters() -> None:
             nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count

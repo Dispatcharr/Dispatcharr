@@ -68,6 +68,9 @@ const stageColorMap = {
   artwork: 'red',
 };
 
+const PROGRESS_REFRESH_DELTA = 25;
+const PROGRESS_REFRESH_INTERVAL_MS = 15000;
+
 const LibraryScanDrawer = ({
   opened,
   onClose,
@@ -89,6 +92,7 @@ const LibraryScanDrawer = ({
   const hasQueuedRef = useRef(false);
   const lastProcessedRef = useRef(0);
   const lastLibraryRefreshRef = useRef(0);
+  const refreshInFlightRef = useRef(false);
 
   const handleRefresh = useCallback(
     () => fetchScans(libraryId),
@@ -170,28 +174,37 @@ const LibraryScanDrawer = ({
 
   useEffect(() => {
     if (!opened) return;
+
+    if (!hasRunningScan && !hasQueuedScan) {
+      lastProcessedRef.current = totalProcessed;
+      return;
+    }
+
     const now = Date.now();
     const prevProcessed = lastProcessedRef.current;
-    const shouldRefreshLibrary =
-      (hasRunningScan || hasQueuedScan) &&
-      (totalProcessed > prevProcessed ||
-        now - lastLibraryRefreshRef.current > 15000);
+    const processedDelta = Math.max(0, totalProcessed - prevProcessed);
+    const elapsedSinceRefresh = now - lastLibraryRefreshRef.current;
 
-    if (!shouldRefreshLibrary) {
-      if (totalProcessed > prevProcessed) {
-        lastProcessedRef.current = totalProcessed;
-      }
+    const shouldRefreshLibrary =
+      processedDelta >= PROGRESS_REFRESH_DELTA ||
+      elapsedSinceRefresh >= PROGRESS_REFRESH_INTERVAL_MS;
+
+    if (!shouldRefreshLibrary || refreshInFlightRef.current) {
       return;
     }
 
     lastProcessedRef.current = totalProcessed;
     lastLibraryRefreshRef.current = now;
+    refreshInFlightRef.current = true;
 
     const mediaStore = useMediaLibraryStore.getState();
     const activeIds = mediaStore.activeLibraryIds || [];
-    void mediaStore.fetchItems(
-      activeIds.length > 0 ? activeIds : undefined
-    );
+
+    void mediaStore
+      .fetchItems(activeIds.length > 0 ? activeIds : undefined)
+      .finally(() => {
+        refreshInFlightRef.current = false;
+      });
   }, [opened, hasRunningScan, hasQueuedScan, totalProcessed]);
 
   useEffect(() => {
