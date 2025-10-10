@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 METADATA_TASK_QUEUE = getattr(settings, "CELERY_METADATA_QUEUE", None)
 METADATA_TASK_PRIORITY = getattr(settings, "CELERY_METADATA_PRIORITY", None)
+PROBE_TASK_QUEUE = getattr(settings, "CELERY_MEDIA_PROBE_QUEUE", None)
+PROBE_TASK_PRIORITY = getattr(settings, "CELERY_MEDIA_PROBE_PRIORITY", None)
 
 
 def _start_next_scan(library: Library) -> None:
@@ -323,6 +325,8 @@ def scan_library_task(
     media_item_ids: Set[int] = set()
     metadata_queue_ids: Set[int] = set()
     metadata_accounted_ids: Set[int] = set()
+    pending_probe_ids: set[int] = set()
+    probes_scheduled = False
     metadata_total_count = scan.metadata_total or 0
     metadata_processed_count = scan.metadata_processed or 0
     artwork_total_count = scan.artwork_total or 0
@@ -404,6 +408,22 @@ def scan_library_task(
                 options["priority"] = METADATA_TASK_PRIORITY
             sync_metadata_task.apply_async(args=args, kwargs=kwargs, **options)
             return True
+
+        def enqueue_probe_tasks() -> None:
+            nonlocal probes_scheduled
+            if probes_scheduled:
+                return
+            if not pending_probe_ids:
+                probes_scheduled = True
+                return
+            options = {}
+            if PROBE_TASK_QUEUE:
+                options["queue"] = PROBE_TASK_QUEUE
+            if PROBE_TASK_PRIORITY is not None:
+                options["priority"] = PROBE_TASK_PRIORITY
+            for file_id in sorted(pending_probe_ids):
+                probe_media_task.apply_async(args=(file_id,), **options)
+            probes_scheduled = True
 
         def refresh_stage_counters() -> None:
             nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count
@@ -546,7 +566,7 @@ def scan_library_task(
                     register_metadata_item(media_obj, needs_metadata)
 
             if result.requires_probe:
-                probe_media_task.delay(result.file_id)
+                pending_probe_ids.add(result.file_id)
 
             processed = discovery_processed
             scan.record_stage_progress("discovery", processed=discovery_processed)
@@ -585,6 +605,8 @@ def scan_library_task(
             )
             for item in metadata_qs:
                 queue_metadata(item)
+
+        enqueue_probe_tasks()
 
         scan.total_files = max(scan.total_files, discovery_processed)
         scan.record_stage_progress(
@@ -667,6 +689,7 @@ def scan_library_task(
             )
         _start_next_scan(library)
     except Exception as exc:  # noqa: BLE001
+        enqueue_probe_tasks()
         logger.exception("Library scan failed for %s", library.name)
         scan.record_progress(
             processed=processed,
