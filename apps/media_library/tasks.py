@@ -104,6 +104,9 @@ def resume_orphaned_scans(*, library_id: int | None = None) -> int:
         elif scan.updated_at and scan.updated_at < stale_before:
             should_resume = True
 
+        if scan.discovery_status == LibraryScan.STAGE_STATUS_COMPLETED:
+            continue
+
         if not should_resume or not scan.library:
             continue
 
