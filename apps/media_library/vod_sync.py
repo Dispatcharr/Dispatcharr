@@ -14,7 +14,7 @@ import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
@@ -415,21 +415,28 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 movie = fallback_candidate
 
         if not movie:
-            movie = Movie.objects.create(
-                name=media_item.title or "Untitled Movie",
-                description=media_item.synopsis or "",
-                year=media_item.release_year,
-                rating=media_item.rating or "",
-                genre=", ".join(media_item.genres) if isinstance(media_item.genres, Iterable) else "",
-                duration_secs=_duration_seconds(media_item),
-                tmdb_id=media_item.tmdb_id,
-                imdb_id=media_item.imdb_id,
-                custom_properties={
-                    "source": "library",
-                    "library_id": media_item.library_id,
-                    "library_item_id": media_item.id,
-                },
-            )
+            try:
+                movie = Movie.objects.create(
+                    name=media_item.title or "Untitled Movie",
+                    description=media_item.synopsis or "",
+                    year=media_item.release_year,
+                    rating=media_item.rating or "",
+                    genre=", ".join(media_item.genres) if isinstance(media_item.genres, Iterable) else "",
+                    duration_secs=_duration_seconds(media_item),
+                    tmdb_id=media_item.tmdb_id,
+                    imdb_id=media_item.imdb_id,
+                    custom_properties={
+                        "source": "library",
+                        "library_id": media_item.library_id,
+                        "library_item_id": media_item.id,
+                    },
+                )
+            except IntegrityError:
+                movie = Movie.objects.filter(tmdb_id=media_item.tmdb_id).first()
+                if not movie and media_item.imdb_id:
+                    movie = Movie.objects.filter(imdb_id=media_item.imdb_id).first()
+                if not movie:
+                    raise
         movie = _update_movie_from_media_item(movie, media_item)
         if media_item.vod_movie_id != movie.id:
             media_item.vod_movie = movie
@@ -456,20 +463,27 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 series = fallback_candidate
 
         if not series:
-            series = Series.objects.create(
-                name=media_item.title or "Untitled Series",
-                description=media_item.synopsis or "",
-                year=media_item.release_year,
-                rating=media_item.rating or "",
-                genre=", ".join(media_item.genres) if isinstance(media_item.genres, Iterable) else "",
-                tmdb_id=media_item.tmdb_id,
-                imdb_id=media_item.imdb_id,
-                custom_properties={
-                    "source": "library",
-                    "library_id": media_item.library_id,
-                    "library_item_id": media_item.id,
-                },
-            )
+            try:
+                series = Series.objects.create(
+                    name=media_item.title or "Untitled Series",
+                    description=media_item.synopsis or "",
+                    year=media_item.release_year,
+                    rating=media_item.rating or "",
+                    genre=", ".join(media_item.genres) if isinstance(media_item.genres, Iterable) else "",
+                    tmdb_id=media_item.tmdb_id,
+                    imdb_id=media_item.imdb_id,
+                    custom_properties={
+                        "source": "library",
+                        "library_id": media_item.library_id,
+                        "library_item_id": media_item.id,
+                    },
+                )
+            except IntegrityError:
+                series = Series.objects.filter(tmdb_id=media_item.tmdb_id).first()
+                if not series and media_item.imdb_id:
+                    series = Series.objects.filter(imdb_id=media_item.imdb_id).first()
+                if not series:
+                    raise
         series = _update_series_from_media_item(series, media_item)
         if media_item.vod_series_id != series.id:
             media_item.vod_series = series
