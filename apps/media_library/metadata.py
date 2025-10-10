@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, Optional
 
+import requests
 import tmdbsimple as tmdb
 from dateutil import parser as date_parser
 from django.conf import settings
@@ -15,6 +16,12 @@ logger = logging.getLogger(__name__)
 TMDB_API_KEY_SETTING = "tmdb-api-key"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
 METADATA_CACHE_TIMEOUT = 60 * 60 * 6  # 6 hours
+_REQUESTS_SESSION = requests.Session()
+_REQUESTS_SESSION.mount(
+    "https://",
+    requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=40, max_retries=3),
+)
+tmdb.REQUESTS_SESSION = _REQUESTS_SESSION
 
 
 def get_tmdb_api_key() -> Optional[str]:
@@ -89,12 +96,12 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         try:
             if media_item.is_movie:
                 movie = tmdb.Movies(lookup_id)
-                info = movie.info()
-                credits = movie.credits()
+                info = movie.info(append_to_response="credits,images")
+                credits = info.get("credits", {})
             elif media_item.item_type == MediaItem.TYPE_SHOW:
                 tv = tmdb.TV(lookup_id)
-                info = tv.info()
-                credits = tv.credits()
+                info = tv.info(append_to_response="credits,images")
+                credits = info.get("credits", {})
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Failed to retrieve TMDB info for %s using id %s", media_item, tmdb_id
@@ -131,12 +138,12 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         try:
             if media_item.is_movie:
                 movie = tmdb.Movies(tmdb_id)
-                info = movie.info()
-                credits = movie.credits()
+                info = movie.info(append_to_response="credits,images")
+                credits = info.get("credits", {})
             elif media_item.item_type == MediaItem.TYPE_SHOW:
                 tv = tmdb.TV(tmdb_id)
-                info = tv.info()
-                credits = tv.credits()
+                info = tv.info(append_to_response="credits,images")
+                credits = info.get("credits", {})
             else:
                 return None
         except Exception:  # noqa: BLE001

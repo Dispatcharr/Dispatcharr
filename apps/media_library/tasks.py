@@ -7,6 +7,7 @@ from celery import shared_task
 from celery.result import AsyncResult
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -29,6 +30,9 @@ from apps.media_library.vod_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+METADATA_TASK_QUEUE = getattr(settings, "CELERY_METADATA_QUEUE", None)
+METADATA_TASK_PRIORITY = getattr(settings, "CELERY_METADATA_PRIORITY", None)
 
 
 def _start_next_scan(library: Library) -> None:
@@ -391,7 +395,14 @@ def scan_library_task(
             if item.id in metadata_queue_ids:
                 return False
             metadata_queue_ids.add(item.id)
-            sync_metadata_task.delay(item.id, scan_id=str(scan.id))
+            args = (item.id,)
+            kwargs = {"scan_id": str(scan.id)}
+            options = {}
+            if METADATA_TASK_QUEUE:
+                options["queue"] = METADATA_TASK_QUEUE
+            if METADATA_TASK_PRIORITY is not None:
+                options["priority"] = METADATA_TASK_PRIORITY
+            sync_metadata_task.apply_async(args=args, kwargs=kwargs, **options)
             return True
 
         def refresh_stage_counters() -> None:
