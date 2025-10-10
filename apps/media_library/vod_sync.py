@@ -14,7 +14,7 @@ import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
@@ -423,10 +423,13 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 defaults=movie_defaults,
             )
         if not movie and media_item.imdb_id:
-            movie, _created = Movie.objects.get_or_create(
+            movie, created_with_imdb = Movie.objects.get_or_create(
                 imdb_id=media_item.imdb_id,
                 defaults=movie_defaults,
             )
+            if created_with_imdb and media_item.tmdb_id and not movie.tmdb_id:
+                movie.tmdb_id = media_item.tmdb_id
+                movie.save(update_fields=["tmdb_id", "updated_at"])
 
         if not movie:
             fallback_filters = Q(tmdb_id__isnull=True) & Q(imdb_id__isnull=True)
@@ -439,7 +442,14 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 movie = fallback_candidate
 
         if not movie:
-            movie = Movie.objects.create(**movie_defaults)
+            try:
+                movie = Movie.objects.create(**movie_defaults)
+            except IntegrityError:
+                movie = Movie.objects.filter(tmdb_id=media_item.tmdb_id).first()
+                if not movie and media_item.imdb_id:
+                    movie = Movie.objects.filter(imdb_id=media_item.imdb_id).first()
+                if not movie:
+                    raise
         movie = _update_movie_from_media_item(movie, media_item)
         if media_item.vod_movie_id != movie.id:
             media_item.vod_movie = movie
@@ -473,10 +483,13 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 defaults=series_defaults,
             )
         if not series and media_item.imdb_id:
-            series, _created = Series.objects.get_or_create(
+            series, created_with_imdb = Series.objects.get_or_create(
                 imdb_id=media_item.imdb_id,
                 defaults=series_defaults,
             )
+            if created_with_imdb and media_item.tmdb_id and not series.tmdb_id:
+                series.tmdb_id = media_item.tmdb_id
+                series.save(update_fields=["tmdb_id", "updated_at"])
 
         if not series:
             fallback_filters = Q(tmdb_id__isnull=True) & Q(imdb_id__isnull=True)
@@ -489,7 +502,14 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 series = fallback_candidate
 
         if not series:
-            series = Series.objects.create(**series_defaults)
+            try:
+                series = Series.objects.create(**series_defaults)
+            except IntegrityError:
+                series = Series.objects.filter(tmdb_id=media_item.tmdb_id).first()
+                if not series and media_item.imdb_id:
+                    series = Series.objects.filter(imdb_id=media_item.imdb_id).first()
+                if not series:
+                    raise
         series = _update_series_from_media_item(series, media_item)
         if media_item.vod_series_id != series.id:
             media_item.vod_series = series
