@@ -297,6 +297,11 @@ def scan_library_task(
     unmatched = 0
     media_item_ids: Set[int] = set()
     metadata_queue_ids: Set[int] = set()
+    metadata_accounted_ids: Set[int] = set()
+    metadata_total_count = scan.metadata_total or 0
+    metadata_processed_count = scan.metadata_processed or 0
+    artwork_total_count = scan.artwork_total or 0
+    artwork_processed_count = scan.artwork_processed or 0
     last_progress_emit = timezone.now()
     progress_interval = 0.4  # seconds
 
@@ -361,23 +366,65 @@ def scan_library_task(
                 last_progress_emit = now
                 _emit_scan_update(scan, status=status)
 
-        def queue_metadata(item: MediaItem) -> None:
+        def queue_metadata(item: MediaItem) -> bool:
             if item.id in metadata_queue_ids:
-                return
+                return False
             metadata_queue_ids.add(item.id)
-            current_total = len(metadata_queue_ids)
-            scan.record_stage_progress(
-                "metadata",
-                status=LibraryScan.STAGE_STATUS_RUNNING,
-                total=current_total,
-            )
-            scan.record_stage_progress(
-                "artwork",
-                status=LibraryScan.STAGE_STATUS_RUNNING,
-                total=current_total,
-            )
             sync_metadata_task.delay(item.id, scan_id=str(scan.id))
-            maybe_emit_progress(force=True)
+            return True
+
+        def register_metadata_item(item: MediaItem | None, needs_metadata: bool) -> None:
+            nonlocal metadata_total_count, metadata_processed_count, artwork_total_count, artwork_processed_count
+            if not item or not item.id or item.id in metadata_accounted_ids:
+                return
+            metadata_accounted_ids.add(item.id)
+
+            metadata_total_count += 1
+            if scan.metadata_status == LibraryScan.STAGE_STATUS_PENDING:
+                scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_RUNNING)
+
+            if needs_metadata:
+                scan.record_stage_progress("metadata", total=metadata_total_count)
+                queued = queue_metadata(item)
+                if queued:
+                    maybe_emit_progress(force=True)
+            else:
+                metadata_processed_count += 1
+                scan.record_stage_progress(
+                    "metadata",
+                    total=metadata_total_count,
+                    processed=metadata_processed_count,
+                )
+
+            artwork_total_count += 1
+            if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING:
+                scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_RUNNING)
+
+            if needs_metadata or not item.poster_url:
+                scan.record_stage_progress("artwork", total=artwork_total_count)
+            else:
+                artwork_processed_count += 1
+                scan.record_stage_progress(
+                    "artwork",
+                    total=artwork_total_count,
+                    processed=artwork_processed_count,
+                )
+
+            if (
+                metadata_total_count
+                and metadata_processed_count >= metadata_total_count
+                and scan.metadata_status == LibraryScan.STAGE_STATUS_RUNNING
+            ):
+                scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
+
+            if (
+                artwork_total_count
+                and artwork_processed_count >= artwork_total_count
+                and scan.artwork_status == LibraryScan.STAGE_STATUS_RUNNING
+            ):
+                scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
+
+            maybe_emit_progress()
 
         discovery_iter = scanner.discover_files_iter()
 
@@ -429,12 +476,12 @@ def scan_library_task(
                 else:
                     if is_new_media:
                         _send_media_item_update(media_obj, status="progress")
-                    if (
+                    needs_metadata = (
                         force_full
                         or media_obj.metadata_last_synced_at is None
                         or not media_obj.poster_url
-                    ):
-                        queue_metadata(media_obj)
+                    )
+                    register_metadata_item(media_obj, needs_metadata)
 
             if result.requires_probe:
                 probe_media_task.delay(result.file_id)
@@ -498,30 +545,32 @@ def scan_library_task(
         )
 
         if not metadata_queue_ids:
-            scan.record_stage_progress(
-                "metadata",
-                status=LibraryScan.STAGE_STATUS_SKIPPED,
-                total=0,
-                processed=0,
-            )
-            scan.record_stage_progress(
-                "artwork",
-                status=LibraryScan.STAGE_STATUS_SKIPPED,
-                total=0,
-                processed=0,
-            )
+            if metadata_total_count == 0:
+                scan.record_stage_progress(
+                    "metadata",
+                    status=LibraryScan.STAGE_STATUS_SKIPPED,
+                    total=0,
+                    processed=0,
+                )
+                scan.record_stage_progress(
+                    "artwork",
+                    status=LibraryScan.STAGE_STATUS_SKIPPED,
+                    total=0,
+                    processed=0,
+                )
+            else:
+                scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
+                scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
         else:
             if scan.metadata_status == LibraryScan.STAGE_STATUS_PENDING:
                 scan.record_stage_progress(
                     "metadata",
                     status=LibraryScan.STAGE_STATUS_RUNNING,
-                    processed=scan.metadata_processed,
                 )
             if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING:
                 scan.record_stage_progress(
                     "artwork",
                     status=LibraryScan.STAGE_STATUS_RUNNING,
-                    processed=scan.artwork_processed,
                 )
 
         scanner.finalize(matched=matched, unmatched=unmatched, summary=summary)
