@@ -318,6 +318,22 @@ def _maybe_mark_scan_completed(scan: LibraryScan) -> None:
     if scan.status == LibraryScan.STATUS_COMPLETED:
         return
 
+    if (
+        scan.metadata_total
+        and scan.metadata_processed >= scan.metadata_total
+        and scan.metadata_status not in (LibraryScan.STAGE_STATUS_COMPLETED, LibraryScan.STAGE_STATUS_SKIPPED)
+    ):
+        scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
+        scan.metadata_status = LibraryScan.STAGE_STATUS_COMPLETED
+
+    if (
+        scan.artwork_total
+        and scan.artwork_processed >= scan.artwork_total
+        and scan.artwork_status not in (LibraryScan.STAGE_STATUS_COMPLETED, LibraryScan.STAGE_STATUS_SKIPPED)
+    ):
+        scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
+        scan.artwork_status = LibraryScan.STAGE_STATUS_COMPLETED
+
     metadata_done = scan.metadata_status in (
         LibraryScan.STAGE_STATUS_COMPLETED,
         LibraryScan.STAGE_STATUS_SKIPPED,
