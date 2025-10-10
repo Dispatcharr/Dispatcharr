@@ -125,12 +125,52 @@ def resume_orphaned_scans(*, library_id: int | None = None) -> int:
         else:
             summary_text = summary_text.strip()
 
+        scan.processed_files = 0
+        scan.total_files = 0
+        scan.new_files = 0
+        scan.updated_files = 0
+        scan.removed_files = 0
+        scan.matched_items = 0
+        scan.unmatched_files = 0
+        scan.discovery_status = LibraryScan.STAGE_STATUS_PENDING
+        scan.discovery_total = 0
+        scan.discovery_processed = 0
+        scan.metadata_status = LibraryScan.STAGE_STATUS_PENDING
+        scan.metadata_total = 0
+        scan.metadata_processed = 0
+        scan.artwork_status = LibraryScan.STAGE_STATUS_PENDING
+        scan.artwork_total = 0
+        scan.artwork_processed = 0
         scan.status = LibraryScan.STATUS_PENDING
         scan.task_id = None
         scan.finished_at = None
         scan.summary = summary_text
         scan.updated_at = now
-        scan.save(update_fields=["status", "task_id", "finished_at", "summary", "updated_at"])
+        scan.save(
+            update_fields=[
+                "processed_files",
+                "total_files",
+                "new_files",
+                "updated_files",
+                "removed_files",
+                "matched_items",
+                "unmatched_files",
+                "discovery_status",
+                "discovery_total",
+                "discovery_processed",
+                "metadata_status",
+                "metadata_total",
+                "metadata_processed",
+                "artwork_status",
+                "artwork_total",
+                "artwork_processed",
+                "status",
+                "task_id",
+                "finished_at",
+                "summary",
+                "updated_at",
+            ]
+        )
 
         _start_next_scan(scan.library)
         resumed += 1
