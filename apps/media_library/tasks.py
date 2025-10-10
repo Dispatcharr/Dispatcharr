@@ -687,7 +687,6 @@ def scan_library_task(
                     processed=metadata_processed_count,
                 )
 
-            artwork_total_count += 1
             if scan.artwork_status != LibraryScan.STAGE_STATUS_RUNNING:
                 scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_RUNNING)
 
