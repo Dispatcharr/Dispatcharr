@@ -379,8 +379,13 @@ def scan_library_task(
                 return
             metadata_accounted_ids.add(item.id)
 
+            metadata_total_count = max(metadata_total_count, scan.metadata_total or 0)
+            metadata_processed_count = max(metadata_processed_count, scan.metadata_processed or 0)
+            artwork_total_count = max(artwork_total_count, scan.artwork_total or 0)
+            artwork_processed_count = max(artwork_processed_count, scan.artwork_processed or 0)
+
             metadata_total_count += 1
-            if scan.metadata_status == LibraryScan.STAGE_STATUS_PENDING:
+            if scan.metadata_status != LibraryScan.STAGE_STATUS_RUNNING:
                 scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_RUNNING)
 
             if needs_metadata:
@@ -397,7 +402,7 @@ def scan_library_task(
                 )
 
             artwork_total_count += 1
-            if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING:
+            if scan.artwork_status != LibraryScan.STAGE_STATUS_RUNNING:
                 scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_RUNNING)
 
             if needs_metadata or not item.poster_url:
@@ -409,20 +414,6 @@ def scan_library_task(
                     total=artwork_total_count,
                     processed=artwork_processed_count,
                 )
-
-            if (
-                metadata_total_count
-                and metadata_processed_count >= metadata_total_count
-                and scan.metadata_status == LibraryScan.STAGE_STATUS_RUNNING
-            ):
-                scan.record_stage_progress("metadata", status=LibraryScan.STAGE_STATUS_COMPLETED)
-
-            if (
-                artwork_total_count
-                and artwork_processed_count >= artwork_total_count
-                and scan.artwork_status == LibraryScan.STAGE_STATUS_RUNNING
-            ):
-                scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
 
             maybe_emit_progress()
 
