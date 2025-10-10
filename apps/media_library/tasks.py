@@ -623,11 +623,17 @@ def scan_library_task(
             if not snapshot:
                 return
 
-            metadata_total_count = max(metadata_total_count, snapshot.get("metadata_total") or 0)
+            discovered_total = max(
+                scan.total_files,
+                snapshot.get("metadata_total") or 0,
+                snapshot.get("artwork_total") or 0,
+            )
+
+            metadata_total_count = max(metadata_total_count, discovered_total)
             metadata_processed_count = max(
                 metadata_processed_count, snapshot.get("metadata_processed") or 0
             )
-            artwork_total_count = max(artwork_total_count, snapshot.get("artwork_total") or 0)
+            artwork_total_count = max(artwork_total_count, discovered_total)
             artwork_processed_count = max(
                 artwork_processed_count, snapshot.get("artwork_processed") or 0
             )
@@ -651,9 +657,11 @@ def scan_library_task(
 
             refresh_stage_counters()
 
-            metadata_total_count = max(metadata_total_count, scan.metadata_total or 0)
+            discovered_total = max(scan.total_files, metadata_total_count, artwork_total_count)
+
+            metadata_total_count = max(metadata_total_count, discovered_total)
             metadata_processed_count = max(metadata_processed_count, scan.metadata_processed or 0)
-            artwork_total_count = max(artwork_total_count, scan.artwork_total or 0)
+            artwork_total_count = max(artwork_total_count, discovered_total)
             artwork_processed_count = max(artwork_processed_count, scan.artwork_processed or 0)
 
             metadata_total_count += 1
