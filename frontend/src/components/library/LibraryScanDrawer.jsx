@@ -7,7 +7,6 @@ import {
   Divider,
   Drawer,
   Group,
-  Loader,
   Progress,
   ScrollArea,
   Stack,
@@ -44,13 +43,6 @@ const isRunning = (s) =>
 
 const isQueued = (s) => s === 'pending' || s === 'queued' || s === 'scheduled';
 
-const stageStatusColor = {
-  pending: 'gray',
-  running: 'blue',
-  completed: 'green',
-  skipped: 'gray',
-};
-
 const stageStatusLabel = {
   pending: 'Waiting',
   running: 'In progress',
@@ -68,6 +60,12 @@ const EMPTY_STAGE = {
   status: 'pending',
   processed: 0,
   total: 0,
+};
+
+const stageColorMap = {
+  discovery: 'blue',
+  metadata: 'green',
+  artwork: 'red',
 };
 
 const LibraryScanDrawer = ({
@@ -201,43 +199,62 @@ const LibraryScanDrawer = ({
       setLoaderHold(false);
       return undefined;
     }
-    if (!scansLoading) {
-      return undefined;
+    if (scansLoading) {
+      setLoaderHold(true);
+      const timeout = setTimeout(() => setLoaderHold(false), 800);
+      return () => clearTimeout(timeout);
     }
-    setLoaderHold(true);
-    const timeout = setTimeout(() => setLoaderHold(false), 800);
-    return () => clearTimeout(timeout);
+    setLoaderHold(false);
+    return undefined;
   }, [opened, scansLoading]);
 
-  const showLoader = scansLoading || loaderHold;
+  const isInitialLoading =
+    scans.length === 0 && (scansLoading || loaderHold);
 
   const getStagePercent = (stage) => {
     if (!stage) return 0;
-    if (stage.total > 0) {
-      const denominator = stage.total === 0 ? 1 : stage.total;
-      return Math.min(
-        100,
-        Math.round((stage.processed / denominator) * 100)
-      );
+    const processed = Math.max(0, Number(stage.processed) || 0);
+    let total = Math.max(0, Number(stage.total) || 0);
+
+    if (!total || total <= processed) {
+      if (stage.status === 'completed') {
+        total = processed || 1;
+      } else {
+        total = processed + 1;
+      }
     }
-    if (stage.status === 'completed') return 100;
-    if (stage.status === 'skipped') return 0;
-    if (stage.status === 'running') return 100;
-    return stage.processed > 0 ? 100 : 0;
+
+    if (!total) return 0;
+    return Math.min(100, Math.round((processed / total) * 100));
   };
 
-  const formatStageCount = (stage) => {
+  const formatStageCount = (stage, stageKey) => {
     if (!stage) return '0';
-    if (stage.total > 0) {
-      return `${stage.processed} / ${stage.total}`;
-    }
+    const processed = stage.processed ?? 0;
+    const total = stage.total ?? 0;
+
     if (stage.status === 'skipped') {
       return 'Not required';
     }
-    if (stage.status === 'completed' && stage.processed === 0) {
+    if (total > 0 && total >= processed) {
+      return `${processed} / ${total}`;
+    }
+    if (stage.status === 'completed' && processed === 0) {
       return 'Done';
     }
-    return `${stage.processed} item${stage.processed === 1 ? '' : 's'}`;
+
+    const suffix =
+      stageKey === 'discovery'
+        ? 'files scanned'
+        : stageKey === 'metadata'
+          ? 'metadata items'
+          : 'artwork assets';
+
+    if (processed === 0) {
+      return 'Waiting…';
+    }
+
+    return `${processed} ${suffix}`;
   };
 
   const handleClearFinished = useCallback(async () => {
@@ -310,9 +327,9 @@ const LibraryScanDrawer = ({
       title={header}
     >
       <ScrollArea style={{ height: '100%' }}>
-        {showLoader ? (
+        {isInitialLoading ? (
           <Group justify="center" py="lg">
-            <Loader />
+            <Text c="dimmed">Loading scans…</Text>
           </Group>
         ) : scans.length === 0 ? (
           <Stack align="center" py="lg" gap={4}>
@@ -377,25 +394,35 @@ const LibraryScanDrawer = ({
                         const stage = scan.stages?.[key] || EMPTY_STAGE;
                         const stageStatus = stage.status || 'pending';
                         const percent = getStagePercent(stage);
-                        const color = stageStatusColor[stageStatus] || 'gray';
+                        const progressColor = stageColorMap[key] || 'gray';
+                        const badgeColor =
+                          stageStatus === 'completed' || stageStatus === 'running'
+                            ? progressColor
+                            : 'gray';
                         const animated = stageStatus === 'running';
+                        const percentDisplay =
+                          stageStatus === 'completed'
+                            ? '100%'
+                            : stageStatus === 'skipped'
+                              ? null
+                              : `${percent}%`;
                         return (
                           <Stack gap={4} key={`${scan.id}-${key}`}>
                             <Group justify="space-between" align="center">
                               <Text size="xs" fw={500}>
                                 {label}
                               </Text>
-                              <Badge color={color} variant="light" size="xs">
+                              <Badge color={badgeColor} variant="light" size="xs">
                                 {stageStatusLabel[stageStatus] || stageStatus}
                               </Badge>
                             </Group>
                             <Group justify="space-between" align="center">
                               <Text size="xs" c="dimmed">
-                                {formatStageCount(stage)}
+                                {formatStageCount(stage, key)}
                               </Text>
-                              {stage.total > 0 && (
+                              {percentDisplay && (
                                 <Text size="xs" c="dimmed">
-                                  {percent}%
+                                  {percentDisplay}
                                 </Text>
                               )}
                             </Group>
@@ -404,7 +431,7 @@ const LibraryScanDrawer = ({
                               size="sm"
                               striped={animated}
                               animated={animated}
-                              color={color}
+                              color={progressColor}
                             />
                           </Stack>
                         );

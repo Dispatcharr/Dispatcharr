@@ -250,6 +250,7 @@ class LibraryScan(models.Model):
         processed: int | None = None,
         matched: int | None = None,
         unmatched: int | None = None,
+        total: int | None = None,
         summary: str | None = None,
     ) -> None:
         updates: dict[str, object] = {}
@@ -263,6 +264,10 @@ class LibraryScan(models.Model):
         if unmatched is not None:
             self.unmatched_files = unmatched
             updates["unmatched_files"] = unmatched
+        if total is not None:
+            total_value = max(0, int(total))
+            self.total_files = total_value
+            updates["total_files"] = total_value
         if summary is not None:
             self.summary = summary
             updates["summary"] = summary

@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 from typing import Optional, Set
+from collections import deque
 
 from celery import shared_task
 from celery.result import AsyncResult
@@ -210,6 +211,14 @@ def _emit_scan_update(scan: LibraryScan, *, status: str, extra: dict | None = No
     }
     if extra:
         payload.update(extra)
+    logger.debug(
+        "Scan %s update status=%s processed=%s/%s stages=%s",
+        payload["scan_id"],
+        status,
+        payload.get("processed"),
+        payload.get("total"),
+        payload.get("stages"),
+    )
     _send_scan_event(payload)
 
 
@@ -296,7 +305,12 @@ def scan_library_task(
     )
     discovery_total_estimate = initial_total_estimate or 0
 
-    scan.record_progress(processed=0, matched=0, unmatched=0)
+    scan.record_progress(
+        processed=0,
+        matched=0,
+        unmatched=0,
+        total=discovery_total_estimate,
+    )
     scan.record_stage_progress(
         "discovery",
         status=LibraryScan.STAGE_STATUS_RUNNING,
@@ -315,6 +329,7 @@ def scan_library_task(
         total=0,
         processed=0,
     )
+    scan.total_files = max(scan.total_files, discovery_total_estimate)
     _emit_scan_update(
         scan,
         status="started",
@@ -328,17 +343,12 @@ def scan_library_task(
             rescan_item_id=rescan_item_id,
         )
 
+        discovery_buffer: deque = deque()
+        discovery_total_known = 0
         discovery_processed = 0
+        discovery_finished = False
         total_files = discovery_total_estimate
-        progress_step = max(1, (discovery_total_estimate // 200) or 1)
-
-        def update_progress_step() -> None:
-            nonlocal progress_step
-            baseline = max(discovery_total_estimate, discovery_processed)
-            if baseline <= 0:
-                progress_step = 1
-                return
-            progress_step = max(1, baseline // 200)
+        backlog_target = 25
 
         def maybe_emit_progress(force: bool = False, status: str = "progress") -> None:
             nonlocal last_progress_emit
@@ -346,7 +356,6 @@ def scan_library_task(
             if (
                 force
                 or discovery_processed == 0
-                or discovery_processed % progress_step == 0
                 or (now - last_progress_emit).total_seconds() >= progress_interval
             ):
                 last_progress_emit = now
@@ -370,15 +379,32 @@ def scan_library_task(
             sync_metadata_task.delay(item.id, scan_id=str(scan.id))
             maybe_emit_progress(force=True)
 
-        for result in scanner.discover_files_iter():
-            discovery_processed += 1
-            processed = discovery_processed
-            if discovery_processed > discovery_total_estimate:
-                discovery_total_estimate = discovery_processed
-                scan.record_stage_progress("discovery", total=discovery_total_estimate)
-                update_progress_step()
+        discovery_iter = scanner.discover_files_iter()
 
-            scan.record_stage_progress("discovery", processed=discovery_processed)
+        def fill_discovery_buffer() -> None:
+            nonlocal discovery_total_known, discovery_finished, total_files
+            while not discovery_finished and len(discovery_buffer) < backlog_target:
+                try:
+                    result = next(discovery_iter)
+                except StopIteration:
+                    discovery_finished = True
+                    break
+                discovery_buffer.append(result)
+                discovery_total_known += 1
+                current_total = max(discovery_total_estimate, discovery_total_known)
+                scan.total_files = max(scan.total_files, current_total)
+                scan.record_stage_progress(
+                    "discovery",
+                    status=LibraryScan.STAGE_STATUS_RUNNING,
+                    total=current_total,
+                )
+                total_files = max(total_files, current_total)
+                scan.record_progress(total=current_total)
+                maybe_emit_progress()
+
+        def process_discovery_result(result) -> None:
+            nonlocal discovery_processed, matched, unmatched, processed, total_files
+            discovery_processed += 1
             identify_result = _identify_media_file(
                 library=library,
                 file_id=result.file_id,
@@ -413,9 +439,29 @@ def scan_library_task(
             if result.requires_probe:
                 probe_media_task.delay(result.file_id)
 
-            total_files = max(total_files, discovery_total_estimate, discovery_processed)
-            scan.record_progress(processed=processed, matched=matched, unmatched=unmatched)
+            processed = discovery_processed
+            scan.record_stage_progress("discovery", processed=discovery_processed)
+            current_total = max(discovery_total_estimate, discovery_total_known)
+            total_files = max(total_files, current_total)
+            scan.record_progress(
+                processed=processed,
+                matched=matched,
+                unmatched=unmatched,
+                total=current_total,
+            )
             maybe_emit_progress()
+
+        fill_discovery_buffer()
+        while discovery_buffer:
+            result = discovery_buffer.popleft()
+            process_discovery_result(result)
+            if len(discovery_buffer) < max(1, backlog_target // 2):
+                fill_discovery_buffer()
+
+        while not discovery_finished:
+            fill_discovery_buffer()
+            while discovery_buffer:
+                process_discovery_result(discovery_buffer.popleft())
 
         scanner.mark_missing_files()
 
@@ -431,16 +477,17 @@ def scan_library_task(
             for item in metadata_qs:
                 queue_metadata(item)
 
+        scan.total_files = max(scan.total_files, discovery_processed)
         scan.record_stage_progress(
             "discovery",
             status=LibraryScan.STAGE_STATUS_COMPLETED,
             processed=discovery_processed,
-            total=discovery_total_estimate,
+            total=max(discovery_total_estimate, discovery_total_known),
         )
         _emit_scan_update(
             scan,
             status="discovered",
-            extra={"files": discovery_processed},
+            extra={"files": max(discovery_total_estimate, discovery_total_known)},
         )
 
         summary = (
@@ -488,6 +535,7 @@ def scan_library_task(
             processed=processed,
             matched=matched,
             unmatched=unmatched,
+            total=max(total_files, discovery_total_estimate, discovery_total_known, processed),
             summary=str(exc),
         )
         scan.mark_failed(summary=str(exc))
@@ -499,7 +547,12 @@ def scan_library_task(
                 "message": str(exc),
                 "processed": processed,
                 "processed_files": processed,
-                "total": total_files,
+                "total": max(
+                    total_files,
+                    discovery_total_estimate,
+                    discovery_total_known,
+                    processed,
+                ),
             },
         )
         _start_next_scan(library)
