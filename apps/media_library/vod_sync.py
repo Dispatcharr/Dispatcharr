@@ -442,9 +442,12 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 movie = fallback_candidate
 
         if not movie:
+            savepoint = transaction.savepoint()
             try:
                 movie = Movie.objects.create(**movie_defaults)
+                transaction.savepoint_commit(savepoint)
             except IntegrityError:
+                transaction.savepoint_rollback(savepoint)
                 movie = Movie.objects.filter(tmdb_id=media_item.tmdb_id).first()
                 if not movie and media_item.imdb_id:
                     movie = Movie.objects.filter(imdb_id=media_item.imdb_id).first()
@@ -506,9 +509,12 @@ def sync_media_item_to_vod(media_item: MediaItem) -> None:
                 series = fallback_candidate
 
         if not series:
+            savepoint = transaction.savepoint()
             try:
                 series = Series.objects.create(**series_defaults)
+                transaction.savepoint_commit(savepoint)
             except IntegrityError:
+                transaction.savepoint_rollback(savepoint)
                 series = Series.objects.filter(tmdb_id=media_item.tmdb_id).first()
                 if not series and media_item.imdb_id:
                     series = Series.objects.filter(imdb_id=media_item.imdb_id).first()
