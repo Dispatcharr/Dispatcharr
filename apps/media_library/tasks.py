@@ -935,13 +935,35 @@ def _sync_metadata(media_item_id: int, scan_id: str | None = None) -> None:
     if scan.artwork_status == LibraryScan.STAGE_STATUS_PENDING and scan.artwork_total:
         scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_RUNNING)
 
+    progressed = False
     if metadata_increment or artwork_increment:
         _advance_metadata_stage(
             scan,
             metadata_increment=metadata_increment,
             artwork_increment=artwork_increment,
         )
-        _maybe_mark_scan_completed(scan)
+        progressed = True
+
+    if scan:
+        if progressed:
+            try:
+                scan.refresh_from_db(
+                    fields=[
+                        "metadata_status",
+                        "metadata_total",
+                        "metadata_processed",
+                        "artwork_status",
+                        "artwork_total",
+                        "artwork_processed",
+                        "status",
+                        "finished_at",
+                        "updated_at",
+                    ]
+                )
+            except LibraryScan.DoesNotExist:
+                scan = None
+        if scan:
+            _maybe_mark_scan_completed(scan)
 
 
 @shared_task(name="media_library.sync_metadata")
