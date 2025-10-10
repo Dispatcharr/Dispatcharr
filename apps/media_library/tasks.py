@@ -816,7 +816,7 @@ def _sync_metadata(media_item_id: int, scan_id: str | None = None) -> None:
 
     result = sync_metadata(media_item)
     if result:
-    _send_media_item_update(result, status="metadata")
+        _send_media_item_update(result, status="metadata")
 
     if not scan:
         return
