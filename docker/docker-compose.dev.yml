@@ -37,5 +37,18 @@ services:
     ports:
       - 8081:8081
 
+  dispatcharr-fs:
+    image: dispatcharr/fuse
+    container_name: dispatcharr-fs
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - /appdata/dispatcharr/vod:/mnt:shared
+    restart: unless-stopped
+
 volumes:
   dispatcharr_dev_pgadmin:
