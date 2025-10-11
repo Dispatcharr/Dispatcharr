@@ -286,6 +286,45 @@ class LibraryScan(models.Model):
         "artwork": ("artwork_status", "artwork_total", "artwork_processed"),
     }
 
+    def _ensure_completed(self) -> bool:
+        """
+        Bring the overall scan status in sync with stage completion.
+
+        Returns True when the scan transitions to the completed state.
+        """
+        if self.status == self.STATUS_COMPLETED and self.finished_at:
+            return False
+
+        metadata_done = self.metadata_status in (
+            self.STAGE_STATUS_COMPLETED,
+            self.STAGE_STATUS_SKIPPED,
+        )
+        artwork_done = self.artwork_status in (
+            self.STAGE_STATUS_COMPLETED,
+            self.STAGE_STATUS_SKIPPED,
+        )
+        discovery_done = self.discovery_status == self.STAGE_STATUS_COMPLETED
+
+        if not (metadata_done and artwork_done and discovery_done):
+            return False
+
+        summary = self.summary or ""
+        self.mark_completed(summary=summary)
+
+        if self.library_id:
+            now = timezone.now()
+            Library.objects.filter(pk=self.library_id).update(
+                last_scan_at=now,
+                last_successful_scan_at=now,
+                updated_at=now,
+            )
+            if getattr(self, "library", None):
+                self.library.last_scan_at = now
+                self.library.last_successful_scan_at = now
+                self.library.updated_at = now
+
+        return True
+
     def stage_snapshot(self, *, normalize: bool = False) -> dict[str, dict[str, int | str]]:
         """
         Return the current stage progress for the scan.
@@ -295,6 +334,9 @@ class LibraryScan(models.Model):
         progress bars consistent in the UI without affecting the stored values
         that drive the underlying workflow.
         """
+        # Keeping overall status consistent avoids stale "running" badges in the UI.
+        self._ensure_completed()
+
         snapshot: dict[str, dict[str, int | str]] = {}
         total_files = max(0, int(self.total_files or 0))
 

@@ -293,8 +293,13 @@ def _emit_scan_update(scan: LibraryScan, *, status: str, extra: dict | None = No
     library_name = ""
     if getattr(scan, "library", None):
         library_name = scan.library.name
+
+    resolved_status = status
+    if status != LibraryScan.STATUS_COMPLETED and scan.status == LibraryScan.STATUS_COMPLETED:
+        resolved_status = LibraryScan.STATUS_COMPLETED
+
     payload = {
-        "status": status,
+        "status": resolved_status,
         "scan_id": str(scan.id),
         "library_id": scan.library_id,
         "library_name": library_name,
@@ -427,30 +432,7 @@ def _maybe_mark_scan_completed(scan: LibraryScan) -> None:
         scan.record_stage_progress("artwork", status=LibraryScan.STAGE_STATUS_COMPLETED)
         scan.artwork_status = LibraryScan.STAGE_STATUS_COMPLETED
 
-    metadata_done = scan.metadata_status in (
-        LibraryScan.STAGE_STATUS_COMPLETED,
-        LibraryScan.STAGE_STATUS_SKIPPED,
-    )
-    artwork_done = scan.artwork_status in (
-        LibraryScan.STAGE_STATUS_COMPLETED,
-        LibraryScan.STAGE_STATUS_SKIPPED,
-    )
-    discovery_done = scan.discovery_status == LibraryScan.STAGE_STATUS_COMPLETED
-
-    if discovery_done and metadata_done and artwork_done:
-        summary = scan.summary or ""
-        scan.mark_completed(summary=summary)
-        if scan.library_id:
-            now = timezone.now()
-            Library.objects.filter(pk=scan.library_id).update(
-                last_scan_at=now,
-                last_successful_scan_at=now,
-                updated_at=now,
-            )
-            if getattr(scan, "library", None):
-                scan.library.last_scan_at = now
-                scan.library.last_successful_scan_at = now
-                scan.library.updated_at = now
+    if scan._ensure_completed():
         _emit_scan_update(scan, status="completed")
 
 
