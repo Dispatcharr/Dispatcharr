@@ -1428,6 +1428,19 @@ export default class API {
     }
   }
 
+  static async validateTmdbApiKey(apiKey) {
+    try {
+      const response = await request(`${host}/api/core/settings/validate-tmdb/`, {
+        method: 'POST',
+        body: { api_key: apiKey },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to validate TMDB API key', e);
+      throw e;
+    }
+  }
+
   static async updateSetting(values) {
     const { id, ...payload } = values;
 

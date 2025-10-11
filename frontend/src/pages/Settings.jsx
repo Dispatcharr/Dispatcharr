@@ -222,7 +222,15 @@ const SettingsPage = () => {
   const [editingLibrarySettings, setEditingLibrarySettings] = useState(null);
   const [librarySubmitting, setLibrarySubmitting] = useState(false);
   const tmdbSetting = settings['tmdb-api-key'];
+  const TMDB_REQUIREMENT_MESSAGE =
+    'You need a TMDB API key for metadata and artwork. Without one, creating new libraries is disabled while we explore keyless options.';
   const [tmdbKey, setTmdbKey] = useState('');
+  const [tmdbKeyValid, setTmdbKeyValid] = useState(false);
+  const [tmdbValidating, setTmdbValidating] = useState(false);
+  const [tmdbValidationState, setTmdbValidationState] = useState('info');
+  const [tmdbValidationMessage, setTmdbValidationMessage] = useState(
+    TMDB_REQUIREMENT_MESSAGE
+  );
   const [savingTmdbKey, setSavingTmdbKey] = useState(false);
   const [tmdbHintOpen, setTmdbHintOpen] = useState(false);
   // Store pending changed settings when showing the dialog
@@ -432,12 +440,6 @@ const SettingsPage = () => {
     }
   }, [authUser?.user_level, fetchMediaLibraries]);
 
-  useEffect(() => {
-    if (tmdbSetting && tmdbSetting.value !== undefined) {
-      setTmdbKey(tmdbSetting.value);
-    }
-  }, [tmdbSetting]);
-
   const onSubmit = async () => {
     const values = form.getValues();
     const changedSettings = {};
@@ -512,7 +514,7 @@ const SettingsPage = () => {
       console.error('Failed to save library', error);
       notifications.show({
         title: 'Library error',
-        message: 'Unable to save library changes.',
+        message: error?.body?.detail || 'Unable to save library changes.',
         color: 'red',
       });
     } finally {
@@ -558,25 +560,89 @@ const SettingsPage = () => {
     }
   };
 
+  const validateTmdbKeyValue = useCallback(
+    async (value) => {
+      const trimmed = (value || '').trim();
+
+      if (!trimmed) {
+        setTmdbValidating(false);
+        setTmdbKeyValid(false);
+        setTmdbValidationState('info');
+        setTmdbValidationMessage(TMDB_REQUIREMENT_MESSAGE);
+        return { valid: false, message: 'TMDB API key is required.' };
+      }
+
+      setTmdbValidating(true);
+      setTmdbValidationState('info');
+      setTmdbValidationMessage('Validating TMDB API key…');
+      try {
+        const result = await API.validateTmdbApiKey(trimmed);
+        const isValid = Boolean(result?.valid);
+        setTmdbKeyValid(isValid);
+        setTmdbValidationState(isValid ? 'valid' : 'invalid');
+        setTmdbValidationMessage(
+          isValid
+            ? 'TMDB key verified successfully. Metadata and artwork will load for your libraries.'
+            : result?.message || 'TMDB rejected the API key.'
+        );
+        return result ?? { valid: isValid };
+      } catch (error) {
+        setTmdbKeyValid(false);
+        setTmdbValidationState('error');
+        setTmdbValidationMessage('Unable to reach TMDB to validate the API key right now.');
+        throw error;
+      } finally {
+        setTmdbValidating(false);
+      }
+    },
+    [TMDB_REQUIREMENT_MESSAGE]
+  );
+
+  useEffect(() => {
+    const currentValue =
+      tmdbSetting && tmdbSetting.value !== undefined ? tmdbSetting.value : '';
+    setTmdbKey(currentValue);
+    validateTmdbKeyValue(currentValue).catch((error) => {
+      console.error('Failed to validate TMDB API key', error);
+    });
+  }, [tmdbSetting?.value, validateTmdbKeyValue]);
+
   const handleSaveTmdbKey = async () => {
+    const trimmedKey = tmdbKey.trim();
     setSavingTmdbKey(true);
     try {
+      if (trimmedKey) {
+        const validation = await validateTmdbKeyValue(trimmedKey);
+        if (!validation?.valid) {
+          notifications.show({
+            title: 'Invalid TMDB key',
+            message: validation?.message || 'TMDB rejected the API key.',
+            color: 'red',
+          });
+          return;
+        }
+      } else {
+        await validateTmdbKeyValue('');
+      }
+
       if (tmdbSetting && tmdbSetting.id) {
         await API.updateSetting({
           ...tmdbSetting,
-          value: tmdbKey,
+          value: trimmedKey,
         });
       } else {
         await API.createSetting({
           key: 'tmdb-api-key',
           name: 'TMDB API Key',
-          value: tmdbKey,
+          value: trimmedKey,
         });
       }
       notifications.show({
-        title: 'Saved',
-        message: 'TMDB API key updated.',
-        color: 'green',
+        title: trimmedKey ? 'TMDB key saved' : 'TMDB key cleared',
+        message: trimmedKey
+          ? 'TMDB API key saved and verified.'
+          : 'TMDB key removed. Add one to enable new libraries.',
+        color: trimmedKey ? 'green' : 'yellow',
       });
     } catch (error) {
       console.error('Failed to save TMDB key', error);
@@ -589,6 +655,15 @@ const SettingsPage = () => {
       setSavingTmdbKey(false);
     }
   };
+
+  const libraryActionsDisabled = tmdbValidating || !tmdbKeyValid;
+  const tmdbMessageColor =
+    tmdbValidationState === 'valid'
+      ? 'teal.6'
+      : tmdbValidationState === 'error' || tmdbValidationState === 'invalid'
+        ? 'red.6'
+        : 'orange.6';
+  const addLibraryTooltipLabel = 'Save a valid TMDB API key before creating libraries.';
 
   const onNetworkAccessSubmit = async () => {
     setNetworkAccessSaved(false);
@@ -855,16 +930,25 @@ const SettingsPage = () => {
                       <Text c="dimmed" size="sm">
                         Configure local media libraries used for scanning and playback.
                       </Text>
-                      <Button
-                        size="xs"
-                        leftSection={<Plus size={14} />}
-                        onClick={() => {
-                          setEditingLibrarySettings(null);
-                          setLibraryModalOpen(true);
-                        }}
+                      <Tooltip
+                        label={addLibraryTooltipLabel}
+                        disabled={!libraryActionsDisabled}
+                        withArrow
                       >
-                        Add Library
-                      </Button>
+                        <span>
+                          <Button
+                            size="xs"
+                            leftSection={<Plus size={14} />}
+                            disabled={libraryActionsDisabled}
+                            onClick={() => {
+                              setEditingLibrarySettings(null);
+                              setLibraryModalOpen(true);
+                            }}
+                          >
+                            Add Library
+                          </Button>
+                        </span>
+                      </Tooltip>
                     </Group>
 
                     <Stack spacing="xs">
@@ -888,12 +972,27 @@ const SettingsPage = () => {
                           size="xs"
                           variant="light"
                           onClick={handleSaveTmdbKey}
-                          loading={savingTmdbKey}
+                          loading={savingTmdbKey || tmdbValidating}
                         >
                           Save Metadata Settings
                         </Button>
                       </Group>
+                      {tmdbValidationMessage && (
+                        <Group gap="xs" align="center">
+                          {tmdbValidating && <Loader size="xs" />}
+                          <Text size="xs" c={tmdbMessageColor}>
+                            {tmdbValidationMessage}
+                          </Text>
+                        </Group>
+                      )}
                     </Stack>
+
+                    {!tmdbKeyValid && !tmdbValidating && (
+                      <Alert color="yellow" variant="light" radius="md">
+                        A valid TMDB API key is required before you can add new libraries. We're
+                        exploring future options that won&apos;t need a TMDB key.
+                      </Alert>
+                    )}
 
                     {librariesLoading ? (
                       <Group justify="center" py="md">
@@ -970,6 +1069,19 @@ const SettingsPage = () => {
                         ))}
                       </Stack>
                     )}
+                    <Center py="md">
+                      <Anchor
+                        href="https://www.themoviedb.org/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <img
+                          src="/tmdb-logo-blue.svg"
+                          alt="Powered by TMDB"
+                          style={{ maxWidth: 180 }}
+                        />
+                      </Anchor>
+                    </Center>
                   </Stack>
                 </Accordion.Panel>
               </Accordion.Item>

@@ -15,7 +15,11 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.accounts.permissions import Authenticated
 from apps.media_library import models, serializers
-from apps.media_library.metadata import sync_metadata
+from apps.media_library.metadata import (
+    get_tmdb_api_key,
+    sync_metadata,
+    validate_tmdb_api_key,
+)
 from apps.media_library.tasks import (
     enqueue_library_scan,
     sync_metadata_task,
@@ -110,6 +114,22 @@ class LibraryViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        tmdb_key = (get_tmdb_api_key() or "").strip()
+        if not tmdb_key:
+            raise ValidationError(
+                {
+                    "detail": "Add a valid TMDB API key before creating libraries. Metadata lookups require it."
+                }
+            )
+        is_valid, message = validate_tmdb_api_key(tmdb_key)
+        if not is_valid:
+            raise ValidationError(
+                {
+                    "detail": message
+                    or "TMDB API key failed validation. Save a working key before creating libraries."
+                }
+            )
+
         library = serializer.save()
         if library.auto_scan_enabled:
             enqueue_library_scan(library_id=library.id, user_id=self.request.user.id)

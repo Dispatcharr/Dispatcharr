@@ -4,6 +4,7 @@ import json
 import ipaddress
 import logging
 from rest_framework import viewsets, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
@@ -32,6 +33,10 @@ from apps.accounts.permissions import (
     Authenticated,
 )
 from dispatcharr.utils import get_client_ip
+from apps.media_library.metadata import (
+    TMDB_API_KEY_SETTING,
+    validate_tmdb_api_key,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -64,25 +69,61 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     queryset = CoreSettings.objects.all()
     serializer_class = CoreSettingsSerializer
 
+    def _sanitize_tmdb_key(self, value: str | None) -> str:
+        candidate = value if isinstance(value, str) else ("" if value is None else str(value))
+        trimmed = candidate.strip()
+        if not trimmed:
+            return trimmed
+
+        is_valid, message = validate_tmdb_api_key(trimmed)
+        if not is_valid:
+            raise ValidationError({"detail": message or "TMDB API key is invalid."})
+        return trimmed
+
     def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
         instance = self.get_object()
-        response = super().update(request, *args, **kwargs)
-        if instance.key == STREAM_HASH_KEY:
-            if instance.value != request.data["value"]:
-                rehash_streams.delay(request.data["value"].split(","))
+        setting_key = instance.key
+        previous_value = instance.value
+
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if setting_key == TMDB_API_KEY_SETTING:
+            data["value"] = self._sanitize_tmdb_key(data.get("value"))
+
+        serializer = self.get_serializer(instance, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        updated_instance = serializer.instance
+        updated_value = updated_instance.value
+
+        if getattr(updated_instance, "_prefetched_objects_cache", None):
+            updated_instance._prefetched_objects_cache = {}
+
+        response = Response(serializer.data)
+
+        if setting_key == STREAM_HASH_KEY and previous_value != updated_value:
+            rehash_streams.delay(str(updated_value).split(","))
 
         # If DVR pre/post offsets changed, reschedule upcoming recordings
         try:
             from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
-            if instance.key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
-                if instance.value != request.data.get("value"):
+
+            if setting_key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
+                if previous_value != updated_value:
                     try:
                         # Prefer async task if Celery is available
-                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+                        from apps.channels.tasks import (
+                            reschedule_upcoming_recordings_for_offset_change,
+                        )
+
                         reschedule_upcoming_recordings_for_offset_change.delay()
                     except Exception:
                         # Fallback to synchronous implementation
-                        from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+                        from apps.channels.tasks import (
+                            reschedule_upcoming_recordings_for_offset_change_impl,
+                        )
+
                         reschedule_upcoming_recordings_for_offset_change_impl()
         except Exception:
             pass
@@ -90,21 +131,60 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         return response
 
     def create(self, request, *args, **kwargs):
-        response = super().create(request, *args, **kwargs)
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if data.get("key") == TMDB_API_KEY_SETTING:
+            data["value"] = self._sanitize_tmdb_key(data.get("value"))
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        instance = serializer.instance
+        response = Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
         # If creating DVR pre/post offset settings, also reschedule upcoming recordings
         try:
-            key = request.data.get("key")
             from core.models import DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY
-            if key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
+
+            if instance.key in (DVR_PRE_OFFSET_MINUTES_KEY, DVR_POST_OFFSET_MINUTES_KEY):
                 try:
                     from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change
+
                     reschedule_upcoming_recordings_for_offset_change.delay()
                 except Exception:
                     from apps.channels.tasks import reschedule_upcoming_recordings_for_offset_change_impl
+
                     reschedule_upcoming_recordings_for_offset_change_impl()
         except Exception:
             pass
         return response
+
+    @action(detail=False, methods=["post"], url_path="validate-tmdb")
+    def validate_tmdb(self, request, *args, **kwargs):
+        api_key = request.data.get("api_key") or request.data.get("value")
+        normalized = (api_key or "").strip()
+
+        if not normalized:
+            return Response(
+                {
+                    "valid": False,
+                    "message": "TMDB API key is required to enable metadata lookups.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        is_valid, message = validate_tmdb_api_key(normalized)
+        if is_valid:
+            return Response({"valid": True}, status=status.HTTP_200_OK)
+
+        return Response(
+            {
+                "valid": False,
+                "message": message or "TMDB API key is invalid.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=["post"], url_path="check")
     def check(self, request, *args, **kwargs):
         data = request.data

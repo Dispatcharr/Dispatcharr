@@ -16,12 +16,64 @@ logger = logging.getLogger(__name__)
 TMDB_API_KEY_SETTING = "tmdb-api-key"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
 METADATA_CACHE_TIMEOUT = 60 * 60 * 6  # 6 hours
+TMDB_VALIDATION_CACHE_SUCCESS_TTL = 60 * 30  # 30 minutes
+TMDB_VALIDATION_CACHE_FAILURE_TTL = 60 * 5  # 5 minutes
 _REQUESTS_SESSION = requests.Session()
 _REQUESTS_SESSION.mount(
     "https://",
     requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=40, max_retries=3),
 )
 tmdb.REQUESTS_SESSION = _REQUESTS_SESSION
+
+
+def validate_tmdb_api_key(api_key: str, *, use_cache: bool = True) -> tuple[bool, str | None]:
+    """
+    Validate a TMDB API key by calling the configuration endpoint.
+
+    Returns a tuple of (is_valid, message). On success, message is None.
+    """
+    normalized_key = (api_key or "").strip()
+    if not normalized_key:
+        return False, "TMDB API key is required."
+
+    cache_key = f"tmdb-key-validation:{normalized_key}"
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached.get("valid", False), cached.get("message")
+
+    try:
+        response = _REQUESTS_SESSION.get(
+            "https://api.themoviedb.org/3/configuration",
+            params={"api_key": normalized_key},
+            timeout=5,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Unable to validate TMDB API key due to network error: %s", exc)
+        message = "Could not reach TMDB to validate the API key."
+        return False, message
+
+    if response.status_code == 200:
+        if use_cache:
+            cache.set(
+                cache_key,
+                {"valid": True, "message": None},
+                TMDB_VALIDATION_CACHE_SUCCESS_TTL,
+            )
+        return True, None
+
+    if response.status_code == 401:
+        message = "TMDB rejected the API key (HTTP 401 Unauthorized)."
+    else:
+        message = f"TMDB returned status {response.status_code} while validating the API key."
+
+    if use_cache:
+        cache.set(
+            cache_key,
+            {"valid": False, "message": message},
+            TMDB_VALIDATION_CACHE_FAILURE_TTL,
+        )
+    return False, message
 
 
 def get_tmdb_api_key() -> Optional[str]:
