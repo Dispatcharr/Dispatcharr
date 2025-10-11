@@ -27,6 +27,7 @@ urlpatterns = [
     path('core/', include(('core.api_urls', 'core'), namespace='core')),
     path('plugins/', include(('apps.plugins.api_urls', 'plugins'), namespace='plugins')),
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
+    path('media/', include(('apps.media_library.api_urls', 'media'), namespace='media')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),
     #path('settings/', include(('apps.settings.api_urls', 'settings'), namespace='settings')),

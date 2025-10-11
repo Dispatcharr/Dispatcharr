@@ -3,6 +3,7 @@
 import json
 import ipaddress
 import logging
+from typing import Optional
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -28,6 +29,7 @@ import socket
 import requests
 import os
 from core.tasks import rehash_streams
+from apps.media_library.metadata import check_movie_db_health, validate_tmdb_api_key
 from apps.accounts.permissions import (
     Authenticated,
 )
@@ -144,6 +146,71 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
             return Response(in_network, status=status.HTTP_200_OK)
 
         return Response({}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="validate-tmdb")
+    def validate_tmdb(self, request, *args, **kwargs):
+        api_key = request.data.get("api_key") or request.data.get("value")
+        normalized = (api_key or "").strip()
+
+        tmdb_configured = bool(normalized)
+        tmdb_valid = False
+        tmdb_message: Optional[str] = None
+
+        if tmdb_configured:
+            tmdb_valid, tmdb_message = validate_tmdb_api_key(normalized)
+        else:
+            tmdb_message = "TMDB API key not configured."
+
+        fallback_available, fallback_message = check_movie_db_health()
+        if fallback_available and not fallback_message:
+            fallback_message = "Movie-DB fallback reachable."
+
+        provider = "unavailable"
+        overall_valid = False
+        summary_message: Optional[str] = None
+
+        if tmdb_configured and tmdb_valid:
+            provider = "tmdb"
+            overall_valid = True
+            summary_message = "TMDB key verified successfully. Metadata and artwork will load for your libraries."
+        elif fallback_available:
+            provider = "movie-db"
+            overall_valid = True
+            base_summary = "Using Movie-DB fallback for metadata."
+            if tmdb_configured and tmdb_message:
+                summary_message = f"TMDB unavailable ({tmdb_message}); {base_summary}"
+            elif not tmdb_configured:
+                summary_message = f"No TMDB key configured. {base_summary}"
+            else:
+                summary_message = base_summary
+        else:
+            details = []
+            if tmdb_message:
+                details.append(f"TMDB: {tmdb_message}")
+            if fallback_message:
+                details.append(f"Movie-DB: {fallback_message}")
+            summary = "All metadata sources are unavailable."
+            if details:
+                summary = f"{summary} {' '.join(details)}"
+            summary_message = summary
+
+        return Response(
+            {
+                "overall_valid": overall_valid,
+                "provider": provider,
+                "message": summary_message,
+                "tmdb": {
+                    "configured": tmdb_configured,
+                    "valid": tmdb_valid,
+                    "message": tmdb_message,
+                },
+                "fallback": {
+                    "available": fallback_available,
+                    "message": fallback_message,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class ProxySettingsViewSet(viewsets.ViewSet):
     """

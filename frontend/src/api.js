@@ -1428,6 +1428,19 @@ export default class API {
     }
   }
 
+  static async validateTmdbApiKey(apiKey) {
+    try {
+      const response = await request(`${host}/api/core/settings/validate-tmdb/`, {
+        method: 'POST',
+        body: { api_key: apiKey },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to validate TMDB API key', e);
+      throw e;
+    }
+  }
+
   static async updateSetting(values) {
     const { id, ...payload } = values;
 
@@ -2378,6 +2391,394 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update playback position', e);
+    }
+  }
+
+  // Media Library Methods
+  static async getMediaLibraries(params = new URLSearchParams()) {
+    try {
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/libraries/${query ? `?${query}` : ''}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to load media libraries', e);
+      throw e;
+    }
+  }
+
+  static async createMediaLibrary(payload) {
+    try {
+      const response = await request(`${host}/api/media/libraries/`, {
+        method: 'POST',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create library', e);
+      throw e;
+    }
+  }
+
+  static async updateMediaLibrary(id, payload) {
+    try {
+      const response = await request(`${host}/api/media/libraries/${id}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update library', e);
+      throw e;
+    }
+  }
+
+  static async deleteMediaLibrary(id) {
+    try {
+      await request(`${host}/api/media/libraries/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete library', e);
+      throw e;
+    }
+  }
+
+  static async browseLibraryPath(path = '') {
+    try {
+      const params = new URLSearchParams();
+      if (path) {
+        params.append('path', path);
+      }
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/libraries/browse/${query ? `?${query}` : ''}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to browse server directories', e);
+      throw e;
+    }
+  }
+
+  static async triggerLibraryScan(id, { full = false } = {}) {
+    try {
+      const response = await request(
+        `${host}/api/media/libraries/${id}/scan/`,
+        {
+          method: 'POST',
+          body: { full },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start library scan', e);
+      throw e;
+    }
+  }
+
+  static async getLibraryScans(params = new URLSearchParams()) {
+    try {
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/scans/${query ? `?${query}` : ''}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to load library scans', e);
+      throw e;
+    }
+  }
+
+  static async cancelLibraryScan(id, payload = {}) {
+    try {
+      const response = await request(`${host}/api/media/scans/${id}/cancel/`, {
+        method: 'POST',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to cancel library scan', e);
+      throw e;
+    }
+  }
+
+  static async deleteLibraryScan(id) {
+    try {
+      await request(`${host}/api/media/scans/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to remove library scan', e);
+      throw e;
+    }
+  }
+
+  static async purgeLibraryScans({ library, statuses } = {}) {
+    try {
+      const params = new URLSearchParams();
+      if (library !== undefined && library !== null) {
+        params.append('library', library);
+      }
+      if (Array.isArray(statuses) && statuses.length > 0) {
+        statuses.forEach((statusValue) => params.append('status', statusValue));
+      }
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/scans/purge/${query ? `?${query}` : ''}`,
+        {
+          method: 'DELETE',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to clear library scans', e);
+      throw e;
+    }
+  }
+
+  static async getMediaItems(params = new URLSearchParams()) {
+    try {
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/items/${query ? `?${query}` : ''}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to load media items', e);
+      throw e;
+    }
+  }
+
+  static async getMediaItem(id, options = {}) {
+    const { suppressErrorNotification = false } = options;
+    try {
+      const response = await request(`${host}/api/media/items/${id}/`);
+      return response;
+    } catch (e) {
+      if (!suppressErrorNotification) {
+        errorNotification('Failed to load media item details', e);
+      }
+      throw e;
+    }
+  }
+
+  static async updateMediaItem(id, payload) {
+    try {
+      const response = await request(`${host}/api/media/items/${id}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update media item', e);
+      throw e;
+    }
+  }
+
+  static async setMediaItemTMDB(id, tmdbId) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/set-tmdb/`,
+        {
+          method: 'POST',
+          body: { tmdb_id: tmdbId },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply TMDB metadata', e);
+      throw e;
+    }
+  }
+
+  static async getMediaItemEpisodes(parentId) {
+    try {
+      const params = new URLSearchParams();
+      params.append('parent', parentId);
+      params.append('ordering', 'season_number,episode_number');
+      const response = await request(
+        `${host}/api/media/items/?${params.toString()}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to load episodes', e);
+      throw e;
+    }
+  }
+
+  static async refreshMediaItemMetadata(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/refresh-metadata/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to queue metadata refresh', e);
+      throw e;
+    }
+  }
+
+  static async getMediaItemFiles(mediaItemId, options = {}) {
+    const { suppressErrorNotification = false } = options;
+    try {
+      const params = new URLSearchParams();
+      params.append('media_item', mediaItemId);
+      const response = await request(
+        `${host}/api/media/files/?${params.toString()}`
+      );
+      return response.results || response;
+    } catch (e) {
+      if (!suppressErrorNotification) {
+        errorNotification('Failed to load media item files', e);
+      }
+      throw e;
+    }
+  }
+
+  static async markSeriesWatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/mark-series-watched/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to mark series watched', e);
+      throw e;
+    }
+  }
+
+  static async markSeriesUnwatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/mark-series-unwatched/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to mark series unwatched', e);
+      throw e;
+    }
+  }
+
+  static async deleteMediaItem(id) {
+    try {
+      await request(`${host}/api/media/items/${id}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete media item', e);
+      throw e;
+    }
+  }
+
+  static async markMediaItemWatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/mark-watched/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to mark as watched', e);
+      throw e;
+    }
+  }
+
+  static async clearMediaItemProgress(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/items/${id}/clear-progress/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to clear watch progress', e);
+      throw e;
+    }
+  }
+
+  static async getMediaWatchProgress(params = new URLSearchParams()) {
+    try {
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/progress/${query ? `?${query}` : ''}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to load watch progress', e);
+      throw e;
+    }
+  }
+
+  static async setMediaWatchProgress(payload) {
+    try {
+      const response = await request(`${host}/api/media/progress/set/`, {
+        method: 'POST',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update watch progress', e);
+      throw e;
+    }
+  }
+
+  static async resumeMediaProgress(id) {
+    try {
+      const response = await request(
+        `${host}/api/media/progress/${id}/resume/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to load resume information', e);
+      throw e;
+    }
+  }
+
+  static async streamMediaItem(id, options = {}) {
+    try {
+      const params = new URLSearchParams();
+      if (options.fileId) {
+        params.append('file', options.fileId);
+      }
+      const startCandidate =
+        options.startMs ??
+        options.resumeMs ??
+        (typeof options.startSeconds === 'number'
+          ? Math.round(options.startSeconds * 1000)
+          : null);
+      if (startCandidate != null) {
+        const normalized = Math.floor(Number(startCandidate));
+        if (!Number.isNaN(normalized) && normalized > 0) {
+          params.append('start_ms', String(normalized));
+        }
+      }
+      const query = params.toString();
+      const response = await request(
+        `${host}/api/media/items/${id}/stream/${query ? `?${query}` : ''}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to load media stream info', e);
+      throw e;
     }
   }
 }

@@ -21,6 +21,7 @@ import { Play } from 'lucide-react';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
+import API from '../api';
 
 const imdbUrl = (imdb_id) =>
   imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
@@ -35,9 +36,17 @@ const formatDuration = (seconds) => {
 };
 
 const formatStreamLabel = (relation) => {
+  if (relation?.provider_type === 'library' || relation?.type === 'library') {
+    const libraryName =
+      relation?.library?.name ||
+      relation?.m3u_account?.name ||
+      'Library';
+    return `${libraryName} - Local Library`;
+  }
+
   // Create a label for the stream that includes provider name and stream-specific info
-  const provider = relation.m3u_account.name;
-  const streamId = relation.stream_id;
+  const provider = relation?.m3u_account?.name || 'Provider';
+  const streamId = relation?.stream_id;
 
   // Try to extract quality info - prioritizing the new quality_info field from backend
   let qualityInfo = '';
@@ -241,15 +250,76 @@ const SeriesModal = ({ series, opened, onClose }) => {
     }
   }, [opened]);
 
-  const handlePlayEpisode = (episode) => {
+  const resolveLibraryEpisodeMediaItemId = (episode) => {
+    if (episode?.library_media_item_ids?.length) {
+      return episode.library_media_item_ids[0];
+    }
+    if (episode?.providers) {
+      const libraryProvider = episode.providers.find(
+        (relation) =>
+          relation?.provider_type === 'library' || relation?.type === 'library'
+      );
+      if (libraryProvider?.library_item_id) {
+        return libraryProvider.library_item_id;
+      }
+      if (libraryProvider?.custom_properties?.media_item_id) {
+        return libraryProvider.custom_properties.media_item_id;
+      }
+    }
+    if (selectedProvider?.provider_type === 'library' && selectedProvider.library_item_id) {
+      return selectedProvider.library_item_id;
+    }
+    return null;
+  };
+
+  const handlePlayEpisode = async (episode) => {
     let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
+
+    if (
+      selectedProvider?.provider_type === 'library' ||
+      selectedProvider?.type === 'library'
+    ) {
+      const mediaItemId = resolveLibraryEpisodeMediaItemId(episode);
+      if (!mediaItemId) {
+        console.warn('No library episode media item available for playback');
+        return;
+      }
+      try {
+        const streamInfo = await API.streamMediaItem(mediaItemId);
+        if (!streamInfo?.url) {
+          console.error('Library episode stream did not return a URL');
+          return;
+        }
+        const playbackMeta = {
+          ...episode,
+          provider_type: 'library',
+          library_media_item_id: mediaItemId,
+          mediaItemId,
+          fileId: streamInfo?.file_id,
+          resumePositionMs: 0,
+          resumeHandledByServer: Boolean(streamInfo?.start_offset_ms),
+          startOffsetMs: streamInfo?.start_offset_ms ?? 0,
+          requiresTranscode: Boolean(streamInfo?.requires_transcode),
+          transcodeStatus: streamInfo?.transcode_status ?? null,
+          durationMs:
+            streamInfo?.duration_ms ??
+            episode?.runtime_ms ??
+            episode?.files?.[0]?.duration_ms ??
+            null,
+        };
+        showVideo(streamInfo.url, 'library', playbackMeta);
+      } catch (error) {
+        console.error('Failed to start library episode stream:', error);
+      }
+      return;
+    }
 
     // Add selected provider as query parameter if available
     if (selectedProvider) {
       // Use stream_id for most specific selection, fallback to account_id
       if (selectedProvider.stream_id) {
         streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
-      } else {
+      } else if (selectedProvider?.m3u_account?.id) {
         streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
       }
     }
@@ -279,6 +349,12 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   // Use detailed data if available, otherwise use basic series data
   const displaySeries = detailedSeries || series;
+  const seriesPoster =
+    displaySeries?.series_image ||
+    displaySeries?.logo?.cache_url ||
+    displaySeries?.logo?.url ||
+    displaySeries?.custom_properties?.poster_url ||
+    null;
 
   return (
     <>
@@ -341,10 +417,10 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
               {/* Series poster and basic info */}
               <Flex gap="md">
-                {displaySeries.series_image || displaySeries.logo?.url ? (
+                {seriesPoster ? (
                   <Box style={{ flexShrink: 0 }}>
                     <Image
-                      src={displaySeries.series_image || displaySeries.logo.url}
+                      src={seriesPoster}
                       width={200}
                       height={300}
                       alt={displaySeries.name}
@@ -498,16 +574,19 @@ const SeriesModal = ({ series, opened, onClose }) => {
                 </Text>
                 {providers.length === 0 &&
                 !loadingProviders &&
-                displaySeries.m3u_account ? (
+                (displaySeries.m3u_account ||
+                  (displaySeries.library_sources?.length ?? 0) > 0) ? (
                   <Group spacing="md">
                     <Badge color="blue" variant="light">
-                      {displaySeries.m3u_account.name}
+                      {displaySeries.m3u_account?.name ||
+                        displaySeries.library_sources?.[0]?.library_name ||
+                        'Library'}
                     </Badge>
                   </Group>
                 ) : providers.length === 1 ? (
                   <Group spacing="md">
                     <Badge color="blue" variant="light">
-                      {providers[0].m3u_account.name}
+                      {formatStreamLabel(providers[0])}
                     </Badge>
                     {providers[0].stream_id && (
                       <Badge color="orange" variant="outline" size="xs">
@@ -640,10 +719,16 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                       {/* Episode Image and Description Row */}
                                       <Flex gap="md">
                                         {/* Episode Image */}
-                                        {episode.movie_image && (
-                                          <Box style={{ flexShrink: 0 }}>
-                                            <Image
-                                              src={episode.movie_image}
+                                        {(() => {
+                                          const episodeImage =
+                                            episode.movie_image || seriesPoster;
+                                          if (!episodeImage) {
+                                            return null;
+                                          }
+                                          return (
+                                            <Box style={{ flexShrink: 0 }}>
+                                              <Image
+                                              src={episodeImage}
                                               width={120}
                                               height={160}
                                               alt={episode.name}
@@ -651,7 +736,8 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                               style={{ borderRadius: '4px' }}
                                             />
                                           </Box>
-                                        )}
+                                          );
+                                        })()}
 
                                         {/* Episode Description */}
                                         <Box style={{ flex: 1 }}>

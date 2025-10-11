@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "apps.epg",
     "apps.hdhr",
     "apps.m3u",
+    "apps.media_library",
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
     "apps.proxy.ts_proxy",

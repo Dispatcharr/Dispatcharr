@@ -26,6 +26,7 @@
     "@tanstack/react-table": "^8.21.2",
     "allotment": "^1.20.4",
     "dayjs": "^1.11.13",
+    "immer": "^10.1.1",
     "formik": "^2.4.6",
     "hls.js": "^1.5.20",
     "lucide-react": "^0.511.0",

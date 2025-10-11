@@ -12,6 +12,8 @@ import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
+import useLibraryStore from './store/library';
+import useMediaLibraryStore from './store/mediaLibrary';
 import { Box, Button, Stack, Alert, Group } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
@@ -37,6 +39,7 @@ export const WebsocketProvider = ({ children }) => {
   const updateEPGProgress = useEPGsStore((s) => s.updateEPGProgress);
 
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
+  const applyMediaScanUpdate = useLibraryStore((s) => s.applyScanUpdate);
 
   // Calculate reconnection delay with exponential backoff
   const getReconnectDelay = useCallback(() => {
@@ -220,6 +223,49 @@ export const WebsocketProvider = ({ children }) => {
                 try {
                   await useChannelsStore.getState().fetchRecordings();
                 } catch {}
+              }
+              break;
+            }
+            case 'media_scan': {
+              applyMediaScanUpdate(parsedEvent.data);
+              if (parsedEvent.data.media_item) {
+                useMediaLibraryStore.getState().upsertItems([
+                  parsedEvent.data.media_item,
+                ]);
+              }
+
+              if (parsedEvent.data.status === 'completed') {
+                const { library_id: libraryId } = parsedEvent.data;
+                const mediaStore = useMediaLibraryStore.getState();
+                const activeLibraryIds = mediaStore.activeLibraryIds || [];
+                const shouldRefresh =
+                  activeLibraryIds.length === 0 ||
+                  (libraryId != null &&
+                    activeLibraryIds.includes(Number(libraryId)));
+                if (shouldRefresh) {
+                  mediaStore.fetchItems(
+                    activeLibraryIds.length > 0 ? activeLibraryIds : undefined
+                  );
+                }
+                notifications.show({
+                  title: 'Library scan complete',
+                  message: parsedEvent.data.summary || 'Library scan finished successfully.',
+                  color: 'green',
+                });
+              } else if (parsedEvent.data.status === 'failed') {
+                notifications.show({
+                  title: 'Library scan failed',
+                  message: parsedEvent.data.message || 'Check logs for details.',
+                  color: 'red',
+                });
+              }
+              break;
+            }
+            case 'media_item_update': {
+              if (parsedEvent.data.media_item) {
+                useMediaLibraryStore.getState().upsertItems([
+                  parsedEvent.data.media_item,
+                ]);
               }
               break;
             }

@@ -9,6 +9,7 @@ from drf_yasg import openapi
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 import os, json, requests, logging
+from django.conf import settings
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
@@ -1462,6 +1463,22 @@ class LogoViewSet(viewsets.ModelViewSet):
 
         return super().destroy(request, *args, **kwargs)
 
+    def list(self, request, *args, **kwargs):
+        """Support optional no_pagination flag for convenience queries."""
+        queryset = self.filter_queryset(self.get_queryset())
+
+        if request.query_params.get("no_pagination", "").lower() == "true":
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     @action(detail=False, methods=["post"])
     def upload(self, request):
         if "file" not in request.FILES:
@@ -1525,21 +1542,38 @@ class LogoViewSet(viewsets.ModelViewSet):
         logo = self.get_object()
         logo_url = logo.url
 
-        if logo_url.startswith("/data"):  # Local file
-            if not os.path.exists(logo_url):
+        filesystem_path = None
+        if logo_url.startswith("/data"):
+            filesystem_path = logo_url
+        else:
+            media_root = getattr(settings, "MEDIA_ROOT", "")
+            media_url = getattr(settings, "MEDIA_URL", "")
+
+            candidate_path = None
+
+            if media_root:
+                if media_url and logo_url.startswith(media_url):
+                    rel_path = logo_url[len(media_url.rstrip("/")) + 1 :]
+                    candidate_path = os.path.join(media_root, rel_path)
+                elif not logo_url.lower().startswith(("http://", "https://")):
+                    candidate_path = os.path.join(media_root, logo_url.lstrip("/"))
+
+            if candidate_path and os.path.exists(candidate_path):
+                filesystem_path = candidate_path
+
+        if filesystem_path:
+            if not os.path.exists(filesystem_path):
                 raise Http404("Image not found")
 
-            # Get proper mime type (first item of the tuple)
-            content_type, _ = mimetypes.guess_type(logo_url)
+            content_type, _ = mimetypes.guess_type(filesystem_path)
             if not content_type:
-                content_type = "image/jpeg"  # Default to a common image type
+                content_type = "image/jpeg"
 
-            # Use context manager and set Content-Disposition to inline
             response = StreamingHttpResponse(
-                open(logo_url, "rb"), content_type=content_type
+                open(filesystem_path, "rb"), content_type=content_type
             )
-            response["Content-Disposition"] = 'inline; filename="{}"'.format(
-                os.path.basename(logo_url)
+            response["Content-Disposition"] = 'inline; filename=\"{}\"'.format(
+                os.path.basename(filesystem_path)
             )
             return response
 

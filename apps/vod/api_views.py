@@ -1,3 +1,4 @@
+import json
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -5,7 +6,9 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 import django_filters
+from django.db.models import Q
 import logging
 from apps.accounts.permissions import (
     Authenticated,
@@ -29,6 +32,15 @@ from django.utils import timezone
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def build_logo_cache_url(request, logo_id):
+    if not logo_id:
+        return None
+    cache_path = reverse("api:channels:logo-cache", args=[logo_id])
+    if request:
+        return request.build_absolute_uri(cache_path)
+    return cache_path
 
 
 class VODPagination(PageNumberPagination):
@@ -86,9 +98,15 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         # Only return movies that have active M3U relations
-        return Movie.objects.filter(
-            m3u_relations__m3u_account__is_active=True
-        ).distinct().select_related('logo').prefetch_related('m3u_relations__m3u_account')
+        return (
+            Movie.objects.filter(
+                Q(m3u_relations__m3u_account__is_active=True)
+                | Q(library_items__library__use_as_vod_source=True)
+            )
+            .distinct()
+            .select_related('logo')
+            .prefetch_related('m3u_relations__m3u_account', 'library_items__library')
+        )
 
     @action(detail=True, methods=['get'], url_path='providers')
     def get_providers(self, request, pk=None):
@@ -99,14 +117,99 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             m3u_account__is_active=True
         ).select_related('m3u_account', 'category')
 
-        serializer = M3UMovieRelationSerializer(relations, many=True)
-        return Response(serializer.data)
+        relation_payload = M3UMovieRelationSerializer(relations, many=True).data
+
+        library_payload = []
+        for media_item in movie.library_items.select_related("library"):
+            library = media_item.library
+            if not library or not library.use_as_vod_source:
+                continue
+            library_payload.append(
+                {
+                    "id": f"library-{media_item.id}",
+                    "provider_type": "library",
+                    "type": "library",
+                    "library_item_id": media_item.id,
+                    "library": {
+                        "id": library.id,
+                        "name": library.name,
+                    },
+                    "stream_id": None,
+                    "m3u_account": {
+                        "id": f"library-{library.id}",
+                        "name": library.name,
+                        "account_type": "library",
+                    },
+                    "quality_info": (movie.custom_properties or {}).get("quality"),
+                    "custom_properties": {
+                        "source": "library",
+                        "library_id": library.id,
+                        "media_item_id": media_item.id,
+                    },
+                }
+            )
+
+        return Response([*relation_payload, *library_payload])
 
 
     @action(detail=True, methods=['get'], url_path='provider-info')
     def provider_info(self, request, pk=None):
         """Get detailed movie information from the original provider, throttled to 24h."""
         movie = self.get_object()
+
+        library_item = movie.library_items.select_related("library").filter(
+            library__use_as_vod_source=True
+        ).first()
+        if library_item:
+            library = library_item.library
+            custom_props = movie.custom_properties or {}
+            logo_cache_url = build_logo_cache_url(request, movie.logo_id)
+            response_data = {
+                'id': movie.id,
+                'uuid': movie.uuid,
+                'stream_id': None,
+                'name': movie.name,
+                'description': movie.description,
+                'plot': movie.description,
+                'year': movie.year,
+                'genre': movie.genre,
+                'rating': movie.rating,
+                'tmdb_id': movie.tmdb_id,
+                'imdb_id': movie.imdb_id,
+                'duration_secs': movie.duration_secs,
+                'movie_image': logo_cache_url or (movie.logo.url if movie.logo else custom_props.get('poster_url')),
+                'backdrop_path': (
+                    custom_props.get('backdrop_path')
+                    if isinstance(custom_props.get('backdrop_path'), list)
+                    else ([custom_props.get('backdrop_url')] if custom_props.get('backdrop_url') else [])
+                ),
+                'video': (custom_props.get('quality') or {}).get('video'),
+                'audio': (custom_props.get('quality') or {}).get('audio'),
+                'bitrate': (custom_props.get('quality') or {}).get('bitrate'),
+                'container_extension': (custom_props.get('quality') or {}).get('container'),
+                'direct_source': None,
+                'library_item_id': library_item.id,
+                'library_sources': [
+                    {
+                        'library_id': library.id,
+                        'library_name': library.name,
+                        'media_item_id': library_item.id,
+                    }
+                ],
+                'custom_properties': custom_props,
+                'm3u_account': {
+                    'id': f'library-{library.id}',
+                    'name': library.name,
+                    'account_type': 'library',
+                },
+                'logo': {
+                    'id': movie.logo_id,
+                    'name': movie.logo.name if movie.logo else None,
+                    'url': movie.logo.url if movie.logo else custom_props.get('poster_url'),
+                    'cache_url': logo_cache_url,
+                } if movie.logo else None,
+            }
+            return Response(response_data)
 
         # Get the highest priority active relation
         relation = M3UMovieRelation.objects.filter(
@@ -136,6 +239,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             # Refresh objects from database after task completion
             movie.refresh_from_db()
             relation.refresh_from_db()
+            logo_cache_url = build_logo_cache_url(request, movie.logo_id)
 
         # Use refreshed data from database
         custom_props = relation.custom_properties or {}
@@ -166,7 +270,7 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             'backdrop_path': (movie.custom_properties or {}).get('backdrop_path') or info.get('backdrop_path', []),
             'cover': info.get('cover_big', ''),
             'cover_big': info.get('cover_big', ''),
-            'movie_image': movie.logo.url if movie.logo else info.get('movie_image', ''),
+            'movie_image': logo_cache_url or (movie.logo.url if movie.logo else info.get('movie_image', '')),
             'bitrate': info.get('bitrate', 0),
             'video': info.get('video', {}),
             'audio': info.get('audio', {}),
@@ -178,7 +282,13 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
                 'id': relation.m3u_account.id,
                 'name': relation.m3u_account.name,
                 'account_type': relation.m3u_account.account_type
-            }
+            },
+            'logo': {
+                'id': movie.logo_id,
+                'name': movie.logo.name if movie.logo else None,
+                'url': movie.logo.url if movie.logo else info.get('movie_image', ''),
+                'cache_url': logo_cache_url,
+            } if movie.logo_id else None
         }
         return Response(response_data)
 
@@ -242,9 +352,15 @@ class EpisodeViewSet(viewsets.ReadOnlyModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        return Episode.objects.select_related(
-            'series', 'm3u_account'
-        ).filter(m3u_account__is_active=True)
+        return (
+            Episode.objects.select_related("series")
+            .filter(
+                Q(m3u_relations__m3u_account__is_active=True)
+                | Q(library_items__library__use_as_vod_source=True)
+            )
+            .distinct()
+            .prefetch_related("m3u_relations__m3u_account", "library_items__library")
+        )
 
 
 class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
@@ -267,9 +383,15 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         # Only return series that have active M3U relations
-        return Series.objects.filter(
-            m3u_relations__m3u_account__is_active=True
-        ).distinct().select_related('logo').prefetch_related('episodes', 'm3u_relations__m3u_account')
+        return (
+            Series.objects.filter(
+                Q(m3u_relations__m3u_account__is_active=True)
+                | Q(library_items__library__use_as_vod_source=True)
+            )
+            .distinct()
+            .select_related('logo')
+            .prefetch_related('episodes', 'm3u_relations__m3u_account', 'library_items__library')
+        )
 
     @action(detail=True, methods=['get'], url_path='providers')
     def get_providers(self, request, pk=None):
@@ -280,8 +402,38 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
             m3u_account__is_active=True
         ).select_related('m3u_account', 'category')
 
-        serializer = M3USeriesRelationSerializer(relations, many=True)
-        return Response(serializer.data)
+        relation_payload = M3USeriesRelationSerializer(relations, many=True).data
+
+        library_payload = []
+        for media_item in series.library_items.select_related("library"):
+            library = media_item.library
+            if not library or not library.use_as_vod_source:
+                continue
+            library_payload.append(
+                {
+                    "id": f"library-{media_item.id}",
+                    "provider_type": "library",
+                    "type": "library",
+                    "library_item_id": media_item.id,
+                    "library": {
+                        "id": library.id,
+                        "name": library.name,
+                    },
+                    "m3u_account": {
+                        "id": f"library-{library.id}",
+                        "name": library.name,
+                        "account_type": "library",
+                    },
+                    "quality_info": None,
+                    "custom_properties": {
+                        "source": "library",
+                        "library_id": library.id,
+                        "media_item_id": media_item.id,
+                    },
+                }
+            )
+
+        return Response([*relation_payload, *library_payload])
 
     @action(detail=True, methods=['get'], url_path='episodes')
     def get_episodes(self, request, pk=None):
@@ -302,7 +454,39 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
                 m3u_account__is_active=True
             ).select_related('m3u_account')
 
-            episode_data['providers'] = M3UEpisodeRelationSerializer(relations, many=True).data
+            relation_payload = M3UEpisodeRelationSerializer(relations, many=True).data
+
+            library_payload = []
+            for media_item in episode.library_items.select_related("library"):
+                library = media_item.library
+                if not library or not library.use_as_vod_source:
+                    continue
+                library_payload.append(
+                    {
+                        "id": f"library-{media_item.id}",
+                        "provider_type": "library",
+                        "type": "library",
+                        "library_item_id": media_item.id,
+                        "library": {
+                            "id": library.id,
+                            "name": library.name,
+                        },
+                        "m3u_account": {
+                            "id": f"library-{library.id}",
+                            "name": library.name,
+                            "account_type": "library",
+                        },
+                        "stream_id": None,
+                        "quality_info": None,
+                        "custom_properties": {
+                            "source": "library",
+                            "library_id": library.id,
+                            "media_item_id": media_item.id,
+                        },
+                    }
+                )
+
+            episode_data['providers'] = [*relation_payload, *library_payload]
             episodes_data.append(episode_data)
 
         return Response(episodes_data)
@@ -313,6 +497,75 @@ class SeriesViewSet(viewsets.ReadOnlyModelViewSet):
         logger.debug(f"SeriesViewSet.series_info called for series ID: {pk}")
         series = self.get_object()
         logger.debug(f"Retrieved series: {series.name} (ID: {series.id})")
+
+        library_item = series.library_items.select_related("library").filter(
+            library__use_as_vod_source=True
+        ).first()
+        if library_item:
+            library = library_item.library
+            series_logo_cache_url = build_logo_cache_url(request, series.logo_id)
+            episodes_by_season: dict[str, list[dict]] = {}
+            for episode in series.episodes.all().prefetch_related("library_items__library").order_by('season_number', 'episode_number'):
+                if not episode.library_items.filter(library__use_as_vod_source=True).exists():
+                    continue
+                season_key = str(episode.season_number or 0)
+                if season_key not in episodes_by_season:
+                    episodes_by_season[season_key] = []
+                episodes_by_season[season_key].append(
+                    {
+                        'id': episode.id,
+                        'title': episode.name,
+                        'plot': episode.description,
+                        'season_number': episode.season_number,
+                        'episode_number': episode.episode_number,
+                        'duration_secs': episode.duration_secs,
+                        'rating': episode.rating,
+                        'tmdb_id': episode.tmdb_id,
+                        'imdb_id': episode.imdb_id,
+                        'uuid': str(episode.uuid),
+                        'library_media_item_ids': [
+                            item.id for item in episode.library_items.filter(library__use_as_vod_source=True)
+                        ],
+                    }
+                )
+
+            response_data = {
+                'id': series.id,
+                'series_id': series.id,
+                'name': series.name,
+                'description': series.description,
+                'year': series.year,
+                'genre': series.genre,
+                'rating': series.rating,
+                'tmdb_id': series.tmdb_id,
+                'imdb_id': series.imdb_id,
+                'category_id': None,
+                'category_name': None,
+                'cover': {
+                    'id': series.logo.id,
+                    'url': series_logo_cache_url or series.logo.url,
+                    'name': series.logo.name,
+                    'cache_url': series_logo_cache_url,
+                } if series.logo else None,
+                'custom_properties': series.custom_properties or {},
+                'm3u_account': {
+                    'id': f'library-{library.id}',
+                    'name': library.name,
+                    'account_type': 'library',
+                },
+                'episodes_fetched': True,
+                'detailed_fetched': True,
+                'episodes': episodes_by_season,
+                'library_item_id': library_item.id,
+                'library_sources': [
+                    {
+                        'library_id': library.id,
+                        'library_name': library.name,
+                        'media_item_id': library_item.id,
+                    }
+                ],
+            }
+            return Response(response_data)
 
         # Get the highest priority active relation
         relation = M3USeriesRelation.objects.filter(
@@ -512,18 +765,36 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             search = request.query_params.get('search', '')
             category = request.query_params.get('category', '')
 
-            # Build WHERE clauses
-            where_conditions = [
-                # Only active content
-                "movies.id IN (SELECT DISTINCT movie_id FROM vod_m3umovierelation mmr JOIN m3u_m3uaccount ma ON mmr.m3u_account_id = ma.id WHERE ma.is_active = true)",
-                "series.id IN (SELECT DISTINCT series_id FROM vod_m3useriesrelation msr JOIN m3u_m3uaccount ma ON msr.m3u_account_id = ma.id WHERE ma.is_active = true)"
-            ]
+            # Build base WHERE clauses
+            movie_m3u_condition = (
+                "movies.id IN (SELECT DISTINCT movie_id FROM vod_m3umovierelation mmr "
+                "JOIN m3u_m3uaccount ma ON mmr.m3u_account_id = ma.id "
+                "WHERE ma.is_active = true)"
+            )
+            movie_library_condition = (
+                "EXISTS (SELECT 1 FROM media_library_mediaitem mi "
+                "JOIN media_library_library lib ON mi.library_id = lib.id "
+                "WHERE mi.vod_movie_id = movies.id AND lib.use_as_vod_source = true)"
+            )
+            series_m3u_condition = (
+                "series.id IN (SELECT DISTINCT series_id FROM vod_m3useriesrelation msr "
+                "JOIN m3u_m3uaccount ma ON msr.m3u_account_id = ma.id "
+                "WHERE ma.is_active = true)"
+            )
+            series_library_condition = (
+                "EXISTS (SELECT 1 FROM media_library_mediaitem mi "
+                "JOIN media_library_library lib ON mi.library_id = lib.id "
+                "WHERE mi.vod_series_id = series.id AND lib.use_as_vod_source = true)"
+            )
+
+            movie_where = f"(({movie_m3u_condition}) OR ({movie_library_condition}))"
+            series_where = f"(({series_m3u_condition}) OR ({series_library_condition}))"
 
             params = []
 
             if search:
-                where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
-                where_conditions[1] += " AND LOWER(series.name) LIKE %s"
+                movie_where += " AND LOWER(movies.name) LIKE %s"
+                series_where += " AND LOWER(series.name) LIKE %s"
                 search_param = f"%{search.lower()}%"
                 params.extend([search_param, search_param])
 
@@ -531,16 +802,28 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 if '|' in category:
                     cat_name, cat_type = category.split('|', 1)
                     if cat_type == 'movie':
-                        where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                        where_conditions[1] = "1=0"  # Exclude series
+                        movie_where += (
+                            " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr "
+                            "JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                        )
+                        series_where = "1=0"  # Exclude series
                         params.append(cat_name)
                     elif cat_type == 'series':
-                        where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                        where_conditions[0] = "1=0"  # Exclude movies
+                        series_where += (
+                            " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr "
+                            "JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                        )
+                        movie_where = "1=0"  # Exclude movies
                         params.append(cat_name)
                 else:
-                    where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
-                    where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                    movie_where += (
+                        " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr "
+                        "JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
+                    )
+                    series_where += (
+                        " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr "
+                        "JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
+                    )
                     params.extend([category, category])
 
             # Use UNION ALL with ORDER BY and LIMIT/OFFSET for true unified pagination
@@ -565,7 +848,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     'movie' as content_type
                 FROM vod_movie movies
                 LEFT JOIN dispatcharr_channels_logo logo ON movies.logo_id = logo.id
-                WHERE {where_conditions[0]}
+                WHERE {movie_where}
 
                 UNION ALL
 
@@ -587,7 +870,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     'series' as content_type
                 FROM vod_series series
                 LEFT JOIN dispatcharr_channels_logo logo ON series.logo_id = logo.id
-                WHERE {where_conditions[1]}
+                WHERE {series_where}
             )
             SELECT * FROM unified_content
             ORDER BY LOWER(name), id
@@ -606,18 +889,42 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 for row in cursor.fetchall():
                     item_dict = dict(zip(columns, row))
 
+                    custom_props = item_dict.get('custom_properties') or {}
+                    if isinstance(custom_props, str):
+                        try:
+                            custom_props = json.loads(custom_props)
+                        except json.JSONDecodeError:
+                            custom_props = {}
+
                     # Build logo object in the format expected by frontend
                     logo_data = None
+                    poster_candidate = None
                     if item_dict['logo_id']:
+                        cache_url = build_logo_cache_url(request, item_dict['logo_id'])
+                        poster_candidate = cache_url or item_dict.get('logo_url')
                         logo_data = {
                             'id': item_dict['logo_id'],
                             'name': item_dict['logo_name'],
                             'url': item_dict['logo_url'],
-                            'cache_url': f"/media/logo_cache/{item_dict['logo_id']}.png" if item_dict['logo_id'] else None,
-                            'channel_count': 0,  # We don't need this for VOD
+                            'cache_url': cache_url,
+                            'channel_count': 0,
                             'is_used': True,
-                            'channel_names': []  # We don't need this for VOD
+                            'channel_names': []
                         }
+                    if not poster_candidate:
+                        poster_candidate = custom_props.get('poster_url') or custom_props.get('cover')
+
+                    backdrop_values = []
+                    if isinstance(custom_props.get('backdrop_path'), list):
+                        backdrop_values = custom_props['backdrop_path']
+                    elif custom_props.get('backdrop_url'):
+                        backdrop_values = [custom_props['backdrop_url']]
+
+                    rating_value = item_dict['rating']
+                    try:
+                        rating_parsed = float(rating_value) if rating_value is not None else 0.0
+                    except (TypeError, ValueError):
+                        rating_parsed = rating_value
 
                     # Convert to the format expected by frontend
                     formatted_item = {
@@ -626,13 +933,17 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                         'name': item_dict['name'],
                         'description': item_dict['description'] or '',
                         'year': item_dict['year'],
-                        'rating': float(item_dict['rating']) if item_dict['rating'] else 0.0,
+                        'rating': rating_parsed,
                         'genre': item_dict['genre'] or '',
                         'duration': item_dict['duration'],
+                        'duration_secs': item_dict['duration'],
                         'created_at': item_dict['created_at'].isoformat() if item_dict['created_at'] else None,
                         'updated_at': item_dict['updated_at'].isoformat() if item_dict['updated_at'] else None,
-                        'custom_properties': item_dict['custom_properties'] or {},
+                        'custom_properties': custom_props,
                         'logo': logo_data,
+                        'movie_image': poster_candidate if item_dict['content_type'] == 'movie' else None,
+                        'series_image': poster_candidate if item_dict['content_type'] == 'series' else None,
+                        'backdrop_path': backdrop_values,
                         'content_type': item_dict['content_type']
                     }
                     results.append(formatted_item)
@@ -643,9 +954,9 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             # Use a separate efficient count query
             count_sql = f"""
             SELECT COUNT(*) FROM (
-                SELECT 1 FROM vod_movie movies WHERE {where_conditions[0]}
+                SELECT 1 FROM vod_movie movies WHERE {movie_where}
                 UNION ALL
-                SELECT 1 FROM vod_series series WHERE {where_conditions[1]}
+                SELECT 1 FROM vod_series series WHERE {series_where}
             ) as total_count
             """
 
