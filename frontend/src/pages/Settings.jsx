@@ -51,6 +51,7 @@ import { shallow } from 'zustand/shallow';
 import useLibraryStore from '../store/library';
 import LibraryFormModal from '../components/library/LibraryFormModal';
 import { Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import tmdbLogo from '../assets/tmdb-logo-blue.svg';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -1076,7 +1077,7 @@ const SettingsPage = () => {
                         rel="noopener noreferrer"
                       >
                         <img
-                          src="/tmdb-logo-blue.svg"
+                          src={tmdbLogo}
                           alt="Powered by TMDB"
                           style={{ maxWidth: 180 }}
                         />
