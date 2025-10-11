@@ -33,7 +33,13 @@ const OptionWithTooltip = forwardRef(
   )
 );
 
-const LiveGroupFilter = ({ playlist, groupStates, setGroupStates }) => {
+const LiveGroupFilter = ({
+  playlist,
+  groupStates,
+  setGroupStates,
+  autoEnableNewGroupsLive,
+  setAutoEnableNewGroupsLive,
+}) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
@@ -158,6 +164,16 @@ const LiveGroupFilter = ({ playlist, groupStates, setGroupStates }) => {
           number for each group to organize your channels.
         </Text>
       </Alert>
+
+      <Checkbox
+        label="Automatically enable new groups discovered on future scans"
+        checked={autoEnableNewGroupsLive}
+        onChange={(event) =>
+          setAutoEnableNewGroupsLive(event.currentTarget.checked)
+        }
+        size="sm"
+        description="When disabled, new groups from the M3U source will be created but disabled by default. You can enable them manually later."
+      />
 
       <Flex gap="sm">
         <TextInput

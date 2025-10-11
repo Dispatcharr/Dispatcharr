@@ -187,16 +187,28 @@ def batch_create_categories(categories_data, category_type, account):
 
     logger.debug(f"Found {len(existing_categories)} existing categories")
 
+    # Check if we should auto-enable new categories based on account settings
+    account_custom_props = account.custom_properties or {}
+    if category_type == 'movie':
+        auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+    else:  # series
+        auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+
     # Create missing categories in batch
     new_categories = []
+
     for name in category_names:
         if name not in existing_categories:
+            # Always create new categories
             new_categories.append(VODCategory(name=name, category_type=category_type))
         else:
+            # Existing category - create relationship with enabled based on auto_enable setting
+            # (category exists globally but is new to this account)
             relations_to_create.append(M3UVODCategoryRelation(
                 category=existing_categories[name],
                 m3u_account=account,
                 custom_properties={},
+                enabled=auto_enable_new,
             ))
 
     logger.debug(f"{len(new_categories)} new categories found")
@@ -204,23 +216,67 @@ def batch_create_categories(categories_data, category_type, account):
 
     if new_categories:
         logger.debug("Creating new categories...")
-        created_categories = VODCategory.bulk_create_and_fetch(new_categories, ignore_conflicts=True)
+        created_categories = list(VODCategory.bulk_create_and_fetch(new_categories, ignore_conflicts=True))
+
+        # Create relations for newly created categories with enabled based on auto_enable setting
+        for cat in created_categories:
+            if not auto_enable_new:
+                logger.info(f"New {category_type} category '{cat.name}' created but DISABLED - auto_enable_new_groups is disabled for account {account.id}")
+
+            relations_to_create.append(
+                M3UVODCategoryRelation(
+                    category=cat,
+                    m3u_account=account,
+                    custom_properties={},
+                    enabled=auto_enable_new,
+                )
+            )
+
         # Convert to dictionary for easy lookup
         newly_created = {cat.name: cat for cat in created_categories}
-
-        relations_to_create += [
-            M3UVODCategoryRelation(
-                category=cat,
-                m3u_account=account,
-                custom_properties={},
-            ) for cat in newly_created.values()
-        ]
-
         existing_categories.update(newly_created)
 
     # Create missing relations
     logger.debug("Updating category account relations...")
     M3UVODCategoryRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
+
+    # Delete orphaned category relationships (categories no longer in the M3U source)
+    current_category_ids = set(existing_categories[name].id for name in category_names)
+    existing_relations = M3UVODCategoryRelation.objects.filter(
+        m3u_account=account,
+        category__category_type=category_type
+    ).select_related('category')
+
+    relations_to_delete = [
+        rel for rel in existing_relations
+        if rel.category_id not in current_category_ids
+    ]
+
+    if relations_to_delete:
+        M3UVODCategoryRelation.objects.filter(
+            id__in=[rel.id for rel in relations_to_delete]
+        ).delete()
+        logger.info(f"Deleted {len(relations_to_delete)} orphaned {category_type} category relationships for account {account.id}: {[rel.category.name for rel in relations_to_delete]}")
+
+        # Check if any of the deleted relationships left categories with no remaining associations
+        orphaned_category_ids = []
+        for rel in relations_to_delete:
+            category = rel.category
+
+            # Check if this category has any remaining M3U account relationships
+            remaining_relationships = M3UVODCategoryRelation.objects.filter(
+                category=category
+            ).exists()
+
+            # If no relationships remain, it's safe to delete the category
+            if not remaining_relationships:
+                orphaned_category_ids.append(category.id)
+                logger.debug(f"Category '{category.name}' has no remaining associations and will be deleted")
+
+        # Delete orphaned categories
+        if orphaned_category_ids:
+            VODCategory.objects.filter(id__in=orphaned_category_ids).delete()
+            logger.info(f"Deleted {len(orphaned_category_ids)} orphaned {category_type} categories with no remaining associations")
 
     # 🔑 Fetch all relations for this account, for all categories
     # relations = { rel.id: rel for rel in M3UVODCategoryRelation.objects

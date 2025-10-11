@@ -488,25 +488,29 @@ def process_groups(account, groups):
     }
     logger.info(f"Currently {len(existing_groups)} existing groups")
 
-    group_objs = []
+    # Check if we should auto-enable new groups based on account settings
+    account_custom_props = account.custom_properties or {}
+    auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
+
+    # Separate existing groups from groups that need to be created
+    existing_group_objs = []
     groups_to_create = []
+
     for group_name, custom_props in groups.items():
-        logger.debug(f"Handling group for M3U account {account.id}: {group_name}")
-
-        if group_name not in existing_groups:
-            groups_to_create.append(
-                ChannelGroup(
-                    name=group_name,
-                )
-            )
+        if group_name in existing_groups:
+            existing_group_objs.append(existing_groups[group_name])
         else:
-            group_objs.append(existing_groups[group_name])
+            groups_to_create.append(ChannelGroup(name=group_name))
 
+    # Create new groups and fetch them back with IDs
+    newly_created_group_objs = []
     if groups_to_create:
-        logger.debug(f"Creating {len(groups_to_create)} groups")
-        created = ChannelGroup.bulk_create_and_fetch(groups_to_create)
-        logger.debug(f"Created {len(created)} groups")
-        group_objs.extend(created)
+        logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
+        newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
+        logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
+
+    # Combine all groups
+    all_group_objs = existing_group_objs + newly_created_group_objs
 
     # Get existing relationships for this account
     existing_relationships = {
@@ -536,7 +540,7 @@ def process_groups(account, groups):
             relations_to_delete.append(rel)
             logger.debug(f"Marking relationship for deletion: group '{group_name}' no longer exists in source for account {account.id}")
 
-    for group in group_objs:
+    for group in all_group_objs:
         custom_props = groups.get(group.name, {})
 
         if group.name in existing_relationships:
@@ -566,35 +570,17 @@ def process_groups(account, groups):
             else:
                 logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
         else:
-            # Create new relationship - but check if there's an existing relationship that might have user settings
-            # This can happen if the group was temporarily removed and is now back
-            try:
-                potential_existing = ChannelGroupM3UAccount.objects.filter(
-                    m3u_account=account,
-                    channel_group=group
-                ).first()
+            # Create new relationship - this group is new to this M3U account
+            # Use the auto_enable setting to determine if it should start enabled
+            if not auto_enable_new_groups_live:
+                logger.info(f"Group '{group.name}' is new to account {account.id} - creating relationship but DISABLED (auto_enable_new_groups_live=False)")
 
-                if potential_existing:
-                    # Merge with existing custom properties to preserve user settings
-                    existing_custom_props = potential_existing.custom_properties or {}
-
-                    # Merge new properties with existing ones
-                    merged_custom_props = existing_custom_props.copy()
-                    merged_custom_props.update(custom_props)
-                    custom_props = merged_custom_props
-                    logger.debug(f"Merged custom properties for existing relationship: group '{group.name}' - account {account.id}")
-            except Exception as e:
-                logger.debug(f"Could not check for existing relationship: {str(e)}")
-                # Fall back to using just the new custom properties
-                pass
-
-            # Create new relationship
             relations_to_create.append(
                 ChannelGroupM3UAccount(
                     channel_group=group,
                     m3u_account=account,
                     custom_properties=custom_props,
-                    enabled=True,  # Default to enabled
+                    enabled=auto_enable_new_groups_live,
                 )
             )
 

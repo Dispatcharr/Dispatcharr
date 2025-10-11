@@ -131,6 +131,8 @@ class ProxyServer:
             max_retries = 10
             base_retry_delay = 1  # Start with 1 second delay
             max_retry_delay = 30  # Cap at 30 seconds
+            pubsub_client = None
+            pubsub = None
 
             while True:
                 try:
@@ -339,19 +341,26 @@ class ProxyServer:
                     logger.error(f"Error in event listener: {e}. Retrying in {final_delay:.1f}s (attempt {retry_count})")
                     gevent.sleep(final_delay)  # REPLACE: time.sleep(final_delay)
 
-                    # Try to clean up the old connection
-                    try:
-                        if 'pubsub' in locals():
-                            pubsub.close()
-                        if 'pubsub_client' in locals():
-                            pubsub_client.close()
-                    except:
-                        pass
-
                 except Exception as e:
                     logger.error(f"Error in event listener: {e}")
                     # Add a short delay to prevent rapid retries on persistent errors
                     gevent.sleep(5)  # REPLACE: time.sleep(5)
+
+                finally:
+                    # Always clean up PubSub connections in all error paths
+                    try:
+                        if pubsub:
+                            pubsub.close()
+                            pubsub = None
+                    except Exception as e:
+                        logger.debug(f"Error closing pubsub: {e}")
+
+                    try:
+                        if pubsub_client:
+                            pubsub_client.close()
+                            pubsub_client = None
+                    except Exception as e:
+                        logger.debug(f"Error closing pubsub_client: {e}")
 
         thread = threading.Thread(target=event_listener, daemon=True)
         thread.name = "redis-event-listener"
@@ -596,7 +605,7 @@ class ProxyServer:
                 if channel_user_agent:
                     metadata["user_agent"] = channel_user_agent
 
-                # CRITICAL FIX: Make sure stream_id is always set in metadata and properly logged
+                # Make sure stream_id is always set in metadata and properly logged
                 if channel_stream_id:
                     metadata["stream_id"] = str(channel_stream_id)
                     logger.info(f"Storing stream_id {channel_stream_id} in metadata for channel {channel_id}")

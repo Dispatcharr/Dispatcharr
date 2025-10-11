@@ -68,15 +68,16 @@ install_packages() {
   echo ">>> Installing system packages..."
   apt-get update
   declare -a packages=(
-    git curl wget build-essential gcc libpcre3-dev libpq-dev
+    git curl wget build-essential gcc libpq-dev
     python3-dev python3-venv python3-pip nginx redis-server
     postgresql postgresql-contrib ffmpeg procps streamlink
+    sudo
   )
   apt-get install -y --no-install-recommends "${packages[@]}"
 
   if ! command -v node >/dev/null 2>&1; then
     echo ">>> Installing Node.js..."
-    curl -sL https://deb.nodesource.com/setup_23.x | bash -
+    curl -sL https://deb.nodesource.com/setup_24.x | bash -
     apt-get install -y nodejs
   fi
 
@@ -186,7 +187,32 @@ EOSU
 }
 
 ##############################################################################
-# 8) Django Migrations & Static
+# 8) Create Directories
+##############################################################################
+
+create_directories() {
+  mkdir -p /data/logos
+  mkdir -p /data/recordings
+  mkdir -p /data/uploads/m3us
+  mkdir -p /data/uploads/epgs
+  mkdir -p /data/m3us
+  mkdir -p /data/epgs
+  mkdir -p /data/plugins
+  mkdir -p /data/db
+
+  # Needs to own ALL of /data except db
+  chown -R $DISPATCH_USER:$DISPATCH_GROUP /data
+  chown -R postgres:postgres /data/db
+  chmod +x /data
+
+  mkdir -p "$APP_DIR"/logo_cache
+  mkdir -p "$APP_DIR"/media
+  chown -R $DISPATCH_USER:$DISPATCH_GROUP "$APP_DIR"/logo_cache
+  chown -R $DISPATCH_USER:$DISPATCH_GROUP "$APP_DIR"/media
+}
+
+##############################################################################
+# 9) Django Migrations & Static
 ##############################################################################
 
 django_migrate_collectstatic() {
@@ -204,7 +230,7 @@ EOSU
 }
 
 ##############################################################################
-# 9) Configure Services & Nginx
+# 10) Configure Services & Nginx
 ##############################################################################
 
 configure_services() {
@@ -360,7 +386,7 @@ EOF
 }
 
 ##############################################################################
-# 10) Start Services
+# 11) Start Services
 ##############################################################################
 
 start_services() {
@@ -371,7 +397,7 @@ start_services() {
 }
 
 ##############################################################################
-# 11) Summary
+# 12) Summary
 ##############################################################################
 
 show_summary() {
@@ -408,6 +434,7 @@ main() {
   clone_dispatcharr_repo
   setup_python_env
   build_frontend
+  create_directories
   django_migrate_collectstatic
   configure_services
   start_services

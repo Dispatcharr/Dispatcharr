@@ -10,6 +10,7 @@ import {
   Text,
   Divider,
   Box,
+  Checkbox,
 } from '@mantine/core';
 import { CircleCheck, CircleX } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
@@ -19,6 +20,8 @@ const VODCategoryFilter = ({
   categoryStates,
   setCategoryStates,
   type,
+  autoEnableNewGroups,
+  setAutoEnableNewGroups,
 }) => {
   const categories = useVODStore((s) => s.categories);
   const [filter, setFilter] = useState('');
@@ -85,6 +88,16 @@ const VODCategoryFilter = ({
 
   return (
     <Stack style={{ paddingTop: 10 }}>
+      <Checkbox
+        label={`Automatically enable new ${type === 'movie' ? 'movie' : 'series'} categories discovered on future scans`}
+        checked={autoEnableNewGroups}
+        onChange={(event) =>
+          setAutoEnableNewGroups(event.currentTarget.checked)
+        }
+        size="sm"
+        description="When disabled, new categories from the provider will be created but disabled by default. You can enable them manually later."
+      />
+
       <Flex gap="sm">
         <TextInput
           placeholder="Filter categories..."

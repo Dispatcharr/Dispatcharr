@@ -55,6 +55,21 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [movieCategoryStates, setMovieCategoryStates] = useState([]);
   const [seriesCategoryStates, setSeriesCategoryStates] = useState([]);
+  const [autoEnableNewGroupsLive, setAutoEnableNewGroupsLive] = useState(true);
+  const [autoEnableNewGroupsVod, setAutoEnableNewGroupsVod] = useState(true);
+  const [autoEnableNewGroupsSeries, setAutoEnableNewGroupsSeries] =
+    useState(true);
+
+  useEffect(() => {
+    if (!playlist) return;
+
+    // Initialize account-level settings
+    setAutoEnableNewGroupsLive(playlist.auto_enable_new_groups_live ?? true);
+    setAutoEnableNewGroupsVod(playlist.auto_enable_new_groups_vod ?? true);
+    setAutoEnableNewGroupsSeries(
+      playlist.auto_enable_new_groups_series ?? true
+    );
+  }, [playlist]);
 
   useEffect(() => {
     if (Object.keys(channelGroups).length === 0) {
@@ -116,6 +131,14 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
         }))
         .filter((state) => state.enabled !== state.original_enabled);
 
+      // Update account-level settings via the proper account endpoint
+      await API.updatePlaylist({
+        id: playlist.id,
+        auto_enable_new_groups_live: autoEnableNewGroupsLive,
+        auto_enable_new_groups_vod: autoEnableNewGroupsVod,
+        auto_enable_new_groups_series: autoEnableNewGroupsSeries,
+      });
+
       // Update group settings via API endpoint
       await API.updateM3UGroupSettings(
         playlist.id,
@@ -176,6 +199,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               playlist={playlist}
               groupStates={groupStates}
               setGroupStates={setGroupStates}
+              autoEnableNewGroupsLive={autoEnableNewGroupsLive}
+              setAutoEnableNewGroupsLive={setAutoEnableNewGroupsLive}
             />
           </Tabs.Panel>
 
@@ -185,6 +210,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               categoryStates={movieCategoryStates}
               setCategoryStates={setMovieCategoryStates}
               type="movie"
+              autoEnableNewGroups={autoEnableNewGroupsVod}
+              setAutoEnableNewGroups={setAutoEnableNewGroupsVod}
             />
           </Tabs.Panel>
 
@@ -194,6 +221,8 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
               categoryStates={seriesCategoryStates}
               setCategoryStates={setSeriesCategoryStates}
               type="series"
+              autoEnableNewGroups={autoEnableNewGroupsSeries}
+              setAutoEnableNewGroups={setAutoEnableNewGroupsSeries}
             />
           </Tabs.Panel>
         </Tabs>

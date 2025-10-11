@@ -136,6 +136,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         validators=[validate_flexible_url],
     )
     enable_vod = serializers.BooleanField(required=False, write_only=True)
+    auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
+    auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
+    auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
 
     class Meta:
         model = M3UAccount
@@ -164,6 +167,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "status",
             "last_message",
             "enable_vod",
+            "auto_enable_new_groups_live",
+            "auto_enable_new_groups_vod",
+            "auto_enable_new_groups_series",
         ]
         extra_kwargs = {
             "password": {
@@ -175,23 +181,36 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # Parse custom_properties to get VOD preference
+        # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}
 
         data["enable_vod"] = custom_props.get("enable_vod", False)
+        data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
+        data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
+        data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
         return data
 
     def update(self, instance, validated_data):
-        # Handle enable_vod preference
+        # Handle enable_vod preference and auto_enable_new_groups settings
         enable_vod = validated_data.pop("enable_vod", None)
+        auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
+        auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
+        auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
 
+        # Get existing custom_properties
+        custom_props = instance.custom_properties or {}
+
+        # Update preferences
         if enable_vod is not None:
-            # Get existing custom_properties
-            custom_props = instance.custom_properties or {}
-
-            # Update VOD preference
             custom_props["enable_vod"] = enable_vod
-            validated_data["custom_properties"] = custom_props
+        if auto_enable_new_groups_live is not None:
+            custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
+        if auto_enable_new_groups_vod is not None:
+            custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
+        if auto_enable_new_groups_series is not None:
+            custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+
+        validated_data["custom_properties"] = custom_props
 
         # Pop out channel group memberships so we can handle them manually
         channel_group_data = validated_data.pop("channel_group", [])
@@ -225,14 +244,20 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
-        # Handle enable_vod preference during creation
+        # Handle enable_vod preference and auto_enable_new_groups settings during creation
         enable_vod = validated_data.pop("enable_vod", False)
+        auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
+        auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
+        auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
 
         # Parse existing custom_properties or create new
         custom_props = validated_data.get("custom_properties", {})
 
-        # Set VOD preference
+        # Set preferences (default to True for auto_enable_new_groups)
         custom_props["enable_vod"] = enable_vod
+        custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
+        custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
+        custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
         validated_data["custom_properties"] = custom_props
 
         return super().create(validated_data)

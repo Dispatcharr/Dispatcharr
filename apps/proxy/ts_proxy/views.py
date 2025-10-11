@@ -491,7 +491,7 @@ def stream_xc(request, username, password, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
-    return stream_ts(request._request, channel.uuid)
+    return stream_ts(request._request, str(channel.uuid))
 
 
 @csrf_exempt

@@ -1219,6 +1219,30 @@ class StreamManager:
                 except Exception as e:
                     logger.error(f"Final kill attempt failed for channel {self.channel_id}: {e}")
 
+            # Explicitly close all subprocess pipes to prevent file descriptor leaks
+            try:
+                if self.transcode_process.stdin:
+                    self.transcode_process.stdin.close()
+                if self.transcode_process.stdout:
+                    self.transcode_process.stdout.close()
+                if self.transcode_process.stderr:
+                    self.transcode_process.stderr.close()
+                logger.debug(f"Closed all subprocess pipes for channel {self.channel_id}")
+            except Exception as e:
+                logger.debug(f"Error closing subprocess pipes for channel {self.channel_id}: {e}")
+
+            # Join stderr reader thread to ensure it's fully terminated
+            if hasattr(self, 'stderr_reader_thread') and self.stderr_reader_thread and self.stderr_reader_thread.is_alive():
+                try:
+                    logger.debug(f"Waiting for stderr reader thread to terminate for channel {self.channel_id}")
+                    self.stderr_reader_thread.join(timeout=2.0)
+                    if self.stderr_reader_thread.is_alive():
+                        logger.warning(f"Stderr reader thread did not terminate within timeout for channel {self.channel_id}")
+                except Exception as e:
+                    logger.debug(f"Error joining stderr reader thread for channel {self.channel_id}: {e}")
+                finally:
+                    self.stderr_reader_thread = None
+
             self.transcode_process = None
             self.transcode_process_active = False  # Reset the flag
 
