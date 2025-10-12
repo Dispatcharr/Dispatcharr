@@ -18,12 +18,28 @@ EPISODE_PATTERN = re.compile(
         (?:[\.\-_\s]*e?(?P<episode_end>\d{1,4}))?
     )
     |
-    (?:
-        (?P<abs_episode>\d{1,4})
-    )
+    (?P<abs_episode>\d{1,4})
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+
+
+def _safe_number(value):
+    if isinstance(value, (list, tuple, set)):
+        for entry in value:
+            normalized = _safe_number(entry)
+            if normalized is not None:
+                return normalized
+        return None
+    if value in (None, "", []):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
 
 
 def _strip_extension(file_name: str) -> str:
@@ -83,29 +99,40 @@ def classify_media_entry(
     series_name = _ensure_series_name_from_path(relative_path, default=guess_data.get("title") or base_name)
 
     if library.library_type == Library.LIBRARY_TYPE_SHOWS:
-        season_number = guess_data.get("season")
-        episode_number = guess_data.get("episode")
+        season_number = _safe_number(guess_data.get("season"))
+        episode_number = _safe_number(guess_data.get("episode"))
 
         if season_number is None:
             season_number = _season_from_segments(segments)
 
         if episode_number is None:
-            episode_number = guess_data.get("episode_list", [None])[0] if guess_data.get("episode_list") else None
+            episode_number = _safe_number(guess_data.get("episode_list"))
+
+        episode_list_raw = guess_data.get("episode_list") or []
+        if not episode_list_raw and isinstance(guess_data.get("episode"), (list, tuple)):
+            episode_list_raw = list(guess_data.get("episode") or [])
+        episode_list = []
+        for item in episode_list_raw:
+            number = _safe_number(item)
+            if number is not None and number not in episode_list:
+                episode_list.append(number)
 
         if episode_number is None:
             match = EPISODE_PATTERN.search(file_name)
             if match:
-                episode_number = match.group("episode")
-                if episode_number:
-                    try:
-                        episode_number = int(episode_number)
-                    except (TypeError, ValueError):
-                        episode_number = None
+                episode_number = _safe_number(match.group("episode") or match.group("abs_episode"))
                 if season_number is None and match.group("season"):
                     try:
                         season_number = int(match.group("season"))
                     except (TypeError, ValueError):
                         season_number = None
+                if match.group("episode_end"):
+                    end_number = _safe_number(match.group("episode_end"))
+                    if end_number:
+                        if end_number not in episode_list:
+                            episode_list.append(end_number)
+                        if episode_number is not None and episode_number not in episode_list:
+                            episode_list.append(episode_number)
 
         detected_type = MediaItem.TYPE_EPISODE if season_number is not None and episode_number is not None else MediaItem.TYPE_SHOW
         normalized_title = normalize_title(series_name or base_name)
@@ -114,6 +141,10 @@ def classify_media_entry(
             data["season"] = season_number
         if episode_number is not None:
             data["episode"] = episode_number
+        if episode_list:
+            episode_list_sorted = sorted({n for n in episode_list if isinstance(n, int)})
+            if episode_list_sorted:
+                data["episode_list"] = episode_list_sorted
         if series_name:
             data["series"] = series_name
 
@@ -137,4 +168,3 @@ def classify_media_entry(
         year=guess_data.get("year"),
         data=data,
     )
-
