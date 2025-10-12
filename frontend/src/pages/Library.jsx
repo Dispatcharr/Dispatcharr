@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ActionIcon, Box, Button, Divider, Group, Paper, Portal, Select, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
+import { ActionIcon, Box, Button, Divider, Group, Loader, Paper, Portal, Select, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useDebouncedValue } from '@mantine/hooks';
 import { ListChecks, Play, RefreshCcw, Search, Trash2, XCircle } from 'lucide-react';
@@ -21,12 +21,13 @@ const TABS = [
 ];
 
 const SORT_OPTIONS = [
-  { label: 'Default', value: 'default' },
   { label: 'Name (A-Z)', value: 'alpha' },
   { label: 'Release Year', value: 'year' },
   { label: 'Recently Added', value: 'recent' },
   { label: 'Genre', value: 'genre' },
 ];
+
+const INITIAL_LIBRARY_LIMIT = 60;
 
 const parseDate = (value) => {
   if (!value) return 0;
@@ -52,7 +53,7 @@ const LibraryPage = () => {
   const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
   const [playbackModalOpen, setPlaybackModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('recommended');
-  const [sortOption, setSortOption] = useState('default');
+  const [sortOption, setSortOption] = useState('alpha');
   const [searchTerm, setSearchTerm] = useState('');
   const [contextMenu, setContextMenu] = useState(null);
   const contextMenuPosition = useMemo(() => {
@@ -78,6 +79,7 @@ const LibraryPage = () => {
   // Media store hooks
   const items = useMediaLibraryStore((s) => s.items);
   const itemsLoading = useMediaLibraryStore((s) => s.loading);
+  const itemsBackgroundLoading = useMediaLibraryStore((s) => s.backgroundLoading);
   const setItemFilters = useMediaLibraryStore((s) => s.setFilters);
   const fetchItems = useMediaLibraryStore((s) => s.fetchItems);
   const setSelectedMediaLibrary = useMediaLibraryStore((s) => s.setSelectedLibraryId);
@@ -112,14 +114,39 @@ const LibraryPage = () => {
 
   // Fetch items when library changes or filters update
   useEffect(() => {
+    const ids = relevantLibraryIds;
+
     if (!libraries || libraries.length === 0) {
       setSelectedMediaLibrary(null);
       fetchItems([]);
       return;
     }
-    const ids = relevantLibraryIds;
+
     setSelectedMediaLibrary(ids.length === 1 ? ids[0] : null);
-    fetchItems(ids);
+
+    if (ids.length === 0) {
+      fetchItems([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadItems = async () => {
+      if (debouncedSearch) {
+        await fetchItems(ids, { background: false });
+        return;
+      }
+
+      await fetchItems(ids, { limit: INITIAL_LIBRARY_LIMIT, ordering: '-updated_at' });
+      if (cancelled) return;
+      await fetchItems(ids, { background: true });
+    };
+
+    loadItems();
+
+    return () => {
+      cancelled = true;
+    };
   }, [libraries, relevantLibraryIds, fetchItems, setSelectedMediaLibrary, debouncedSearch, itemTypeFilter]);
 
   const filteredItems = useMemo(() => {
@@ -205,9 +232,7 @@ const LibraryPage = () => {
         ? 'No movie libraries configured.'
         : 'No TV show libraries configured.';
     }
-    const label = isMovies ? 'movie' : 'TV show';
-    const count = relevantLibraryIds.length;
-    return `Aggregating ${count} ${label} librar${count === 1 ? 'y' : 'ies'}.`;
+    return '';
   }, [libraries, hasLibraries, relevantLibraryIds, isMovies]);
 
   const canManageSingleLibrary = Boolean(primaryLibraryId);
@@ -512,13 +537,16 @@ const LibraryPage = () => {
       <Box style={{ position: 'relative' }}>
         <Stack spacing="lg">
           <Group justify="space-between" align="center">
-            <Select
-              label="Sort by"
-              data={SORT_OPTIONS}
-              value={sortOption}
-              onChange={(value) => setSortOption(value || 'default')}
-              w={220}
-            />
+            <Group align="flex-end" gap="sm">
+              <Select
+                label="Sort by"
+                data={SORT_OPTIONS}
+                value={sortOption}
+                onChange={(value) => setSortOption(value || 'alpha')}
+                w={220}
+              />
+              {itemsBackgroundLoading && <Loader size="xs" />}
+            </Group>
             <Button
               variant="subtle"
               leftSection={<RefreshCcw size={16} />}
@@ -527,9 +555,7 @@ const LibraryPage = () => {
               Refresh
             </Button>
           </Group>
-          {sortOption === 'default' ? (
-            recommendedView
-          ) : sortOption === 'genre' ? (
+          {sortOption === 'genre' ? (
             <Stack spacing="xl">
               {genreCarousels.map(({ genre, items: genreItems }) => (
                 <MediaCarousel
@@ -589,9 +615,11 @@ const LibraryPage = () => {
         <Group justify="space-between" align="flex-start" wrap="wrap">
           <Stack spacing={4}>
             <Title order={2}>{isMovies ? 'Movies' : 'TV Shows'}</Title>
-            <Text c="dimmed" size="sm">
-              {aggregatedSubtitle}
-            </Text>
+            {aggregatedSubtitle && (
+              <Text c="dimmed" size="sm">
+                {aggregatedSubtitle}
+              </Text>
+            )}
           </Stack>
           <Group align="center" gap="sm">
             <ActionIcon

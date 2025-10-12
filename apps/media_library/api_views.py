@@ -336,6 +336,46 @@ class MediaItemViewSet(viewsets.ModelViewSet):
             )
         return queryset
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        total_count = queryset.count()
+
+        limit_param = request.query_params.get("limit")
+        offset_param = request.query_params.get("offset")
+
+        limit = None
+        offset = 0
+
+        try:
+            if limit_param not in (None, "", "0"):
+                parsed_limit = int(limit_param)
+                if parsed_limit > 0:
+                    limit = parsed_limit
+            if offset_param not in (None, "", "0"):
+                parsed_offset = int(offset_param)
+                if parsed_offset >= 0:
+                    offset = parsed_offset
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "Invalid limit or offset value."})
+
+        sliced_queryset = queryset
+        if limit is not None or offset:
+            end = offset + limit if limit is not None else None
+            sliced_queryset = queryset[offset:end]
+
+        serializer = self.get_serializer(sliced_queryset, many=True)
+        data = serializer.data
+
+        if limit is None and offset == 0:
+            return Response(data)
+
+        payload = {"count": total_count, "results": data}
+        if limit is not None:
+            payload["limit"] = limit
+        if offset:
+            payload["offset"] = offset
+        return Response(payload)
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["request"] = self.request

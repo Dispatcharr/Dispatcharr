@@ -145,14 +145,41 @@ const useLibraryStore = create(
     },
 
     deleteLibrary: async (id) => {
-      await API.deleteMediaLibrary(id);
+      let removedLibrary = null;
+      let removedScans = null;
+      let previousSelectedId = null;
       set((state) => {
-        state.libraries = state.libraries.filter((lib) => lib.id !== id);
+        previousSelectedId = state.selectedLibraryId;
+        const index = state.libraries.findIndex((lib) => lib.id === id);
+        if (index >= 0) {
+          removedLibrary = state.libraries[index];
+          state.libraries.splice(index, 1);
+        }
         if (state.selectedLibraryId === id) {
           state.selectedLibraryId = null;
         }
-        delete state.scans[id];
+        if (state.scans[id]) {
+          removedScans = state.scans[id];
+          delete state.scans[id];
+        }
       });
+      try {
+        await API.deleteMediaLibrary(id);
+      } catch (error) {
+        set((state) => {
+          if (removedLibrary) {
+            state.libraries.push(removedLibrary);
+            state.libraries.sort((a, b) =>
+              (a?.name || '').localeCompare(b?.name || '')
+            );
+          }
+          state.selectedLibraryId = previousSelectedId;
+          if (removedScans) {
+            state.scans[id] = removedScans;
+          }
+        });
+        throw error;
+      }
     },
 
     purgeCompletedScans: async (options = {}) => {

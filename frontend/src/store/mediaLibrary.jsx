@@ -79,6 +79,7 @@ const useMediaLibraryStore = create(
     ownerUserId: null,
     items: [],
     loading: false,
+    backgroundLoading: false,
     error: null,
     total: 0,
     activeItem: null,
@@ -185,7 +186,14 @@ const useMediaLibraryStore = create(
         state.total = state.items.length;
       }),
 
-    fetchItems: async (libraryIds) => {
+    fetchItems: async (libraryIds, options = {}) => {
+      const {
+        limit = null,
+        offset = 0,
+        append = false,
+        background = false,
+        ordering = null,
+      } = options;
       const { isAuthenticated, userId } = getAuthSnapshot();
 
       if (!isAuthenticated || !userId) {
@@ -212,13 +220,36 @@ const useMediaLibraryStore = create(
           ? [Number(libraryIds)].filter((id) => Number.isFinite(id))
           : [];
 
+      if (normalizedIds.length === 0) {
+        set((state) => {
+          if (state.ownerUserId == null) {
+            state.ownerUserId = userId;
+          } else if (state.ownerUserId !== userId) {
+            resetStateForUser(state, userId);
+            state.ownerUserId = userId;
+          }
+          state.items = [];
+          state.total = 0;
+          state.loading = false;
+          state.backgroundLoading = false;
+          state.error = null;
+          state.activeLibraryIds = [];
+          state.selectedLibraryId = null;
+        });
+        return;
+      }
+
       set((state) => {
         if (state.ownerUserId == null) {
           state.ownerUserId = userId;
         } else if (state.ownerUserId !== userId) {
           resetStateForUser(state, userId);
         }
-        state.loading = true;
+        if (background) {
+          state.backgroundLoading = true;
+        } else {
+          state.loading = true;
+        }
         state.error = null;
         state.activeLibraryIds = normalizedIds;
         state.selectedLibraryId = normalizedIds.length > 0 ? normalizedIds[0] : null;
@@ -240,18 +271,50 @@ const useMediaLibraryStore = create(
         if (filters.search) {
           params.append('search', filters.search);
         }
-        const response = await API.getMediaItems(params);
-        const results = response.results || response;
-        const itemsArray = Array.isArray(results) ? results : [];
+        if (limit !== null) {
+          params.append('limit', limit);
+        }
+        if (offset) {
+          params.append('offset', offset);
+        }
+        if (ordering) {
+          params.append('ordering', ordering);
+        }
+        const rawResponse = await API.getMediaItems(params);
+        const responseResults = Array.isArray(rawResponse)
+          ? rawResponse
+          : rawResponse?.results ?? rawResponse;
+        const itemsArray = Array.isArray(responseResults) ? responseResults : [];
+        const totalItems = Array.isArray(rawResponse)
+          ? itemsArray.length
+          : rawResponse?.count ?? itemsArray.length ?? 0;
+
         set((state) => {
           if (state.ownerUserId !== userId) {
             return;
           }
           state.activeLibraryIds = normalizedIds;
           state.selectedLibraryId = normalizedIds.length > 0 ? normalizedIds[0] : null;
-          state.items = itemsArray;
-          state.total = response.count || itemsArray.length || 0;
-          state.loading = false;
+          if (append && state.items.length > 0) {
+            const existingById = new Map(
+              state.items.map((item) => [item.id, item])
+            );
+            itemsArray.forEach((item) => {
+              if (item?.id != null) {
+                existingById.set(item.id, item);
+              }
+            });
+            state.items = Array.from(existingById.values());
+            state.total = Math.max(state.items.length, totalItems);
+          } else {
+            state.items = itemsArray;
+            state.total = totalItems;
+          }
+          if (background) {
+            state.backgroundLoading = false;
+          } else {
+            state.loading = false;
+          }
         });
         queueMetadataRefresh(itemsArray);
       } catch (error) {
@@ -261,7 +324,11 @@ const useMediaLibraryStore = create(
             return;
           }
           state.error = 'Failed to load media items';
-          state.loading = false;
+          if (background) {
+            state.backgroundLoading = false;
+          } else {
+            state.loading = false;
+          }
         });
       }
     },
