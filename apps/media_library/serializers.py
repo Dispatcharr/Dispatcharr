@@ -400,6 +400,7 @@ class MediaItemListSerializer(MediaItemBaseSerializer):
             "season_number",
             "episode_number",
             "genres",
+            "is_missing",
             "tags",
             "tagline",
             "metadata_last_synced_at",
@@ -448,6 +449,7 @@ class MediaItemSerializer(MediaItemBaseSerializer):
             "metadata",
             "metadata_last_synced_at",
             "metadata_source",
+            "is_missing",
             "first_imported_at",
             "updated_at",
             "files",
@@ -470,6 +472,7 @@ class MediaItemSerializer(MediaItemBaseSerializer):
             "vod_series",
             "vod_episode",
             "watch_progress",
+            "is_missing",
         ]
         extra_kwargs = {
             "genres": {"required": False, "allow_null": True},

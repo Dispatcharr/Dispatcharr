@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import timedelta
 from typing import Optional, Set
 from collections import deque
@@ -9,19 +10,14 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.utils import timezone
 
 from apps.media_library.metadata import sync_metadata
 from apps.media_library.models import Library, LibraryScan, MediaFile, MediaItem
 from apps.media_library import serializers
-from apps.media_library.utils import (
-    LibraryScanner,
-    apply_probe_metadata,
-    classify_media_file,
-    probe_media_file,
-    resolve_media_item,
-)
+from apps.media_library.utils import LibraryScanner, apply_probe_metadata, probe_media_file, resolve_media_item
+from apps.media_library.naming import classify_media_entry
 from apps.media_library.transcode import ensure_browser_ready_source
 from apps.media_library.vod_sync import (
     sync_library_to_vod,
@@ -480,6 +476,7 @@ def scan_library_task(
     matched = 0
     unmatched = 0
     media_item_ids: Set[int] = set()
+    series_ids: Set[int] = set()
     metadata_queue_ids: Set[int] = set()
     metadata_accounted_ids: Set[int] = set()
     pending_probe_ids: set[int] = set()
@@ -732,6 +729,10 @@ def scan_library_task(
                 except MediaItem.DoesNotExist:
                     continue
                 else:
+                    if media_obj.item_type == MediaItem.TYPE_SHOW:
+                        series_ids.add(media_obj.id)
+                    elif media_obj.parent_id:
+                        series_ids.add(media_obj.parent_id)
                     if is_new_media:
                         _send_media_item_update(media_obj, status="progress")
                     needs_metadata = (
@@ -769,6 +770,39 @@ def scan_library_task(
                 process_discovery_result(discovery_buffer.popleft())
 
         scanner.mark_missing_files()
+
+        def reconcile_missing(series_id_set: Set[int]) -> None:
+            if not series_id_set:
+                return
+
+            episode_qs = (
+                MediaItem.objects.filter(
+                    parent_id__in=series_id_set,
+                    item_type=MediaItem.TYPE_EPISODE,
+                )
+                .annotate(file_count=Count("files"))
+            )
+
+            missing_ids = list(
+                episode_qs.filter(file_count=0, is_missing=False).values_list("id", flat=True)
+            )
+            if missing_ids:
+                MediaItem.objects.filter(pk__in=missing_ids).update(
+                    is_missing=True,
+                    status=MediaItem.STATUS_FAILED,
+                    updated_at=timezone.now(),
+                )
+
+            restored_ids = list(
+                episode_qs.filter(file_count__gt=0, is_missing=True).values_list("id", flat=True)
+            )
+            if restored_ids:
+                MediaItem.objects.filter(pk__in=restored_ids).update(
+                    is_missing=False,
+                    updated_at=timezone.now(),
+                )
+
+        reconcile_missing(series_ids)
 
         if media_item_ids:
             metadata_qs = (
@@ -920,16 +954,33 @@ def _identify_media_file(
     except MediaFile.DoesNotExist:
         return {"matched": 0, "unmatched": 0}
 
-    classification = classify_media_file(file_record.file_name)
-    if library.library_type == Library.LIBRARY_TYPE_MOVIES:
-        classification.detected_type = MediaItem.TYPE_MOVIE
-    elif library.library_type == Library.LIBRARY_TYPE_SHOWS:
-        if classification.detected_type == MediaItem.TYPE_MOVIE:
-            classification.detected_type = MediaItem.TYPE_SHOW
-    # mixed/other retain detected type
+    relative_dir = os.path.dirname(file_record.relative_path or "") if file_record.relative_path else ""
+    classification = classify_media_entry(
+        library,
+        relative_path=relative_dir,
+        file_name=file_record.file_name,
+    )
+
     target_item = None
     if target_item_id:
         target_item = MediaItem.objects.filter(pk=target_item_id, library=library).first()
+
+    if (
+        library.library_type == Library.LIBRARY_TYPE_SHOWS
+        and classification.detected_type != MediaItem.TYPE_EPISODE
+        and not target_item
+    ):
+        # Unable to positively identify this episode; treat as unmatched.
+        if file_record.media_item_id is not None:
+            file_record.media_item = None
+            file_record.save(update_fields=["media_item", "updated_at"])
+        return {
+            "file_id": file_id,
+            "media_item_id": None,
+            "parent_media_item_id": None,
+            "matched": 0,
+            "unmatched": 1,
+        }
 
     media_item = resolve_media_item(library, classification, target_item=target_item)
     matched = 0

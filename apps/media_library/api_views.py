@@ -266,6 +266,8 @@ class MediaItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = getattr(self.request, "user", None)
+        include_missing_param = (self.request.query_params.get("include_missing") or "").lower()
+        self._include_missing = include_missing_param in {"1", "true", "yes"}
         if user and user.is_authenticated:
             watch_prefetch = Prefetch(
                 "watch_progress",
@@ -304,6 +306,8 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 .prefetch_related(episode_watch_prefetch)
                 .order_by("season_number", "episode_number", "id")
             )
+            if not self._include_missing:
+                children_qs = children_qs.filter(is_missing=False)
             return base_queryset.prefetch_related(
                 watch_prefetch,
                 Prefetch(
@@ -317,6 +321,11 @@ class MediaItemViewSet(viewsets.ModelViewSet):
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
+        include_missing = getattr(self, "_include_missing", False)
+        if not include_missing:
+            queryset = queryset.exclude(
+                Q(item_type=models.MediaItem.TYPE_EPISODE) & Q(is_missing=True)
+            )
         search = self.request.query_params.get("search")
         if search:
             search = search.strip()

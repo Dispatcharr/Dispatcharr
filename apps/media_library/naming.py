@@ -1,0 +1,140 @@
+import os
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+from guessit import guessit
+
+from apps.media_library.models import Library, MediaItem
+from apps.media_library.utils import ClassificationResult, _json_safe, normalize_title
+
+SEASON_FOLDER_PATTERN = re.compile(r"^(?:season|series|s)[\s\._-]*([0-9]{1,3})$", re.IGNORECASE)
+EPISODE_PATTERN = re.compile(
+    r"""
+    (?:
+        s(?P<season>\d{1,3})
+        [\.\-_\s]*
+        e(?P<episode>\d{1,4})
+        (?:[\.\-_\s]*e?(?P<episode_end>\d{1,4}))?
+    )
+    |
+    (?:
+        (?P<abs_episode>\d{1,4})
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_extension(file_name: str) -> str:
+    base, _ext = os.path.splitext(file_name)
+    return base
+
+
+def _ensure_series_name_from_path(relative_path: str, default: str | None = None) -> str:
+    """
+    Best effort extraction of a series title from a relative path.
+    Matches Jellyfin's approach of sanitizing folder names by replacing
+    dots/underscores with spaces when they separate words.
+    """
+    if not relative_path:
+        return default or ""
+
+    segments = [segment for segment in relative_path.split(os.sep) if segment]
+    if not segments:
+        return default or ""
+
+    series_candidate = segments[0]
+    sanitized = re.sub(r"(([^._]{2,})[\._]*)|([\._]([^._]{2,}))", r"\2\4", series_candidate).replace("_", " ").replace(".", " ")
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    return sanitized or (default or "")
+
+
+def _season_from_segments(segments: list[str]) -> Optional[int]:
+    for segment in reversed(segments):
+        match = SEASON_FOLDER_PATTERN.match(segment)
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def classify_media_entry(
+    library: Library,
+    *,
+    relative_path: str,
+    file_name: str,
+) -> ClassificationResult:
+    """
+    Wrapper around guessit that injects folder hints similar to Jellyfin's resolver.
+    """
+    base_name = _strip_extension(file_name)
+    guess_data = {}
+
+    # Provide path context to guessit.
+    try:
+        guess_data = guessit(file_name)
+    except Exception:
+        guess_data = {}
+
+    segments = [segment for segment in relative_path.split(os.sep) if segment]
+    series_name = _ensure_series_name_from_path(relative_path, default=guess_data.get("title") or base_name)
+
+    if library.library_type == Library.LIBRARY_TYPE_SHOWS:
+        season_number = guess_data.get("season")
+        episode_number = guess_data.get("episode")
+
+        if season_number is None:
+            season_number = _season_from_segments(segments)
+
+        if episode_number is None:
+            episode_number = guess_data.get("episode_list", [None])[0] if guess_data.get("episode_list") else None
+
+        if episode_number is None:
+            match = EPISODE_PATTERN.search(file_name)
+            if match:
+                episode_number = match.group("episode")
+                if episode_number:
+                    try:
+                        episode_number = int(episode_number)
+                    except (TypeError, ValueError):
+                        episode_number = None
+                if season_number is None and match.group("season"):
+                    try:
+                        season_number = int(match.group("season"))
+                    except (TypeError, ValueError):
+                        season_number = None
+
+        detected_type = MediaItem.TYPE_EPISODE if season_number is not None and episode_number is not None else MediaItem.TYPE_SHOW
+        normalized_title = normalize_title(series_name or base_name)
+        data = _json_safe(guess_data)
+        if season_number is not None:
+            data["season"] = season_number
+        if episode_number is not None:
+            data["episode"] = episode_number
+        if series_name:
+            data["series"] = series_name
+
+        return ClassificationResult(
+            detected_type=detected_type,
+            title=series_name or base_name,
+            year=guess_data.get("year"),
+            season=season_number,
+            episode=episode_number,
+            episode_title=guess_data.get("episode_title"),
+            data=data,
+        )
+
+    # Movies & other types fall back to original logic.
+    detected_type = MediaItem.TYPE_MOVIE if library.library_type == Library.LIBRARY_TYPE_MOVIES else MediaItem.TYPE_OTHER
+    data = _json_safe(guess_data)
+    title = guess_data.get("title") or base_name
+    return ClassificationResult(
+        detected_type=detected_type,
+        title=title,
+        year=guess_data.get("year"),
+        data=data,
+    )
+

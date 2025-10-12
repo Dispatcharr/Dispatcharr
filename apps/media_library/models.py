@@ -456,6 +456,7 @@ class MediaItem(models.Model):
     )
     item_type = models.CharField(max_length=16, choices=ITEM_TYPE_CHOICES, default=TYPE_OTHER)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    is_missing = models.BooleanField(default=False)
 
     title = models.CharField(max_length=512)
     sort_title = models.CharField(max_length=512, blank=True)

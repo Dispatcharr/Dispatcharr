@@ -282,51 +282,6 @@ class LibraryScanner:
         self.log_messages.append(message)
 
 
-def classify_media_file(file_name: str) -> ClassificationResult:
-    base_name = Path(file_name).stem
-    try:
-        data = guessit(file_name)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("guessit failed for %s: %s", file_name, exc)
-        return ClassificationResult(
-            detected_type=MediaItem.TYPE_OTHER,
-            title=base_name,
-            data={"error": str(exc)},
-        )
-
-    data = _json_safe(data)
-
-    guess_type = data.get("type")
-    detected_type = MediaItem.TYPE_OTHER
-
-    if guess_type == "movie":
-        detected_type = MediaItem.TYPE_MOVIE
-    elif guess_type == "episode":
-        detected_type = MediaItem.TYPE_EPISODE
-    elif guess_type in {"show", "series", "tv"}:
-        detected_type = MediaItem.TYPE_SHOW
-    elif guess_type == "season":
-        detected_type = MediaItem.TYPE_SEASON
-
-    title = data.get("title") or base_name
-
-    classification = ClassificationResult(
-        detected_type=detected_type,
-        title=title,
-        year=_first_numeric(data.get("year")),
-        season=_first_numeric(data.get("season")),
-        episode=_first_numeric(data.get("episode")),
-        episode_title=data.get("episode_title"),
-        data=data,
-    )
-
-    if detected_type == MediaItem.TYPE_EPISODE:
-        classification.data = dict(data)
-        classification.data["series_title"] = data.get("series") or data.get("title") or base_name
-
-    return classification
-
-
 def resolve_media_item(
     library: Library,
     classification: ClassificationResult,
@@ -420,6 +375,9 @@ def resolve_media_item(
             ).first()
         )
         if episode_item:
+            if episode_item.is_missing:
+                episode_item.is_missing = False
+                episode_item.save(update_fields=["is_missing", "updated_at"])
             if classification.episode_title and not episode_item.title:
                 episode_item.title = classification.episode_title
                 episode_item.save(update_fields=["title", "updated_at"])
