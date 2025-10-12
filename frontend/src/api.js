@@ -1471,6 +1471,22 @@ export default class API {
     }
   }
 
+  static async deleteSetting({ id, key }) {
+    if (!id) return;
+    try {
+      await request(`${host}/api/core/settings/${id}/`, {
+        method: 'DELETE',
+      });
+      if (key) {
+        useSettingsStore.getState().removeSetting(key);
+      }
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete setting', e);
+      throw e;
+    }
+  }
+
   static async getChannelStats(uuid = null) {
     try {
       const response = await request(`${host}/proxy/ts/status`);

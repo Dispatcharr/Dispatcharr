@@ -615,61 +615,73 @@ const SettingsPage = () => {
     });
   }, [tmdbSetting?.value, validateTmdbKeyValue]);
 
-  const handleSaveTmdbKey = async () => {
-    const trimmedKey = tmdbKey.trim();
+  const persistTmdbKey = async (rawValue) => {
+    const trimmedKey = (rawValue || '').trim();
+    setTmdbKey(trimmedKey);
     setSavingTmdbKey(true);
     try {
-      let validationResult = null;
-      if (trimmedKey) {
-        validationResult = await validateTmdbKeyValue(trimmedKey);
-        if (!validationResult?.overall_valid) {
-          notifications.show({
-            title: 'Invalid TMDB key',
-            message:
-              validationResult?.message ||
-              'Metadata providers are unavailable. TMDB rejected the API key and Movie-DB is unreachable.',
-            color: 'red',
-          });
-          return;
-        }
-      } else {
-        validationResult = await validateTmdbKeyValue('');
+      const validationResult = await validateTmdbKeyValue(trimmedKey);
+
+      if (trimmedKey && !validationResult?.overall_valid) {
+        notifications.show({
+          title: 'Invalid TMDB key',
+          message:
+            validationResult?.message ||
+            'Metadata providers are unavailable. TMDB rejected the API key and Movie-DB is unreachable.',
+          color: 'red',
+        });
+        return;
       }
 
-      if (tmdbSetting && tmdbSetting.id) {
-        await API.updateSetting({
-          ...tmdbSetting,
-          value: trimmedKey,
-        });
-      } else {
-        await API.createSetting({
-          key: 'tmdb-api-key',
-          name: 'TMDB API Key',
-          value: trimmedKey,
-        });
+      if (trimmedKey) {
+        if (tmdbSetting && tmdbSetting.id) {
+          await API.updateSetting({
+            ...tmdbSetting,
+            value: trimmedKey,
+          });
+        } else {
+          await API.createSetting({
+            key: 'tmdb-api-key',
+            name: 'TMDB API Key',
+            value: trimmedKey,
+          });
+        }
+      } else if (tmdbSetting && tmdbSetting.id) {
+        await API.deleteSetting(tmdbSetting);
       }
 
       const provider = validationResult?.provider || activeMetadataSource;
       const usingFallback = provider === 'movie-db';
+      const title = trimmedKey
+        ? provider === 'tmdb'
+          ? 'TMDB key saved'
+          : 'Saved with fallback'
+        : usingFallback
+          ? 'TMDB key removed'
+          : 'Metadata unavailable';
+      const message = trimmedKey
+        ? provider === 'tmdb'
+          ? 'TMDB API key saved and verified.'
+          : usingFallback
+            ? 'Movie-DB fallback will be used for metadata until TMDB becomes available.'
+            : 'Metadata providers are currently unavailable. Libraries may fail to scan.'
+        : usingFallback
+          ? 'TMDB API key removed. Movie-DB fallback will be used for metadata.'
+          : 'TMDB API key removed, but no metadata providers are currently available.';
+      const color = trimmedKey
+        ? provider === 'tmdb'
+          ? 'green'
+          : usingFallback
+            ? 'blue'
+            : 'red'
+        : usingFallback
+          ? 'blue'
+          : 'red';
+
       notifications.show({
-        title:
-          provider === 'tmdb'
-            ? 'TMDB key saved'
-            : trimmedKey
-              ? 'Saved with fallback'
-              : 'Using fallback metadata',
-        message:
-          provider === 'tmdb'
-            ? 'TMDB API key saved and verified.'
-            : usingFallback
-              ? 'Movie-DB fallback will be used for metadata until TMDB becomes available.'
-              : 'Metadata providers are currently unavailable. Libraries may fail to scan.',
-        color:
-          provider === 'tmdb'
-            ? 'green'
-            : usingFallback
-              ? 'blue'
-              : 'red',
+        title,
+        message,
+        color,
       });
     } catch (error) {
       console.error('Failed to save TMDB key', error);
@@ -680,6 +692,24 @@ const SettingsPage = () => {
       });
     } finally {
       setSavingTmdbKey(false);
+    }
+  };
+
+  const handleSaveTmdbKey = () => persistTmdbKey(tmdbKey);
+
+  const handleDeleteTmdbKey = async () => {
+    if (!tmdbKey) return;
+    const confirmed =
+      typeof window === 'undefined'
+        ? true
+        : window.confirm(
+            'Remove the TMDB API key? Metadata will fall back to Movie-DB when possible.'
+          );
+    if (!confirmed) return;
+    try {
+      await persistTmdbKey('');
+    } catch (error) {
+      console.error('Failed to remove TMDB key', error);
     }
   };
 
@@ -990,6 +1020,23 @@ const SettingsPage = () => {
                         placeholder="Enter TMDB API key"
                         value={tmdbKey}
                         onChange={(event) => setTmdbKey(event.currentTarget.value)}
+                        rightSection={
+                          tmdbKey && tmdbKey.trim().length > 0 ? (
+                            <Tooltip label="Remove TMDB API key" withArrow>
+                              <ActionIcon
+                                variant="subtle"
+                                color="red"
+                                size="sm"
+                                onClick={handleDeleteTmdbKey}
+                                disabled={savingTmdbKey || tmdbValidating}
+                                aria-label="Remove TMDB API key"
+                              >
+                                <Trash2 size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                          ) : null
+                        }
+                        rightSectionPointerEvents="auto"
                         description="Used for metadata and artwork lookups."
                       />
                       <Group justify="space-between" align="center">

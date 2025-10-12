@@ -40,6 +40,13 @@ const useSettingsStore = create((set) => ({
     set((state) => ({
       settings: { ...state.settings, [setting.key]: setting },
     })),
+  removeSetting: (key) =>
+    set((state) => {
+      if (!key) return state;
+      const next = { ...state.settings };
+      delete next[key];
+      return { ...state, settings: next };
+    }),
 }));
 
 export default useSettingsStore;
