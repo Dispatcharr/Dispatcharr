@@ -295,7 +295,13 @@ const useLibraryStore = create(
             library: libraryId ?? existing?.library ?? null,
             library_name: event.library_name || existing?.library_name || '',
             status: event.status || 'running',
-            summary: event.summary || event.message || items[index]?.summary || '',
+            summary:
+              event.summary ??
+              event.message ??
+              existing?.summary ??
+              '',
+            log: event.log ?? existing?.log ?? '',
+            extra: event.extra ?? existing?.extra ?? null,
             matched_items: event.matched ?? items[index]?.matched_items ?? null,
             unmatched_files: event.unmatched ?? items[index]?.unmatched_files ?? null,
             total_files: event.total ?? event.files ?? items[index]?.total_files ?? null,

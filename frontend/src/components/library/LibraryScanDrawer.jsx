@@ -357,6 +357,12 @@ const LibraryScanDrawer = ({
           <Stack gap="sm" py="xs">
             {scans.map((scan) => {
               const status = scan.status || 'pending';
+              const unmatchedPaths = Array.isArray(scan.extra?.unmatched_paths)
+                ? scan.extra.unmatched_paths.filter(Boolean)
+                : [];
+              const errorEntries = Array.isArray(scan.extra?.errors)
+                ? scan.extra.errors.filter(Boolean)
+                : [];
               return (
                 <Card key={scan.id} withBorder shadow="sm" radius="md">
                   <Stack gap="sm">
@@ -471,6 +477,61 @@ const LibraryScanDrawer = ({
                         <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
                           {scan.log}
                         </Text>
+                      )}
+                      {unmatchedPaths.length > 0 && (
+                        <Stack gap={4}>
+                          <Text size="xs" fw={600}>
+                            Unmatched files
+                          </Text>
+                          <ScrollArea.Autosize mah={160}>
+                            <Stack gap={2}>
+                              {unmatchedPaths.map((path) => (
+                                <Text
+                                  key={path}
+                                  size="xs"
+                                  style={{ fontFamily: 'monospace' }}
+                                >
+                                  {path}
+                                </Text>
+                              ))}
+                            </Stack>
+                          </ScrollArea.Autosize>
+                        </Stack>
+                      )}
+                      {errorEntries.length > 0 && (
+                        <Stack gap={4}>
+                          <Text size="xs" fw={600} c="red.4">
+                            Errors
+                          </Text>
+                          <ScrollArea.Autosize mah={160}>
+                            <Stack gap={6}>
+                              {errorEntries.map((entry, index) => {
+                                const path =
+                                  entry && typeof entry === 'object' ? entry.path || '' : '';
+                                const message =
+                                  entry && typeof entry === 'object'
+                                    ? entry.error || ''
+                                    : String(entry);
+                                const key = `${path}-${message}-${index}`;
+                                return (
+                                  <Stack key={key} gap={2}>
+                                    {path && (
+                                      <Text
+                                        size="xs"
+                                        style={{ fontFamily: 'monospace' }}
+                                      >
+                                        {path}
+                                      </Text>
+                                    )}
+                                    <Text size="xs" c="red.4">
+                                      {message || 'Unknown error'}
+                                    </Text>
+                                  </Stack>
+                                );
+                              })}
+                            </Stack>
+                          </ScrollArea.Autosize>
+                        </Stack>
                       )}
                     </Stack>
                   </Stack>

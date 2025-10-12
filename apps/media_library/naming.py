@@ -47,6 +47,27 @@ def _strip_extension(file_name: str) -> str:
     return base
 
 
+def _first_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        for entry in value:
+            text = _first_text(entry)
+            if text:
+                return text
+        return ""
+    if isinstance(value, dict):
+        for key in ("title", "name", "value"):
+            if key in value:
+                text = _first_text(value[key])
+                if text:
+                    return text
+        return ""
+    return str(value)
+
+
 def _ensure_series_name_from_path(relative_path: str, default: str | None = None) -> str:
     """
     Best effort extraction of a series title from a relative path.
@@ -105,6 +126,7 @@ def classify_media_entry(
         guess_options = {"type": "episode", "show_type": "series"}
     elif library.library_type == Library.LIBRARY_TYPE_MOVIES:
         guess_options = {"type": "movie"}
+    guessed_title = ""
 
     # Provide path context to guessit.
     try:
@@ -112,11 +134,13 @@ def classify_media_entry(
             guess_data = guessit(guess_target, options=guess_options)
         else:
             guess_data = guessit(guess_target)
+        guessed_title = _first_text(guess_data.get("title"))
     except Exception:
         guess_data = {}
+        guessed_title = ""
 
     segments = [segment for segment in relative_path.split(os.sep) if segment]
-    series_name = _ensure_series_name_from_path(relative_path, default=guess_data.get("title") or base_name)
+    series_name = _ensure_series_name_from_path(relative_path, default=guessed_title or base_name)
 
     if library.library_type == Library.LIBRARY_TYPE_SHOWS:
         season_number = _safe_number(guess_data.get("season"))
@@ -181,7 +205,7 @@ def classify_media_entry(
     # Movies & other types fall back to original logic.
     detected_type = MediaItem.TYPE_MOVIE if library.library_type == Library.LIBRARY_TYPE_MOVIES else MediaItem.TYPE_OTHER
     data = _json_safe(guess_data)
-    title = guess_data.get("title") or base_name
+    title = guessed_title or base_name
     return ClassificationResult(
         detected_type=detected_type,
         title=title,

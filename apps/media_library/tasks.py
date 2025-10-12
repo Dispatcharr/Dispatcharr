@@ -309,6 +309,9 @@ def _emit_scan_update(scan: LibraryScan, *, status: str, extra: dict | None = No
         "removed_files": scan.removed_files,
         "stages": _stage_snapshot(scan),
     }
+    payload["summary"] = scan.summary or ""
+    payload["log"] = scan.log or ""
+    payload["extra"] = scan.extra or {}
     if extra:
         payload.update(extra)
     logger.debug(
@@ -492,6 +495,8 @@ def scan_library_task(
         MediaFile.objects.filter(library=library).count()
     )
     discovery_total_estimate = initial_total_estimate or 0
+    unmatched_paths: set[str] = set()
+    error_entries: list[dict[str, str]] = []
 
     scan.record_progress(
         processed=0,
@@ -518,6 +523,11 @@ def scan_library_task(
         processed=0,
     )
     scan.total_files = max(scan.total_files, discovery_total_estimate)
+    extra_payload = {**(scan.extra or {})}
+    extra_payload["unmatched_paths"] = []
+    extra_payload["errors"] = []
+    scan.extra = extra_payload
+    scan.save(update_fields=["extra", "updated_at"])
     _emit_scan_update(
         scan,
         status="started",
@@ -714,6 +724,17 @@ def scan_library_task(
             )
             matched += identify_result.get("matched", 0)
             unmatched += identify_result.get("unmatched", 0)
+            file_path = identify_result.get("file_path")
+            if identify_result.get("unmatched", 0) and file_path:
+                unmatched_paths.add(str(file_path))
+            error_message = identify_result.get("error")
+            if error_message:
+                error_entries.append(
+                    {
+                        "path": str(file_path or ""),
+                        "error": str(error_message),
+                    }
+                )
             media_id = identify_result.get("media_item_id")
             parent_media_id = identify_result.get("parent_media_item_id")
             candidate_ids = {
@@ -838,6 +859,21 @@ def scan_library_task(
             f"unmatched={unmatched}"
         )
 
+        extra_payload = {**(scan.extra or {})}
+        existing_unmatched = set(extra_payload.get("unmatched_paths") or [])
+        existing_unmatched.update(unmatched_paths)
+        extra_payload["unmatched_paths"] = sorted(existing_unmatched)
+        existing_errors = [entry for entry in extra_payload.get("errors") or [] if isinstance(entry, dict)]
+        seen_error_pairs = {(entry.get("path"), entry.get("error")) for entry in existing_errors}
+        for entry in error_entries:
+            key = (entry.get("path"), entry.get("error"))
+            if key not in seen_error_pairs:
+                existing_errors.append(entry)
+                seen_error_pairs.add(key)
+        extra_payload["errors"] = existing_errors
+        scan.extra = extra_payload
+        scan.save(update_fields=["extra", "updated_at"])
+
         if not metadata_queue_ids:
             if metadata_total_count == 0:
                 scan.record_stage_progress(
@@ -899,6 +935,26 @@ def scan_library_task(
             )
         _start_next_scan(library)
     except Exception as exc:  # noqa: BLE001
+        extra_payload = {**(scan.extra or {})}
+        existing_unmatched = set(extra_payload.get("unmatched_paths") or [])
+        existing_unmatched.update(unmatched_paths)
+        extra_payload["unmatched_paths"] = sorted(existing_unmatched)
+        existing_errors = [entry for entry in extra_payload.get("errors") or [] if isinstance(entry, dict)]
+        seen_error_pairs = {(entry.get("path"), entry.get("error")) for entry in existing_errors}
+        for entry in error_entries:
+            key = (entry.get("path"), entry.get("error"))
+            if key not in seen_error_pairs:
+                existing_errors.append(entry)
+                seen_error_pairs.add(key)
+        error_message = str(exc)
+        if error_message:
+            error_key = ("", error_message)
+            if error_key not in seen_error_pairs:
+                existing_errors.append({"path": "", "error": error_message})
+                seen_error_pairs.add(error_key)
+        extra_payload["errors"] = existing_errors
+        scan.extra = extra_payload
+        scan.save(update_fields=["extra", "updated_at"])
         enqueue_probe_tasks()
         logger.exception("Library scan failed for %s", library.name)
         scan.record_progress(
@@ -952,25 +1008,88 @@ def _identify_media_file(
             pk=file_id, library=library
         )
     except MediaFile.DoesNotExist:
-        return {"matched": 0, "unmatched": 0}
+        return {"matched": 0, "unmatched": 0, "file_path": ""}
 
-    relative_dir = os.path.dirname(file_record.relative_path or "") if file_record.relative_path else ""
-    classification = classify_media_entry(
-        library,
-        relative_path=relative_dir,
-        file_name=file_record.file_name,
-    )
+    absolute_path = file_record.absolute_path or ""
 
-    target_item = None
-    if target_item_id:
-        target_item = MediaItem.objects.filter(pk=target_item_id, library=library).first()
+    try:
+        relative_dir = (
+            os.path.dirname(file_record.relative_path or "")
+            if file_record.relative_path
+            else ""
+        )
+        classification = classify_media_entry(
+            library,
+            relative_path=relative_dir,
+            file_name=file_record.file_name,
+        )
 
-    if (
-        library.library_type == Library.LIBRARY_TYPE_SHOWS
-        and classification.detected_type != MediaItem.TYPE_EPISODE
-        and not target_item
-    ):
-        # Unable to positively identify this episode; treat as unmatched.
+        target_item = None
+        if target_item_id:
+            target_item = MediaItem.objects.filter(pk=target_item_id, library=library).first()
+
+        if (
+            library.library_type == Library.LIBRARY_TYPE_SHOWS
+            and classification.detected_type != MediaItem.TYPE_EPISODE
+            and not target_item
+        ):
+            # Unable to positively identify this episode; treat as unmatched.
+            if file_record.media_item_id is not None:
+                file_record.media_item = None
+                file_record.save(update_fields=["media_item", "updated_at"])
+            return {
+                "file_id": file_id,
+                "media_item_id": None,
+                "parent_media_item_id": None,
+                "matched": 0,
+                "unmatched": 1,
+                "file_path": absolute_path,
+            }
+
+        media_item = resolve_media_item(library, classification, target_item=target_item)
+        matched = 0
+        unmatched = 0
+        if media_item:
+            if file_record.media_item_id != media_item.id:
+                file_record.media_item = media_item
+                file_record.save(update_fields=["media_item", "updated_at"])
+            if classification.detected_type == MediaItem.TYPE_OTHER:
+                if media_item.status != MediaItem.STATUS_FAILED:
+                    media_item.status = MediaItem.STATUS_FAILED
+                    media_item.save(update_fields=["status", "updated_at"])
+                unmatched = 1
+            else:
+                if media_item.status != MediaItem.STATUS_MATCHED:
+                    media_item.status = MediaItem.STATUS_MATCHED
+                    media_item.save(update_fields=["status", "updated_at"])
+                if (
+                    classification.detected_type == MediaItem.TYPE_EPISODE
+                    and media_item.parent_id
+                ):
+                    parent = MediaItem.objects.filter(pk=media_item.parent_id).first()
+                    if parent:
+                        if parent.status != MediaItem.STATUS_MATCHED:
+                            parent.status = MediaItem.STATUS_MATCHED
+                            parent.save(update_fields=["status", "updated_at"])
+                        if not parent.metadata_last_synced_at or not parent.poster_url:
+                            sync_metadata_task.delay(parent.id)
+                matched = 1
+
+            # Synchronize to VOD catalog when configured.
+            sync_media_item_to_vod(media_item)
+        else:
+            unmatched = 1
+
+        return {
+            "file_id": file_id,
+            "media_item_id": media_item.id if media_item else None,
+            "parent_media_item_id": media_item.parent_id if media_item else None,
+            "matched": matched,
+            "unmatched": unmatched,
+            "file_path": absolute_path,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to identify media file %s", absolute_path)
         if file_record.media_item_id is not None:
             file_record.media_item = None
             file_record.save(update_fields=["media_item", "updated_at"])
@@ -980,49 +1099,9 @@ def _identify_media_file(
             "parent_media_item_id": None,
             "matched": 0,
             "unmatched": 1,
+            "file_path": absolute_path,
+            "error": str(exc),
         }
-
-    media_item = resolve_media_item(library, classification, target_item=target_item)
-    matched = 0
-    unmatched = 0
-    if media_item:
-        if file_record.media_item_id != media_item.id:
-            file_record.media_item = media_item
-            file_record.save(update_fields=["media_item", "updated_at"])
-        if classification.detected_type == MediaItem.TYPE_OTHER:
-            if media_item.status != MediaItem.STATUS_FAILED:
-                media_item.status = MediaItem.STATUS_FAILED
-                media_item.save(update_fields=["status", "updated_at"])
-            unmatched = 1
-        else:
-            if media_item.status != MediaItem.STATUS_MATCHED:
-                media_item.status = MediaItem.STATUS_MATCHED
-                media_item.save(update_fields=["status", "updated_at"])
-            if (
-                classification.detected_type == MediaItem.TYPE_EPISODE
-                and media_item.parent_id
-            ):
-                parent = MediaItem.objects.filter(pk=media_item.parent_id).first()
-                if parent:
-                    if parent.status != MediaItem.STATUS_MATCHED:
-                        parent.status = MediaItem.STATUS_MATCHED
-                        parent.save(update_fields=["status", "updated_at"])
-                    if not parent.metadata_last_synced_at or not parent.poster_url:
-                        sync_metadata_task.delay(parent.id)
-            matched = 1
-
-        # Synchronize to VOD catalog when configured.
-        sync_media_item_to_vod(media_item)
-    else:
-        unmatched = 1
-
-    return {
-        "file_id": file_id,
-        "media_item_id": media_item.id if media_item else None,
-        "parent_media_item_id": media_item.parent_id if media_item else None,
-        "matched": matched,
-        "unmatched": unmatched,
-    }
 
 
 @shared_task(name="media_library.identify_media")
