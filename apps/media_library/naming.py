@@ -60,7 +60,16 @@ def _ensure_series_name_from_path(relative_path: str, default: str | None = None
     if not segments:
         return default or ""
 
-    series_candidate = segments[0]
+    series_candidate = None
+    for segment in segments:
+        if SEASON_FOLDER_PATTERN.match(segment):
+            continue
+        series_candidate = segment
+        break
+
+    if series_candidate is None:
+        series_candidate = segments[0]
+
     sanitized = re.sub(r"(([^._]{2,})[\._]*)|([\._]([^._]{2,}))", r"\2\4", series_candidate).replace("_", " ").replace(".", " ")
     sanitized = re.sub(r"\s+", " ", sanitized).strip()
     return sanitized or (default or "")
@@ -88,10 +97,21 @@ def classify_media_entry(
     """
     base_name = _strip_extension(file_name)
     guess_data = {}
+    guess_target = file_name
+    if relative_path:
+        guess_target = os.path.join(relative_path, file_name)
+    guess_options = {}
+    if library.library_type == Library.LIBRARY_TYPE_SHOWS:
+        guess_options = {"type": "episode", "show_type": "series"}
+    elif library.library_type == Library.LIBRARY_TYPE_MOVIES:
+        guess_options = {"type": "movie"}
 
     # Provide path context to guessit.
     try:
-        guess_data = guessit(file_name)
+        if guess_options:
+            guess_data = guessit(guess_target, options=guess_options)
+        else:
+            guess_data = guessit(guess_target)
     except Exception:
         guess_data = {}
 
