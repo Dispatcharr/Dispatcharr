@@ -482,9 +482,7 @@ class MediaItemViewSet(viewsets.ModelViewSet):
             payload["start_ms"] = applied_start_ms
 
         token = self._stream_signer.sign_object(payload)
-        stream_url = request.build_absolute_uri(
-            reverse("api:media:stream-file", args=[token])
-        )
+        stream_url = request.build_absolute_uri(reverse("proxy:library-stream", args=[token]))
         ttl = getattr(settings, "MEDIA_LIBRARY_STREAM_TOKEN_TTL", 3600)
         return Response(
             {

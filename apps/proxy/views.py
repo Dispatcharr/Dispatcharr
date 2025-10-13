@@ -1,8 +1,12 @@
-from rest_framework import viewsets, status
+import logging
+
+from django.apps import apps
+from django.http import HttpResponse
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.apps import apps
-import logging
+
+from apps.media_library.views import stream_media_file
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,7 @@ class ProxyViewSet(viewsets.ViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
     @action(detail=False, methods=['post'])
     def stop(self, request):
         """Stop a proxy server for a channel"""
@@ -62,3 +67,11 @@ class ProxyViewSet(viewsets.ViewSet):
                 {'error': str(e)}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+def library_stream(request, token: str) -> HttpResponse:
+    """
+    Shallow proxy around the media library stream endpoint so playback traffic
+    is routed through the proxy layer (for stats, connection tracking, etc.).
+    """
+    return stream_media_file(request, token)
