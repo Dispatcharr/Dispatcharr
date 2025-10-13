@@ -26,12 +26,25 @@ const formatRuntime = (runtimeMs) => {
   return `${hours}h ${minutes}m`;
 };
 
+const POSTER_HEIGHT = {
+  sm: 180,
+  md: 220,
+  lg: 270,
+};
+
+const BASE_CONTENT_HEIGHT = {
+  sm: 96,
+  md: 108,
+  lg: 120,
+};
+
 const MediaCard = ({
   item,
   onClick,
   onContextMenu,
   size = 'md',
   showTypeBadge = true,
+  style = {},
 }) => {
   const handleContextMenu = (event) => {
     if (onContextMenu) {
@@ -40,10 +53,15 @@ const MediaCard = ({
     }
   };
 
-  const height = size === 'sm' ? 220 : size === 'lg' ? 320 : 260;
+  const posterHeight = POSTER_HEIGHT[size] ?? POSTER_HEIGHT.md;
+  const minCardHeight = posterHeight + (BASE_CONTENT_HEIGHT[size] ?? BASE_CONTENT_HEIGHT.md);
   const progress = item.watch_progress;
   const watchSummary = item.watch_summary;
   const status = watchSummary?.status;
+  const runtimeText = formatRuntime(item.runtime_ms);
+  const hasGenres = Array.isArray(item.genres) && item.genres.length > 0;
+  const showEpisodeBadge =
+    item.item_type === 'show' && watchSummary?.total_episodes;
 
   return (
     <Card
@@ -51,15 +69,22 @@ const MediaCard = ({
       padding="sm"
       radius="md"
       withBorder
-      style={{ cursor: 'pointer', background: 'rgba(12, 15, 27, 0.75)' }}
+      style={{
+        cursor: 'pointer',
+        background: 'rgba(12, 15, 27, 0.75)',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: minCardHeight,
+        ...style,
+      }}
       onClick={() => onClick?.(item)}
       onContextMenu={handleContextMenu}
     >
-      <Stack spacing="xs">
+      <Stack spacing="xs" style={{ flex: 1 }}>
         <Box style={{ position: 'relative' }}>
           {item.poster_url ? (
             <Box
-              h={height}
+              h={posterHeight}
               style={{
                 borderRadius: 12,
                 background: 'rgba(12, 17, 32, 0.65)',
@@ -81,7 +106,7 @@ const MediaCard = ({
             <Stack
               align="center"
               justify="center"
-              h={height}
+              h={posterHeight}
               style={{
                 borderRadius: 12,
                 background: 'rgba(30, 41, 59, 0.6)',
@@ -109,17 +134,18 @@ const MediaCard = ({
             />
           ) : null}
         </Box>
-        <Stack spacing={4}>
+        <Stack spacing={6} style={{ flex: 1, minHeight: BASE_CONTENT_HEIGHT[size] ?? BASE_CONTENT_HEIGHT.md }}>
           <Group justify="space-between" align="flex-start" gap="xs">
-            <Text fw={600} size="sm" lineClamp={2}>
+            <Text fw={600} size="sm" style={{ flex: 1, minWidth: 0 }}>
               {item.title}
             </Text>
             {item.release_year && (
-              <Badge variant="outline" size="xs">
+              <Badge variant="outline" size="xs" miw={42} ta="center">
                 {item.release_year}
               </Badge>
             )}
           </Group>
+
           <Group gap={6} wrap="wrap">
             {showTypeBadge && (
               <Badge size="xs" color="violet" variant="light" tt="capitalize">
@@ -131,19 +157,9 @@ const MediaCard = ({
                 Watched
               </Badge>
             )}
-            {status === 'in_progress' && (
-              <Badge size="xs" color="yellow" variant="light">
-                In progress
-              </Badge>
-            )}
-            {item.item_type === 'show' && watchSummary?.total_episodes ? (
-              <Badge size="xs" color="blue" variant="outline">
-                {watchSummary.completed_episodes || 0}/
-                {watchSummary.total_episodes} episodes
-              </Badge>
-            ) : null}
           </Group>
-          {Array.isArray(item.genres) && item.genres.length > 0 ? (
+
+          {hasGenres ? (
             <Group gap={4} wrap="wrap">
               {item.genres.slice(0, 3).map((genre) => (
                 <Badge key={`${item.id}-${genre}`} size="xs" color="blue" variant="light">
@@ -152,11 +168,28 @@ const MediaCard = ({
               ))}
             </Group>
           ) : null}
-          {formatRuntime(item.runtime_ms) && (
-            <Text size="xs" c="dimmed">
-              {formatRuntime(item.runtime_ms)}
+
+          <Stack spacing={4} style={{ marginTop: 'auto' }}>
+            {status === 'in_progress' && (
+              <Badge size="xs" color="yellow" variant="light">
+                In progress
+              </Badge>
+            )}
+            {showEpisodeBadge ? (
+              <Badge size="xs" color="blue" variant="outline">
+                {watchSummary.completed_episodes || 0}/{watchSummary.total_episodes} episodes
+              </Badge>
+            ) : null}
+            <Text
+              size="xs"
+              c="dimmed"
+              style={{
+                visibility: runtimeText ? 'visible' : 'hidden',
+              }}
+            >
+              {runtimeText || '\u00A0'}
             </Text>
-          )}
+          </Stack>
         </Stack>
       </Stack>
     </Card>

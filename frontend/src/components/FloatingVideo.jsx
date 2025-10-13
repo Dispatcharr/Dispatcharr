@@ -1,5 +1,5 @@
 // frontend/src/components/FloatingVideo.js
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import mpegts from 'mpegts.js';
@@ -76,6 +76,23 @@ export default function FloatingVideo() {
   const previousVolumeRef = useRef(1);
   const [showVolumeControl, setShowVolumeControl] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const updateVideoMetadata = useCallback((updates) => {
+    if (!updates || typeof updates !== 'object') {
+      return;
+    }
+    useVideoStore.setState((state) => {
+      if (!state.metadata) {
+        return {};
+      }
+      return {
+        metadata: {
+          ...state.metadata,
+          ...updates,
+        },
+      };
+    });
+  }, []);
 
   const clearControlsTimeout = () => {
     if (controlsTimeoutRef.current) {
@@ -294,6 +311,37 @@ export default function FloatingVideo() {
                 ((metadata?.startOffsetMs ?? 0) / 1000 + videoRef.current.duration) * 1000
               )
             : undefined);
+
+        if (!resumeHandledByServer) {
+          updateVideoMetadata({
+            requiresTranscode,
+            transcodeStatus,
+            durationMs: derivedDurationMs ?? metadata?.durationMs ?? null,
+            resumeHandledByServer: false,
+            resumePositionMs: startMs,
+          });
+          if (videoRef.current) {
+            const resumeWasPlaying = wasPlayingBeforeScrubRef.current || !videoRef.current.paused;
+            try {
+              videoRef.current.currentTime = Math.max(0, sanitized - startOffsetSeconds);
+            } catch (err) {
+              console.debug('Failed to adjust local playback position after server seek fallback', err);
+            }
+            if (resumeWasPlaying) {
+              videoRef.current.play().catch(() => {});
+            }
+            setIsPlaying(!videoRef.current.paused);
+          }
+          setCurrentTimeSeconds(sanitized);
+          setScrubValueSeconds(sanitized);
+          lastServerSeekAbsoluteRef.current = sanitized;
+          serverSeekInProgressRef.current = false;
+          wasPlayingBeforeScrubRef.current = false;
+          setIsLoading(false);
+          setLoadError(null);
+          handlePointerActivity();
+          return;
+        }
 
         const nextMetadata = {
           ...metadata,

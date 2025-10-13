@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   ActionIcon,
@@ -12,6 +12,7 @@ import {
   Loader,
   Modal,
   ScrollArea,
+  Select,
   Stack,
   Text,
   Title,
@@ -80,6 +81,10 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const [episodePlayLoadingId, setEpisodePlayLoadingId] = useState(null);
   const [episodeActionLoading, setEpisodeActionLoading] = useState({});
   const [itemActionLoading, setItemActionLoading] = useState(null);
+  const [selectedSeason, setSelectedSeason] = useState(null);
+  const [expandedEpisodeIds, setExpandedEpisodeIds] = useState(() => new Set());
+  const [seasonManuallySelected, setSeasonManuallySelected] = useState(false);
+  const lastResumeSeasonRef = useRef(null);
 
   const setEpisodeLoading = useCallback((episodeId, action) => {
     setEpisodeActionLoading((prev) => ({ ...prev, [episodeId]: action }));
@@ -103,6 +108,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
     try {
       const results = await API.getMediaItemEpisodes(activeItem.id);
       setEpisodes(Array.isArray(results) ? results : []);
+      setExpandedEpisodeIds(new Set());
     } catch (error) {
       console.error('Failed to load episodes for show', error);
       notifications.show({
@@ -411,18 +417,34 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const handlePrimaryAction = () => {
     if (!activeItem) return;
     if (activeItem.item_type === 'show') {
+      const candidateSequence =
+        playbackPlan?.sorted?.length ? playbackPlan.sorted : orderedEpisodes;
       const targetEpisode =
-        playbackPlan?.resumeEpisode || playbackPlan?.nextEpisode || playbackPlan?.sorted?.[0];
-      if (!targetEpisode) {
-        notifications.show({
-          title: 'No episodes available',
-          message: 'This series does not have any episodes to play yet.',
-          color: 'yellow',
+        playbackPlan?.resumeEpisode ||
+        playbackPlan?.nextEpisode ||
+        (candidateSequence?.length ? candidateSequence[0] : null);
+
+      if (targetEpisode) {
+        const startIndex = candidateSequence?.findIndex((ep) => ep.id === targetEpisode.id);
+        void handlePlayEpisode(targetEpisode, {
+          sequence: candidateSequence,
+          startIndex: startIndex ?? null,
         });
         return;
       }
-      const startIndex = playbackPlan.sorted.findIndex((ep) => ep.id === targetEpisode.id);
-      void handlePlayEpisode(targetEpisode, { sequence: playbackPlan.sorted, startIndex });
+
+      const fallbackEpisodeId =
+        showWatchSummary?.resume_episode_id || showWatchSummary?.next_episode_id || null;
+      if (fallbackEpisodeId) {
+        void handlePlayEpisode({ id: fallbackEpisodeId }, { sequence: candidateSequence });
+        return;
+      }
+
+      notifications.show({
+        title: 'No episodes available',
+        message: 'This series does not have any episodes to play yet.',
+        color: 'yellow',
+      });
       return;
     }
     if (canResume && (resumePrompt || activeProgress)) {
@@ -453,15 +475,18 @@ const MediaDetailModal = ({ opened, onClose }) => {
         return;
       }
 
-      const resolvedSequence = Array.isArray(sequence) ? sequence : [];
-      const episodeIds = resolvedSequence.length
-        ? resolvedSequence.map((ep) => ep.id)
-        : orderedEpisodes.map((ep) => ep.id);
-      const computedIndex = startIndex ?? episodeIds.findIndex((id) => id === episode.id);
+      const baseSequence =
+        Array.isArray(sequence) && sequence.length ? sequence : orderedEpisodes;
+      const effectiveSequence =
+        baseSequence && baseSequence.length ? baseSequence : [episodeDetail];
+      const episodeIds = effectiveSequence.map((ep) => ep.id);
+      const computedIndex =
+        startIndex ?? episodeIds.findIndex((id) => id === episodeDetail.id);
 
-      const playbackSequence = episodeIds.length
-        ? { episodeIds, currentIndex: computedIndex >= 0 ? computedIndex : 0 }
-        : null;
+      const playbackSequence =
+        episodeIds.length > 1
+          ? { episodeIds, currentIndex: computedIndex >= 0 ? computedIndex : 0 }
+          : null;
 
       const episodeProgress = episodeDetail.watch_progress;
       const episodeSummary = episodeDetail.watch_summary;
@@ -542,6 +567,11 @@ const MediaDetailModal = ({ opened, onClose }) => {
     [episodesBySeason]
   );
 
+  const visibleEpisodes = useMemo(() => {
+    if (!selectedSeason) return [];
+    return episodesBySeason.get(selectedSeason) || [];
+  }, [episodesBySeason, selectedSeason]);
+
   const formatEpisodeCode = (episode) => {
     const season = episode.season_number || 0;
     const ep = episode.episode_number || 0;
@@ -610,7 +640,82 @@ const MediaDetailModal = ({ opened, onClose }) => {
     }
   };
 
+  const toggleEpisodeExpanded = useCallback((episodeId) => {
+    setExpandedEpisodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(episodeId)) {
+        next.delete(episodeId);
+      } else {
+        next.add(episodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleEpisodeCardClick = useCallback(
+    (episodeId, event) => {
+      if (!episodeId) return;
+      if (event?.target?.closest('button')) return;
+      toggleEpisodeExpanded(episodeId);
+    },
+    [toggleEpisodeExpanded]
+  );
+
+  const handleEpisodeCardKeyDown = useCallback(
+    (episodeId, event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleEpisodeExpanded(episodeId);
+      }
+    },
+    [toggleEpisodeExpanded]
+  );
+
   const files = activeItem?.files || [];
+
+  const seasonOptions = useMemo(
+    () =>
+      sortedSeasons.map((season) => ({
+        value: String(season),
+        label: `Season ${season}`,
+      })),
+    [sortedSeasons]
+  );
+
+  const resumeSeasonNumber = playbackPlan?.resumeEpisode?.season_number ?? null;
+
+  useEffect(() => {
+    if (!sortedSeasons.length) {
+      if (selectedSeason !== null) {
+        setSelectedSeason(null);
+      }
+      lastResumeSeasonRef.current = null;
+      setSeasonManuallySelected(false);
+      return;
+    }
+
+    if (resumeSeasonNumber && sortedSeasons.includes(resumeSeasonNumber)) {
+      const resumeChanged = lastResumeSeasonRef.current !== resumeSeasonNumber;
+      if (!seasonManuallySelected || resumeChanged) {
+        lastResumeSeasonRef.current = resumeSeasonNumber;
+        setSelectedSeason(resumeSeasonNumber);
+        setSeasonManuallySelected(false);
+        return;
+      }
+    } else {
+      lastResumeSeasonRef.current = null;
+    }
+
+    if (selectedSeason === null || !sortedSeasons.includes(selectedSeason)) {
+      const fallback = sortedSeasons[0];
+      setSelectedSeason(fallback);
+      setSeasonManuallySelected(false);
+    }
+  }, [sortedSeasons, resumeSeasonNumber, seasonManuallySelected, selectedSeason]);
+
+  useEffect(() => {
+    setExpandedEpisodeIds(new Set());
+  }, [selectedSeason]);
 
   return (
     <>
@@ -829,134 +934,156 @@ const MediaDetailModal = ({ opened, onClose }) => {
                       </Text>
                     ) : (
                       <Stack spacing="md">
-                        {sortedSeasons.map((season) => {
-                          const seasonEpisodes = episodesBySeason.get(season) || [];
-                          return (
-                            <Stack key={season} spacing={STACK_TIGHT}>
-                              <Group justify="space-between" align="center">
-                                <Group gap="xs" align="center">
-                                  <Title order={5}>Season {season}</Title>
-                                  <Badge variant="outline" size="xs">
-                                    {seasonEpisodes.length} episode
-                                    {seasonEpisodes.length === 1 ? '' : 's'}
-                                  </Badge>
-                                </Group>
-                              </Group>
-                              <Stack spacing={STACK_TIGHT}>
-                                {seasonEpisodes.map((episode) => {
-                                  const episodeProgress = episode.watch_progress;
-                                  const episodeStatus = episode.watch_summary?.status;
-                                  const progressPercent = episodeProgress?.percentage
-                                    ? Math.round(episodeProgress.percentage * 100)
-                                    : null;
-                                  const isWatched = episodeStatus === 'watched';
-                                  const isInProgress = episodeStatus === 'in_progress';
-                                  const episodeLoading = episodeActionLoading[episode.id];
-                                  return (
-                                    <Group
-                                      key={episode.id}
-                                      justify="space-between"
-                                      align="flex-start"
-                                      gap="md"
-                                      style={{
-                                        border: '1px solid rgba(148, 163, 184, 0.15)',
-                                        borderRadius: 12,
-                                        padding: '10px 12px',
-                                      }}
-                                    >
-                                      <Stack spacing={STACK_TIGHT} style={{ flex: 1, minWidth: 0 }}>
-                                        <Group justify="space-between" align="center">
-                                          <Text fw={600} size="sm" lineClamp={1}>
-                                            {[formatEpisodeCode(episode), episode.title]
-                                              .filter(Boolean)
-                                              .join(' ')}
-                                          </Text>
-                                          <Group gap={6}>
-                                            {isWatched && (
-                                              <Badge size="xs" color="green">
+                        <Group justify="space-between" align="center">
+                          <Select
+                            label="Season"
+                            data={seasonOptions}
+                            value={
+                              selectedSeason != null ? String(selectedSeason) : null
+                            }
+                            onChange={(value) => {
+                              setSeasonManuallySelected(true);
+                              setSelectedSeason(value ? Number(value) : null);
+                            }}
+                            placeholder="Select season"
+                            allowDeselect={false}
+                            w={220}
+                          />
+                          <Badge variant="outline" size="xs">
+                            {visibleEpisodes.length} episode
+                            {visibleEpisodes.length === 1 ? '' : 's'}
+                          </Badge>
+                        </Group>
+                        {visibleEpisodes.length === 0 ? (
+                          <Text size="sm" c="dimmed">
+                            No episodes available for this season.
+                          </Text>
+                        ) : (
+                          <Stack spacing={STACK_TIGHT}>
+                            {visibleEpisodes.map((episode) => {
+                              const episodeProgress = episode.watch_progress;
+                              const episodeStatus = episode.watch_summary?.status;
+                              const progressPercent = episodeProgress?.percentage
+                                ? Math.round(episodeProgress.percentage * 100)
+                                : null;
+                              const isWatched = episodeStatus === 'watched';
+                              const isInProgress = episodeStatus === 'in_progress';
+                              const episodeLoading = episodeActionLoading[episode.id];
+                              const isExpanded = expandedEpisodeIds.has(episode.id);
+                              const synopsisText = episode.synopsis?.trim();
+                              return (
+                                <Group
+                                  key={episode.id}
+                                  justify="space-between"
+                                  align="flex-start"
+                                  gap="md"
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(event) => handleEpisodeCardClick(episode.id, event)}
+                                  onKeyDown={(event) => handleEpisodeCardKeyDown(episode.id, event)}
+                                  style={{
+                                    border: '1px solid rgba(148, 163, 184, 0.15)',
+                                    borderRadius: 12,
+                                    padding: '10px 12px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  <Stack spacing={STACK_TIGHT} style={{ flex: 1, minWidth: 0 }}>
+                                    <Group justify="space-between" align="center">
+                                      <Text fw={600} size="sm" lineClamp={1}>
+                                        {[formatEpisodeCode(episode), episode.title]
+                                          .filter(Boolean)
+                                          .join(' ')}
+                                      </Text>
+                                      <Group gap={6}>
+                                        {isWatched && (
+                                          <Badge size="xs" color="green">
                                                 Watched
-                                              </Badge>
-                                            )}
-                                            {isInProgress && (
-                                              <Badge size="xs" color="yellow" variant="light">
-                                                In progress
-                                              </Badge>
-                                            )}
-                                            {progressPercent !== null && (
-                                              <Badge
-                                                size="xs"
-                                                color={episodeProgress?.completed ? 'green' : 'cyan'}
-                                                variant="light"
-                                              >
-                                                {progressPercent}%
-                                              </Badge>
-                                            )}
-                                          </Group>
-                                        </Group>
-                                        <Group gap={8} wrap="wrap">
-                                          {runtimeLabel(episode.runtime_ms) && (
-                                            <Group gap={4} align="center">
-                                              <Clock size={14} />
-                                              <Text size="xs" c="dimmed">
-                                                {runtimeLabel(episode.runtime_ms)}
-                                              </Text>
-                                            </Group>
-                                          )}
-                                        </Group>
-                                        {(episode.synopsis || activeItem?.synopsis) && (
-                                          <Text size="xs" c="dimmed" lineClamp={2}>
-                                            {episode.synopsis || activeItem?.synopsis}
-                                          </Text>
+                                          </Badge>
                                         )}
-                                      </Stack>
-                                      <Stack spacing={STACK_TIGHT} align="flex-end">
-                                        <Group gap={6}>
-                                          <Button
+                                        {isInProgress && (
+                                          <Badge size="xs" color="yellow" variant="light">
+                                            In progress
+                                          </Badge>
+                                        )}
+                                        {progressPercent !== null && (
+                                          <Badge
                                             size="xs"
+                                            color={episodeProgress?.completed ? 'green' : 'cyan'}
                                             variant="light"
-                                            leftSection={<PlayCircle size={16} />}
-                                            onClick={() =>
-                                              handlePlayEpisode(episode, {
-                                                sequence: playbackPlan?.sorted,
-                                              })
-                                            }
-                                            loading={episodePlayLoadingId === episode.id}
                                           >
-                                            Play
-                                          </Button>
-                                          <Button
-                                            size="xs"
-                                            variant="subtle"
-                                            leftSection={
-                                              isWatched ? <Undo2 size={14} /> : <CheckCircle2 size={14} />
-                                            }
-                                            onClick={() =>
-                                              isWatched
-                                                ? handleEpisodeMarkUnwatched(episode)
-                                                : handleEpisodeMarkWatched(episode)
-                                            }
-                                            loading={episodeLoading === 'watch' || episodeLoading === 'unwatch'}
-                                          >
-                                            {isWatched ? 'Unwatch' : 'Mark watched'}
-                                          </Button>
-                                          <ActionIcon
-                                            color="red"
-                                            variant="subtle"
-                                            onClick={() => handleEpisodeDelete(episode)}
-                                            loading={episodeLoading === 'delete'}
-                                            title="Delete episode"
-                                          >
-                                            <Trash2 size={16} />
-                                          </ActionIcon>
-                                        </Group>
-                                      </Stack>
+                                            {progressPercent}%
+                                          </Badge>
+                                        )}
+                                      </Group>
                                     </Group>
-                                  );
-                                })}
-                              </Stack>
-                            </Stack>
-                          );
-                        })}
+                                    <Group gap={8} wrap="wrap">
+                                      {runtimeLabel(episode.runtime_ms) && (
+                                        <Group gap={4} align="center">
+                                          <Clock size={14} />
+                                          <Text size="xs" c="dimmed">
+                                            {runtimeLabel(episode.runtime_ms)}
+                                          </Text>
+                                        </Group>
+                                      )}
+                                    </Group>
+                                    {synopsisText ? (
+                                      <Text size="xs" c="dimmed" lineClamp={isExpanded ? undefined : 2}>
+                                        {synopsisText}
+                                      </Text>
+                                    ) : null}
+                                  </Stack>
+                                  <Stack spacing={STACK_TIGHT} align="flex-end">
+                                    <Group gap={6}>
+                                      <Button
+                                        size="xs"
+                                        variant="light"
+                                        leftSection={<PlayCircle size={16} />}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          handlePlayEpisode(episode, {
+                                            sequence: playbackPlan?.sorted ?? orderedEpisodes,
+                                          });
+                                        }}
+                                        loading={episodePlayLoadingId === episode.id}
+                                      >
+                                        Play
+                                      </Button>
+                                      <Button
+                                        size="xs"
+                                        variant="subtle"
+                                        leftSection={
+                                          isWatched ? <Undo2 size={14} /> : <CheckCircle2 size={14} />
+                                        }
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          isWatched
+                                            ? handleEpisodeMarkUnwatched(episode)
+                                            : handleEpisodeMarkWatched(episode);
+                                        }}
+                                        loading={episodeLoading === 'watch' || episodeLoading === 'unwatch'}
+                                      >
+                                        {isWatched ? 'Unwatch' : 'Mark watched'}
+                                      </Button>
+                                      <ActionIcon
+                                        color="red"
+                                        variant="subtle"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          handleEpisodeDelete(episode);
+                                        }}
+                                        loading={episodeLoading === 'delete'}
+                                        title="Delete episode"
+                                      >
+                                        <Trash2 size={16} />
+                                      </ActionIcon>
+                                    </Group>
+                                  </Stack>
+                                </Group>
+                              );
+                            })}
+                          </Stack>
+                        )}
                       </Stack>
                     )}
                   </>

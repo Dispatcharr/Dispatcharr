@@ -287,10 +287,31 @@ def resolve_media_item(
     classification: ClassificationResult,
     target_item: Optional[MediaItem] = None,
 ) -> Optional[MediaItem]:
+    def _first_text(value):
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple, set)):
+            for entry in value:
+                text = _first_text(entry)
+                if text:
+                    return text
+            return ""
+        if isinstance(value, dict):
+            for key in ("title", "name", "value"):
+                if key in value:
+                    text = _first_text(value[key])
+                    if text:
+                        return text
+            return ""
+        return str(value)
+
     if target_item:
         return target_item
 
-    title = classification.title or "Unknown"
+    title_raw = classification.title
+    title = _first_text(title_raw) or "Unknown"
     normalized = normalize_title(title)
 
     if classification.detected_type == MediaItem.TYPE_MOVIE:
@@ -341,7 +362,10 @@ def resolve_media_item(
         )
 
     if classification.detected_type == MediaItem.TYPE_EPISODE:
-        series_title = classification.data.get("series_title") if classification.data else title
+        series_title_raw = ""
+        if classification.data:
+            series_title_raw = classification.data.get("series_title") or classification.data.get("series")
+        series_title = _first_text(series_title_raw) or title
         if not series_title:
             series_title = title
         series_normalized = normalize_title(series_title)

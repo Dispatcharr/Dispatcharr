@@ -403,6 +403,7 @@ class MediaItemListSerializer(MediaItemBaseSerializer):
             "is_missing",
             "tags",
             "tagline",
+            "synopsis",
             "metadata_last_synced_at",
             "metadata_source",
             "watch_progress",
