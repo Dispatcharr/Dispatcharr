@@ -1548,7 +1548,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             # Get force_dummy_epg, group_override, and regex patterns from group custom_properties
             group_custom_props = {}
-            force_dummy_epg = False
+            force_dummy_epg = False  # Backward compatibility: legacy option to disable EPG
             override_group_id = None
             name_regex_pattern = None
             name_replace_pattern = None
@@ -1558,6 +1558,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             channel_sort_reverse = False
             stream_profile_id = None
             custom_logo_id = None
+            custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
             if group_relation.custom_properties:
                 group_custom_props = group_relation.custom_properties
                 force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
@@ -1568,6 +1569,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
                 name_match_regex = group_custom_props.get("name_match_regex")
                 channel_profile_ids = group_custom_props.get("channel_profile_ids")
+                custom_epg_id = group_custom_props.get("custom_epg_id")
                 channel_sort_order = group_custom_props.get("channel_sort_order")
                 channel_sort_reverse = group_custom_props.get(
                     "channel_sort_reverse", False
@@ -1828,7 +1830,25 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                         # Handle logo updates
                         current_logo = None
-                        if stream.logo_url:
+                        if custom_logo_id:
+                            # Use the custom logo specified in group settings
+                            from apps.channels.models import Logo
+                            try:
+                                current_logo = Logo.objects.get(id=custom_logo_id)
+                            except Logo.DoesNotExist:
+                                logger.warning(
+                                    f"Custom logo with ID {custom_logo_id} not found for existing channel, falling back to stream logo"
+                                )
+                                # Fall back to stream logo if custom logo not found
+                                if stream.logo_url:
+                                    current_logo, _ = Logo.objects.get_or_create(
+                                        url=stream.logo_url,
+                                        defaults={
+                                            "name": stream.name or stream.tvg_id or "Unknown"
+                                        },
+                                    )
+                        elif stream.logo_url:
+                            # No custom logo configured, use stream logo
                             from apps.channels.models import Logo
 
                             current_logo, _ = Logo.objects.get_or_create(
@@ -1844,10 +1864,42 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                         # Handle EPG data updates
                         current_epg_data = None
-                        if stream.tvg_id and not force_dummy_epg:
+                        if custom_epg_id:
+                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
+                            from apps.epg.models import EPGSource
+                            try:
+                                epg_source = EPGSource.objects.get(id=custom_epg_id)
+                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
+                                if epg_source.source_type == 'dummy':
+                                    current_epg_data = EPGData.objects.filter(
+                                        epg_source=epg_source
+                                    ).first()
+                                    if not current_epg_data:
+                                        logger.warning(
+                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
+                                        )
+                                else:
+                                    # For non-dummy sources, try to find existing EPGData by tvg_id
+                                    if stream.tvg_id:
+                                        current_epg_data = EPGData.objects.filter(
+                                            tvg_id=stream.tvg_id,
+                                            epg_source=epg_source
+                                        ).first()
+                            except EPGSource.DoesNotExist:
+                                logger.warning(
+                                    f"Custom EPG source with ID {custom_epg_id} not found for existing channel, falling back to auto-match"
+                                )
+                                # Fall back to auto-match by tvg_id
+                                if stream.tvg_id and not force_dummy_epg:
+                                    current_epg_data = EPGData.objects.filter(
+                                        tvg_id=stream.tvg_id
+                                    ).first()
+                        elif stream.tvg_id and not force_dummy_epg:
+                            # Auto-match EPG by tvg_id (original behavior)
                             current_epg_data = EPGData.objects.filter(
                                 tvg_id=stream.tvg_id
                             ).first()
+                        # If force_dummy_epg is True and no custom_epg_id, current_epg_data stays None
 
                         if existing_channel.epg_data != current_epg_data:
                             existing_channel.epg_data = current_epg_data
@@ -1937,14 +1989,55 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             ChannelProfileMembership.objects.bulk_create(memberships)
 
                         # Try to match EPG data
-                        if stream.tvg_id and not force_dummy_epg:
+                        if custom_epg_id:
+                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
+                            from apps.epg.models import EPGSource
+                            try:
+                                epg_source = EPGSource.objects.get(id=custom_epg_id)
+                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
+                                if epg_source.source_type == 'dummy':
+                                    epg_data = EPGData.objects.filter(
+                                        epg_source=epg_source
+                                    ).first()
+                                    if epg_data:
+                                        channel.epg_data = epg_data
+                                        channel.save(update_fields=["epg_data"])
+                                    else:
+                                        logger.warning(
+                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
+                                        )
+                                else:
+                                    # For non-dummy sources, try to find existing EPGData by tvg_id
+                                    if stream.tvg_id:
+                                        epg_data = EPGData.objects.filter(
+                                            tvg_id=stream.tvg_id,
+                                            epg_source=epg_source
+                                        ).first()
+                                        if epg_data:
+                                            channel.epg_data = epg_data
+                                            channel.save(update_fields=["epg_data"])
+                            except EPGSource.DoesNotExist:
+                                logger.warning(
+                                    f"Custom EPG source with ID {custom_epg_id} not found, falling back to auto-match"
+                                )
+                                # Fall back to auto-match by tvg_id
+                                if stream.tvg_id and not force_dummy_epg:
+                                    epg_data = EPGData.objects.filter(
+                                        tvg_id=stream.tvg_id
+                                    ).first()
+                                    if epg_data:
+                                        channel.epg_data = epg_data
+                                        channel.save(update_fields=["epg_data"])
+                        elif stream.tvg_id and not force_dummy_epg:
+                            # Auto-match EPG by tvg_id (original behavior)
                             epg_data = EPGData.objects.filter(
                                 tvg_id=stream.tvg_id
                             ).first()
                             if epg_data:
                                 channel.epg_data = epg_data
                                 channel.save(update_fields=["epg_data"])
-                        elif stream.tvg_id and force_dummy_epg:
+                        elif force_dummy_epg:
+                            # Force dummy EPG with no custom EPG selected (set to None)
                             channel.epg_data = None
                             channel.save(update_fields=["epg_data"])
 

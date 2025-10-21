@@ -3,13 +3,30 @@ import dayjs from 'dayjs';
 export const PROGRAM_HEIGHT = 90;
 export const EXPANDED_PROGRAM_HEIGHT = 180;
 
-export function buildChannelIdMap(channels, tvgsById) {
+export function buildChannelIdMap(channels, tvgsById, epgs = {}) {
   const map = new Map();
   channels.forEach((channel) => {
     const tvgRecord = channel.epg_data_id
       ? tvgsById[channel.epg_data_id]
       : null;
-    const tvgId = tvgRecord?.tvg_id ?? channel.uuid;
+    
+    // For dummy EPG sources, ALWAYS use channel UUID to ensure unique programs per channel
+    // This prevents multiple channels with the same dummy EPG from showing identical data
+    let tvgId;
+    if (tvgRecord?.epg_source) {
+      const epgSource = epgs[tvgRecord.epg_source];
+      if (epgSource?.source_type === 'dummy') {
+        // Dummy EPG: use channel UUID for uniqueness
+        tvgId = channel.uuid;
+      } else {
+        // Regular EPG: use tvg_id from EPG data, or fall back to channel UUID
+        tvgId = tvgRecord.tvg_id ?? channel.uuid;
+      }
+    } else {
+      // No EPG data: use channel UUID
+      tvgId = channel.uuid;
+    }
+    
     if (tvgId) {
       const tvgKey = String(tvgId);
       if (!map.has(tvgKey)) {

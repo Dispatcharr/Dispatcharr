@@ -133,8 +133,9 @@ def delete_epg_refresh_task_by_id(epg_id):
 @shared_task
 def refresh_all_epg_data():
     logger.info("Starting refresh_epg_data task.")
-    active_sources = EPGSource.objects.filter(is_active=True)
-    logger.debug(f"Found {active_sources.count()} active EPGSource(s).")
+    # Exclude dummy EPG sources from refresh - they don't need refreshing
+    active_sources = EPGSource.objects.filter(is_active=True).exclude(source_type='dummy')
+    logger.debug(f"Found {active_sources.count()} active EPGSource(s) (excluding dummy EPGs).")
 
     for source in active_sources:
         refresh_epg_data(source.id)
@@ -177,6 +178,13 @@ def refresh_epg_data(source_id):
             logger.info(f"EPG source {source_id} is not active. Skipping.")
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
+            gc.collect()
+            return
+
+        # Skip refresh for dummy EPG sources - they don't need refreshing
+        if source.source_type == 'dummy':
+            logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
 
@@ -1943,3 +1951,20 @@ def detect_file_format(file_path=None, content=None):
 
     # If we reach here, we couldn't reliably determine the format
     return format_type, is_compressed, file_extension
+
+
+def generate_dummy_epg(source):
+    """
+    DEPRECATED: This function is no longer used.
+
+    Dummy EPG programs are now generated on-demand when they are requested
+    (during XMLTV export or EPG grid display), rather than being pre-generated
+    and stored in the database.
+
+    See: apps/output/views.py - generate_custom_dummy_programs()
+
+    This function remains for backward compatibility but should not be called.
+    """
+    logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
+                   f"Dummy EPG programs are now generated on-demand.")
+    return True

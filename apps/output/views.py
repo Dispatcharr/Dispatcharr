@@ -9,7 +9,7 @@ from apps.epg.models import ProgramData
 from apps.accounts.models import User
 from core.models import CoreSettings, NETWORK_ACCESS
 from dispatcharr.utils import network_access_allowed
-from django.utils import timezone
+from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta
 import html  # Add this import for XML escaping
@@ -22,6 +22,7 @@ import logging
 from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
+import regex
 
 logger = logging.getLogger(__name__)
 
@@ -186,12 +187,42 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
-def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length_hours=4):
+def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length_hours=4, epg_source=None):
+    """
+    Generate dummy EPG programs for channels.
+
+    If epg_source is provided and it's a custom dummy EPG with patterns,
+    use those patterns to generate programs from the channel title.
+    Otherwise, generate default dummy programs.
+
+    Args:
+        channel_id: Channel ID for the programs
+        channel_name: Channel title/name
+        num_days: Number of days to generate programs for
+        program_length_hours: Length of each program in hours
+        epg_source: Optional EPGSource for custom dummy EPG with patterns
+
+    Returns:
+        List of program dictionaries
+    """
     # Get current time rounded to hour
-    now = timezone.now()
+    now = django_timezone.now()
     now = now.replace(minute=0, second=0, microsecond=0)
 
-    # Humorous program descriptions based on time of day
+    # Check if this is a custom dummy EPG with regex patterns
+    if epg_source and epg_source.source_type == 'dummy' and epg_source.custom_properties:
+        custom_programs = generate_custom_dummy_programs(
+            channel_id, channel_name, now, num_days,
+            epg_source.custom_properties
+        )
+        # If custom generation succeeded, return those programs
+        # If it returned empty (pattern didn't match), fall through to default
+        if custom_programs:
+            return custom_programs
+        else:
+            logger.info(f"Custom pattern didn't match for '{channel_name}', using default dummy EPG")
+
+    # Default humorous program descriptions based on time of day
     time_descriptions = {
         (0, 4): [
             f"Late Night with {channel_name} - Where insomniacs unite!",
@@ -263,6 +294,579 @@ def generate_dummy_programs(channel_id, channel_name, num_days=1, program_length
     return programs
 
 
+def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, custom_properties):
+    """
+    Generate programs using custom dummy EPG regex patterns.
+
+    Extracts information from channel title using regex patterns and generates
+    programs based on the extracted data.
+
+    TIMEZONE HANDLING:
+    ------------------
+    The timezone parameter specifies the timezone of the event times in your channel
+    titles using standard timezone names (e.g., 'US/Eastern', 'US/Pacific', 'Europe/London').
+    DST (Daylight Saving Time) is handled automatically by pytz.
+
+    Examples:
+    - Channel: "NHL 01: Bruins VS Maple Leafs @ 8:00PM ET"
+    - Set timezone = "US/Eastern"
+    - In October (DST): 8:00PM EDT → 12:00AM UTC (automatically uses UTC-4)
+    - In January (no DST): 8:00PM EST → 1:00AM UTC (automatically uses UTC-5)
+
+    Args:
+        channel_id: Channel ID for the programs
+        channel_name: Channel title to parse
+        now: Current datetime (in UTC)
+        num_days: Number of days to generate programs for
+        custom_properties: Dict with title_pattern, time_pattern, templates, etc.
+            - timezone: Timezone name (e.g., 'US/Eastern')
+
+    Returns:
+        List of program dictionaries with start_time/end_time in UTC
+    """
+    import pytz
+
+    logger.info(f"Generating custom dummy programs for channel: {channel_name}")
+
+    # Extract patterns from custom properties
+    title_pattern = custom_properties.get('title_pattern', '')
+    time_pattern = custom_properties.get('time_pattern', '')
+    date_pattern = custom_properties.get('date_pattern', '')
+
+    # Get timezone name (e.g., 'US/Eastern', 'US/Pacific', 'Europe/London')
+    timezone_value = custom_properties.get('timezone', 'UTC')
+    output_timezone_value = custom_properties.get('output_timezone', '')  # Optional: display times in different timezone
+    program_duration = custom_properties.get('program_duration', 180)  # Minutes
+    title_template = custom_properties.get('title_template', '')
+    description_template = custom_properties.get('description_template', '')
+
+    # Templates for upcoming/ended programs
+    upcoming_title_template = custom_properties.get('upcoming_title_template', '')
+    upcoming_description_template = custom_properties.get('upcoming_description_template', '')
+    ended_title_template = custom_properties.get('ended_title_template', '')
+    ended_description_template = custom_properties.get('ended_description_template', '')
+
+    # EPG metadata options
+    category_string = custom_properties.get('category', '')
+    # Split comma-separated categories and strip whitespace, filter out empty strings
+    categories = [cat.strip() for cat in category_string.split(',') if cat.strip()] if category_string else []
+    include_date = custom_properties.get('include_date', True)
+    include_live = custom_properties.get('include_live', False)
+
+    # Parse timezone name
+    try:
+        source_tz = pytz.timezone(timezone_value)
+        logger.debug(f"Using timezone: {timezone_value} (DST will be handled automatically)")
+    except pytz.exceptions.UnknownTimeZoneError:
+        logger.warning(f"Unknown timezone: {timezone_value}, defaulting to UTC")
+        source_tz = pytz.utc
+
+    # Parse output timezone if provided (for display purposes)
+    output_tz = None
+    if output_timezone_value:
+        try:
+            output_tz = pytz.timezone(output_timezone_value)
+            logger.debug(f"Using output timezone for display: {output_timezone_value}")
+        except pytz.exceptions.UnknownTimeZoneError:
+            logger.warning(f"Unknown output timezone: {output_timezone_value}, will use source timezone")
+            output_tz = None
+
+    if not title_pattern:
+        logger.warning(f"No title_pattern in custom_properties, falling back to default")
+        return []  # Return empty, will use default
+
+    logger.debug(f"Title pattern from DB: {repr(title_pattern)}")
+
+    # Convert PCRE/JavaScript named groups (?<name>) to Python format (?P<name>)
+    # This handles patterns created with JavaScript regex syntax
+    # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
+    title_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', title_pattern)
+    logger.debug(f"Converted title pattern: {repr(title_pattern)}")
+
+    # Compile regex patterns using the enhanced regex module
+    # (supports variable-width lookbehinds like JavaScript)
+    try:
+        title_regex = regex.compile(title_pattern)
+    except Exception as e:
+        logger.error(f"Invalid title regex pattern after conversion: {e}")
+        logger.error(f"Pattern was: {repr(title_pattern)}")
+        return []
+
+    time_regex = None
+    if time_pattern:
+        # Convert PCRE/JavaScript named groups to Python format
+        # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
+        time_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', time_pattern)
+        logger.debug(f"Converted time pattern: {repr(time_pattern)}")
+        try:
+            time_regex = regex.compile(time_pattern)
+        except Exception as e:
+            logger.warning(f"Invalid time regex pattern after conversion: {e}")
+            logger.warning(f"Pattern was: {repr(time_pattern)}")
+
+    # Compile date regex if provided
+    date_regex = None
+    if date_pattern:
+        # Convert PCRE/JavaScript named groups to Python format
+        # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
+        date_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', date_pattern)
+        logger.debug(f"Converted date pattern: {repr(date_pattern)}")
+        try:
+            date_regex = regex.compile(date_pattern)
+        except Exception as e:
+            logger.warning(f"Invalid date regex pattern after conversion: {e}")
+            logger.warning(f"Pattern was: {repr(date_pattern)}")
+
+    # Try to match the channel name with the title pattern
+    # Use search() instead of match() to match JavaScript behavior where .match() searches anywhere in the string
+    title_match = title_regex.search(channel_name)
+    if not title_match:
+        logger.debug(f"Channel name '{channel_name}' doesn't match title pattern")
+        return []  # Return empty, will use default
+
+    groups = title_match.groupdict()
+    logger.debug(f"Title pattern matched. Groups: {groups}")
+
+    # Helper function to format template with matched groups
+    def format_template(template, groups):
+        """Replace {groupname} placeholders with matched group values"""
+        if not template:
+            return ''
+        result = template
+        for key, value in groups.items():
+            result = result.replace(f'{{{key}}}', str(value) if value else '')
+        return result
+
+    # Extract time from title if time pattern exists
+    time_info = None
+    time_groups = {}
+    if time_regex:
+        time_match = time_regex.search(channel_name)
+        if time_match:
+            time_groups = time_match.groupdict()
+            try:
+                hour = int(time_groups.get('hour'))
+                # Handle optional minute group - could be None if not captured
+                minute_value = time_groups.get('minute')
+                minute = int(minute_value) if minute_value is not None else 0
+                ampm = time_groups.get('ampm')
+                ampm = ampm.lower() if ampm else None
+
+                # Determine if this is 12-hour or 24-hour format
+                if ampm in ('am', 'pm'):
+                    # 12-hour format: convert to 24-hour
+                    if ampm == 'pm' and hour != 12:
+                        hour += 12
+                    elif ampm == 'am' and hour == 12:
+                        hour = 0
+                    logger.debug(f"Extracted time (12-hour): {hour}:{minute:02d} {ampm}")
+                else:
+                    # 24-hour format: hour is already in 24-hour format
+                    # Validate that it's actually a 24-hour time (0-23)
+                    if hour > 23:
+                        logger.warning(f"Invalid 24-hour time: {hour}. Must be 0-23.")
+                        hour = hour % 24  # Wrap around just in case
+                    logger.debug(f"Extracted time (24-hour): {hour}:{minute:02d}")
+
+                time_info = {'hour': hour, 'minute': minute}
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error parsing time: {e}")
+
+    # Extract date from title if date pattern exists
+    date_info = None
+    date_groups = {}
+    if date_regex:
+        date_match = date_regex.search(channel_name)
+        if date_match:
+            date_groups = date_match.groupdict()
+            try:
+                # Support various date group names: month, day, year
+                month_str = date_groups.get('month', '')
+                day = int(date_groups.get('day', 1))
+                year = int(date_groups.get('year', now.year))  # Default to current year if not provided
+
+                # Parse month - can be numeric (1-12) or text (Jan, January, etc.)
+                month = None
+                if month_str.isdigit():
+                    month = int(month_str)
+                else:
+                    # Try to parse text month names
+                    import calendar
+                    month_str_lower = month_str.lower()
+                    # Check full month names
+                    for i, month_name in enumerate(calendar.month_name):
+                        if month_name.lower() == month_str_lower:
+                            month = i
+                            break
+                    # Check abbreviated month names if not found
+                    if month is None:
+                        for i, month_abbr in enumerate(calendar.month_abbr):
+                            if month_abbr.lower() == month_str_lower:
+                                month = i
+                                break
+
+                if month and 1 <= month <= 12 and 1 <= day <= 31:
+                    date_info = {'year': year, 'month': month, 'day': day}
+                    logger.debug(f"Extracted date: {year}-{month:02d}-{day:02d}")
+                else:
+                    logger.warning(f"Invalid date values: month={month}, day={day}, year={year}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error parsing date: {e}")
+
+    # Merge title groups, time groups, and date groups for template formatting
+    all_groups = {**groups, **time_groups, **date_groups}
+
+    # Add formatted time strings for better display (handles minutes intelligently)
+    if time_info:
+        hour_24 = time_info['hour']
+        minute = time_info['minute']
+
+        # If output_timezone is specified, convert the display time to that timezone
+        if output_tz:
+            # Create a datetime in the source timezone
+            temp_date = datetime.now(source_tz).replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+            # Convert to output timezone
+            temp_date_output = temp_date.astimezone(output_tz)
+            # Extract converted hour and minute for display
+            hour_24 = temp_date_output.hour
+            minute = temp_date_output.minute
+            logger.debug(f"Converted display time from {source_tz} to {output_tz}: {hour_24}:{minute:02d}")
+
+        # Format 24-hour time string - only include minutes if non-zero
+        if minute > 0:
+            all_groups['time24'] = f"{hour_24}:{minute:02d}"
+        else:
+            all_groups['time24'] = f"{hour_24:02d}:00"
+
+        # Convert 24-hour to 12-hour format for {time} placeholder
+        # Note: hour_24 is ALWAYS in 24-hour format at this point (converted earlier if needed)
+        ampm = 'AM' if hour_24 < 12 else 'PM'
+        hour_12 = hour_24
+        if hour_24 == 0:
+            hour_12 = 12
+        elif hour_24 > 12:
+            hour_12 = hour_24 - 12
+
+        # Format 12-hour time string - only include minutes if non-zero
+        if minute > 0:
+            all_groups['time'] = f"{hour_12}:{minute:02d} {ampm}"
+        else:
+            all_groups['time'] = f"{hour_12} {ampm}"
+
+    # Generate programs
+    programs = []
+
+    # If we have extracted time AND date, the event happens on a SPECIFIC date
+    # If we have time but NO date, generate for multiple days (existing behavior)
+    # All other days and times show "Upcoming" before or "Ended" after
+    event_happened = False
+
+    # Determine how many iterations we need
+    if date_info and time_info:
+        # Specific date extracted - only generate for that one date
+        iterations = 1
+        logger.debug(f"Date extracted, generating single event for specific date")
+    else:
+        # No specific date - use num_days (existing behavior)
+        iterations = num_days
+
+    for day in range(iterations):
+        # Start from current time (like standard dummy) instead of midnight
+        # This ensures programs appear in the guide's current viewing window
+        day_start = now + timedelta(days=day)
+        day_end = day_start + timedelta(days=1)
+
+        if time_info:
+            # We have an extracted event time - this is when the MAIN event starts
+            # The extracted time is in the SOURCE timezone (e.g., 8PM ET)
+            # We need to convert it to UTC for storage
+
+            # Determine which date to use
+            if date_info:
+                # Use the extracted date from the channel title
+                current_date = datetime(
+                    date_info['year'],
+                    date_info['month'],
+                    date_info['day']
+                ).date()
+                logger.debug(f"Using extracted date: {current_date}")
+            else:
+                # No date extracted, use day offset from current time in SOURCE timezone
+                # This ensures we calculate "today" in the event's timezone, not UTC
+                # For example: 8:30 PM Central (1:30 AM UTC next day) for a 10 PM ET event
+                # should use today's date in ET, not tomorrow's date in UTC
+                now_in_source_tz = now.astimezone(source_tz)
+                current_date = (now_in_source_tz + timedelta(days=day)).date()
+                logger.debug(f"No date extracted, using day offset in {source_tz}: {current_date}")
+
+            # Create a naive datetime (no timezone info) representing the event in source timezone
+            event_start_naive = datetime.combine(
+                current_date,
+                datetime.min.time().replace(
+                    hour=time_info['hour'],
+                    minute=time_info['minute']
+                )
+            )
+
+            # Use pytz to localize the naive datetime to the source timezone
+            # This automatically handles DST!
+            try:
+                event_start_local = source_tz.localize(event_start_naive)
+                # Convert to UTC
+                event_start_utc = event_start_local.astimezone(pytz.utc)
+                logger.debug(f"Converted {event_start_local} to UTC: {event_start_utc}")
+            except Exception as e:
+                logger.error(f"Error localizing time to {source_tz}: {e}")
+                # Fallback: treat as UTC
+                event_start_utc = django_timezone.make_aware(event_start_naive, pytz.utc)
+
+            event_end_utc = event_start_utc + timedelta(minutes=program_duration)
+
+            # Pre-generate the main event title and description for reuse
+            if title_template:
+                main_event_title = format_template(title_template, all_groups)
+            else:
+                title_parts = []
+                if 'league' in all_groups and all_groups['league']:
+                    title_parts.append(all_groups['league'])
+                if 'team1' in all_groups and 'team2' in all_groups:
+                    title_parts.append(f"{all_groups['team1']} vs {all_groups['team2']}")
+                elif 'title' in all_groups and all_groups['title']:
+                    title_parts.append(all_groups['title'])
+                main_event_title = ' - '.join(title_parts) if title_parts else channel_name
+
+            if description_template:
+                main_event_description = format_template(description_template, all_groups)
+            else:
+                main_event_description = main_event_title
+
+
+
+            # Determine if this day is before, during, or after the event
+            # Event only happens on day 0 (first day)
+            is_event_day = (day == 0)
+
+            if is_event_day and not event_happened:
+                # This is THE day the event happens
+                # Fill programs BEFORE the event
+                current_time = day_start
+
+                while current_time < event_start_utc:
+                    program_start_utc = current_time
+                    program_end_utc = min(current_time + timedelta(minutes=program_duration), event_start_utc)
+
+                    # Use custom upcoming templates if provided, otherwise use defaults
+                    if upcoming_title_template:
+                        upcoming_title = format_template(upcoming_title_template, all_groups)
+                    else:
+                        upcoming_title = main_event_title
+
+                    if upcoming_description_template:
+                        upcoming_description = format_template(upcoming_description_template, all_groups)
+                    else:
+                        upcoming_description = f"Upcoming: {main_event_description}"
+
+                    # Build custom_properties for upcoming programs (only date, no category/live)
+                    program_custom_properties = {}
+
+                    # Add date if requested (YYYY-MM-DD format from start time in event timezone)
+                    if include_date:
+                        # Convert UTC time to event timezone for date calculation
+                        local_time = program_start_utc.astimezone(source_tz)
+                        date_str = local_time.strftime('%Y-%m-%d')
+                        program_custom_properties['date'] = date_str
+
+                    programs.append({
+                        "channel_id": channel_id,
+                        "start_time": program_start_utc,
+                        "end_time": program_end_utc,
+                        "title": upcoming_title,
+                        "description": upcoming_description,
+                        "custom_properties": program_custom_properties,
+                    })
+
+                    current_time += timedelta(minutes=program_duration)
+
+                # Add the MAIN EVENT at the extracted time
+                # Build custom_properties for main event (includes category and live)
+                main_event_custom_properties = {}
+
+                # Add categories if provided
+                if categories:
+                    main_event_custom_properties['categories'] = categories
+
+                # Add date if requested (YYYY-MM-DD format from start time in event timezone)
+                if include_date:
+                    # Convert UTC time to event timezone for date calculation
+                    local_time = event_start_utc.astimezone(source_tz)
+                    date_str = local_time.strftime('%Y-%m-%d')
+                    main_event_custom_properties['date'] = date_str
+
+                # Add live flag if requested
+                if include_live:
+                    main_event_custom_properties['live'] = True
+
+                programs.append({
+                    "channel_id": channel_id,
+                    "start_time": event_start_utc,
+                    "end_time": event_end_utc,
+                    "title": main_event_title,
+                    "description": main_event_description,
+                    "custom_properties": main_event_custom_properties,
+                })
+
+                event_happened = True
+
+                # Fill programs AFTER the event until end of day
+                current_time = event_end_utc
+
+                while current_time < day_end:
+                    program_start_utc = current_time
+                    program_end_utc = min(current_time + timedelta(minutes=program_duration), day_end)
+
+                    # Use custom ended templates if provided, otherwise use defaults
+                    if ended_title_template:
+                        ended_title = format_template(ended_title_template, all_groups)
+                    else:
+                        ended_title = main_event_title
+
+                    if ended_description_template:
+                        ended_description = format_template(ended_description_template, all_groups)
+                    else:
+                        ended_description = f"Ended: {main_event_description}"
+
+                    # Build custom_properties for ended programs (only date, no category/live)
+                    program_custom_properties = {}
+
+                    # Add date if requested (YYYY-MM-DD format from start time in event timezone)
+                    if include_date:
+                        # Convert UTC time to event timezone for date calculation
+                        local_time = program_start_utc.astimezone(source_tz)
+                        date_str = local_time.strftime('%Y-%m-%d')
+                        program_custom_properties['date'] = date_str
+
+                    programs.append({
+                        "channel_id": channel_id,
+                        "start_time": program_start_utc,
+                        "end_time": program_end_utc,
+                        "title": ended_title,
+                        "description": ended_description,
+                        "custom_properties": program_custom_properties,
+                    })
+
+                    current_time += timedelta(minutes=program_duration)
+            else:
+                # This day is either before the event (future days) or after the event happened
+                # Fill entire day with appropriate message
+                current_time = day_start
+
+                # If event already happened, all programs show "Ended"
+                # If event hasn't happened yet (shouldn't occur with day 0 logic), show "Upcoming"
+                is_ended = event_happened
+
+                while current_time < day_end:
+                    program_start_utc = current_time
+                    program_end_utc = min(current_time + timedelta(minutes=program_duration), day_end)
+
+                    # Use custom templates based on whether event has ended or is upcoming
+                    if is_ended:
+                        if ended_title_template:
+                            program_title = format_template(ended_title_template, all_groups)
+                        else:
+                            program_title = main_event_title
+
+                        if ended_description_template:
+                            program_description = format_template(ended_description_template, all_groups)
+                        else:
+                            program_description = f"Ended: {main_event_description}"
+                    else:
+                        if upcoming_title_template:
+                            program_title = format_template(upcoming_title_template, all_groups)
+                        else:
+                            program_title = main_event_title
+
+                        if upcoming_description_template:
+                            program_description = format_template(upcoming_description_template, all_groups)
+                        else:
+                            program_description = f"Upcoming: {main_event_description}"
+
+                    # Build custom_properties (only date for upcoming/ended filler programs)
+                    program_custom_properties = {}
+
+                    # Add date if requested (YYYY-MM-DD format from start time in event timezone)
+                    if include_date:
+                        # Convert UTC time to event timezone for date calculation
+                        local_time = program_start_utc.astimezone(source_tz)
+                        date_str = local_time.strftime('%Y-%m-%d')
+                        program_custom_properties['date'] = date_str
+
+                    programs.append({
+                        "channel_id": channel_id,
+                        "start_time": program_start_utc,
+                        "end_time": program_end_utc,
+                        "title": program_title,
+                        "description": program_description,
+                        "custom_properties": program_custom_properties,
+                    })
+
+                    current_time += timedelta(minutes=program_duration)
+        else:
+            # No extracted time - fill entire day with regular intervals
+            # day_start and day_end are already in UTC, so no conversion needed
+            programs_per_day = max(1, int(24 / (program_duration / 60)))
+
+            for program_num in range(programs_per_day):
+                program_start_utc = day_start + timedelta(minutes=program_num * program_duration)
+                program_end_utc = program_start_utc + timedelta(minutes=program_duration)
+
+                if title_template:
+                    title = format_template(title_template, all_groups)
+                else:
+                    title_parts = []
+                    if 'league' in all_groups and all_groups['league']:
+                        title_parts.append(all_groups['league'])
+                    if 'team1' in all_groups and 'team2' in all_groups:
+                        title_parts.append(f"{all_groups['team1']} vs {all_groups['team2']}")
+                    elif 'title' in all_groups and all_groups['title']:
+                        title_parts.append(all_groups['title'])
+                    title = ' - '.join(title_parts) if title_parts else channel_name
+
+                if description_template:
+                    description = format_template(description_template, all_groups)
+                else:
+                    description = title
+
+                # Build custom_properties for this program
+                program_custom_properties = {}
+
+                # Add categories if provided
+                if categories:
+                    program_custom_properties['categories'] = categories
+
+                # Add date if requested (YYYY-MM-DD format from start time in event timezone)
+                if include_date:
+                    # Convert UTC time to event timezone for date calculation
+                    local_time = program_start_utc.astimezone(source_tz)
+                    date_str = local_time.strftime('%Y-%m-%d')
+                    program_custom_properties['date'] = date_str
+
+                # Add live flag if requested
+                if include_live:
+                    program_custom_properties['live'] = True
+
+                programs.append({
+                    "channel_id": channel_id,
+                    "start_time": program_start_utc,
+                    "end_time": program_end_utc,
+                    "title": title,
+                    "description": description,
+                    "custom_properties": program_custom_properties,
+                })
+
+    logger.info(f"Generated {len(programs)} custom dummy programs for {channel_name}")
+    return programs
+
+
 def generate_dummy_epg(
     channel_id, channel_name, xml_lines=None, num_days=1, program_length_hours=4
 ):
@@ -294,6 +898,23 @@ def generate_dummy_epg(
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
+
+        # Add custom_properties if present
+        custom_data = program.get('custom_properties', {})
+
+        # Categories
+        if 'categories' in custom_data:
+            for cat in custom_data['categories']:
+                xml_lines.append(f"    <category>{html.escape(cat)}</category>")
+
+        # Date tag
+        if 'date' in custom_data:
+            xml_lines.append(f"    <date>{html.escape(custom_data['date'])}</date>")
+
+        # Live tag
+        if custom_data.get('live', False):
+            xml_lines.append(f"    <live />")
+
         xml_lines.append(f"  </programme>")
 
     return xml_lines
@@ -367,7 +988,7 @@ def generate_epg(request, profile_name=None, user=None):
         dummy_days = num_days if num_days > 0 else 3
 
         # Calculate cutoff date for EPG data filtering (only if days > 0)
-        now = timezone.now()
+        now = django_timezone.now()
         cutoff_date = now + timedelta(days=num_days) if num_days > 0 else None
 
         # Process channels for the <channel> section
@@ -434,12 +1055,38 @@ def generate_epg(request, profile_name=None, user=None):
                 # Default to channel number
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
+            # Use EPG data name for display, but channel name for pattern matching
             display_name = channel.epg_data.name if channel.epg_data else channel.name
+            # For dummy EPG pattern matching, determine which name to use
+            pattern_match_name = channel.name
+
+            # Check if we should use stream name instead of channel name
+            if channel.epg_data and channel.epg_data.epg_source:
+                epg_source = channel.epg_data.epg_source
+                if epg_source.custom_properties:
+                    custom_props = epg_source.custom_properties
+                    name_source = custom_props.get('name_source')
+
+                    if name_source == 'stream':
+                        stream_index = custom_props.get('stream_index', 1) - 1
+                        channel_streams = channel.streams.all().order_by('channelstream__order')
+
+                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
+                            stream = list(channel_streams)[stream_index]
+                            pattern_match_name = stream.name
+                            logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
+                        else:
+                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
 
             if not channel.epg_data:
                 # Use the enhanced dummy EPG generation function with defaults
                 program_length_hours = 4  # Default to 4-hour program blocks
-                dummy_programs = generate_dummy_programs(channel_id, display_name, num_days=dummy_days, program_length_hours=program_length_hours)
+                dummy_programs = generate_dummy_programs(
+                    channel_id, pattern_match_name,
+                    num_days=dummy_days,
+                    program_length_hours=program_length_hours,
+                    epg_source=None
+                )
 
                 for program in dummy_programs:
                     # Format times in XMLTV format
@@ -450,9 +1097,68 @@ def generate_epg(request, profile_name=None, user=None):
                     yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
                     yield f"    <title>{html.escape(program['title'])}</title>\n"
                     yield f"    <desc>{html.escape(program['description'])}</desc>\n"
+
+                    # Add custom_properties if present
+                    custom_data = program.get('custom_properties', {})
+
+                    # Categories
+                    if 'categories' in custom_data:
+                        for cat in custom_data['categories']:
+                            yield f"    <category>{html.escape(cat)}</category>\n"
+
+                    # Date tag
+                    if 'date' in custom_data:
+                        yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
+
+                    # Live tag
+                    if custom_data.get('live', False):
+                        yield f"    <live />\n"
+
                     yield f"  </programme>\n"
 
             else:
+                # Check if this is a dummy EPG with no programs (generate on-demand)
+                if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
+                    # This is a custom dummy EPG - check if it has programs
+                    if not channel.epg_data.programs.exists():
+                        # No programs stored, generate on-demand using custom patterns
+                        # Use actual channel name for pattern matching
+                        program_length_hours = 4
+                        dummy_programs = generate_dummy_programs(
+                            channel_id, pattern_match_name,
+                            num_days=dummy_days,
+                            program_length_hours=program_length_hours,
+                            epg_source=channel.epg_data.epg_source
+                        )
+
+                        for program in dummy_programs:
+                            start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
+                            stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
+
+                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                            yield f"    <title>{html.escape(program['title'])}</title>\n"
+                            yield f"    <desc>{html.escape(program['description'])}</desc>\n"
+
+                            # Add custom_properties if present
+                            custom_data = program.get('custom_properties', {})
+
+                            # Categories
+                            if 'categories' in custom_data:
+                                for cat in custom_data['categories']:
+                                    yield f"    <category>{html.escape(cat)}</category>\n"
+
+                            # Date tag
+                            if 'date' in custom_data:
+                                yield f"    <date>{html.escape(custom_data['date'])}</date>\n"
+
+                            # Live tag
+                            if custom_data.get('live', False):
+                                yield f"    <live />\n"
+
+                            yield f"  </programme>\n"
+
+                        continue  # Skip to next channel
+
                 # For real EPG data - filter only if days parameter was specified
                 if num_days > 0:
                     programs_qs = channel.epg_data.programs.filter(
@@ -1013,14 +1719,34 @@ def xc_get_epg(request, user, short=False):
 
     limit = request.GET.get('limit', 4)
     if channel.epg_data:
-        if short == False:
-            programs = channel.epg_data.programs.filter(
-                start_time__gte=timezone.now()
-            ).order_by('start_time')
+        # Check if this is a dummy EPG that generates on-demand
+        if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
+            if not channel.epg_data.programs.exists():
+                # Generate on-demand using custom patterns
+                programs = generate_dummy_programs(
+                    channel_id=channel_id,
+                    channel_name=channel.name,
+                    epg_source=channel.epg_data.epg_source
+                )
+            else:
+                # Has stored programs, use them
+                if short == False:
+                    programs = channel.epg_data.programs.filter(
+                        start_time__gte=django_timezone.now()
+                    ).order_by('start_time')
+                else:
+                    programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
         else:
-            programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+            # Regular EPG with stored programs
+            if short == False:
+                programs = channel.epg_data.programs.filter(
+                    start_time__gte=django_timezone.now()
+                ).order_by('start_time')
+            else:
+                programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
     else:
-        programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name)
+        # No EPG data assigned, generate default dummy
+        programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)
 
     output = {"epg_listings": []}
     for program in programs:
@@ -1047,7 +1773,7 @@ def xc_get_epg(request, user, short=False):
         }
 
         if short == False:
-            program_output["now_playing"] = 1 if start <= timezone.now() <= end else 0
+            program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
             program_output["has_archive"] = "0"
 
         output['epg_listings'].append(program_output)
@@ -1232,7 +1958,7 @@ def xc_get_series_info(request, user, series_id):
     try:
         should_refresh = (
             not series_relation.last_episode_refresh or
-            series_relation.last_episode_refresh < timezone.now() - timedelta(hours=24)
+            series_relation.last_episode_refresh < django_timezone.now() - timedelta(hours=24)
         )
 
         # Check if detailed data has been fetched

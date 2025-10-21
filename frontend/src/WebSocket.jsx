@@ -642,6 +642,16 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
+            case 'epg_data_created':
+              // A new EPG data entry was created (e.g., for a dummy EPG)
+              // Fetch EPG data so the channel form can immediately assign it
+              try {
+                await fetchEPGData();
+              } catch (e) {
+                console.warn('Failed to refresh EPG data after creation:', e);
+              }
+              break;
+
             case 'stream_rehash':
               // Handle stream rehash progress updates
               if (parsedEvent.data.action === 'starting') {

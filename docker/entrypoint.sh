@@ -96,7 +96,16 @@ fi
 
 chmod +x /etc/profile.d/dispatcharr.sh
 
-pip install django-filter
+# Ensure root's .bashrc sources the profile.d scripts for interactive non-login shells
+if ! grep -q "profile.d/dispatcharr.sh" /root/.bashrc 2>/dev/null; then
+    cat >> /root/.bashrc << 'EOF'
+
+# Source Dispatcharr environment variables
+if [ -f /etc/profile.d/dispatcharr.sh ]; then
+    . /etc/profile.d/dispatcharr.sh
+fi
+EOF
+fi
 
 # Run init scripts
 echo "Starting user setup..."

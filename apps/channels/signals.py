@@ -45,6 +45,20 @@ def set_default_m3u_account(sender, instance, **kwargs):
         else:
             raise ValueError("No default M3UAccount found.")
 
+@receiver(post_save, sender=Stream)
+def generate_custom_stream_hash(sender, instance, created, **kwargs):
+    """
+    Generate a stable stream_hash for custom streams after creation.
+    Uses the stream's ID to ensure the hash never changes even if name/url is edited.
+    """
+    if instance.is_custom and not instance.stream_hash and created:
+        import hashlib
+        # Use stream ID for a stable, unique hash that never changes
+        unique_string = f"custom_stream_{instance.id}"
+        instance.stream_hash = hashlib.sha256(unique_string.encode()).hexdigest()
+        # Use update to avoid triggering signals again
+        Stream.objects.filter(id=instance.id).update(stream_hash=instance.stream_hash)
+
 @receiver(post_save, sender=Channel)
 def refresh_epg_programs(sender, instance, created, **kwargs):
     """

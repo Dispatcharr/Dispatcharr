@@ -28,6 +28,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'last_message',
             'created_at',
             'updated_at',
+            'custom_properties',
             'epg_data_ids'
         ]
 

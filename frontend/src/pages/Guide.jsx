@@ -250,6 +250,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const logos = useLogosStore((s) => s.logos);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
+  const epgs = useEPGsStore((s) => s.epgs);
 
   const [programs, setPrograms] = useState([]);
   const [guideChannels, setGuideChannels] = useState([]);
@@ -400,8 +401,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     : defaultEnd;
 
   const channelIdByTvgId = useMemo(
-    () => buildChannelIdMap(guideChannels, tvgsById),
-    [guideChannels, tvgsById]
+    () => buildChannelIdMap(guideChannels, tvgsById, epgs),
+    [guideChannels, tvgsById, epgs]
   );
 
   const channelById = useMemo(() => {
@@ -1476,6 +1477,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
           {filteredChannels.length > 0 ? (
             <VariableSizeList
+              className="guide-list-outer"
               height={virtualizedHeight}
               width={virtualizedWidth}
               itemCount={filteredChannels.length}

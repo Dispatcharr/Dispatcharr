@@ -29,6 +29,7 @@ import { FixedSizeList as List } from 'react-window';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
 import logo from '../../images/logo.png';
+import API from '../../api';
 
 // Custom item component for MultiSelect with tooltip
 const OptionWithTooltip = forwardRef(
@@ -53,6 +54,7 @@ const LiveGroupFilter = ({
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const fetchStreamProfiles = useStreamProfilesStore((s) => s.fetchProfiles);
   const [groupFilter, setGroupFilter] = useState('');
+  const [epgSources, setEpgSources] = useState([]);
 
   // Logo selection functionality
   const {
@@ -74,6 +76,19 @@ const LiveGroupFilter = ({
       fetchStreamProfiles();
     }
   }, [streamProfiles.length, fetchStreamProfiles]);
+
+  // Fetch EPG sources when component mounts
+  useEffect(() => {
+    const fetchEPGSources = async () => {
+      try {
+        const sources = await API.getEPGs();
+        setEpgSources(sources || []);
+      } catch (error) {
+        console.error('Failed to fetch EPG sources:', error);
+      }
+    };
+    fetchEPGSources();
+  }, []);
 
   useEffect(() => {
     if (Object.keys(channelGroups).length === 0) {
@@ -298,10 +313,10 @@ const LiveGroupFilter = ({
                         placeholder="Select options..."
                         data={[
                           {
-                            value: 'force_dummy_epg',
-                            label: 'Force Dummy EPG',
+                            value: 'force_epg',
+                            label: 'Force EPG Source',
                             description:
-                              'Assign a dummy EPG to all channels in this group if no EPG is matched',
+                              'Force a specific EPG source for all auto-synced channels, or disable EPG assignment entirely',
                           },
                           {
                             value: 'group_override',
@@ -349,8 +364,12 @@ const LiveGroupFilter = ({
                         itemComponent={OptionWithTooltip}
                         value={(() => {
                           const selectedValues = [];
-                          if (group.custom_properties?.force_dummy_epg) {
-                            selectedValues.push('force_dummy_epg');
+                          if (
+                            group.custom_properties?.custom_epg_id !==
+                              undefined ||
+                            group.custom_properties?.force_dummy_epg
+                          ) {
+                            selectedValues.push('force_epg');
                           }
                           if (
                             group.custom_properties?.group_override !==
@@ -409,13 +428,25 @@ const LiveGroupFilter = ({
                                   ...(state.custom_properties || {}),
                                 };
 
-                                // Handle force_dummy_epg
-                                if (
-                                  selectedOptions.includes('force_dummy_epg')
-                                ) {
-                                  newCustomProps.force_dummy_epg = true;
+                                // Handle force_epg
+                                if (selectedOptions.includes('force_epg')) {
+                                  // Migrate from old force_dummy_epg if present
+                                  if (
+                                    newCustomProps.force_dummy_epg &&
+                                    newCustomProps.custom_epg_id === undefined
+                                  ) {
+                                    // Migrate: force_dummy_epg=true becomes custom_epg_id=null
+                                    newCustomProps.custom_epg_id = null;
+                                    delete newCustomProps.force_dummy_epg;
+                                  } else if (
+                                    newCustomProps.custom_epg_id === undefined
+                                  ) {
+                                    // New configuration: initialize with null (no EPG/default dummy)
+                                    newCustomProps.custom_epg_id = null;
+                                  }
                                 } else {
-                                  delete newCustomProps.force_dummy_epg;
+                                  // Only remove custom_epg_id when deselected
+                                  delete newCustomProps.custom_epg_id;
                                 }
 
                                 // Handle group_override
@@ -1087,6 +1118,79 @@ const LiveGroupFilter = ({
                             Upload or Create Logo
                           </Button>
                         </Box>
+                      )}
+
+                      {/* Show EPG selector when force_epg is selected */}
+                      {(group.custom_properties?.custom_epg_id !== undefined ||
+                        group.custom_properties?.force_dummy_epg) && (
+                        <Tooltip
+                          label="Force a specific EPG source for all auto-synced channels in this group. For dummy EPGs, all channels will share the same EPG data. For regular EPG sources (XMLTV, Schedules Direct), channels will be matched by their tvg_id within that source. Select 'No EPG' to disable EPG assignment."
+                          withArrow
+                        >
+                          <Select
+                            label="EPG Source"
+                            placeholder="No EPG (Disabled)"
+                            value={(() => {
+                              // Handle migration from force_dummy_epg
+                              if (
+                                group.custom_properties?.custom_epg_id !==
+                                undefined
+                              ) {
+                                // Convert to string, use '0' for null/no EPG
+                                return group.custom_properties.custom_epg_id ===
+                                  null
+                                  ? '0'
+                                  : group.custom_properties.custom_epg_id.toString();
+                              } else if (
+                                group.custom_properties?.force_dummy_epg
+                              ) {
+                                // Show "No EPG" for old force_dummy_epg configs
+                                return '0';
+                              }
+                              return '0';
+                            })()}
+                            onChange={(value) => {
+                              // Convert back: '0' means no EPG (null)
+                              const newValue =
+                                value === '0' ? null : parseInt(value);
+                              setGroupStates(
+                                groupStates.map((state) => {
+                                  if (
+                                    state.channel_group === group.channel_group
+                                  ) {
+                                    return {
+                                      ...state,
+                                      custom_properties: {
+                                        ...state.custom_properties,
+                                        custom_epg_id: newValue,
+                                      },
+                                    };
+                                  }
+                                  return state;
+                                })
+                              );
+                            }}
+                            data={[
+                              { value: '0', label: 'No EPG (Disabled)' },
+                              ...epgSources.map((source) => ({
+                                value: source.id.toString(),
+                                label: `${source.name} (${
+                                  source.source_type === 'dummy'
+                                    ? 'Dummy'
+                                    : source.source_type === 'xmltv'
+                                      ? 'XMLTV'
+                                      : source.source_type ===
+                                          'schedules_direct'
+                                        ? 'Schedules Direct'
+                                        : source.source_type
+                                })`,
+                              })),
+                            ]}
+                            clearable
+                            searchable
+                            size="xs"
+                          />
+                        </Tooltip>
                       )}
                     </>
                   )}

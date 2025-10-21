@@ -8,7 +8,7 @@ from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from core.models import UserAgent, CoreSettings
+from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
 from uuid import UUID
 import requests
@@ -26,16 +26,67 @@ def get_stream_object(id: str):
 
 def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]:
     """
-    Generate the appropriate stream URL for a channel based on its profile settings.
+    Generate the appropriate stream URL for a channel or stream based on its profile settings.
 
     Args:
-        channel_id: The UUID of the channel
+        channel_id: The UUID of the channel or stream hash
 
     Returns:
         Tuple[str, str, bool, Optional[int]]: (stream_url, user_agent, transcode_flag, profile_id)
     """
     try:
-        channel = get_stream_object(channel_id)
+        channel_or_stream = get_stream_object(channel_id)
+
+        # Handle direct stream preview (custom streams)
+        if isinstance(channel_or_stream, Stream):
+            stream = channel_or_stream
+            logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
+
+            # For custom streams, we need to get the M3U account and profile
+            m3u_account = stream.m3u_account
+            if not m3u_account:
+                logger.error(f"Stream {stream.id} has no M3U account")
+                return None, None, False, None
+
+            # Get the default profile for this M3U account (custom streams use default)
+            m3u_profiles = m3u_account.profiles.all()
+            profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+
+            if not profile:
+                logger.error(f"No default profile found for M3U account {m3u_account.id}")
+                return None, None, False, None
+
+            # Get the appropriate user agent
+            stream_user_agent = m3u_account.get_user_agent().user_agent
+            if stream_user_agent is None:
+                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+
+            # Get stream URL (no transformation for custom streams)
+            stream_url = stream.url
+
+            # Check if the stream has its own stream_profile set, otherwise use default
+            if stream.stream_profile:
+                stream_profile = stream.stream_profile
+                logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
+            else:
+                stream_profile = StreamProfile.objects.get(
+                    id=CoreSettings.get_default_stream_profile_id()
+                )
+                logger.debug(f"Using default stream profile: {stream_profile.name}")
+
+            # Check if transcoding is needed
+            if stream_profile.is_proxy() or stream_profile is None:
+                transcode = False
+            else:
+                transcode = True
+
+            stream_profile_id = stream_profile.id
+
+            return stream_url, stream_user_agent, transcode, stream_profile_id
+
+        # Handle channel preview (existing logic)
+        channel = channel_or_stream
 
         # Get stream and profile for this channel
         # Note: get_stream now returns 3 values (stream_id, profile_id, error_reason)

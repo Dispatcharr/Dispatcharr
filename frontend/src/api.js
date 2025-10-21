@@ -1118,6 +1118,21 @@ export default class API {
     }
   }
 
+  static async getTimezones() {
+    try {
+      const response = await request(`${host}/api/core/timezones/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve timezones', e);
+      // Return fallback data instead of throwing
+      return {
+        timezones: ['UTC', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific'],
+        grouped: {},
+        count: 5
+      };
+    }
+  }
+
   static async getStreamProfiles() {
     try {
       const response = await request(`${host}/api/core/streamprofiles/`);
