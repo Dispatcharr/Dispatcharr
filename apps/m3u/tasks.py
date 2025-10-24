@@ -219,6 +219,10 @@ def fetch_m3u_lines(account, use_cache=False):
                         # Has HTTP URLs, might be a simple M3U without headers
                         is_valid_m3u = True
                         logger.info("Content validated as M3U: contains HTTP URLs")
+                    elif any(line.strip().startswith('rtsp') for line in content_lines):
+                        # Has HTTP URLs, might be a simple M3U without headers
+                        is_valid_m3u = True
+                        logger.info("Content validated as M3U: contains RTSP URLs")
 
                     if not is_valid_m3u:
                         # Log what we actually received for debugging
@@ -1367,7 +1371,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                     )
                     problematic_lines.append((line_index + 1, line[:200]))
 
-            elif extinf_data and line.startswith("http"):
+            elif extinf_data and (line.startswith("http") or line.startswith("rtsp")):
                 url_count += 1
                 # Associate URL with the last EXTINF line
                 extinf_data[-1]["url"] = line

@@ -377,8 +377,8 @@ def validate_flexible_url(value):
         import re
 
         # More flexible pattern for non-FQDN hostnames with paths
-        # Matches: http://hostname, http://hostname/, http://hostname:port/path/to/file.xml
-        non_fqdn_pattern = r'^https?://[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\:[0-9]+)?(/[^\s]*)?$'
+        # Matches: http://hostname, http://hostname/, http://hostname:port/path/to/file.xml, rtp://192.168.2.1,  rtsp://192.168.178.1
+        non_fqdn_pattern = r'^(rts?p|https?)://([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])|[0-9.]+)?(\:[0-9]+)?(/[^\s]*)?$'
         non_fqdn_match = re.match(non_fqdn_pattern, value)
 
         if non_fqdn_match:
