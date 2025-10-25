@@ -219,7 +219,7 @@ class RedisBackedVODConnection:
 
             # Convert bytes keys/values to strings if needed
             if isinstance(list(data.keys())[0], bytes):
-                data = {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()}
+                data = {k: v for k, v in data.items()}
 
             return SerializableConnectionState.from_dict(data)
         except Exception as e:
@@ -1115,14 +1115,14 @@ class MultiWorkerVODConnectionManager:
 
                         # Convert bytes to strings if needed
                         if isinstance(list(data.keys())[0], bytes):
-                            data = {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()}
+                            data = {k: v for k, v in data.items()}
 
                         last_activity = float(data.get('last_activity', 0))
                         active_streams = int(data.get('active_streams', 0))
 
                         # Clean up if stale and no active streams
                         if (current_time - last_activity > max_age_seconds) and active_streams == 0:
-                            session_id = key.decode('utf-8').replace('vod_persistent_connection:', '')
+                            session_id = key.replace('vod_persistent_connection:', '')
                             logger.info(f"Cleaning up stale connection: {session_id}")
 
                             # Clean up connection and related keys
@@ -1219,7 +1219,7 @@ class MultiWorkerVODConnectionManager:
             if connection_data:
                 # Convert bytes to strings if needed
                 if isinstance(list(connection_data.keys())[0], bytes):
-                    connection_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in connection_data.items()}
+                    connection_data = {k: v for k, v in connection_data.items()}
 
                 profile_id = connection_data.get('m3u_profile_id')
                 if profile_id:
@@ -1279,7 +1279,7 @@ class MultiWorkerVODConnectionManager:
 
                         # Convert bytes keys/values to strings if needed
                         if isinstance(list(connection_data.keys())[0], bytes):
-                            connection_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in connection_data.items()}
+                            connection_data = {k: v for k, v in connection_data.items()}
 
                         # Check if content matches (using consolidated data)
                         stored_content_type = connection_data.get('content_obj_type', '')
@@ -1289,7 +1289,7 @@ class MultiWorkerVODConnectionManager:
                             continue
 
                         # Extract session ID
-                        session_id = key.decode('utf-8').replace('vod_persistent_connection:', '')
+                        session_id = key.replace('vod_persistent_connection:', '')
 
                         # Check if Redis-backed connection exists and has no active streams
                         redis_connection = RedisBackedVODConnection(session_id, self.redis_client)

@@ -1849,14 +1849,12 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 client_set_key = RedisKeys.clients(channel_uuid)
                 client_ids = r.smembers(client_set_key) or []
                 stopped = 0
-                for raw_id in client_ids:
+                for cid in client_ids:
                     try:
-                        cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
                         meta_key = RedisKeys.client_metadata(channel_uuid, cid)
                         ua = r.hget(meta_key, "user_agent")
-                        ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
                         # Identify DVR recording client by its user agent
-                        if ua_s and "Dispatcharr-DVR" in ua_s:
+                        if ua and "Dispatcharr-DVR" in ua:
                             try:
                                 ChannelService.stop_client(channel_uuid, cid)
                                 stopped += 1

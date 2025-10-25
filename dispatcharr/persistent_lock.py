@@ -48,7 +48,7 @@ class PersistentLock:
         Returns True if the expiration was successfully extended.
         """
         current_value = self.redis_client.get(self.lock_key)
-        if current_value and current_value.decode("utf-8") == self.lock_token:
+        if current_value and current_value == self.lock_token:
             self.redis_client.expire(self.lock_key, self.lock_timeout)
             self.has_lock = False
             return True

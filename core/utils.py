@@ -42,100 +42,115 @@ def natural_sort_key(text):
     return [convert(c) for c in re.split('([0-9]+)', text)]
 
 class RedisClient:
+    _initialized = False
     _client = None
+    _buffer = None
     _pubsub_client = None
+
+    @classmethod
+    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                # Get connection parameters from settings or environment
+                redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+                redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+
+                # Use standardized settings
+                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
+                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
+                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+
+                # Create Redis client with better defaults
+                client = redis.Redis(
+                    host=redis_host,
+                    port=redis_port,
+                    db=redis_db,
+                    socket_timeout=socket_timeout,
+                    socket_connect_timeout=socket_connect_timeout,
+                    socket_keepalive=socket_keepalive,
+                    health_check_interval=health_check_interval,
+                    retry_on_timeout=retry_on_timeout,
+                    decode_responses=decode_responses
+                )
+
+                # Validate connection with ping
+                client.ping()
+                if cls._initialized is False:
+                    client.flushdb()
+                    cls._initialized = True
+
+                # Disable persistence on first connection - improves performance
+                # Only try to disable if not in a read-only environment
+                try:
+                    client.config_set('save', '')  # Disable RDB snapshots
+                    client.config_set('appendonly', 'no')  # Disable AOF logging
+
+                    # Set optimal memory settings with environment variable support
+                    # Get max memory from environment or use a larger default (512MB instead of 256MB)
+                    #max_memory = os.environ.get('REDIS_MAX_MEMORY', '512mb')
+                    #eviction_policy = os.environ.get('REDIS_EVICTION_POLICY', 'allkeys-lru')
+
+                    # Apply memory settings
+                    #client.config_set('maxmemory-policy', eviction_policy)
+                    #client.config_set('maxmemory', max_memory)
+
+                    #logger.info(f"Redis configured with maxmemory={max_memory}, policy={eviction_policy}")
+
+                    # Disable protected mode when in debug mode
+                    if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
+                        client.config_set('protected-mode', 'no')  # Disable protected mode in debug
+                        logger.warning("Redis protected mode disabled for debug environment")
+
+                    logger.trace("Redis persistence disabled for better performance")
+                except redis.exceptions.ResponseError as e:
+                    # Improve error handling for Redis configuration errors
+                    if "OOM" in str(e):
+                        logger.error(f"Redis OOM during configuration: {e}")
+                        # Try to increase maxmemory as an emergency measure
+                        try:
+                            client.config_set('maxmemory', '768mb')
+                            logger.warning("Applied emergency Redis memory increase to 768MB")
+                        except:
+                            pass
+                    else:
+                        logger.error(f"Redis configuration error: {e}")
+
+                logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
+                break
+
+            except (ConnectionError, TimeoutError) as e:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}")
+                    return None
+                else:
+                    # Use exponential backoff for retries
+                    wait_time = retry_interval * (2 ** (retry_count - 1))
+                    logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
+                    time.sleep(wait_time)
+
+            except Exception as e:
+                logger.error(f"Unexpected error connecting to Redis: {e}")
+                return None
+
+        return client
 
     @classmethod
     def get_client(cls, max_retries=5, retry_interval=1):
         if cls._client is None:
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                    redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                    redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-
-                    # Use standardized settings
-                    socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                    # Create Redis client with better defaults
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        socket_timeout=socket_timeout,
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
-                    )
-
-                    # Validate connection with ping
-                    client.ping()
-                    client.flushdb()
-
-                    # Disable persistence on first connection - improves performance
-                    # Only try to disable if not in a read-only environment
-                    try:
-                        client.config_set('save', '')  # Disable RDB snapshots
-                        client.config_set('appendonly', 'no')  # Disable AOF logging
-
-                        # Set optimal memory settings with environment variable support
-                        # Get max memory from environment or use a larger default (512MB instead of 256MB)
-                        #max_memory = os.environ.get('REDIS_MAX_MEMORY', '512mb')
-                        #eviction_policy = os.environ.get('REDIS_EVICTION_POLICY', 'allkeys-lru')
-
-                        # Apply memory settings
-                        #client.config_set('maxmemory-policy', eviction_policy)
-                        #client.config_set('maxmemory', max_memory)
-
-                        #logger.info(f"Redis configured with maxmemory={max_memory}, policy={eviction_policy}")
-
-                        # Disable protected mode when in debug mode
-                        if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
-                            client.config_set('protected-mode', 'no')  # Disable protected mode in debug
-                            logger.warning("Redis protected mode disabled for debug environment")
-
-                        logger.trace("Redis persistence disabled for better performance")
-                    except redis.exceptions.ResponseError as e:
-                        # Improve error handling for Redis configuration errors
-                        if "OOM" in str(e):
-                            logger.error(f"Redis OOM during configuration: {e}")
-                            # Try to increase maxmemory as an emergency measure
-                            try:
-                                client.config_set('maxmemory', '768mb')
-                                logger.warning("Applied emergency Redis memory increase to 768MB")
-                            except:
-                                pass
-                        else:
-                            logger.error(f"Redis configuration error: {e}")
-
-                    logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
-
-                    cls._client = client
-                    break
-
-                except (ConnectionError, TimeoutError) as e:
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}")
-                        return None
-                    else:
-                        # Use exponential backoff for retries
-                        wait_time = retry_interval * (2 ** (retry_count - 1))
-                        logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
-                        time.sleep(wait_time)
-
-                except Exception as e:
-                    logger.error(f"Unexpected error connecting to Redis: {e}")
-                    return None
-
+            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval)
         return cls._client
+
+    @classmethod
+    def get_buffer(cls, max_retries=5, retry_interval=1):
+        """Get Redis client optimized for binary data (no decoding)"""
+        if cls._buffer is None:
+            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval)
+        return cls._buffer
 
     @classmethod
     def get_pubsub_client(cls, max_retries=5, retry_interval=1):
@@ -165,7 +180,8 @@ class RedisClient:
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
                         health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
+                        retry_on_timeout=retry_on_timeout,
+                        decode_responses=True
                     )
 
                     # Validate connection with ping

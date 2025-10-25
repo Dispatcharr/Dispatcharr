@@ -550,14 +550,7 @@ class VODStreamView(View):
                 connection_data = redis_client.hgetall(persistent_connection_key)
 
                 if connection_data:
-                    # Decode Redis hash data
-                    decoded_data = {}
-                    for k, v in connection_data.items():
-                        k_str = k.decode('utf-8') if isinstance(k, bytes) else k
-                        v_str = v.decode('utf-8') if isinstance(v, bytes) else v
-                        decoded_data[k_str] = v_str
-
-                    existing_profile_id = decoded_data.get('m3u_profile_id')
+                    existing_profile_id = connection_data.get('m3u_profile_id')
                     if existing_profile_id:
                         try:
                             existing_profile = M3UAccountProfile.objects.get(
@@ -770,19 +763,16 @@ class VODStatsView(View):
 
                 for key in keys:
                     try:
-                        key_str = key.decode('utf-8') if isinstance(key, bytes) else key
                         connection_data = redis_client.hgetall(key)
 
                         if connection_data:
                             # Extract session ID from key
-                            session_id = key_str.replace('vod_persistent_connection:', '')
+                            session_id = key.replace('vod_persistent_connection:', '')
 
                             # Decode Redis hash data
                             combined_data = {}
                             for k, v in connection_data.items():
-                                k_str = k.decode('utf-8') if isinstance(k, bytes) else k
-                                v_str = v.decode('utf-8') if isinstance(v, bytes) else v
-                                combined_data[k_str] = v_str
+                                combined_data[k] = v
 
                             # Get content info from the connection data (using correct field names)
                             content_type = combined_data.get('content_obj_type', 'unknown')

@@ -1875,14 +1875,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 md = r.hgetall(metadata_key)
                 if md:
                     def _gv(bkey):
-                        return md.get(bkey.encode('utf-8'))
+                        return md.get(bkey)
 
                     def _d(bkey, cast=str):
                         v = _gv(bkey)
                         try:
                             if v is None:
                                 return None
-                            s = v.decode('utf-8')
+                            s = v
                             return cast(s) if cast is not str else s
                         except Exception:
                             return None

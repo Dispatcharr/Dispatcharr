@@ -215,9 +215,9 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
                     existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                     if existing_stream_id:
                         # Decode bytes to string/int for proper Redis key lookup
-                        existing_stream_id = existing_stream_id.decode('utf-8')
+                        existing_stream_id = existing_stream_id
                         existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
-                        if existing_profile_id and int(existing_profile_id.decode('utf-8')) == profile.id:
+                        if existing_profile_id and int(existing_profile_id) == profile.id:
                             channel_using_profile = True
                             logger.debug(f"Channel {channel.id} already using profile {profile.id}")
 
@@ -353,9 +353,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                         existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                         if existing_stream_id:
                             # Decode bytes to string/int for proper Redis key lookup
-                            existing_stream_id = existing_stream_id.decode('utf-8')
+                            existing_stream_id = existing_stream_id
                             existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
-                            if existing_profile_id and int(existing_profile_id.decode('utf-8')) == profile.id:
+                            if existing_profile_id and int(existing_profile_id) == profile.id:
                                 channel_using_profile = True
                                 logger.debug(f"Channel {channel.id} already using profile {profile.id}")
 
