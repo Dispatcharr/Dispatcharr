@@ -330,6 +330,8 @@ const SettingsPage = () => {
               break;
             case 'dvr-pre-offset-minutes':
             case 'dvr-post-offset-minutes':
+            case 'dvr-max-retries':
+            case 'dvr-retry-frequency':
               val = Number.parseInt(value.value || '0', 10);
               if (Number.isNaN(val)) val = 0;
               break;
@@ -871,6 +873,38 @@ const SettingsPage = () => {
                         name={
                           settings['dvr-post-offset-minutes']?.key ||
                           'dvr-post-offset-minutes'
+                        }
+                      />
+                      <NumberInput
+                        label="Max Retries"
+                        description="How many times should the DVR attempt to start recording before reporting failure."
+                        min={0}
+                        max={10}
+                        step={1}
+                        {...form.getInputProps('dvr-max-retries')}
+                        key={form.key('dvr-max-retries')}
+                        id={
+                          settings['dvr-max-retries']?.id || 'dvr-max-retries'
+                        }
+                        name={
+                          settings['dvr-max-retries']?.key || 'dvr-max-retries'
+                        }
+                      />
+                      <NumberInput
+                        label="Retry Frequency (seconds)"
+                        description="How long should the DVR wait between each attempt to start the stream."
+                        min={10}
+                        max={300}
+                        step={5}
+                        {...form.getInputProps('dvr-retry-frequency')}
+                        key={form.key('dvr-retry-frequency')}
+                        id={
+                          settings['dvr-retry-frequency']?.id ||
+                          'dvr-retry-frequency'
+                        }
+                        name={
+                          settings['dvr-retry-frequency']?.key ||
+                          'dvr-retry-frequency'
                         }
                       />
                       <TextInput

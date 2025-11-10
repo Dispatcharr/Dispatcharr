@@ -981,8 +981,9 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const status = customProps.status;
   const isTimeActive = now.isAfter(start) && now.isBefore(end);
   const isInterrupted = status === 'interrupted';
-  const isInProgress = isTimeActive; // Show as recording by time, regardless of status glitches
-  const isUpcoming = now.isBefore(start);
+  const isPending = status === 'pending' || status === 'attempting';
+  const isInProgress = (isTimeActive || status === 'recording') && !isPending; // Show as recording if status is "recording" or within time window
+  const isUpcoming = now.isBefore(start) && !isPending && status !== 'recording';
   const isSeriesGroup = Boolean(
     recording._group_count && recording._group_count > 1
   );
@@ -1132,20 +1133,24 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
             color={
               isInterrupted
                 ? 'red.7'
-                : isInProgress
-                  ? 'red.6'
-                  : isUpcoming
-                    ? 'yellow.6'
-                    : 'gray.6'
+                : isPending
+                  ? 'orange.6'
+                  : isInProgress
+                    ? 'red.6'
+                    : isUpcoming
+                      ? 'yellow.6'
+                      : 'gray.6'
             }
           >
             {isInterrupted
               ? 'Interrupted'
-              : isInProgress
-                ? 'Recording'
-                : isUpcoming
-                  ? 'Scheduled'
-                  : 'Completed'}
+              : isPending
+                ? 'Pending'
+                : isInProgress
+                  ? 'Recording'
+                  : isUpcoming
+                    ? 'Scheduled'
+                    : 'Completed'}
           </Badge>
           {isInterrupted && <AlertTriangle size={16} color="#ffa94d" />}
           <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
@@ -1235,6 +1240,36 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
           {isInterrupted && customProps.interrupted_reason && (
             <Text size="xs" c="red.4">
               {customProps.interrupted_reason}
+            </Text>
+          )}
+
+          {isPending && (
+            <Text size="xs" c="orange.4">
+              {status === 'attempting' 
+                ? 'Attempting to start recording...'
+                : (() => {
+                    const retryCount = customProps.retry_count || 0;
+                    const maxRetries = customProps.max_retries || 3;
+                    
+                    if (customProps.next_retry_at) {
+                      const nextRetry = toUserTime(customProps.next_retry_at);
+                      const secondsUntil = Math.max(0, nextRetry.diff(now, 'seconds'));
+                      
+                      if (secondsUntil === 0) {
+                        return `Retry ${retryCount} of ${maxRetries} – attempting now...`;
+                      } else {
+                        return `Retry ${retryCount} of ${maxRetries} – trying again in ${secondsUntil}s`;
+                      }
+                    }
+                    
+                    return `Retry ${retryCount} of ${maxRetries}`;
+                  })()
+              }
+              {customProps.last_error && (
+                <Text size="xs" c="dimmed" mt={2}>
+                  {customProps.last_error}
+                </Text>
+              )}
             </Text>
           )}
 
@@ -1427,8 +1462,9 @@ const DVRPage = () => {
   }, [userNow]);
 
   // Categorize recordings
-  const { inProgress, upcoming, completed } = useMemo(() => {
+  const { inProgress, pending, upcoming, completed } = useMemo(() => {
     const inProgress = [];
+    const pending = [];
     const upcoming = [];
     const completed = [];
     const list = Array.isArray(recordings)
@@ -1448,6 +1484,8 @@ const DVRPage = () => {
       const status = rec.custom_properties?.status;
       if (status === 'interrupted' || status === 'completed') {
         completed.push(rec);
+      } else if (status === 'pending' || status === 'attempting') {
+        pending.push(rec);
       } else {
         if (now.isAfter(s) && now.isBefore(e)) inProgress.push(rec);
         else if (now.isBefore(s)) upcoming.push(rec);
@@ -1501,6 +1539,7 @@ const DVRPage = () => {
     completed.sort((a, b) => toUserTime(b.end_time) - toUserTime(a.end_time));
     return {
       inProgress: inProgressDedup,
+      pending: pending.sort((a, b) => toUserTime(a.start_time) - toUserTime(b.start_time)),
       upcoming: upcomingGrouped,
       completed,
     };
@@ -1552,6 +1591,32 @@ const DVRPage = () => {
             )}
           </SimpleGrid>
         </div>
+
+        {pending.length > 0 && (
+          <div>
+            <Group justify="space-between" mb={8}>
+              <Title order={4}>Pending Recordings</Title>
+              <Badge color="orange.6">{pending.length}</Badge>
+            </Group>
+            <SimpleGrid
+              cols={3}
+              spacing="md"
+              breakpoints={[
+                { maxWidth: '62rem', cols: 2 },
+                { maxWidth: '36rem', cols: 1 },
+              ]}
+            >
+              {pending.map((rec) => (
+                <RecordingCard
+                  key={`rec-${rec.id}`}
+                  recording={rec}
+                  onOpenDetails={openDetails}
+                  onOpenRecurring={openRuleModal}
+                />
+              ))}
+            </SimpleGrid>
+          </div>
+        )}
 
         <div>
           <Group justify="space-between" mb={8}>

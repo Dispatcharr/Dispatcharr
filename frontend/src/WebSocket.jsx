@@ -535,6 +535,20 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
+            case 'recording_pending_retry':
+              notifications.show({
+                title: 'Recording retry scheduled',
+                message: `Channel ${parsedEvent.data.channel} offline, retry ${parsedEvent.data.retry_count} of ${parsedEvent.data.max_retries}`,
+                color: 'orange.5',
+                autoClose: 5000,
+              });
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on retry:', e);
+              }
+              break;
+
             case 'recording_ended':
               notifications.show({
                 title: 'Recording finished!',

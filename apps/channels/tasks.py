@@ -1410,12 +1410,23 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     - Attempts to capture stream stats from TS proxy (codec, resolution, fps, etc.)
     - Attempts to capture a poster (via program.custom_properties) and store a Logo reference
     """
+    from django.utils import timezone as django_timezone
+    
     channel = Channel.objects.get(id=channel_id)
 
     start_time = datetime.fromisoformat(start_time_str)
     end_time = datetime.fromisoformat(end_time_str)
+    
+    # Ensure times are timezone-aware
+    if start_time.tzinfo is None:
+        start_time = django_timezone.make_aware(start_time)
+    if end_time.tzinfo is None:
+        end_time = django_timezone.make_aware(end_time)
 
     duration_seconds = int((end_time - start_time).total_seconds())
+    
+    logger.info(f"DVR: Starting recording {recording_id} for {channel.name}, duration={duration_seconds}s, end_time={end_time}")
+    
     # Build output paths from templates
     # We need program info; will refine after we load Recording cp below
     filename = None
@@ -1441,10 +1452,17 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         recording_obj = Recording.objects.get(id=recording_id)
         # Prime custom_properties with file info/status
         cp = recording_obj.custom_properties or {}
-        cp.update({
-            "status": "recording",
-            "started_at": str(datetime.now()),
-        })
+        
+        # Check if this is a retry attempt
+        is_retry = cp.get("retry_count", 0) > 0
+        
+        # Don't set status to "recording" yet - wait until we confirm stream is available
+        # Keep status as "pending" if this is a retry
+        if not is_retry:
+            cp.update({
+                "status": "attempting",
+                "started_at": str(datetime.now()),
+            })
         # Provide a predictable playback URL for the frontend
         cp["file_url"] = f"/api/channels/recordings/{recording_id}/file/"
         cp["output_file_url"] = cp["file_url"]
@@ -1730,49 +1748,102 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             ) as response:
                 response.raise_for_status()
 
-                # Open the file and start copying; if we get any data within a short window, accept this base
-                got_any_data = False
-                test_window = 3.0  # seconds to detect first bytes
+                # Enhanced stream validation:
+                # 1. Verify we get data quickly (within test window)
+                # 2. Verify we get a minimum amount of data (not just error messages)
+                # 3. Validate it looks like TS data (starts with 0x47 sync byte pattern)
+                got_valid_stream = False
+                test_window = 5.0  # seconds to detect valid stream
+                min_bytes_threshold = 4096  # minimum bytes to consider valid (not error pages)
                 window_start = time.time()
+                test_bytes_written = 0
 
                 with open(temp_ts_path, 'wb') as file:
                     started_at = time.time()
                     for chunk in response.iter_content(chunk_size=8192):
                         if not chunk:
-                            # keep-alives may be empty; continue
-                            if not got_any_data and (time.time() - window_start) > test_window:
+                            # keep-alives may be empty
+                            if not got_valid_stream and (time.time() - window_start) > test_window:
+                                logger.warning(f"DVR: No valid stream data from {base} within {test_window}s")
                                 break
                             continue
-                        # We have data
-                        got_any_data = True
-                        chosen_base = base
-                        # Fall through to full recording loop using this same response/connection
+                        
+                        # Write data regardless during test phase
                         file.write(chunk)
-                        bytes_written += len(chunk)
-                        elapsed = time.time() - started_at
-                        if elapsed > duration_seconds:
-                            break
-                        # Continue draining the stream
-                        for chunk2 in response.iter_content(chunk_size=8192):
-                            if not chunk2:
-                                continue
-                            file.write(chunk2)
-                            bytes_written += len(chunk2)
+                        test_bytes_written += len(chunk)
+                        
+                        # Check if we have enough data to validate
+                        if not got_valid_stream and test_bytes_written >= min_bytes_threshold:
+                            # Basic TS validation: check for sync byte pattern (0x47 every 188 bytes)
+                            # Read first few KB to validate
+                            try:
+                                file.flush()
+                                with open(temp_ts_path, 'rb') as validate_file:
+                                    header = validate_file.read(min(test_bytes_written, 8192))
+                                    # Look for TS sync bytes (0x47) at regular 188-byte intervals
+                                    sync_count = 0
+                                    for i in range(0, len(header) - 376, 188):  # Check at least 2 packets
+                                        if header[i] == 0x47 and (i + 188 < len(header) and header[i + 188] == 0x47):
+                                            sync_count += 1
+                                    
+                                    if sync_count >= 2:
+                                        # Looks like valid TS data!
+                                        got_valid_stream = True
+                                        chosen_base = base
+                                        bytes_written = test_bytes_written
+                                        
+                                        # Update status to "recording" now that we confirmed valid stream
+                                        if recording_obj:
+                                            try:
+                                                cp_update = recording_obj.custom_properties or {}
+                                                cp_update["status"] = "recording"
+                                                if not cp_update.get("started_at"):
+                                                    cp_update["started_at"] = str(datetime.now())
+                                                recording_obj.custom_properties = cp_update
+                                                recording_obj.save(update_fields=["custom_properties"])
+                                                logger.info(f"DVR: Valid TS stream detected, status set to recording")
+                                            except Exception as e:
+                                                logger.warning(f"DVR: Failed to update status to recording: {e}")
+                                        
+                                        logger.info(f"DVR: Valid TS stream confirmed from {base} after {test_bytes_written} bytes")
+                                    else:
+                                        logger.warning(f"DVR: Data from {base} doesn't look like valid TS (sync_count={sync_count})")
+                                        got_valid_stream = False
+                                        break  # Not valid TS, try next base
+                            except Exception as e:
+                                logger.warning(f"DVR: Failed to validate TS data: {e}")
+                                break
+                        
+                        # If validated, continue recording until duration complete
+                        if got_valid_stream:
                             elapsed = time.time() - started_at
                             if elapsed > duration_seconds:
                                 break
-                        break  # exit outer for-loop once we switched to full drain
+                            # Continue draining the stream
+                            for chunk2 in response.iter_content(chunk_size=8192):
+                                if not chunk2:
+                                    continue
+                                file.write(chunk2)
+                                bytes_written += len(chunk2)
+                                elapsed = time.time() - started_at
+                                if elapsed > duration_seconds:
+                                    break
+                            break  # exit outer for-loop once recording complete
 
-                # If we wrote any bytes, treat as success and stop trying candidates
-                if bytes_written > 0:
-                    logger.info(f"DVR: selected TS base {base}; wrote initial {bytes_written} bytes")
+                # Only treat as success if we validated the stream
+                if got_valid_stream and bytes_written > 0:
+                    logger.info(f"DVR: selected TS base {base}; wrote {bytes_written} bytes of validated stream")
                     break
                 else:
-                    last_error = f"no_data_from_{base}"
-                    logger.warning(f"DVR: no data received from {base} within {test_window}s, trying next base")
-                    # Clean up empty temp file
+                    if test_bytes_written > 0:
+                        last_error = f"invalid_stream_data_from_{base}"
+                        logger.warning(f"DVR: received {test_bytes_written} bytes from {base} but not valid TS data")
+                    else:
+                        last_error = f"no_data_from_{base}"
+                        logger.warning(f"DVR: no data received from {base} within {test_window}s")
+                    # Clean up invalid temp file
                     try:
-                        if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
+                        if os.path.exists(temp_ts_path):
                             os.remove(temp_ts_path)
                     except Exception:
                         pass
@@ -1783,66 +1854,165 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     if chosen_base is None and bytes_written == 0:
         interrupted = True
         interrupted_reason = f"no_stream_data: {last_error or 'all_bases_failed'}"
-    else:
-        # If we ended before reaching planned duration, record reason
-        actual_elapsed = 0
+
+    # Handle retry logic when recording fails to start
+    if interrupted and bytes_written == 0:
         try:
-            actual_elapsed = os.path.getsize(temp_ts_path) and (duration_seconds)  # Best effort; we streamed until duration or disconnect above
-        except Exception:
-            pass
-        # We cannot compute accurate elapsed here; fine to leave as is
-        pass
+            from core.models import CoreSettings
+            from django.utils import timezone
+            
+            if recording_obj is None:
+                from .models import Recording
+                recording_obj = Recording.objects.get(id=recording_id)
+            
+            cp_now = recording_obj.custom_properties or {}
+            
+            # Get retry configuration
+            max_retries = CoreSettings.get_dvr_max_retries()
+            retry_frequency = CoreSettings.get_dvr_retry_frequency()
+            
+            # Track retry attempts
+            retry_count = cp_now.get("retry_count", 0)
+            
+            # Check if we're still within the recording window and have retries left
+            # Use timezone-aware datetime
+            now_time = timezone.now()
+            
+            logger.info(f"DVR: Recording failed. retry_count={retry_count}, max_retries={max_retries}, now={now_time}, end={end_time}")
+            
+            if now_time < end_time and retry_count < max_retries:
+                # Schedule a retry
+                retry_count += 1
+                next_retry_time = now_time + timedelta(seconds=retry_frequency)
+                
+                # Don't retry past the end time
+                if next_retry_time < end_time:
+                    cp_now.update({
+                        "status": "pending",
+                        "retry_count": retry_count,
+                        "max_retries": max_retries,
+                        "next_retry_at": str(next_retry_time),
+                        "last_error": interrupted_reason,
+                    })
+                    recording_obj.custom_properties = cp_now
+                    recording_obj.save(update_fields=["custom_properties"])
+                    
+                    logger.info(f"DVR: Scheduling retry {retry_count}/{max_retries} for recording {recording_id} in {retry_frequency}s")
+                    
+                    # Schedule the retry
+                    task = run_recording.apply_async(
+                        args=[recording_id, channel_id, start_time_str, end_time_str],
+                        eta=next_retry_time
+                    )
+                    recording_obj.task_id = task.id
+                    recording_obj.save(update_fields=["task_id"])
+                    
+                    # Notify frontend of pending state
+                    async_to_sync(channel_layer.group_send)(
+                        "updates",
+                        {
+                            "type": "update",
+                            "data": {
+                                "success": True,
+                                "type": "recording_pending_retry",
+                                "channel": channel.name,
+                                "retry_count": retry_count,
+                                "max_retries": max_retries,
+                            }
+                        },
+                    )
+                    
+                    logger.info(f"DVR: Retry scheduled successfully, exiting task")
+                    return  # Exit early, retry scheduled
+                else:
+                    logger.warning(f"DVR: Not enough time to retry recording {recording_id} before end_time")
+            else:
+                if retry_count >= max_retries:
+                    logger.warning(f"DVR: Max retries ({max_retries}) reached for recording {recording_id}")
+                else:
+                    logger.warning(f"DVR: Recording window ended, cannot retry recording {recording_id}")
+        except Exception as e:
+            logger.error(f"DVR: Failed to handle retry logic: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # If we reach here without returning early, the recording has permanently failed
+    # Update DB status immediately so the UI reflects the change on the event below
+    try:
+        if recording_obj is None:
+            from .models import Recording
+            recording_obj = Recording.objects.get(id=recording_id)
+        cp_now = recording_obj.custom_properties or {}
+        cp_now.update({
+            "status": "interrupted" if interrupted else "completed",
+            "ended_at": str(datetime.now()),
+            "file_name": filename or cp_now.get("file_name"),
+            "file_path": final_path or cp_now.get("file_path"),
+        })
+        if interrupted and interrupted_reason:
+            cp_now["interrupted_reason"] = interrupted_reason
+        recording_obj.custom_properties = cp_now
+        recording_obj.save(update_fields=["custom_properties"])
+    except Exception as e:
+        logger.debug(f"Failed to update immediate recording status: {e}")
 
-    # If no bytes were written at all, mark detail
-    if bytes_written == 0 and not interrupted:
-        interrupted = True
-        interrupted_reason = f"no_stream_data: {last_error or 'unknown'}"
+    # Send websocket update so frontend refreshes
+    async_to_sync(channel_layer.group_send)(
+        "updates",
+        {
+            "type": "update",
+            "data": {"success": True, "type": "recording_ended", "channel": channel.name}
+        },
+    )
+    logger.info(f"Finished recording for channel {channel.name}")
 
-        # Update DB status immediately so the UI reflects the change on the event below
+    # Clean up failed retry attempts that never got valid data
+    # Only delete files if this was a retry failure (had retry_count) with no valid data
+    if interrupted and bytes_written == 0:
         try:
             if recording_obj is None:
                 from .models import Recording
                 recording_obj = Recording.objects.get(id=recording_id)
-            cp_now = recording_obj.custom_properties or {}
-            cp_now.update({
-                "status": "interrupted" if interrupted else "completed",
-                "ended_at": str(datetime.now()),
-                "file_name": filename or cp_now.get("file_name"),
-                "file_path": final_path or cp_now.get("file_path"),
-            })
-            if interrupted and interrupted_reason:
-                cp_now["interrupted_reason"] = interrupted_reason
-            recording_obj.custom_properties = cp_now
-            recording_obj.save(update_fields=["custom_properties"])
+            
+            cp_check = recording_obj.custom_properties or {}
+            was_retrying = cp_check.get("retry_count", 0) > 0
+            
+            if was_retrying:
+                # This was a failed retry, clean up any temp files
+                files_to_clean = []
+                if temp_ts_path and os.path.exists(temp_ts_path):
+                    files_to_clean.append(temp_ts_path)
+                if final_path and os.path.exists(final_path):
+                    files_to_clean.append(final_path)
+                
+                for file_path in files_to_clean:
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"DVR: Cleaned up failed retry file: {file_path}")
+                    except Exception as cleanup_err:
+                        logger.warning(f"DVR: Failed to cleanup {file_path}: {cleanup_err}")
         except Exception as e:
-            logger.debug(f"Failed to update immediate recording status: {e}")
+            logger.warning(f"DVR: Error during retry cleanup: {e}")
 
-        async_to_sync(channel_layer.group_send)(
-            "updates",
-            {
-                "type": "update",
-                "data": {"success": True, "type": "recording_ended", "channel": channel.name}
-            },
-        )
-        # After the loop, the file and response are closed automatically.
-        logger.info(f"Finished recording for channel {channel.name}")
-
-    # Remux TS to MKV container
+    # Remux TS to MKV container (only if we have data)
     remux_success = False
-    try:
-        if temp_ts_path and os.path.exists(temp_ts_path):
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_ts_path, "-c", "copy", final_path
-            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            remux_success = os.path.exists(final_path)
-            # Clean up temp file on success
-            if remux_success:
-                try:
-                    os.remove(temp_ts_path)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning(f"MKV remux failed: {e}")
+    if bytes_written > 0:
+        try:
+            if temp_ts_path and os.path.exists(temp_ts_path):
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", temp_ts_path, "-c", "copy", final_path
+                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                remux_success = os.path.exists(final_path)
+                # Clean up temp file on success
+                if remux_success:
+                    try:
+                        os.remove(temp_ts_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"MKV remux failed: {e}")
+    else:
+        logger.info(f"DVR: Skipping remux, no data was recorded")
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:

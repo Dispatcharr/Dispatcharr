@@ -162,6 +162,8 @@ DVR_COMSKIP_ENABLED_KEY = slugify("DVR Comskip Enabled")
 DVR_COMSKIP_CUSTOM_PATH_KEY = slugify("DVR Comskip Custom Path")
 DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
 DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
+DVR_MAX_RETRIES_KEY = slugify("DVR Max Retries")
+DVR_RETRY_FREQUENCY_KEY = slugify("DVR Retry Frequency")
 SYSTEM_TIME_ZONE_KEY = slugify("System Time Zone")
 
 
@@ -325,6 +327,34 @@ class CoreSettings(models.Model):
                 return int(float(val))
             except Exception:
                 return 0
+
+    @classmethod
+    def get_dvr_max_retries(cls):
+        """Max number of times to retry starting a recording (default 3)."""
+        try:
+            val = cls.objects.get(key=DVR_MAX_RETRIES_KEY).value
+            return int(val)
+        except cls.DoesNotExist:
+            return 3
+        except Exception:
+            try:
+                return int(float(val))
+            except Exception:
+                return 3
+
+    @classmethod
+    def get_dvr_retry_frequency(cls):
+        """Seconds to wait between retry attempts (default 30)."""
+        try:
+            val = cls.objects.get(key=DVR_RETRY_FREQUENCY_KEY).value
+            return int(val)
+        except cls.DoesNotExist:
+            return 30
+        except Exception:
+            try:
+                return int(float(val))
+            except Exception:
+                return 30
 
     @classmethod
     def get_system_time_zone(cls):
