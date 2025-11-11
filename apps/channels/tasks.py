@@ -1734,122 +1734,142 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     # We'll attempt each base until we receive some data
     for base in candidates:
+        response = None
+        file = None
         try:
             test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
             logger.info(f"DVR: trying TS base {base} -> {test_url}")
 
-            with requests.get(
+            response = requests.get(
                 test_url,
                 headers={
                     'User-Agent': 'Dispatcharr-DVR',
                 },
                 stream=True,
-                timeout=(10, 15),
-            ) as response:
-                response.raise_for_status()
+                # timeout=(10, 15),
+                timeout=(5, 10)
+            )
+            response.raise_for_status()
 
-                # Enhanced stream validation:
-                # 1. Verify we get data quickly (within test window)
-                # 2. Verify we get a minimum amount of data (not just error messages)
-                # 3. Validate it looks like TS data (starts with 0x47 sync byte pattern)
-                got_valid_stream = False
-                test_window = 5.0  # seconds to detect valid stream
-                min_bytes_threshold = 4096  # minimum bytes to consider valid (not error pages)
-                window_start = time.time()
-                test_bytes_written = 0
+            # Enhanced stream validation:
+            # 1. Verify we get data quickly (within test window)
+            # 2. Verify we get a minimum amount of data (not just error messages)
+            # 3. Validate it looks like TS data (starts with 0x47 sync byte pattern)
+            got_valid_stream = False
+            test_window = 5.0  # seconds to detect valid stream
+            min_bytes_threshold = 4096  # minimum bytes to consider valid (not error pages)
+            window_start = time.time()
+            test_bytes_written = 0
 
-                with open(temp_ts_path, 'wb') as file:
-                    started_at = time.time()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if not chunk:
-                            # keep-alives may be empty
-                            if not got_valid_stream and (time.time() - window_start) > test_window:
-                                logger.warning(f"DVR: No valid stream data from {base} within {test_window}s")
-                                break
-                            continue
-                        
-                        # Write data regardless during test phase
-                        file.write(chunk)
-                        test_bytes_written += len(chunk)
-                        
-                        # Check if we have enough data to validate
-                        if not got_valid_stream and test_bytes_written >= min_bytes_threshold:
-                            # Basic TS validation: check for sync byte pattern (0x47 every 188 bytes)
-                            # Read first few KB to validate
-                            try:
-                                file.flush()
-                                with open(temp_ts_path, 'rb') as validate_file:
-                                    header = validate_file.read(min(test_bytes_written, 8192))
-                                    # Look for TS sync bytes (0x47) at regular 188-byte intervals
-                                    sync_count = 0
-                                    for i in range(0, len(header) - 376, 188):  # Check at least 2 packets
-                                        if header[i] == 0x47 and (i + 188 < len(header) and header[i + 188] == 0x47):
-                                            sync_count += 1
+            file = open(temp_ts_path, 'wb')
+            started_at = time.time()
+            
+            try:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if not chunk:
+                        # keep-alives may be empty
+                        if not got_valid_stream and (time.time() - window_start) > test_window:
+                            logger.warning(f"DVR: No valid stream data from {base} within {test_window}s")
+                            break
+                        continue
+                    
+                    # Write data regardless during test phase
+                    file.write(chunk)
+                    test_bytes_written += len(chunk)
+                    
+                    # Check if we have enough data to validate
+                    if not got_valid_stream and test_bytes_written >= min_bytes_threshold:
+                        # Basic TS validation: check for sync byte pattern (0x47 every 188 bytes)
+                        # Read first few KB to validate
+                        try:
+                            file.flush()
+                            with open(temp_ts_path, 'rb') as validate_file:
+                                header = validate_file.read(min(test_bytes_written, 8192))
+                                # Look for TS sync bytes (0x47) at regular 188-byte intervals
+                                sync_count = 0
+                                for i in range(0, len(header) - 376, 188):  # Check at least 2 packets
+                                    if header[i] == 0x47 and (i + 188 < len(header) and header[i + 188] == 0x47):
+                                        sync_count += 1
+                                
+                                if sync_count >= 2:
+                                    # Looks like valid TS data!
+                                    got_valid_stream = True
+                                    chosen_base = base
+                                    bytes_written = test_bytes_written
                                     
-                                    if sync_count >= 2:
-                                        # Looks like valid TS data!
-                                        got_valid_stream = True
-                                        chosen_base = base
-                                        bytes_written = test_bytes_written
-                                        
-                                        # Update status to "recording" now that we confirmed valid stream
-                                        if recording_obj:
-                                            try:
-                                                cp_update = recording_obj.custom_properties or {}
-                                                cp_update["status"] = "recording"
-                                                if not cp_update.get("started_at"):
-                                                    cp_update["started_at"] = str(datetime.now())
-                                                recording_obj.custom_properties = cp_update
-                                                recording_obj.save(update_fields=["custom_properties"])
-                                                logger.info(f"DVR: Valid TS stream detected, status set to recording")
-                                            except Exception as e:
-                                                logger.warning(f"DVR: Failed to update status to recording: {e}")
-                                        
-                                        logger.info(f"DVR: Valid TS stream confirmed from {base} after {test_bytes_written} bytes")
-                                    else:
-                                        logger.warning(f"DVR: Data from {base} doesn't look like valid TS (sync_count={sync_count})")
-                                        got_valid_stream = False
-                                        break  # Not valid TS, try next base
-                            except Exception as e:
-                                logger.warning(f"DVR: Failed to validate TS data: {e}")
-                                break
-                        
-                        # If validated, continue recording until duration complete
-                        if got_valid_stream:
+                                    # Update status to "recording" now that we confirmed valid stream
+                                    if recording_obj:
+                                        try:
+                                            cp_update = recording_obj.custom_properties or {}
+                                            cp_update["status"] = "recording"
+                                            if not cp_update.get("started_at"):
+                                                cp_update["started_at"] = str(datetime.now())
+                                            recording_obj.custom_properties = cp_update
+                                            recording_obj.save(update_fields=["custom_properties"])
+                                            logger.info(f"DVR: Valid TS stream detected, status set to recording")
+                                        except Exception as e:
+                                            logger.warning(f"DVR: Failed to update status to recording: {e}")
+                                    
+                                    logger.info(f"DVR: Valid TS stream confirmed from {base} after {test_bytes_written} bytes")
+                                else:
+                                    logger.warning(f"DVR: Data from {base} doesn't look like valid TS (sync_count={sync_count})")
+                                    got_valid_stream = False
+                                    break  # Not valid TS, try next base
+                        except Exception as e:
+                            logger.warning(f"DVR: Failed to validate TS data: {e}")
+                            break
+                    
+                    # If validated, continue recording until duration complete
+                    if got_valid_stream:
+                        elapsed = time.time() - started_at
+                        if elapsed > duration_seconds:
+                            break
+                        # Continue draining the stream
+                        for chunk2 in response.iter_content(chunk_size=8192):
+                            if not chunk2:
+                                continue
+                            file.write(chunk2)
+                            bytes_written += len(chunk2)
                             elapsed = time.time() - started_at
                             if elapsed > duration_seconds:
                                 break
-                            # Continue draining the stream
-                            for chunk2 in response.iter_content(chunk_size=8192):
-                                if not chunk2:
-                                    continue
-                                file.write(chunk2)
-                                bytes_written += len(chunk2)
-                                elapsed = time.time() - started_at
-                                if elapsed > duration_seconds:
-                                    break
-                            break  # exit outer for-loop once recording complete
-
-                # Only treat as success if we validated the stream
-                if got_valid_stream and bytes_written > 0:
-                    logger.info(f"DVR: selected TS base {base}; wrote {bytes_written} bytes of validated stream")
-                    break
-                else:
-                    if test_bytes_written > 0:
-                        last_error = f"invalid_stream_data_from_provider"
-                        logger.warning(f"DVR: received {test_bytes_written} bytes but not valid TS data")
-                    else:
-                        last_error = f"no_data_from_provider"
-                        logger.warning(f"DVR: no data received within {test_window}s")
-                    # Clean up invalid temp file
+                        break  # exit outer for-loop once recording complete
+            finally:
+                # Always close the file handle
+                if file is not None:
                     try:
-                        if os.path.exists(temp_ts_path):
-                            os.remove(temp_ts_path)
+                        file.close()
                     except Exception:
                         pass
+
+            # Only treat as success if we validated the stream
+            if got_valid_stream and bytes_written > 0:
+                logger.info(f"DVR: selected TS base {base}; wrote {bytes_written} bytes of validated stream")
+                break
+            else:
+                if test_bytes_written > 0:
+                    last_error = "invalid_stream_data"
+                    logger.warning(f"DVR: received {test_bytes_written} bytes from {base} but not valid TS data")
+                else:
+                    last_error = "no_data_received"
+                    logger.warning(f"DVR: no data received from {base} within {test_window}s")
+                # Clean up invalid temp file
+                try:
+                    if os.path.exists(temp_ts_path):
+                        os.remove(temp_ts_path)
+                except Exception:
+                    pass
         except Exception as e:
             last_error = str(e)
             logger.warning(f"DVR: attempt failed for base {base}: {e}")
+        finally:
+            # CRITICAL: Always close the response connection to prevent hanging connections
+            if response is not None:
+                try:
+                    response.close()
+                    logger.debug(f"DVR: Closed connection for base {base}")
+                except Exception as cleanup_err:
+                    logger.warning(f"DVR: Failed to close connection for {base}: {cleanup_err}")
 
     if chosen_base is None and bytes_written == 0:
         interrupted = True
@@ -1951,6 +1971,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         })
         if interrupted and interrupted_reason:
             cp_now["interrupted_reason"] = interrupted_reason
+        
+        # If recording failed with no data, remove file URLs so Watch button is disabled
+        if interrupted and bytes_written == 0:
+            cp_now.pop("file_url", None)
+            cp_now.pop("output_file_url", None)
+            logger.info(f"DVR: Removed file URLs from failed recording {recording_id} (no data written)")
+        
         recording_obj.custom_properties = cp_now
         recording_obj.save(update_fields=["custom_properties"])
     except Exception as e:

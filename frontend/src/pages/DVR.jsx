@@ -1256,9 +1256,9 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
                       const secondsUntil = Math.max(0, nextRetry.diff(now, 'seconds'));
                       
                       if (secondsUntil === 0) {
-                        return `Retry ${retryCount} of ${maxRetries} – attempting now...`;
+                        return `Retry ${retryCount} of ${maxRetries} - attempting now...`;
                       } else {
-                        return `Retry ${retryCount} of ${maxRetries} – trying again in ${secondsUntil}s`;
+                        return `Retry ${retryCount} of ${maxRetries} - trying again in ${secondsUntil}s`;
                       }
                     }
                     
@@ -1287,7 +1287,7 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
               </Button>
             )}
 
-            {!isUpcoming && (
+            {!isUpcoming && !isPending && (
               <Tooltip
                 label={
                   customProps.file_url || customProps.output_file_url
