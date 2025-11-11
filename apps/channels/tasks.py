@@ -1836,11 +1836,11 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     break
                 else:
                     if test_bytes_written > 0:
-                        last_error = f"invalid_stream_data_from_{base}"
-                        logger.warning(f"DVR: received {test_bytes_written} bytes from {base} but not valid TS data")
+                        last_error = f"invalid_stream_data_from_provider"
+                        logger.warning(f"DVR: received {test_bytes_written} bytes but not valid TS data")
                     else:
-                        last_error = f"no_data_from_{base}"
-                        logger.warning(f"DVR: no data received from {base} within {test_window}s")
+                        last_error = f"no_data_from_provider"
+                        logger.warning(f"DVR: no data received within {test_window}s")
                     # Clean up invalid temp file
                     try:
                         if os.path.exists(temp_ts_path):
