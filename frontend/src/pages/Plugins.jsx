@@ -11,6 +11,7 @@ import {
   Stack,
   Switch,
   Text,
+  Divider,
   ActionIcon,
   SimpleGrid,
   Modal,
