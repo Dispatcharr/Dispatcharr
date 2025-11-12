@@ -11,10 +11,8 @@ import {
   Stack,
   Switch,
   Text,
-  Divider,
   ActionIcon,
   SimpleGrid,
-  Modal,
   FileInput,
   Image,
   Badge,
@@ -28,21 +26,12 @@ import { notifications } from '@mantine/notifications';
 
 const PluginCard = ({
   plugin,
-  onRunAction,
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
 }) => {
   const navigate = useNavigate();
-  const [running, setRunning] = useState(false);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
-  const [lastResult, setLastResult] = useState(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmConfig, setConfirmConfig] = useState({
-    title: '',
-    message: '',
-    onConfirm: null,
-  });
 
   // Keep local enabled state in sync with props (e.g., after import + enable)
   React.useEffect(() => {
@@ -164,141 +153,7 @@ const PluginCard = ({
         </Group>
       </Stack>
 
-      {!missing && plugin.actions && plugin.actions.length > 0 && (
-        <>
-          <Divider my="sm" />
-          <Stack gap="xs">
-            {plugin.actions.map((a) => (
-              <Group key={a.id} justify="space-between">
-                <div>
-                  <Text>{a.label}</Text>
-                  {a.description && (
-                    <Text size="sm" c="dimmed">
-                      {a.description}
-                    </Text>
-                  )}
-                </div>
-                <Button
-                  loading={running}
-                  disabled={!enabled}
-                  onClick={async () => {
-                    setRunning(true);
-                    setLastResult(null);
-                    try {
-                      // Determine if confirmation is required from action metadata or fallback field
-                      const actionConfirm = a.confirm;
-                      const confirmField = (plugin.fields || []).find(
-                        (f) => f.id === 'confirm'
-                      );
-                      let requireConfirm = false;
-                      let confirmTitle = `Run ${a.label}?`;
-                      let confirmMessage = `You're about to run "${a.label}" from "${plugin.name}".`;
-                      if (actionConfirm) {
-                        if (typeof actionConfirm === 'boolean') {
-                          requireConfirm = actionConfirm;
-                        } else if (typeof actionConfirm === 'object') {
-                          requireConfirm = actionConfirm.required !== false;
-                          if (actionConfirm.title)
-                            confirmTitle = actionConfirm.title;
-                          if (actionConfirm.message)
-                            confirmMessage = actionConfirm.message;
-                        }
-                      }
-
-                      if (requireConfirm) {
-                        await new Promise((resolve) => {
-                          setConfirmConfig({
-                            title: confirmTitle,
-                            message: confirmMessage,
-                            onConfirm: resolve,
-                          });
-                          setConfirmOpen(true);
-                        });
-                      }
-
-                      const resp = await onRunAction(plugin.key, a.id);
-                      if (resp?.success) {
-                        setLastResult(resp.result || {});
-                        const msg =
-                          resp.result?.message || 'Plugin action completed';
-                        notifications.show({
-                          title: plugin.name,
-                          message: msg,
-                          color: 'green',
-                        });
-                      } else {
-                        const err = resp?.error || 'Unknown error';
-                        setLastResult({ error: err });
-                        notifications.show({
-                          title: `${plugin.name} error`,
-                          message: String(err),
-                          color: 'red',
-                        });
-                      }
-                    } finally {
-                      setRunning(false);
-                    }
-                  }}
-                  size="xs"
-                >
-                  {running ? 'Running…' : 'Run'}
-                </Button>
-              </Group>
-            ))}
-            {running && (
-              <Text size="sm" c="dimmed">
-                Running action… please wait
-              </Text>
-            )}
-            {!running && lastResult?.file && (
-              <Text size="sm" c="dimmed">
-                Output: {lastResult.file}
-              </Text>
-            )}
-            {!running && lastResult?.error && (
-              <Text size="sm" c="red">
-                Error: {String(lastResult.error)}
-              </Text>
-            )}
-          </Stack>
-        </>
-      )}
-      <Modal
-        opened={confirmOpen}
-        onClose={() => {
-          setConfirmOpen(false);
-          setConfirmConfig({ title: '', message: '', onConfirm: null });
-        }}
-        title={confirmConfig.title}
-        centered
-      >
-        <Stack>
-          <Text size="sm">{confirmConfig.message}</Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              onClick={() => {
-                const cb = confirmConfig.onConfirm;
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-                cb && cb(true);
-              }}
-            >
-              Confirm
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+      {/* Plugin actions are displayed on dedicated plugin pages or Settings page accordions, not on cards */}
     </Card>
   );
 };
@@ -385,7 +240,6 @@ export default function PluginsPage() {
               <PluginCard
                 key={p.key}
                 plugin={p}
-                onRunAction={API.runPluginAction}
                 onToggleEnabled={async (key, next) => {
                   const resp = await API.setPluginEnabled(key, next);
                   if (resp?.ever_enabled !== undefined) {

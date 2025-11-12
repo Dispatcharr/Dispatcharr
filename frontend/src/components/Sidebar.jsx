@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
-import { useWebSocket } from '../WebSocket';
+import usePluginsStore from '../store/plugins';
 import {
   ListOrdered,
   Play,
@@ -89,8 +89,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const [userFormOpen, setUserFormOpen] = useState(false);
   const [pluginNavItems, setPluginNavItems] = useState([]);
 
-  // WebSocket for real-time plugin updates
-  const [wsReady, , wsVal] = useWebSocket();
+  // Subscribe to plugin state changes
+  const pluginStateVersion = usePluginsStore((s) => s.pluginStateVersion);
 
   const closeUserForm = () => setUserFormOpen(false);
 
@@ -173,43 +173,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     }
   }, [isAuthenticated]);
 
-  // Fetch enabled plugins with navigation=true on mount
+  // Fetch enabled plugins with navigation=true on mount and when plugin state changes
   useEffect(() => {
     fetchPluginNavItems();
-  }, [fetchPluginNavItems]);
-
-  // Listen for WebSocket events to refresh plugin navigation dynamically
-  useEffect(() => {
-    if (!wsReady || !wsVal) return;
-
-    const handlePluginStateChange = async (event) => {
-      try {
-        const parsedEvent = JSON.parse(event.data);
-
-        // Handle plugin enabled/disabled events
-        if (parsedEvent.data?.type === 'plugin_enabled_changed') {
-          const { plugin_key, enabled, navigation } = parsedEvent.data;
-
-          // If plugin has navigation, refresh the nav items
-          if (navigation) {
-            await fetchPluginNavItems();
-          }
-        }
-      } catch (error) {
-        // Ignore parsing errors - not all WebSocket messages are for us
-      }
-    };
-
-    // Add event listener
-    if (wsVal?.addEventListener) {
-      wsVal.addEventListener('message', handlePluginStateChange);
-
-      // Cleanup
-      return () => {
-        wsVal.removeEventListener('message', handlePluginStateChange);
-      };
-    }
-  }, [wsReady, wsVal, fetchPluginNavItems]);
+  }, [fetchPluginNavItems, pluginStateVersion]);
 
   // Fetch environment settings including version on component mount
   useEffect(() => {

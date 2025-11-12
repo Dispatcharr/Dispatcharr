@@ -40,7 +40,7 @@ import {
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
-import { useWebSocket } from '../WebSocket';
+import usePluginsStore from '../store/plugins';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -184,8 +184,8 @@ const SettingsPage = () => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
 
-  // WebSocket for real-time plugin updates
-  const [wsReady, , wsVal] = useWebSocket();
+  // Subscribe to plugin state changes
+  const pluginStateVersion = usePluginsStore((s) => s.pluginStateVersion);
 
   const [accordianValue, setAccordianValue] = useState(null);
   const [enabledPlugins, setEnabledPlugins] = useState([]);
@@ -427,39 +427,10 @@ const SettingsPage = () => {
     }
   }, []);
 
-  // Load enabled plugins on mount
+  // Load enabled plugins on mount and when plugin state changes
   useEffect(() => {
     loadEnabledPlugins();
-  }, [loadEnabledPlugins]);
-
-  // Listen for WebSocket events to refresh enabled plugins dynamically
-  useEffect(() => {
-    if (!wsReady || !wsVal) return;
-
-    const handlePluginStateChange = async (event) => {
-      try {
-        const parsedEvent = JSON.parse(event.data);
-
-        // Handle plugin enabled/disabled events
-        if (parsedEvent.data?.type === 'plugin_enabled_changed') {
-          // Refresh the enabled plugins list
-          await loadEnabledPlugins();
-        }
-      } catch (error) {
-        // Ignore parsing errors - not all WebSocket messages are for us
-      }
-    };
-
-    // Add event listener
-    if (wsVal?.addEventListener) {
-      wsVal.addEventListener('message', handlePluginStateChange);
-
-      // Cleanup
-      return () => {
-        wsVal.removeEventListener('message', handlePluginStateChange);
-      };
-    }
-  }, [wsReady, wsVal, loadEnabledPlugins]);
+  }, [loadEnabledPlugins, pluginStateVersion]);
 
   // Clear success states when switching accordion panels
   useEffect(() => {

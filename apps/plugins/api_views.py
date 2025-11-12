@@ -288,18 +288,29 @@ class PluginEnabledAPIView(APIView):
             # Send WebSocket notification for instant UI updates
             # Only send if the enabled state actually changed
             if old_enabled != cfg.enabled:
-                from core.utils import send_websocket_update
-                pm = PluginManager.get()
-                pm.discover_plugins()
-                plugin_info = pm.get_plugin(key)
+                try:
+                    from core.utils import send_websocket_update
+                    pm = PluginManager.get()
+                    pm.discover_plugins()
+                    plugin_info = pm.get_plugin(key)
 
-                send_websocket_update('updates', 'update', {
-                    'type': 'plugin_enabled_changed',
-                    'plugin_key': key,
-                    'plugin_name': cfg.name,
-                    'enabled': cfg.enabled,
-                    'navigation': plugin_info.get('navigation', False) if plugin_info else False,
-                })
+                    # Get navigation flag - default to False if plugin not found
+                    has_navigation = False
+                    if plugin_info:
+                        has_navigation = plugin_info.get('navigation', False)
+
+                    send_websocket_update('updates', 'update', {
+                        'type': 'plugin_enabled_changed',
+                        'plugin_key': key,
+                        'plugin_name': cfg.name,
+                        'enabled': cfg.enabled,
+                        'navigation': has_navigation,
+                    })
+                except Exception as e:
+                    # Log the error but don't fail the request
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Failed to send WebSocket update for plugin {key}: {e}")
 
             return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
         except PluginConfig.DoesNotExist:

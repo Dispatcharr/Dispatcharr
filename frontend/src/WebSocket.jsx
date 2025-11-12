@@ -12,6 +12,7 @@ import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
+import usePluginsStore from './store/plugins';
 import { Box, Button, Stack, Alert, Group } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
@@ -817,6 +818,15 @@ export const WebsocketProvider = ({ children }) => {
               setVal(parsedEvent);
               break;
             }
+
+            case 'plugin_enabled_changed':
+              // Plugin was enabled or disabled - trigger refresh in all plugin-aware components
+              try {
+                usePluginsStore.getState().triggerPluginRefresh();
+              } catch (e) {
+                console.warn('Failed to trigger plugin refresh:', e);
+              }
+              break;
 
             default:
               console.error(
