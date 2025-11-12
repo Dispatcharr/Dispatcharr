@@ -329,15 +329,15 @@ class VODConnectionManager:
                             continue
 
                         # Extract session info
-                        stored_content_type = session_data.get(b'content_type', b'').decode('utf-8')
-                        stored_content_uuid = session_data.get(b'content_uuid', b'').decode('utf-8')
+                        stored_content_type = session_data.get('content_type', '')
+                        stored_content_uuid = session_data.get('content_uuid', '')
 
                         # Check if content matches
                         if stored_content_type != content_type or stored_content_uuid != content_uuid:
                             continue
 
                         # Extract session ID from key
-                        session_id = key.decode('utf-8').replace('vod_session:', '')
+                        session_id = key.replace('vod_session:', '')
 
                         # Check if session has an active persistent connection
                         persistent_conn = self._persistent_connections.get(session_id)
@@ -351,13 +351,13 @@ class VODConnectionManager:
                             continue
 
                         # Get stored client info for comparison
-                        stored_client_ip = session_data.get(b'client_ip', b'').decode('utf-8')
-                        stored_user_agent = session_data.get(b'user_agent', b'').decode('utf-8')
+                        stored_client_ip = session_data.get('client_ip', '')
+                        stored_user_agent = session_data.get('user_agent', '')
 
                         # Check timeshift parameters match
-                        stored_utc_start = session_data.get(b'utc_start', b'').decode('utf-8')
-                        stored_utc_end = session_data.get(b'utc_end', b'').decode('utf-8')
-                        stored_offset = session_data.get(b'offset', b'').decode('utf-8')
+                        stored_utc_start = session_data.get('utc_start', '')
+                        stored_utc_end = session_data.get('utc_end', '')
+                        stored_offset = session_data.get('offset', '')
 
                         current_utc_start = utc_start or ""
                         current_utc_end = utc_end or ""
@@ -394,7 +394,7 @@ class VODConnectionManager:
                                 'session_id': session_id,
                                 'score': score,
                                 'reasons': match_reasons,
-                                'last_activity': float(session_data.get(b'last_activity', b'0').decode('utf-8'))
+                                'last_activity': float(session_data.get('last_activity', '0'))
                             })
 
                     except Exception as e:
@@ -536,7 +536,7 @@ class VODConnectionManager:
                 # Get current bytes and add to it
                 current_bytes = self.redis_client.hget(connection_key, "bytes_sent")
                 if current_bytes:
-                    total_bytes = int(current_bytes.decode('utf-8')) + bytes_sent
+                    total_bytes = int(current_bytes) + bytes_sent
                 else:
                     total_bytes = bytes_sent
                 update_data["bytes_sent"] = str(total_bytes)
@@ -571,7 +571,7 @@ class VODConnectionManager:
             profile_id = None
             if b"m3u_profile_id" in connection_data:
                 try:
-                    profile_id = int(connection_data[b"m3u_profile_id"].decode('utf-8'))
+                    profile_id = int(connection_data["m3u_profile_id"])
                 except ValueError:
                     pass
 
@@ -617,16 +617,14 @@ class VODConnectionManager:
             # Convert bytes to strings and parse numbers
             info = {}
             for key, value in connection_data.items():
-                key_str = key.decode('utf-8')
-                value_str = value.decode('utf-8')
 
                 # Parse numeric fields
-                if key_str in ['connected_at', 'last_activity']:
-                    info[key_str] = float(value_str)
-                elif key_str in ['bytes_sent', 'position_seconds', 'm3u_profile_id']:
-                    info[key_str] = int(value_str)
+                if key in ['connected_at', 'last_activity']:
+                    info[key] = float(value)
+                elif key in ['bytes_sent', 'position_seconds', 'm3u_profile_id']:
+                    info[key] = int(valuvaluee_str)
                 else:
-                    info[key_str] = value_str
+                    info[key] = value
 
             return info
 
@@ -676,14 +674,13 @@ class VODConnectionManager:
 
                 for key in keys:
                     try:
-                        key_str = key.decode('utf-8')
                         last_activity = self.redis_client.hget(key, "last_activity")
 
                         if last_activity:
-                            last_activity_time = float(last_activity.decode('utf-8'))
+                            last_activity_time = float(last_activity)
                             if current_time - last_activity_time > max_age_seconds:
                                 # Extract info for cleanup
-                                parts = key_str.split(':')
+                                parts = key.split(':')
                                 if len(parts) >= 5:
                                     content_type = parts[2]
                                     content_uuid = parts[3]
@@ -1342,9 +1339,9 @@ class VODConnectionManager:
                     session_data = self.redis_client.hgetall(session_key)
                     if session_data:
                         # Get session details for connection cleanup
-                        content_type = session_data.get(b'content_type', b'').decode('utf-8')
-                        content_uuid = session_data.get(b'content_uuid', b'').decode('utf-8')
-                        profile_id = session_data.get(b'profile_id')
+                        content_type = session_data.get('content_type', '')
+                        content_uuid = session_data.get('content_uuid', '')
+                        profile_id = session_data.get('profile_id')
 
                         # Generate client_id from session_id (matches what's used during streaming)
                         client_id = session_id
@@ -1355,12 +1352,12 @@ class VODConnectionManager:
                             self.remove_connection(content_type, content_uuid, client_id)
 
                         # Remove from profile connections if counted (additional safety check)
-                        if session_data.get(b'connection_counted') == b'True' and profile_id:
-                            profile_key = self._get_profile_connections_key(int(profile_id.decode('utf-8')))
+                        if session_data.get('connection_counted') == 'True' and profile_id:
+                            profile_key = self._get_profile_connections_key(int(profile_id))
                             current_count = int(self.redis_client.get(profile_key) or 0)
                             if current_count > 0:
                                 self.redis_client.decr(profile_key)
-                                logger.info(f"[{session_id}] Decremented profile {profile_id.decode('utf-8')} connections")
+                                logger.info(f"[{session_id}] Decremented profile {profile_id} connections")
 
                     # Remove session tracking key
                     self.redis_client.delete(session_key)
@@ -1380,7 +1377,7 @@ class VODConnectionManager:
 
                         if session_related_keys:
                             # Filter out keys we already deleted
-                            remaining_keys = [k for k in session_related_keys if k.decode('utf-8') != session_key]
+                            remaining_keys = [k for k in session_related_keys if k != session_key]
                             if remaining_keys:
                                 self.redis_client.delete(*remaining_keys)
                                 logger.info(f"[{session_id}] Cleaned up {len(remaining_keys)} additional session-related keys")
@@ -1410,7 +1407,7 @@ class VODConnectionManager:
                 if self.redis_client:
                     session_data = self.redis_client.hgetall(session_key)
                     if session_data:
-                        created_at = float(session_data.get(b'created_at', b'0').decode('utf-8'))
+                        created_at = float(session_data.get('created_at', '0'))
                         if current_time - created_at > max_age_seconds:
                             logger.info(f"[{session_id}] Session older than {max_age_seconds}s")
                             stale_sessions.append(session_id)
