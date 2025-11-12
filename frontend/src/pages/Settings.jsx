@@ -1366,8 +1366,8 @@ const SettingsPage = () => {
             </>
           )}
 
-          {/* Dynamic Plugin Accordions */}
-          {enabledPlugins.map(plugin => (
+          {/* Dynamic Plugin Accordions - Only for plugins without navigation=true */}
+          {enabledPlugins.filter(plugin => !plugin.navigation).map(plugin => (
             <Accordion.Item key={plugin.key} value={`plugin-${plugin.key}`}>
               <Accordion.Control>{plugin.name}</Accordion.Control>
               <Accordion.Panel>

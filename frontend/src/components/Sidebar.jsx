@@ -86,11 +86,12 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     timestamp: null,
   });
   const [userFormOpen, setUserFormOpen] = useState(false);
+  const [pluginNavItems, setPluginNavItems] = useState([]);
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
+  // Base Navigation Items
+  const baseNavItems =
     authUser && authUser.user_level == USER_LEVELS.ADMIN
       ? [
           {
@@ -143,6 +144,34 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/settings',
           },
         ];
+
+  // Combine base nav items with plugin nav items
+  const navItems = [...baseNavItems, ...pluginNavItems];
+
+  // Fetch enabled plugins with navigation=true
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    const fetchPluginNavItems = async () => {
+      try {
+        const plugins = await API.getEnabledPlugins();
+        const navPlugins = plugins
+          .filter(p => p.navigation === true)
+          .map(p => ({
+            label: p.name,
+            icon: <PlugZap size={20} />,
+            path: `/plugin/${p.key}`,
+          }));
+        setPluginNavItems(navPlugins);
+      } catch (error) {
+        console.error('Failed to load plugin navigation items:', error);
+      }
+    };
+
+    fetchPluginNavItems();
+  }, [isAuthenticated]);
 
   // Fetch environment settings including version on component mount
   useEffect(() => {

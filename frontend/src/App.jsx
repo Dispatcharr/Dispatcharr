@@ -15,6 +15,7 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import PluginPage from './pages/PluginPage';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
@@ -143,6 +144,7 @@ const App = () => {
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
                         <Route path="/plugins" element={<PluginsPage />} />
+                        <Route path="/plugin/:pluginKey" element={<PluginPage />} />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />

@@ -26,4 +26,5 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    navigation = serializers.BooleanField(default=False)
 
