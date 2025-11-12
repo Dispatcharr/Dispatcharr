@@ -22,6 +22,7 @@ import {
   Select,
   Stack,
   Switch,
+  Tabs,
   Text,
   TextInput,
   NumberInput,
@@ -184,6 +185,9 @@ const SettingsPage = () => {
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
 
   const [accordianValue, setAccordianValue] = useState(null);
+  const [activeTab, setActiveTab] = useState('ui-settings');
+  const [enabledPlugins, setEnabledPlugins] = useState([]);
+  const [pluginSettings, setPluginSettings] = useState({});
   const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
   const [networkAccessError, setNetworkAccessError] = useState(null);
   const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
@@ -402,6 +406,26 @@ const SettingsPage = () => {
       }
     };
     loadComskipConfig();
+  }, []);
+
+  // Load enabled plugins for Settings page integration
+  useEffect(() => {
+    const loadEnabledPlugins = async () => {
+      try {
+        const plugins = await API.getEnabledPlugins();
+        setEnabledPlugins(plugins || []);
+
+        // Initialize plugin settings state
+        const initialPluginSettings = {};
+        plugins.forEach(plugin => {
+          initialPluginSettings[plugin.key] = plugin.settings || {};
+        });
+        setPluginSettings(initialPluginSettings);
+      } catch (error) {
+        console.error('Failed to load enabled plugins', error);
+      }
+    };
+    loadEnabledPlugins();
   }, []);
 
   // Clear success states when switching accordion panels
@@ -696,6 +720,82 @@ const SettingsPage = () => {
     }
   };
 
+  // Handler for plugin settings changes
+  const onPluginSettingChange = async (pluginKey, fieldId, value) => {
+    // Update local state
+    setPluginSettings(prev => ({
+      ...prev,
+      [pluginKey]: {
+        ...prev[pluginKey],
+        [fieldId]: value
+      }
+    }));
+
+    // Save to backend
+    try {
+      const updatedSettings = {
+        ...pluginSettings[pluginKey],
+        [fieldId]: value
+      };
+      await API.updatePluginSettings(pluginKey, updatedSettings);
+    } catch (error) {
+      console.error('Failed to save plugin setting:', error);
+    }
+  };
+
+  // Render a plugin field based on its type
+  const renderPluginField = (pluginKey, field) => {
+    const value = pluginSettings[pluginKey]?.[field.id] ?? field.default;
+    const onChange = (val) => onPluginSettingChange(pluginKey, field.id, val);
+
+    switch (field.type) {
+      case 'boolean':
+        return (
+          <Switch
+            key={field.id}
+            label={field.label}
+            description={field.help_text}
+            checked={value}
+            onChange={(e) => onChange(e.currentTarget.checked)}
+          />
+        );
+      case 'number':
+        return (
+          <NumberInput
+            key={field.id}
+            label={field.label}
+            description={field.help_text}
+            value={value}
+            onChange={onChange}
+            min={field.min}
+            max={field.max}
+          />
+        );
+      case 'select':
+        return (
+          <Select
+            key={field.id}
+            label={field.label}
+            description={field.help_text}
+            value={value}
+            onChange={onChange}
+            data={field.choices || []}
+          />
+        );
+      case 'text':
+      default:
+        return (
+          <TextInput
+            key={field.id}
+            label={field.label}
+            description={field.help_text}
+            value={value}
+            onChange={(e) => onChange(e.currentTarget.value)}
+          />
+        );
+    }
+  };
+
   return (
     <Center
       style={{
@@ -703,15 +803,27 @@ const SettingsPage = () => {
       }}
     >
       <Box style={{ width: '100%', maxWidth: 800 }}>
-        <Accordion
-          variant="separated"
-          defaultValue="ui-settings"
-          onChange={setAccordianValue}
-          style={{ minWidth: 400 }}
-        >
-          <Accordion.Item value="ui-settings">
-            <Accordion.Control>UI Settings</Accordion.Control>
-            <Accordion.Panel>
+        <Tabs value={activeTab} onChange={setActiveTab}>
+          <Tabs.List>
+            <Tabs.Tab value="ui-settings">UI Settings</Tabs.Tab>
+            {authUser.user_level == USER_LEVELS.ADMIN && (
+              <>
+                <Tabs.Tab value="dvr-settings">DVR</Tabs.Tab>
+                <Tabs.Tab value="stream-settings">Stream Settings</Tabs.Tab>
+                <Tabs.Tab value="user-agents">User-Agents</Tabs.Tab>
+                <Tabs.Tab value="stream-profiles">Stream Profiles</Tabs.Tab>
+                <Tabs.Tab value="network-access">Network Access</Tabs.Tab>
+                <Tabs.Tab value="proxy-settings">Proxy Settings</Tabs.Tab>
+              </>
+            )}
+            {enabledPlugins.map(plugin => (
+              <Tabs.Tab key={plugin.key} value={`plugin-${plugin.key}`}>
+                {plugin.name}
+              </Tabs.Tab>
+            ))}
+          </Tabs.List>
+
+          <Tabs.Panel value="ui-settings" pt="md">
               <Select
                 label="Table Size"
                 value={tableSize}
@@ -769,14 +881,11 @@ const SettingsPage = () => {
                 onChange={(val) => onUISettingsChange('time-zone', val)}
                 data={timeZoneOptions}
               />
-            </Accordion.Panel>
-          </Accordion.Item>
+          </Tabs.Panel>
 
           {authUser.user_level == USER_LEVELS.ADMIN && (
             <>
-              <Accordion.Item value="dvr-settings">
-                <Accordion.Control>DVR</Accordion.Control>
-                <Accordion.Panel>
+              <Tabs.Panel value="dvr-settings" pt="md">
                   <form onSubmit={form.onSubmit(onSubmit)}>
                     <Stack gap="sm">
                       {generalSettingsSaved && (
@@ -943,11 +1052,9 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
-                </Accordion.Panel>
-              </Accordion.Item>
-              <Accordion.Item value="stream-settings">
-                <Accordion.Control>Stream Settings</Accordion.Control>
-                <Accordion.Panel>
+              </Tabs.Panel>
+
+              <Tabs.Panel value="stream-settings" pt="md">
                   <form onSubmit={form.onSubmit(onSubmit)}>
                     {generalSettingsSaved && (
                       <Alert
@@ -1090,33 +1197,20 @@ const SettingsPage = () => {
                       </Button>
                     </Flex>
                   </form>
-                </Accordion.Panel>
-              </Accordion.Item>
+              </Tabs.Panel>
 
-              <Accordion.Item value="user-agents">
-                <Accordion.Control>User-Agents</Accordion.Control>
-                <Accordion.Panel>
-                  <UserAgentsTable />
-                </Accordion.Panel>
-              </Accordion.Item>
+              <Tabs.Panel value="user-agents" pt="md">
+                <UserAgentsTable />
+              </Tabs.Panel>
 
-              <Accordion.Item value="stream-profiles">
-                <Accordion.Control>Stream Profiles</Accordion.Control>
-                <Accordion.Panel>
-                  <StreamProfilesTable />
-                </Accordion.Panel>
-              </Accordion.Item>
+              <Tabs.Panel value="stream-profiles" pt="md">
+                <StreamProfilesTable />
+              </Tabs.Panel>
 
-              <Accordion.Item value="network-access">
-                <Accordion.Control>
-                  <Box>Network Access</Box>
-                  {accordianValue == 'network-access' && (
-                    <Box>
-                      <Text size="sm">Comma-Delimited CIDR ranges</Text>
-                    </Box>
-                  )}
-                </Accordion.Control>
-                <Accordion.Panel>
+              <Tabs.Panel value="network-access" pt="md">
+                <Box mb="sm">
+                  <Text size="sm" c="dimmed">Comma-Delimited CIDR ranges</Text>
+                </Box>
                   <form
                     onSubmit={networkAccessForm.onSubmit(onNetworkAccessSubmit)}
                   >
@@ -1164,14 +1258,9 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
-                </Accordion.Panel>
-              </Accordion.Item>
+              </Tabs.Panel>
 
-              <Accordion.Item value="proxy-settings">
-                <Accordion.Control>
-                  <Box>Proxy Settings</Box>
-                </Accordion.Control>
-                <Accordion.Panel>
+              <Tabs.Panel value="proxy-settings" pt="md">
                   <form
                     onSubmit={proxySettingsForm.onSubmit(onProxySettingsSubmit)}
                   >
@@ -1263,11 +1352,54 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
-                </Accordion.Panel>
-              </Accordion.Item>
+              </Tabs.Panel>
             </>
           )}
-        </Accordion>
+
+          {/* Dynamic Plugin Tabs */}
+          {enabledPlugins.map(plugin => (
+            <Tabs.Panel key={plugin.key} value={`plugin-${plugin.key}`} pt="md">
+              <Stack gap="md">
+                <Text size="sm" c="dimmed">{plugin.description}</Text>
+
+                {/* Group fields by section */}
+                {(() => {
+                  // Separate fields into sections
+                  const unsectionedFields = plugin.fields?.filter(f => !f.section) || [];
+                  const sectionedFields = plugin.fields?.filter(f => f.section) || [];
+
+                  // Get unique sections
+                  const sections = [...new Set(sectionedFields.map(f => f.section))];
+
+                  return (
+                    <>
+                      {/* Render unsectioned fields first */}
+                      {unsectionedFields.map(field => renderPluginField(plugin.key, field))}
+
+                      {/* Render sectioned fields in accordions */}
+                      {sections.length > 0 && (
+                        <Accordion variant="separated" defaultValue={sections[0]}>
+                          {sections.map(section => (
+                            <Accordion.Item key={section} value={section}>
+                              <Accordion.Control>{section}</Accordion.Control>
+                              <Accordion.Panel>
+                                <Stack gap="sm">
+                                  {sectionedFields
+                                    .filter(f => f.section === section)
+                                    .map(field => renderPluginField(plugin.key, field))}
+                                </Stack>
+                              </Accordion.Panel>
+                            </Accordion.Item>
+                          ))}
+                        </Accordion>
+                      )}
+                    </>
+                  );
+                })()}
+              </Stack>
+            </Tabs.Panel>
+          ))}
+        </Tabs>
       </Box>
 
       <ConfirmationDialog

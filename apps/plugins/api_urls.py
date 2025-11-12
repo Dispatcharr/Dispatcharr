@@ -1,6 +1,7 @@
 from django.urls import path
 from .api_views import (
     PluginsListAPIView,
+    PluginsEnabledListAPIView,
     PluginReloadAPIView,
     PluginSettingsAPIView,
     PluginRunAPIView,
@@ -13,6 +14,7 @@ app_name = "plugins"
 
 urlpatterns = [
     path("plugins/", PluginsListAPIView.as_view(), name="list"),
+    path("plugins/enabled/", PluginsEnabledListAPIView.as_view(), name="enabled-list"),
     path("plugins/reload/", PluginReloadAPIView.as_view(), name="reload"),
     path("plugins/import/", PluginImportAPIView.as_view(), name="import"),
     path("plugins/<str:key>/delete/", PluginDeleteAPIView.as_view(), name="delete"),

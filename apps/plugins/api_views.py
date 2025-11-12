@@ -37,6 +37,25 @@ class PluginsListAPIView(APIView):
         return Response({"plugins": pm.list_plugins()})
 
 
+class PluginsEnabledListAPIView(APIView):
+    """Returns only enabled plugins for Settings page integration."""
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def get(self, request):
+        pm = PluginManager.get()
+        pm.discover_plugins()
+        all_plugins = pm.list_plugins()
+        # Filter to only enabled plugins
+        enabled_plugins = [p for p in all_plugins if p.get("enabled", False)]
+        return Response({"plugins": enabled_plugins})
+
+
 class PluginReloadAPIView(APIView):
     def get_permissions(self):
         try:
