@@ -278,11 +278,29 @@ class PluginEnabledAPIView(APIView):
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             cfg = PluginConfig.objects.get(key=key)
+            old_enabled = cfg.enabled
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
             if cfg.enabled and not cfg.ever_enabled:
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+
+            # Send WebSocket notification for instant UI updates
+            # Only send if the enabled state actually changed
+            if old_enabled != cfg.enabled:
+                from core.utils import send_websocket_update
+                pm = PluginManager.get()
+                pm.discover_plugins()
+                plugin_info = pm.get_plugin(key)
+
+                send_websocket_update('updates', 'update', {
+                    'type': 'plugin_enabled_changed',
+                    'plugin_key': key,
+                    'plugin_name': cfg.name,
+                    'enabled': cfg.enabled,
+                    'navigation': plugin_info.get('navigation', False) if plugin_info else False,
+                })
+
             return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)

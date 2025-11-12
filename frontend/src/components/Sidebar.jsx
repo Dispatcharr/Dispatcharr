@@ -1,6 +1,7 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
+import { useWebSocket } from '../WebSocket';
 import {
   ListOrdered,
   Play,
@@ -88,6 +89,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const [userFormOpen, setUserFormOpen] = useState(false);
   const [pluginNavItems, setPluginNavItems] = useState([]);
 
+  // WebSocket for real-time plugin updates
+  const [wsReady, , wsVal] = useWebSocket();
+
   const closeUserForm = () => setUserFormOpen(false);
 
   // Base Navigation Items
@@ -148,30 +152,64 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   // Combine base nav items with plugin nav items
   const navItems = [...baseNavItems, ...pluginNavItems];
 
-  // Fetch enabled plugins with navigation=true
-  useEffect(() => {
+  // Function to fetch plugin navigation items
+  const fetchPluginNavItems = useCallback(async () => {
     if (!isAuthenticated) {
       return;
     }
 
-    const fetchPluginNavItems = async () => {
+    try {
+      const plugins = await API.getEnabledPlugins();
+      const navPlugins = plugins
+        .filter(p => p.navigation === true)
+        .map(p => ({
+          label: p.name,
+          icon: <PlugZap size={20} />,
+          path: `/plugin/${p.key}`,
+        }));
+      setPluginNavItems(navPlugins);
+    } catch (error) {
+      console.error('Failed to load plugin navigation items:', error);
+    }
+  }, [isAuthenticated]);
+
+  // Fetch enabled plugins with navigation=true on mount
+  useEffect(() => {
+    fetchPluginNavItems();
+  }, [fetchPluginNavItems]);
+
+  // Listen for WebSocket events to refresh plugin navigation dynamically
+  useEffect(() => {
+    if (!wsReady || !wsVal) return;
+
+    const handlePluginStateChange = async (event) => {
       try {
-        const plugins = await API.getEnabledPlugins();
-        const navPlugins = plugins
-          .filter(p => p.navigation === true)
-          .map(p => ({
-            label: p.name,
-            icon: <PlugZap size={20} />,
-            path: `/plugin/${p.key}`,
-          }));
-        setPluginNavItems(navPlugins);
+        const parsedEvent = JSON.parse(event.data);
+
+        // Handle plugin enabled/disabled events
+        if (parsedEvent.data?.type === 'plugin_enabled_changed') {
+          const { plugin_key, enabled, navigation } = parsedEvent.data;
+
+          // If plugin has navigation, refresh the nav items
+          if (navigation) {
+            await fetchPluginNavItems();
+          }
+        }
       } catch (error) {
-        console.error('Failed to load plugin navigation items:', error);
+        // Ignore parsing errors - not all WebSocket messages are for us
       }
     };
 
-    fetchPluginNavItems();
-  }, [isAuthenticated]);
+    // Add event listener
+    if (wsVal?.addEventListener) {
+      wsVal.addEventListener('message', handlePluginStateChange);
+
+      // Cleanup
+      return () => {
+        wsVal.removeEventListener('message', handlePluginStateChange);
+      };
+    }
+  }, [wsReady, wsVal, fetchPluginNavItems]);
 
   // Fetch environment settings including version on component mount
   useEffect(() => {

@@ -40,6 +40,7 @@ import {
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
+import { useWebSocket } from '../WebSocket';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -182,6 +183,9 @@ const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+
+  // WebSocket for real-time plugin updates
+  const [wsReady, , wsVal] = useWebSocket();
 
   const [accordianValue, setAccordianValue] = useState(null);
   const [enabledPlugins, setEnabledPlugins] = useState([]);
@@ -406,25 +410,56 @@ const SettingsPage = () => {
     loadComskipConfig();
   }, []);
 
-  // Load enabled plugins for Settings page integration
-  useEffect(() => {
-    const loadEnabledPlugins = async () => {
-      try {
-        const plugins = await API.getEnabledPlugins();
-        setEnabledPlugins(plugins || []);
+  // Function to load enabled plugins for Settings page integration
+  const loadEnabledPlugins = useCallback(async () => {
+    try {
+      const plugins = await API.getEnabledPlugins();
+      setEnabledPlugins(plugins || []);
 
-        // Initialize plugin settings state
-        const initialPluginSettings = {};
-        plugins.forEach(plugin => {
-          initialPluginSettings[plugin.key] = plugin.settings || {};
-        });
-        setPluginSettings(initialPluginSettings);
+      // Initialize plugin settings state
+      const initialPluginSettings = {};
+      plugins.forEach(plugin => {
+        initialPluginSettings[plugin.key] = plugin.settings || {};
+      });
+      setPluginSettings(initialPluginSettings);
+    } catch (error) {
+      console.error('Failed to load enabled plugins', error);
+    }
+  }, []);
+
+  // Load enabled plugins on mount
+  useEffect(() => {
+    loadEnabledPlugins();
+  }, [loadEnabledPlugins]);
+
+  // Listen for WebSocket events to refresh enabled plugins dynamically
+  useEffect(() => {
+    if (!wsReady || !wsVal) return;
+
+    const handlePluginStateChange = async (event) => {
+      try {
+        const parsedEvent = JSON.parse(event.data);
+
+        // Handle plugin enabled/disabled events
+        if (parsedEvent.data?.type === 'plugin_enabled_changed') {
+          // Refresh the enabled plugins list
+          await loadEnabledPlugins();
+        }
       } catch (error) {
-        console.error('Failed to load enabled plugins', error);
+        // Ignore parsing errors - not all WebSocket messages are for us
       }
     };
-    loadEnabledPlugins();
-  }, []);
+
+    // Add event listener
+    if (wsVal?.addEventListener) {
+      wsVal.addEventListener('message', handlePluginStateChange);
+
+      // Cleanup
+      return () => {
+        wsVal.removeEventListener('message', handlePluginStateChange);
+      };
+    }
+  }, [wsReady, wsVal, loadEnabledPlugins]);
 
   // Clear success states when switching accordion panels
   useEffect(() => {

@@ -18,9 +18,11 @@ import {
   FileInput,
   Image,
   Badge,
+  ThemeIcon,
+  Center,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { RefreshCcw, Trash2, Settings } from 'lucide-react';
+import { RefreshCcw, Trash2, Settings, PlugZap } from 'lucide-react';
 import API from '../api';
 import { notifications } from '@mantine/notifications';
 
@@ -57,13 +59,35 @@ const PluginCard = ({
       style={{ opacity: !missing && enabled ? 1 : 0.6 }}
     >
       <Card.Section>
-        {/* Image placeholder for plugin logo */}
-        <Image
-          src={plugin.logo || null}
-          height={160}
-          alt={`${plugin.name} logo`}
-          fallbackSrc="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Crect width='100%25' height='100%25' fill='%23f1f3f5'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' fill='%23868e96'%3EPlugin%3C/text%3E%3C/svg%3E"
-        />
+        {/* Plugin logo or dark theme-compatible placeholder */}
+        {plugin.logo ? (
+          <Image
+            src={plugin.logo}
+            height={160}
+            alt={`${plugin.name} logo`}
+          />
+        ) : (
+          <Center
+            style={{
+              height: 160,
+              background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+              borderBottom: '1px solid #2A2A2E',
+            }}
+          >
+            <ThemeIcon
+              size={80}
+              radius="xl"
+              variant="light"
+              color="dark"
+              style={{
+                backgroundColor: 'rgba(100, 116, 139, 0.1)',
+                border: '2px solid rgba(100, 116, 139, 0.2)',
+              }}
+            >
+              <PlugZap size={48} color="#64748b" />
+            </ThemeIcon>
+          </Center>
+        )}
       </Card.Section>
 
       <Stack gap="sm" mt="md">
