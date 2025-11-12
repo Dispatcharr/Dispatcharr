@@ -1423,7 +1423,15 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     if end_time.tzinfo is None:
         end_time = django_timezone.make_aware(end_time)
 
-    duration_seconds = int((end_time - start_time).total_seconds())
+    # For retries, calculate duration from NOW (not original start_time)
+    # This ensures we only record the remaining time, not the entire original duration
+    now = django_timezone.now()
+    effective_start = max(start_time, now)  # Use now if we're past the original start
+    duration_seconds = int((end_time - effective_start).total_seconds())
+    
+    if duration_seconds <= 0:
+        logger.warning(f"DVR: Recording {recording_id} cannot start - end_time has already passed")
+        return
     
     logger.info(f"DVR: Starting recording {recording_id} for {channel.name}, duration={duration_seconds}s, end_time={end_time}")
     
@@ -1746,8 +1754,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     'User-Agent': 'Dispatcharr-DVR',
                 },
                 stream=True,
-                # timeout=(10, 15),
-                timeout=(5, 10)
+                timeout=(5, 10),  # Start with aggressive timeout: 5s connect, 10s read for fast validation/failover
             )
             response.raise_for_status()
 
@@ -1776,8 +1783,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     # Write data regardless during test phase
                     file.write(chunk)
                     test_bytes_written += len(chunk)
+                    if got_valid_stream:
+                        bytes_written += len(chunk)
                     
-                    # Check if we have enough data to validate
+                    # Check if we have enough data to validate (only during initial phase)
                     if not got_valid_stream and test_bytes_written >= min_bytes_threshold:
                         # Basic TS validation: check for sync byte pattern (0x47 every 188 bytes)
                         # Read first few KB to validate
@@ -1797,6 +1806,15 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                     chosen_base = base
                                     bytes_written = test_bytes_written
                                     
+                                    # Stream validated - increase socket timeout for long recording session
+                                    # This allows the recording to handle buffering/pauses gracefully
+                                    try:
+                                        sock = response.raw._fp.fp.raw._sock
+                                        sock.settimeout(300)  # 5 minutes - much more tolerant of buffering during recording
+                                        logger.debug(f"DVR: Increased socket timeout to 300s for recording session")
+                                    except Exception as sock_err:
+                                        logger.debug(f"DVR: Could not adjust socket timeout (non-critical): {sock_err}")
+                                    
                                     # Update status to "recording" now that we confirmed valid stream
                                     if recording_obj:
                                         try:
@@ -1811,6 +1829,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                             logger.warning(f"DVR: Failed to update status to recording: {e}")
                                     
                                     logger.info(f"DVR: Valid TS stream confirmed from {base} after {test_bytes_written} bytes")
+                                    # Continue with same loop to keep recording
                                 else:
                                     logger.warning(f"DVR: Data from {base} doesn't look like valid TS (sync_count={sync_count})")
                                     got_valid_stream = False
@@ -1819,21 +1838,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                             logger.warning(f"DVR: Failed to validate TS data: {e}")
                             break
                     
-                    # If validated, continue recording until duration complete
+                    # Check if recording duration complete
                     if got_valid_stream:
                         elapsed = time.time() - started_at
                         if elapsed > duration_seconds:
+                            logger.info(f"DVR: Recording duration complete ({elapsed:.1f}s), stopping")
                             break
-                        # Continue draining the stream
-                        for chunk2 in response.iter_content(chunk_size=8192):
-                            if not chunk2:
-                                continue
-                            file.write(chunk2)
-                            bytes_written += len(chunk2)
-                            elapsed = time.time() - started_at
-                            if elapsed > duration_seconds:
-                                break
-                        break  # exit outer for-loop once recording complete
             finally:
                 # Always close the file handle
                 if file is not None:
