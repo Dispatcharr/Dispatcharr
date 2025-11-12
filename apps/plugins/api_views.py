@@ -291,7 +291,7 @@ class PluginEnabledAPIView(APIView):
                 try:
                     from core.utils import send_websocket_update
                     pm = PluginManager.get()
-                    pm.discover_plugins()
+                    # Get plugin from registry (already loaded, no need to discover again)
                     plugin_info = pm.get_plugin(key)
 
                     # Get navigation flag - default to False if plugin not found
@@ -310,8 +310,6 @@ class PluginEnabledAPIView(APIView):
                     logger.info(f"Successfully sent plugin_enabled_changed WebSocket event for {key} (navigation={has_navigation})")
                 except Exception as e:
                     # Log the error but don't fail the request
-                    import logging
-                    logger = logging.getLogger(__name__)
                     logger.warning(f"Failed to send WebSocket update for plugin {key}: {e}")
 
             return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
