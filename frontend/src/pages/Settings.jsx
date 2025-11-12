@@ -25,6 +25,8 @@ import {
   Text,
   TextInput,
   NumberInput,
+  Divider,
+  Modal,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -190,6 +192,17 @@ const SettingsPage = () => {
   const [accordianValue, setAccordianValue] = useState(null);
   const [enabledPlugins, setEnabledPlugins] = useState([]);
   const [pluginSettings, setPluginSettings] = useState({});
+
+  // State for plugin actions
+  const [runningAction, setRunningAction] = useState(null); // Track which action is running (pluginKey-actionId)
+  const [lastResults, setLastResults] = useState({}); // Track results per plugin
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState({
+    title: '',
+    message: '',
+    onConfirm: null,
+  });
+
   const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
   const [networkAccessError, setNetworkAccessError] = useState(null);
   const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
@@ -797,6 +810,37 @@ const SettingsPage = () => {
             onChange={(e) => onChange(e.currentTarget.value)}
           />
         );
+    }
+  };
+
+  // Run a plugin action
+  const onRunPluginAction = async (pluginKey, pluginName, actionId) => {
+    const actionKey = `${pluginKey}-${actionId}`;
+    setRunningAction(actionKey);
+    setLastResults(prev => ({ ...prev, [pluginKey]: null }));
+
+    try {
+      const resp = await API.runPluginAction(pluginKey, actionId);
+      if (resp?.success) {
+        const result = resp.result || {};
+        setLastResults(prev => ({ ...prev, [pluginKey]: result }));
+        const msg = result?.message || 'Plugin action completed';
+        notifications.show({
+          title: pluginName,
+          message: msg,
+          color: 'green',
+        });
+      } else {
+        const err = resp?.error || 'Unknown error';
+        setLastResults(prev => ({ ...prev, [pluginKey]: { error: err } }));
+        notifications.show({
+          title: `${pluginName} error`,
+          message: String(err),
+          color: 'red',
+        });
+      }
+    } finally {
+      setRunningAction(null);
     }
   };
 
@@ -1411,6 +1455,85 @@ const SettingsPage = () => {
                             ))}
                           </Accordion>
                         )}
+
+                        {/* Plugin Actions */}
+                        {plugin.actions && plugin.actions.length > 0 && (
+                          <>
+                            <Divider my="sm" />
+                            <Text fw={600} size="sm">Actions</Text>
+                            <Stack gap="xs">
+                              {plugin.actions.map((action) => {
+                                const actionKey = `${plugin.key}-${action.id}`;
+                                const isRunning = runningAction === actionKey;
+                                const lastResult = lastResults[plugin.key];
+
+                                return (
+                                  <Group key={action.id} justify="space-between">
+                                    <div>
+                                      <Text>{action.label}</Text>
+                                      {action.description && (
+                                        <Text size="sm" c="dimmed">
+                                          {action.description}
+                                        </Text>
+                                      )}
+                                    </div>
+                                    <Button
+                                      loading={isRunning}
+                                      onClick={async () => {
+                                        // Determine if confirmation is required
+                                        const actionConfirm = action.confirm;
+                                        let requireConfirm = false;
+                                        let confirmTitle = `Run ${action.label}?`;
+                                        let confirmMessage = `You're about to run "${action.label}" from "${plugin.name}".`;
+
+                                        if (actionConfirm) {
+                                          if (typeof actionConfirm === 'boolean') {
+                                            requireConfirm = actionConfirm;
+                                          } else if (typeof actionConfirm === 'object') {
+                                            requireConfirm = actionConfirm.required !== false;
+                                            if (actionConfirm.title) confirmTitle = actionConfirm.title;
+                                            if (actionConfirm.message) confirmMessage = actionConfirm.message;
+                                          }
+                                        }
+
+                                        if (requireConfirm) {
+                                          await new Promise((resolve) => {
+                                            setConfirmConfig({
+                                              title: confirmTitle,
+                                              message: confirmMessage,
+                                              onConfirm: resolve,
+                                            });
+                                            setConfirmOpen(true);
+                                          });
+                                        }
+
+                                        await onRunPluginAction(plugin.key, plugin.name, action.id);
+                                      }}
+                                      size="xs"
+                                    >
+                                      {isRunning ? 'Running…' : 'Run'}
+                                    </Button>
+                                  </Group>
+                                );
+                              })}
+                              {runningAction && runningAction.startsWith(plugin.key) && (
+                                <Text size="sm" c="dimmed">
+                                  Running action… please wait
+                                </Text>
+                              )}
+                              {!runningAction && lastResults[plugin.key]?.file && (
+                                <Text size="sm" c="dimmed">
+                                  Output: {lastResults[plugin.key].file}
+                                </Text>
+                              )}
+                              {!runningAction && lastResults[plugin.key]?.error && (
+                                <Text size="sm" c="red">
+                                  Error: {String(lastResults[plugin.key].error)}
+                                </Text>
+                              )}
+                            </Stack>
+                          </>
+                        )}
                       </>
                     );
                   })()}
@@ -1478,6 +1601,44 @@ Please ensure you have time to let this complete before proceeding.`}
         cancelLabel="Cancel"
         size="md"
       />
+
+      {/* Plugin Action Confirmation Modal */}
+      <Modal
+        opened={confirmOpen}
+        onClose={() => {
+          setConfirmOpen(false);
+          setConfirmConfig({ title: '', message: '', onConfirm: null });
+        }}
+        title={confirmConfig.title}
+        centered
+      >
+        <Stack>
+          <Text size="sm">{confirmConfig.message}</Text>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              size="xs"
+              onClick={() => {
+                setConfirmOpen(false);
+                setConfirmConfig({ title: '', message: '', onConfirm: null });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="xs"
+              onClick={() => {
+                const cb = confirmConfig.onConfirm;
+                setConfirmOpen(false);
+                setConfirmConfig({ title: '', message: '', onConfirm: null });
+                if (cb) cb();
+              }}
+            >
+              Confirm
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Center>
   );
 };
