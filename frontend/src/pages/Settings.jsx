@@ -423,30 +423,29 @@ const SettingsPage = () => {
     loadComskipConfig();
   }, []);
 
-  // Function to load enabled plugins for Settings page integration
-  const loadEnabledPlugins = useCallback(async () => {
-    try {
-      console.log('[Settings] Fetching enabled plugins...');
-      const plugins = await API.getEnabledPlugins();
-      console.log('[Settings] Received plugins:', plugins);
-      setEnabledPlugins(plugins || []);
-
-      // Initialize plugin settings state
-      const initialPluginSettings = {};
-      plugins.forEach(plugin => {
-        initialPluginSettings[plugin.key] = plugin.settings || {};
-      });
-      setPluginSettings(initialPluginSettings);
-    } catch (error) {
-      console.error('[Settings] Failed to load enabled plugins', error);
-    }
-  }, []);
-
   // Load enabled plugins on mount and when plugin state changes
   useEffect(() => {
+    const loadEnabledPlugins = async () => {
+      try {
+        console.log('[Settings] Fetching enabled plugins... (version:', pluginStateVersion, ')');
+        const plugins = await API.getEnabledPlugins();
+        console.log('[Settings] Received plugins:', plugins);
+        setEnabledPlugins(plugins || []);
+
+        // Initialize plugin settings state
+        const initialPluginSettings = {};
+        plugins.forEach(plugin => {
+          initialPluginSettings[plugin.key] = plugin.settings || {};
+        });
+        setPluginSettings(initialPluginSettings);
+      } catch (error) {
+        console.error('[Settings] Failed to load enabled plugins', error);
+      }
+    };
+
     console.log('[Settings] Plugin state version changed:', pluginStateVersion);
     loadEnabledPlugins();
-  }, [loadEnabledPlugins, pluginStateVersion]);
+  }, [pluginStateVersion]);
 
   // Clear success states when switching accordion panels
   useEffect(() => {

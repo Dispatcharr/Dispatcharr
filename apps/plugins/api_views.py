@@ -295,9 +295,10 @@ class PluginEnabledAPIView(APIView):
                     plugin_info = pm.get_plugin(key)
 
                     # Get navigation flag - default to False if plugin not found
+                    # plugin_info is a LoadedPlugin dataclass, not a dict
                     has_navigation = False
                     if plugin_info:
-                        has_navigation = plugin_info.get('navigation', False)
+                        has_navigation = getattr(plugin_info, 'navigation', False)
 
                     send_websocket_update('updates', 'update', {
                         'type': 'plugin_enabled_changed',
@@ -306,6 +307,7 @@ class PluginEnabledAPIView(APIView):
                         'enabled': cfg.enabled,
                         'navigation': has_navigation,
                     })
+                    logger.info(f"Successfully sent plugin_enabled_changed WebSocket event for {key} (navigation={has_navigation})")
                 except Exception as e:
                     # Log the error but don't fail the request
                     import logging
