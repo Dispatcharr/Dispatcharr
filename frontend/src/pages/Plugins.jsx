@@ -18,6 +18,7 @@ import {
   SimpleGrid,
   Modal,
   FileInput,
+  Accordion,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
 import { RefreshCcw, Trash2 } from 'lucide-react';
@@ -177,14 +178,74 @@ const PluginCard = ({
 
       {!missing && plugin.fields && plugin.fields.length > 0 && (
         <Stack gap="xs" mt="sm">
-          {plugin.fields.map((f) => (
-            <Field
-              key={f.id}
-              field={f}
-              value={settings?.[f.id]}
-              onChange={updateField}
-            />
-          ))}
+          {(() => {
+            // Check if any fields have sections
+            const hasSections = plugin.fields.some((f) => f.section);
+
+            if (!hasSections) {
+              // Backward compatible: render flat list
+              return (
+                <>
+                  {plugin.fields.map((f) => (
+                    <Field
+                      key={f.id}
+                      field={f}
+                      value={settings?.[f.id]}
+                      onChange={updateField}
+                    />
+                  ))}
+                </>
+              );
+            }
+
+            // Group fields by section
+            const sections = {};
+            const unsectioned = [];
+            plugin.fields.forEach((f) => {
+              if (f.section) {
+                if (!sections[f.section]) sections[f.section] = [];
+                sections[f.section].push(f);
+              } else {
+                unsectioned.push(f);
+              }
+            });
+
+            const sectionNames = Object.keys(sections);
+
+            return (
+              <>
+                {unsectioned.map((f) => (
+                  <Field
+                    key={f.id}
+                    field={f}
+                    value={settings?.[f.id]}
+                    onChange={updateField}
+                  />
+                ))}
+                {sectionNames.length > 0 && (
+                  <Accordion variant="separated" defaultValue={sectionNames[0]}>
+                    {sectionNames.map((sectionName) => (
+                      <Accordion.Item key={sectionName} value={sectionName}>
+                        <Accordion.Control>{sectionName}</Accordion.Control>
+                        <Accordion.Panel>
+                          <Stack gap="xs">
+                            {sections[sectionName].map((f) => (
+                              <Field
+                                key={f.id}
+                                field={f}
+                                value={settings?.[f.id]}
+                                onChange={updateField}
+                              />
+                            ))}
+                          </Stack>
+                        </Accordion.Panel>
+                      </Accordion.Item>
+                    ))}
+                  </Accordion>
+                )}
+              </>
+            );
+          })()}
           <Group>
             <Button loading={saving} onClick={save} variant="default" size="xs">
               Save Settings

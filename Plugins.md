@@ -6,9 +6,9 @@ This document explains how to build, install, and use Python plugins in Dispatch
 
 ## Quick Start
 
-1) Create a folder under `/app/data/plugins/my_plugin/` (host path `data/plugins/my_plugin/` in the repo).
+1. Create a folder under `/app/data/plugins/my_plugin/` (host path `data/plugins/my_plugin/` in the repo).
 
-2) Add a `plugin.py` file exporting a `Plugin` class:
+2. Add a `plugin.py` file exporting a `Plugin` class:
 
 ```
 # /app/data/plugins/my_plugin/plugin.py
@@ -48,7 +48,7 @@ class Plugin:
         return {"status": "error", "message": f"Unknown action {action}"}
 ```
 
-3) Open the Plugins page in the UI, click the refresh icon to reload discovery, then configure and run your plugin.
+3. Open the Plugins page in the UI, click the refresh icon to reload discovery, then configure and run your plugin.
 
 ---
 
@@ -73,6 +73,7 @@ The directory name (lowercased, spaces as `_`) is used as the registry key and m
 - Metadata (name, version, description) and a per-plugin settings JSON are stored in the DB.
 
 Backend code:
+
 - Loader: `apps/plugins/loader.py`
 - API Views: `apps/plugins/api_views.py`
 - API URLs: `apps/plugins/api_urls.py`
@@ -92,26 +93,72 @@ Export a `Plugin` class. Supported attributes and behavior:
 - `run(action, params, context)` (callable): Invoked when a user clicks an action.
 
 ### Settings Schema
+
 Supported field `type`s:
+
 - `boolean`
 - `number`
 - `string`
 - `select` (requires `options`: `[{"value": ..., "label": ...}, ...]`)
 
 Common field keys:
+
 - `id` (str): Settings key.
 - `label` (str): Label shown in the UI.
 - `type` (str): One of above.
 - `default` (any): Default value used until saved.
 - `help_text` (str, optional): Shown under the control.
 - `options` (list, for select): List of `{value, label}`.
+- `section` (str, optional): Group fields into collapsible sections in the UI.
 
 The UI automatically renders settings and persists them. The backend stores settings in `PluginConfig.settings`.
 
 Read settings in `run` via `context["settings"]`.
 
+#### Collapsible Sections
+
+You can organize plugin settings into collapsible accordion sections by adding a `section` property to your fields. Fields with the same `section` value will be grouped together under a collapsible header.
+
+**Example:**
+
+```python
+fields = [
+    {
+        "id": "enabled",
+        "label": "Enable Feature",
+        "type": "boolean",
+        "default": False,
+        "section": "General"  # This field will appear in the "General" section
+    },
+    {
+        "id": "api_key",
+        "label": "API Key",
+        "type": "string",
+        "default": "",
+        "section": "General"  # Grouped with other "General" fields
+    },
+    {
+        "id": "video_codec",
+        "label": "Video Codec",
+        "type": "select",
+        "options": [{"value": "h264", "label": "H.264"}, {"value": "h265", "label": "H.265"}],
+        "default": "h264",
+        "section": "Video"  # This field will appear in the "Video" section
+    },
+]
+```
+
+**Notes:**
+
+- The `section` property is optional. Fields without a `section` will be displayed at the top of the settings form.
+- Sections are rendered as collapsible accordions using Mantine's Accordion component with `variant="separated"`.
+- The first section is expanded by default.
+- This feature is backward compatible - plugins without sections will render as a flat list.
+
 ### Actions
+
 Each action is a dict:
+
 - `id` (str): Unique action id.
 - `label` (str): Button label.
 - `description` (str, optional): Helper text.
@@ -119,12 +166,14 @@ Each action is a dict:
 Clicking an action calls your plugin’s `run(action, params, context)` and shows a notification with the result or error.
 
 ### Action Confirmation (Modal)
+
 Developers can request a confirmation modal per action using the `confirm` key on the action. Options:
 
 - Boolean: `confirm: true` will show a default confirmation modal.
 - Object: `confirm: { required: true, title: '...', message: '...' }` to customize the modal title and message.
 
 Example:
+
 ```
 actions = [
     {
@@ -143,6 +192,7 @@ actions = [
 Plugins are server-side Python code running within the Django application. You can:
 
 - Import models and run queries/updates:
+
   ```
   from apps.m3u.models import M3UAccount
   from apps.epg.models import EPGSource
@@ -151,6 +201,7 @@ Plugins are server-side Python code running within the Django application. You c
   ```
 
 - Dispatch Celery tasks for heavy work (recommended):
+
   ```
   from apps.m3u.tasks import refresh_m3u_accounts            # apps/m3u/tasks.py
   from apps.epg.tasks import refresh_all_epg_data            # apps/epg/tasks.py
@@ -160,12 +211,14 @@ Plugins are server-side Python code running within the Django application. You c
   ```
 
 - Send WebSocket updates:
+
   ```
   from core.utils import send_websocket_update
   send_websocket_update('updates', 'update', {"type": "plugin", "plugin": "my_plugin", "message": "Done"})
   ```
 
 - Use transactions:
+
   ```
   from django.db import transaction
   with transaction.atomic():
@@ -195,6 +248,7 @@ Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
 - Enable/disable: `POST /api/plugins/plugins/<key>/enabled/` with `{"enabled": true|false}`
 
 Notes:
+
 - When disabled, a plugin cannot run actions; backend returns HTTP 403.
 
 ---
