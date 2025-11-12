@@ -103,12 +103,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Login to GitHub Container Registry
+      #   uses: docker/login-action@v2
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v2
@@ -131,8 +131,6 @@ jobs:
           # push arch-specific tags from each matrix job (they will be combined
           # into a multi-arch manifest in a follow-up job)
           tags: |
-            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
-            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           build-args: |
@@ -153,12 +151,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Login to GitHub Container Registry
+      #   uses: docker/login-action@v2
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v2
@@ -176,17 +174,17 @@ jobs:
           VERSION=${{ needs.prepare.outputs.version }}
           TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
 
-          echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
+          echo "Creating multi-arch manifest for Docker Hub: ${REPO}"
 
           # branch tag (e.g. latest or dev)
-          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
-            ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
+          # docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
+          #   ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
 
           # version + timestamp tag
-          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
-            ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
+          # docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
+          #   ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
 
-          # also create Docker Hub manifests using the same username
+          # Docker Hub manifests only
           docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
 
