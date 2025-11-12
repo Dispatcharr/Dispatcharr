@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AppShell,
   Box,
@@ -10,76 +11,25 @@ import {
   Stack,
   Switch,
   Text,
-  TextInput,
-  NumberInput,
-  Select,
   Divider,
   ActionIcon,
   SimpleGrid,
   Modal,
   FileInput,
-  Accordion,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { RefreshCcw, Trash2 } from 'lucide-react';
+import { RefreshCcw, Trash2, Settings } from 'lucide-react';
 import API from '../api';
 import { notifications } from '@mantine/notifications';
 
-const Field = ({ field, value, onChange }) => {
-  const common = { label: field.label, description: field.help_text };
-  const effective = value ?? field.default;
-  switch (field.type) {
-    case 'boolean':
-      return (
-        <Switch
-          checked={!!effective}
-          onChange={(e) => onChange(field.id, e.currentTarget.checked)}
-          label={field.label}
-          description={field.help_text}
-        />
-      );
-    case 'number':
-      return (
-        <NumberInput
-          value={value ?? field.default ?? 0}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'select':
-      return (
-        <Select
-          value={(value ?? field.default ?? '') + ''}
-          data={(field.options || []).map((o) => ({
-            value: o.value + '',
-            label: o.label,
-          }))}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'string':
-    default:
-      return (
-        <TextInput
-          value={value ?? field.default ?? ''}
-          onChange={(e) => onChange(field.id, e.currentTarget.value)}
-          {...common}
-        />
-      );
-  }
-};
-
 const PluginCard = ({
   plugin,
-  onSaveSettings,
   onRunAction,
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
 }) => {
-  const [settings, setSettings] = useState(plugin.settings || {});
-  const [saving, setSaving] = useState(false);
+  const navigate = useNavigate();
   const [running, setRunning] = useState(false);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
   const [lastResult, setLastResult] = useState(null);
@@ -94,28 +44,6 @@ const PluginCard = ({
   React.useEffect(() => {
     setEnabled(!!plugin.enabled);
   }, [plugin.enabled]);
-  // Sync settings if plugin changes identity
-  React.useEffect(() => {
-    setSettings(plugin.settings || {});
-  }, [plugin.key]);
-
-  const updateField = (id, val) => {
-    setSettings((prev) => ({ ...prev, [id]: val }));
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSaveSettings(plugin.key, settings);
-      notifications.show({
-        title: 'Saved',
-        message: `${plugin.name} settings updated`,
-        color: 'green',
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const missing = plugin.missing;
   return (
@@ -176,82 +104,18 @@ const PluginCard = ({
         </Text>
       )}
 
-      {!missing && plugin.fields && plugin.fields.length > 0 && (
-        <Stack gap="xs" mt="sm">
-          {(() => {
-            // Check if any fields have sections
-            const hasSections = plugin.fields.some((f) => f.section);
-
-            if (!hasSections) {
-              // Backward compatible: render flat list
-              return (
-                <>
-                  {plugin.fields.map((f) => (
-                    <Field
-                      key={f.id}
-                      field={f}
-                      value={settings?.[f.id]}
-                      onChange={updateField}
-                    />
-                  ))}
-                </>
-              );
-            }
-
-            // Group fields by section
-            const sections = {};
-            const unsectioned = [];
-            plugin.fields.forEach((f) => {
-              if (f.section) {
-                if (!sections[f.section]) sections[f.section] = [];
-                sections[f.section].push(f);
-              } else {
-                unsectioned.push(f);
-              }
-            });
-
-            const sectionNames = Object.keys(sections);
-
-            return (
-              <>
-                {unsectioned.map((f) => (
-                  <Field
-                    key={f.id}
-                    field={f}
-                    value={settings?.[f.id]}
-                    onChange={updateField}
-                  />
-                ))}
-                {sectionNames.length > 0 && (
-                  <Accordion variant="separated" defaultValue={sectionNames[0]}>
-                    {sectionNames.map((sectionName) => (
-                      <Accordion.Item key={sectionName} value={sectionName}>
-                        <Accordion.Control>{sectionName}</Accordion.Control>
-                        <Accordion.Panel>
-                          <Stack gap="xs">
-                            {sections[sectionName].map((f) => (
-                              <Field
-                                key={f.id}
-                                field={f}
-                                value={settings?.[f.id]}
-                                onChange={updateField}
-                              />
-                            ))}
-                          </Stack>
-                        </Accordion.Panel>
-                      </Accordion.Item>
-                    ))}
-                  </Accordion>
-                )}
-              </>
-            );
-          })()}
-          <Group>
-            <Button loading={saving} onClick={save} variant="default" size="xs">
-              Save Settings
-            </Button>
-          </Group>
-        </Stack>
+      {/* Settings Button - Navigate to Settings page */}
+      {!missing && enabled && plugin.fields && plugin.fields.length > 0 && (
+        <Group mt="sm">
+          <Button
+            variant="light"
+            size="xs"
+            leftSection={<Settings size={14} />}
+            onClick={() => navigate('/settings')}
+          >
+            Settings
+          </Button>
+        </Group>
       )}
 
       {!missing && plugin.actions && plugin.actions.length > 0 && (
@@ -293,13 +157,6 @@ const PluginCard = ({
                           if (actionConfirm.message)
                             confirmMessage = actionConfirm.message;
                         }
-                      } else if (confirmField) {
-                        const settingVal = settings?.confirm;
-                        const effectiveConfirm =
-                          (settingVal !== undefined
-                            ? settingVal
-                            : confirmField.default) ?? false;
-                        requireConfirm = !!effectiveConfirm;
                       }
 
                       if (requireConfirm) {
@@ -313,12 +170,6 @@ const PluginCard = ({
                         });
                       }
 
-                      // Save settings before running to ensure backend uses latest values
-                      try {
-                        await onSaveSettings(plugin.key, settings);
-                      } catch (e) {
-                        /* ignore, run anyway */
-                      }
                       const resp = await onRunAction(plugin.key, a.id);
                       if (resp?.success) {
                         setLastResult(resp.result || {});
@@ -488,7 +339,6 @@ export default function PluginsPage() {
               <PluginCard
                 key={p.key}
                 plugin={p}
-                onSaveSettings={API.updatePluginSettings}
                 onRunAction={API.runPluginAction}
                 onToggleEnabled={async (key, next) => {
                   const resp = await API.setPluginEnabled(key, next);
