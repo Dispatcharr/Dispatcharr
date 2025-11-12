@@ -1744,6 +1744,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     for base in candidates:
         response = None
         file = None
+        response_closed = False
         try:
             test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
             logger.info(f"DVR: trying TS base {base} -> {test_url}")
@@ -1777,6 +1778,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         # keep-alives may be empty
                         if not got_valid_stream and (time.time() - window_start) > test_window:
                             logger.warning(f"DVR: No valid stream data from {base} within {test_window}s")
+                            # Close connection immediately on timeout
+                            if response and not response_closed:
+                                try:
+                                    response.close()
+                                    response_closed = True
+                                    logger.debug(f"DVR: Closed connection early due to timeout")
+                                except Exception:
+                                    pass
                             break
                         continue
                     
@@ -1833,9 +1842,25 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                 else:
                                     logger.warning(f"DVR: Data from {base} doesn't look like valid TS (sync_count={sync_count})")
                                     got_valid_stream = False
+                                    # Close connection immediately on validation failure
+                                    if response and not response_closed:
+                                        try:
+                                            response.close()
+                                            response_closed = True
+                                            logger.debug(f"DVR: Closed connection early due to invalid TS data")
+                                        except Exception:
+                                            pass
                                     break  # Not valid TS, try next base
                         except Exception as e:
                             logger.warning(f"DVR: Failed to validate TS data: {e}")
+                            # Close connection immediately on validation error
+                            if response and not response_closed:
+                                try:
+                                    response.close()
+                                    response_closed = True
+                                    logger.debug(f"DVR: Closed connection early due to validation error")
+                                except Exception:
+                                    pass
                             break
                     
                     # Check if recording duration complete
@@ -1874,7 +1899,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             logger.warning(f"DVR: attempt failed for base {base}: {e}")
         finally:
             # CRITICAL: Always close the response connection to prevent hanging connections
-            if response is not None:
+            if response is not None and not response_closed:
                 try:
                     response.close()
                     logger.debug(f"DVR: Closed connection for base {base}")
