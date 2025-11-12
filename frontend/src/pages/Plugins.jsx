@@ -13,6 +13,7 @@ import {
   Text,
   ActionIcon,
   SimpleGrid,
+  Modal,
   FileInput,
   Image,
   Badge,
