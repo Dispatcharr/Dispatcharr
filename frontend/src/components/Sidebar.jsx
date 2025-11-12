@@ -155,11 +155,14 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   // Function to fetch plugin navigation items
   const fetchPluginNavItems = useCallback(async () => {
     if (!isAuthenticated) {
+      console.log('[Sidebar] Not authenticated, skipping plugin fetch');
       return;
     }
 
     try {
+      console.log('[Sidebar] Fetching enabled plugins...');
       const plugins = await API.getEnabledPlugins();
+      console.log('[Sidebar] Received plugins:', plugins);
       const navPlugins = plugins
         .filter(p => p.navigation === true)
         .map(p => ({
@@ -167,14 +170,16 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           icon: <PlugZap size={20} />,
           path: `/plugin/${p.key}`,
         }));
+      console.log('[Sidebar] Setting plugin nav items:', navPlugins);
       setPluginNavItems(navPlugins);
     } catch (error) {
-      console.error('Failed to load plugin navigation items:', error);
+      console.error('[Sidebar] Failed to load plugin navigation items:', error);
     }
   }, [isAuthenticated]);
 
   // Fetch enabled plugins with navigation=true on mount and when plugin state changes
   useEffect(() => {
+    console.log('[Sidebar] Plugin state version changed:', pluginStateVersion);
     fetchPluginNavItems();
   }, [fetchPluginNavItems, pluginStateVersion]);
 

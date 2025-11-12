@@ -426,7 +426,9 @@ const SettingsPage = () => {
   // Function to load enabled plugins for Settings page integration
   const loadEnabledPlugins = useCallback(async () => {
     try {
+      console.log('[Settings] Fetching enabled plugins...');
       const plugins = await API.getEnabledPlugins();
+      console.log('[Settings] Received plugins:', plugins);
       setEnabledPlugins(plugins || []);
 
       // Initialize plugin settings state
@@ -436,12 +438,13 @@ const SettingsPage = () => {
       });
       setPluginSettings(initialPluginSettings);
     } catch (error) {
-      console.error('Failed to load enabled plugins', error);
+      console.error('[Settings] Failed to load enabled plugins', error);
     }
   }, []);
 
   // Load enabled plugins on mount and when plugin state changes
   useEffect(() => {
+    console.log('[Settings] Plugin state version changed:', pluginStateVersion);
     loadEnabledPlugins();
   }, [loadEnabledPlugins, pluginStateVersion]);
 

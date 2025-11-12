@@ -821,10 +821,15 @@ export const WebsocketProvider = ({ children }) => {
 
             case 'plugin_enabled_changed':
               // Plugin was enabled or disabled - trigger refresh in all plugin-aware components
+              console.log('[WebSocket] Received plugin_enabled_changed event:', parsedEvent.data);
               try {
+                const currentVersion = usePluginsStore.getState().pluginStateVersion;
+                console.log('[WebSocket] Current plugin state version:', currentVersion);
                 usePluginsStore.getState().triggerPluginRefresh();
+                const newVersion = usePluginsStore.getState().pluginStateVersion;
+                console.log('[WebSocket] New plugin state version:', newVersion);
               } catch (e) {
-                console.warn('Failed to trigger plugin refresh:', e);
+                console.warn('[WebSocket] Failed to trigger plugin refresh:', e);
               }
               break;
 
