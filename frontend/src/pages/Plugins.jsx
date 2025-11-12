@@ -16,6 +16,8 @@ import {
   SimpleGrid,
   Modal,
   FileInput,
+  Image,
+  Badge,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
 import { RefreshCcw, Trash2, Settings } from 'lucide-react';
@@ -51,72 +53,92 @@ const PluginCard = ({
       shadow="sm"
       radius="md"
       withBorder
+      padding="lg"
       style={{ opacity: !missing && enabled ? 1 : 0.6 }}
     >
-      <Group justify="space-between" mb="xs" align="center">
-        <div>
-          <Text fw={600}>{plugin.name}</Text>
-          <Text size="sm" c="dimmed">
-            {plugin.description}
+      <Card.Section>
+        {/* Image placeholder for plugin logo */}
+        <Image
+          src={plugin.logo || null}
+          height={160}
+          alt={`${plugin.name} logo`}
+          fallbackSrc="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Crect width='100%25' height='100%25' fill='%23f1f3f5'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' fill='%23868e96'%3EPlugin%3C/text%3E%3C/svg%3E"
+        />
+      </Card.Section>
+
+      <Stack gap="sm" mt="md">
+        {/* Plugin name and version */}
+        <Group justify="space-between" align="flex-start">
+          <div style={{ flex: 1 }}>
+            <Text fw={600} size="lg">{plugin.name}</Text>
+            <Badge size="sm" variant="light" mt={4}>
+              v{plugin.version || '1.0.0'}
+            </Badge>
+          </div>
+          <Group gap="xs">
+            <Switch
+              checked={!missing && enabled}
+              onChange={async (e) => {
+                const next = e.currentTarget.checked;
+                if (next && !plugin.ever_enabled && onRequireTrust) {
+                  const ok = await onRequireTrust(plugin);
+                  if (!ok) {
+                    // Revert
+                    setEnabled(false);
+                    return;
+                  }
+                }
+                setEnabled(next);
+                const resp = await onToggleEnabled(plugin.key, next);
+                if (next && resp?.ever_enabled) {
+                  plugin.ever_enabled = true;
+                }
+              }}
+              size="sm"
+              onLabel="On"
+              offLabel="Off"
+              disabled={missing}
+            />
+          </Group>
+        </Group>
+
+        {/* Plugin description */}
+        <Text size="sm" c="dimmed">
+          {plugin.description}
+        </Text>
+
+        {missing && (
+          <Text size="sm" c="red" fw={500}>
+            Missing plugin files. Re-import or delete this entry.
           </Text>
-        </div>
-        <Group gap="xs" align="center">
-          <ActionIcon
+        )}
+
+        {/* Action buttons */}
+        <Group gap="xs" mt="xs">
+          {/* Settings Button */}
+          {!missing && enabled && plugin.fields && plugin.fields.length > 0 && (
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<Settings size={14} />}
+              onClick={() => navigate('/settings')}
+            >
+              Settings
+            </Button>
+          )}
+
+          {/* Delete Button */}
+          <Button
             variant="subtle"
             color="red"
-            title="Delete plugin"
+            size="xs"
+            leftSection={<Trash2 size={14} />}
             onClick={() => onRequestDelete && onRequestDelete(plugin)}
           >
-            <Trash2 size={16} />
-          </ActionIcon>
-          <Text size="xs" c="dimmed">
-            v{plugin.version || '1.0.0'}
-          </Text>
-          <Switch
-            checked={!missing && enabled}
-            onChange={async (e) => {
-              const next = e.currentTarget.checked;
-              if (next && !plugin.ever_enabled && onRequireTrust) {
-                const ok = await onRequireTrust(plugin);
-                if (!ok) {
-                  // Revert
-                  setEnabled(false);
-                  return;
-                }
-              }
-              setEnabled(next);
-              const resp = await onToggleEnabled(plugin.key, next);
-              if (next && resp?.ever_enabled) {
-                plugin.ever_enabled = true;
-              }
-            }}
-            size="xs"
-            onLabel="On"
-            offLabel="Off"
-            disabled={missing}
-          />
-        </Group>
-      </Group>
-
-      {missing && (
-        <Text size="sm" c="red">
-          Missing plugin files. Re-import or delete this entry.
-        </Text>
-      )}
-
-      {/* Settings Button - Navigate to Settings page */}
-      {!missing && enabled && plugin.fields && plugin.fields.length > 0 && (
-        <Group mt="sm">
-          <Button
-            variant="light"
-            size="xs"
-            leftSection={<Settings size={14} />}
-            onClick={() => navigate('/settings')}
-          >
-            Settings
+            Delete
           </Button>
         </Group>
-      )}
+      </Stack>
 
       {!missing && plugin.actions && plugin.actions.length > 0 && (
         <>
