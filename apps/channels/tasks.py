@@ -2062,7 +2062,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         try:
             if temp_ts_path and os.path.exists(temp_ts_path):
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", temp_ts_path, "-c", "copy", final_path
+                    "ffmpeg", "-y",
+                    "-fflags", "+genpts+igndts",  # Regenerate PTS, ignore DTS to fix sync issues
+                    "-i", temp_ts_path,
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",  # Fix negative timestamps
+                    "-max_interleave_delta", "0",  # Improve A/V interleaving
+                    final_path
                 ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 remux_success = os.path.exists(final_path)
                 # Clean up temp file on success
