@@ -26,7 +26,7 @@ from core.utils import (
     natural_sort_key,
 )
 from core.models import CoreSettings, UserAgent
-from .mac_portal_client import MacPortalClient, MacPortalErrorserAgent
+from .mac_portal_client import MacPortalClient, MacPortalError
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
