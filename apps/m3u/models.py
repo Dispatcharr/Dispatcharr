@@ -14,6 +14,7 @@ class M3UAccount(models.Model):
     class Types(models.TextChoices):
         STADNARD = "STD", "Standard"
         XC = "XC", "Xtream Codes"
+        MAC = "MAC", "MAC / STB-Portal"
 
     class Status(models.TextChoices):
         IDLE = "idle", "Idle"
@@ -86,6 +87,7 @@ class M3UAccount(models.Model):
     account_type = models.CharField(choices=Types.choices, default=Types.STADNARD)
     username = models.CharField(max_length=255, null=True, blank=True)
     password = models.CharField(max_length=255, null=True, blank=True)
+    mac_address = models.CharField(max_length=17, null=True, blank=True, help_text="MAC address for STB-Portal accounts")
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
     refresh_task = models.ForeignKey(
