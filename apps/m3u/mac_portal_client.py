@@ -50,7 +50,6 @@ class MacPortalClient:
 
         self.portal_url: Optional[str] = None
         self.token: Optional[str] = None
-        # cache for genre/category mapping
         self.genres_by_id: Dict[str, str] = {}
 
     # ------------- helpers -------------
@@ -78,15 +77,10 @@ class MacPortalClient:
     # ------------- step 1: resolve portal url -------------
 
     def resolve_portal_url(self) -> str:
-        """
-        Try to detect the portal load.php URL.
-        If original_base_url already ends with load.php, use it as-is.
-        Otherwise probe common paths.
-        """
         if self.portal_url:
             return self.portal_url
 
-        if self.original_base_url.endswith("load.php"):
+        if self.original_base_url.endswith("load.php") or self.original_base_url.endswith("portal.php"):
             self.portal_url = self.original_base_url
             return self.portal_url
 
@@ -163,10 +157,6 @@ class MacPortalClient:
     # ------------- step 3: expiry / account info -------------
 
     def get_expires(self) -> Optional[str]:
-        """
-        Fetch expiry-like info from account_info/get_main_info.
-        STB-Proxy uses 'phone' field for that.
-        """
         if not self.token:
             self.handshake()
         portal = self.resolve_portal_url()
@@ -187,12 +177,11 @@ class MacPortalClient:
         )
         r.raise_for_status()
         data = r.json().get("js") or {}
-        return data.get("phone")  # may contain expiry-like info
+        return data.get("phone")
 
     # ------------- step 4: genres / categories -------------
 
     def get_genres_map(self) -> Dict[str, str]:
-        """Load mapping of genre/category id -> title from portal, if available."""
         if self.genres_by_id:
             return self.genres_by_id
 
@@ -234,9 +223,7 @@ class MacPortalClient:
 
                 if mapping:
                     self.genres_by_id = mapping
-                    logger.info(
-                        "Loaded %s MAC genres via %s", len(mapping), action
-                    )
+                    logger.info("Loaded %s MAC genres via %s", len(mapping), action)
                     return self.genres_by_id
             except Exception as e:
                 logger.debug("Failed to load MAC genres via %s: %s", action, e)
@@ -272,7 +259,6 @@ class MacPortalClient:
         js = r.json().get("js") or {}
         data = js.get("data") or []
 
-        # Log a few sample entries to inspect keys
         for idx, ch in enumerate(data[:10]):
             try:
                 keys = list(ch.keys())
@@ -288,12 +274,27 @@ class MacPortalClient:
         parts = cmd.split()
         for p in parts:
             if p.startswith("http://") or p.startswith("https://"):
+                try:
+                    parsed = urlparse(p)
+                except Exception:
+                    return p
+                # many portals use http://localhost/ch/... in cmd;
+                # we must rewrite it to the real portal host so that
+                # Dispatcharr/ffmpeg does not call its own localhost.
+                if parsed.hostname in ("localhost", "127.0.0.1") or not parsed.hostname:
+                    portal = urlparse(self.resolve_portal_url())
+                    new_netloc = portal.netloc
+                    new_url = f"{portal.scheme}://{new_netloc}{parsed.path}"
+                    if parsed.query:
+                        new_url += f"?{parsed.query}"
+                    logger.debug(
+                        "Rewriting MAC stream URL from %s to %s based on portal host", p, new_url
+                    )
+                    return new_url
                 return p
         return None
 
     def _detect_group_title(self, ch: Dict[str, Any]) -> str:
-        """Best-effort detection of group/category name for a channel."""
-        # Common keys used by many portals
         candidates = [
             "tv_genre_title",
             "genre_title",
@@ -308,7 +309,6 @@ class MacPortalClient:
             if isinstance(val, str) and val.strip():
                 return val.strip()
 
-        # Some portals use nested 'genres' / 'categories' arrays
         genres = ch.get("genres") or ch.get("categories")
         if isinstance(genres, list) and genres:
             first = genres[0]
@@ -318,18 +318,12 @@ class MacPortalClient:
                     if isinstance(val, str) and val.strip():
                         return val.strip()
 
-        # Fallback: numeric ids with optional mapping
         genre_id = (
-            ch.get("tv_genre_id")
-            or ch.get("genre_id")
-            or ch.get("cat_id")
+            ch.get("tv_genre_id") or ch.get("genre_id") or ch.get("cat_id")
         )
         if genre_id is not None:
-            try:
-                genres = self.get_genres_map()
-            except MacPortalError:
-                genres = self.genres_by_id or {}
-            label = genres.get(str(genre_id))
+            genres_map = self.get_genres_map()
+            label = genres_map.get(str(genre_id))
             if label:
                 return label
             return f"Group {genre_id}"
@@ -337,13 +331,6 @@ class MacPortalClient:
         return "MAC"
 
     def get_channels(self):
-        """Return normalized channels list.
-
-        We try to map provider categories/groups onto our 'group' field.
-
-        Different portals use different keys for the group/category, so we
-        check several common ones in order.
-        """
         raw_list = self.get_all_channels_raw()
         normalized = []
         for ch in raw_list:
