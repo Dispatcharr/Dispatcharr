@@ -1,6 +1,6 @@
 import logging
 from urllib.parse import urlparse
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -192,7 +192,7 @@ class MacPortalClient:
     def get_all_channels_raw(self):
         if not self.token:
             self.handshake()
-        portal = self.resolve_port_url()
+        portal = self.resolve_portal_url()
         proxies = self._get_proxies()
         headers = self._default_headers(with_auth=True)
 
@@ -214,7 +214,11 @@ class MacPortalClient:
 
         # Log ein paar Beispiel-Einträge zur Analyse der Feldnamen
         for idx, ch in enumerate(data[:10]):
-            logger.debug("MAC raw channel %s keys: %s", idx, list(ch.keys()))
+            try:
+                keys = list(ch.keys())
+            except Exception:
+                keys = []
+            logger.debug("MAC raw channel %s keys: %s", idx, keys)
 
         return data
 
