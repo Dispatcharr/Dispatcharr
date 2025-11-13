@@ -1,6 +1,6 @@
 import logging
 from urllib.parse import urlparse
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -122,7 +122,10 @@ class MacPortalClient:
                 logger.debug("Portal candidate %s failed: %s", url, e)
 
         self.portal_url = self.original_base_url
-        logger.warning("Could not positively identify load.php, using base URL: %s", self.portal_url)
+        logger.warning(
+            "Could not positively identify load.php, using base URL: %s",
+            self.portal_url,
+        )
         return self.portal_url
 
     # ------------- step 2: handshake / token -------------
@@ -189,7 +192,7 @@ class MacPortalClient:
     def get_all_channels_raw(self):
         if not self.token:
             self.handshake()
-        portal = self.resolve_portal_url()
+        portal = self.resolve_port_url()
         proxies = self._get_proxies()
         headers = self._default_headers(with_auth=True)
 
@@ -207,7 +210,13 @@ class MacPortalClient:
         )
         r.raise_for_status()
         js = r.json().get("js") or {}
-        return js.get("data") or []
+        data = js.get("data") or []
+
+        # Log ein paar Beispiel-Einträge zur Analyse der Feldnamen
+        for idx, ch in enumerate(data[:10]):
+            logger.debug("MAC raw channel %s keys: %s", idx, list(ch.keys()))
+
+        return data
 
     def _extract_stream_url(self, cmd: str) -> Optional[str]:
         if not cmd:
@@ -217,6 +226,40 @@ class MacPortalClient:
             if p.startswith("http://") or p.startswith("https://"):
                 return p
         return None
+
+    def _detect_group_title(self, ch: Dict[str, Any]) -> str:
+        """Best-effort detection of group/category name for a channel."""
+        # Common keys used by many portals
+        candidates = [
+            "tv_genre_title",
+            "genre_title",
+            "category_name",
+            "cat_name",
+            "group_name",
+            "group_title",
+            "genre_name",
+        ]
+        for key in candidates:
+            val = ch.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+
+        # Some portals use nested 'genres' / 'categories' arrays
+        genres = ch.get("genres") or ch.get("categories")
+        if isinstance(genres, list) and genres:
+            first = genres[0]
+            if isinstance(first, dict):
+                for key in ("title", "name", "genre_title", "category_name"):
+                    val = first.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+
+        # Fallback: numeric ids
+        genre_id = ch.get("tv_genre_id") or ch.get("genre_id") or ch.get("cat_id")
+        if genre_id is not None:
+            return f"Group {genre_id}"
+
+        return "MAC"
 
     def get_channels(self):
         """Return normalized channels list.
@@ -232,24 +275,7 @@ class MacPortalClient:
             ch_id = ch.get("id")
             name = ch.get("name") or f"Channel {ch_id}"
 
-            # Try several keys for group/category name
-            group_title = (
-                ch.get("tv_genre_title")
-                or ch.get("genre_title")
-                or ch.get("category_name")
-                or ch.get("cat_name")
-                or ch.get("group_name")
-                or ch.get("group_title")
-                or ch.get("genre_name")
-            )
-
-            if not group_title:
-                # fallback: some portals put numeric genre ID only
-                genre_id = ch.get("tv_genre_id") or ch.get("genre_id")
-                if genre_id is not None:
-                    group_title = f"Group {genre_id}"
-                else:
-                    group_title = "MAC"
+            group_title = self._detect_group_title(ch)
 
             cmd = ch.get("cmd") or ""
             url = self._extract_stream_url(cmd)
