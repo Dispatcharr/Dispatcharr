@@ -50,6 +50,8 @@ class MacPortalClient:
 
         self.portal_url: Optional[str] = None
         self.token: Optional[str] = None
+        # cache for genre/category mapping
+        self.genres_by_id: Dict[str, str] = {}
 
     # ------------- helpers -------------
 
@@ -187,7 +189,65 @@ class MacPortalClient:
         data = r.json().get("js") or {}
         return data.get("phone")  # may contain expiry-like info
 
-    # ------------- step 4: channels -------------
+    # ------------- step 4: genres / categories -------------
+
+    def get_genres_map(self) -> Dict[str, str]:
+        """Load mapping of genre/category id -> title from portal, if available."""
+        if self.genres_by_id:
+            return self.genres_by_id
+
+        if not self.token:
+            self.handshake()
+        portal = self.resolve_portal_url()
+        proxies = self._get_proxies()
+        headers = self._default_headers(with_auth=True)
+
+        for action in ("get_genres", "get_genres_short"):
+            try:
+                r = self.session.get(
+                    portal,
+                    params={
+                        "type": "itv",
+                        "action": action,
+                        "JsHttpRequest": "1-xml",
+                    },
+                    headers=headers,
+                    cookies=self._cookies(),
+                    proxies=proxies,
+                    timeout=10,
+                )
+                r.raise_for_status()
+                js = r.json().get("js")
+                if not isinstance(js, list):
+                    continue
+
+                mapping: Dict[str, str] = {}
+                for item in js:
+                    try:
+                        gid = item.get("id")
+                        title = item.get("title") or item.get("name")
+                        if gid is None or not title:
+                            continue
+                        mapping[str(gid)] = str(title)
+                    except Exception:
+                        continue
+
+                if mapping:
+                    self.genres_by_id = mapping
+                    logger.info(
+                        "Loaded %s MAC genres via %s", len(mapping), action
+                    )
+                    return self.genres_by_id
+            except Exception as e:
+                logger.debug("Failed to load MAC genres via %s: %s", action, e)
+
+        logger.warning(
+            "Could not load MAC genres mapping; will fall back to numeric Group IDs"
+        )
+        self.genres_by_id = {}
+        return self.genres_by_id
+
+    # ------------- step 5: channels -------------
 
     def get_all_channels_raw(self):
         if not self.token:
@@ -212,7 +272,7 @@ class MacPortalClient:
         js = r.json().get("js") or {}
         data = js.get("data") or []
 
-        # Log ein paar Beispiel-Einträge zur Analyse der Feldnamen
+        # Log a few sample entries to inspect keys
         for idx, ch in enumerate(data[:10]):
             try:
                 keys = list(ch.keys())
@@ -258,9 +318,20 @@ class MacPortalClient:
                     if isinstance(val, str) and val.strip():
                         return val.strip()
 
-        # Fallback: numeric ids
-        genre_id = ch.get("tv_genre_id") or ch.get("genre_id") or ch.get("cat_id")
+        # Fallback: numeric ids with optional mapping
+        genre_id = (
+            ch.get("tv_genre_id")
+            or ch.get("genre_id")
+            or ch.get("cat_id")
+        )
         if genre_id is not None:
+            try:
+                genres = self.get_genres_map()
+            except MacPortalError:
+                genres = self.genres_by_id or {}
+            label = genres.get(str(genre_id))
+            if label:
+                return label
             return f"Group {genre_id}"
 
         return "MAC"
