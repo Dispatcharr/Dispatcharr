@@ -2615,7 +2615,7 @@ def refresh_single_m3u_account(account_id):
         streams_created = 0
         streams_updated = 0
 
-        if account.account_type == M3UAccount.Types.STADNARD:
+        if account.account_type in (M3UAccount.Types.STADNARD, M3UAccount.Types.MAC):
             logger.debug(
                 f"Processing Standard account ({account_id}) with groups: {existing_groups}"
             )
@@ -2726,7 +2726,7 @@ def refresh_single_m3u_account(account_id):
 
             if not all_xc_streams:
                 logger.warning("No streams collected from XC groups")
-            else:
+                elif account.account_type == M3UAccount.Types.XC:
                 # Now batch by stream count (like standard M3U processing)
                 batches = [
                     all_xc_streams[i : i + BATCH_SIZE]
