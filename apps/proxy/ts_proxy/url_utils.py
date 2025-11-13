@@ -553,3 +553,99 @@ def get_connections_left(m3u_profile_id: int) -> int:
     except Exception as e:
         logger.error(f"Error getting connections left for M3U profile {m3u_profile_id}: {e}")
         return 0
+
+
+# === BEGIN: profile-first failover helpers ===
+from typing import Optional, List
+
+def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profile_id: Optional[int] = None) -> List[dict]:
+    """
+    Return available M3U profiles for THIS stream in order (default first),
+    respecting max_streams and current usage. Optionally exclude the current profile.
+    """
+    try:
+        from core.utils import RedisClient
+        channel = get_object_or_404(Channel, uuid=channel_id)
+        stream = get_object_or_404(Stream, pk=stream_id)
+        m3u_account = stream.m3u_account
+        if not m3u_account:
+            return []
+
+        profiles_qs = m3u_account.profiles.filter(is_active=True)
+        default_profile = next((p for p in profiles_qs if getattr(p, "is_default", False)), None)
+        other_profiles = [p for p in profiles_qs if not getattr(p, "is_default", False)]
+        ordered = ([default_profile] if default_profile else []) + other_profiles
+
+        # Redis for connection counters
+        try:
+            redis_client = RedisClient.get_client()
+        except Exception:
+            redis_client = None
+
+        result = []
+        for p in ordered:
+            if not p:
+                continue
+            if exclude_profile_id and int(p.id) == int(exclude_profile_id):
+                continue
+            allowed = True
+            if redis_client:
+                try:
+                    current = int(redis_client.get(f"profile_connections:{p.id}") or 0)
+                except Exception:
+                    current = 0
+                channel_using_profile = False
+                try:
+                    existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
+                    if existing_stream_id:
+                        existing_stream_id = existing_stream_id.decode("utf-8")
+                        existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
+                        if existing_profile_id and int(existing_profile_id.decode("utf-8")) == p.id:
+                            channel_using_profile = True
+                except Exception:
+                    channel_using_profile = False
+                effective = current - (1 if channel_using_profile else 0)
+                if getattr(p, "max_streams", 0) != 0 and effective >= getattr(p, "max_streams", 0):
+                    allowed = False
+            if allowed:
+                result.append({"profile_id": p.id})
+        return result
+    except Exception as e:
+        logger.error(f"Error in get_next_profiles_for_stream: {e}", exc_info=True)
+        return []
+
+
+def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
+    """
+    Build URL/User-Agent/Transcode for a fixed combination of Stream + M3U profile.
+    Return schema compatible with get_stream_info_for_switch(...).
+    """
+    try:
+        channel = get_object_or_404(Channel, uuid=channel_id)
+        stream = get_object_or_404(Stream, pk=stream_id)
+        m3u_profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
+
+        input_url = stream.url
+        stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
+
+        stream_profile = channel.get_stream_profile()
+        transcode = False if (stream_profile is None or stream_profile.is_proxy()) else True
+        profile_value = stream_profile.id if stream_profile else None
+
+        user_agent = stream_profile.user_agent if (stream_profile and stream_profile.user_agent) else None
+        if not user_agent:
+            default_ua = UserAgent.objects.filter(is_active=True).first()
+            user_agent = default_ua.user_agent if default_ua else (CoreSettings.get_value("default-user-agent") or None)
+
+        return {
+            "url": stream_url,
+            "user_agent": user_agent,
+            "transcode": transcode,
+            "stream_profile": profile_value,
+            "stream_id": stream.id,
+            "m3u_profile_id": m3u_profile.id,
+        }
+    except Exception as e:
+        logger.error(f"Error in get_stream_info_for_profile: {e}", exc_info=True)
+        return {"error": str(e)}
+# === END: profile-first failover helpers ===
