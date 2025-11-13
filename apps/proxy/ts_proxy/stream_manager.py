@@ -26,6 +26,99 @@ from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_st
 logger = get_logger()
 
 class StreamManager:
+
+    def _try_next_profile(self) -> bool:
+        """
+        Attempt to switch to another M3U profile of the SAME stream when startup fails.
+        Returns True on successful switch.
+        """
+        try:
+            from .url_utils import get_next_profiles_for_stream, get_stream_info_for_profile
+            from .redis_keys import RedisKeys
+            from .constants import ChannelMetadataField
+            import time
+
+            current_profile_id = None
+            if hasattr(self, "buffer") and getattr(self.buffer, "redis_client", None):
+                metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                md = self.buffer.redis_client.hgetall(metadata_key)
+                key = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
+                if md and key in md:
+                    try:
+                        current_profile_id = int(md[key].decode("utf-8"))
+                    except Exception:
+                        current_profile_id = None
+
+            if not getattr(self, "current_stream_id", None):
+                return False
+
+            candidates = get_next_profiles_for_stream(self.channel_id, self.current_stream_id, exclude_profile_id=current_profile_id)
+            if not candidates:
+                return False
+
+            for cand in candidates:
+                pid = cand["profile_id"]
+                info = get_stream_info_for_profile(self.channel_id, self.current_stream_id, pid)
+                if not info or "error" in info or not info.get("url"):
+                    continue
+
+                new_url = info["url"]
+                new_user_agent = info["user_agent"]
+                new_transcode = info["transcode"]
+                stream_id = info["stream_id"]
+                m3u_profile_id = info["m3u_profile_id"]
+
+                # Avoid switching to same URL
+                if getattr(self, "url", None) and new_url == self.url:
+                    continue
+
+                # Apply runtime params
+                self.user_agent = new_user_agent
+                self.transcode = new_transcode
+
+                # Update metadata
+                if hasattr(self, "buffer") and getattr(self.buffer, "redis_client", None):
+                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                    self.buffer.redis_client.hset(metadata_key, mapping={
+                        ChannelMetadataField.URL: new_url,
+                        ChannelMetadataField.USER_AGENT: new_user_agent,
+                        ChannelMetadataField.STREAM_PROFILE: info["stream_profile"],
+                        ChannelMetadataField.M3U_PROFILE: str(m3u_profile_id),
+                        ChannelMetadataField.STREAM_ID: str(stream_id),
+                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_switch_on_start_failure",
+                    })
+                    # map stream_id -> m3u_profile_id
+                    try:
+                        self.buffer.redis_client.set(f"stream_profile:{stream_id}", str(m3u_profile_id), ex=3600)
+                    except Exception:
+                        pass
+                    if hasattr(self, "channel_db_id") and self.channel_db_id:
+                        try:
+                            self.buffer.redis_client.set(f"channel_stream:{self.channel_db_id}", str(stream_id), ex=3600)
+                        except Exception:
+                            pass
+
+                # Apply URL via existing update method if available, or set directly
+                if hasattr(self, "update_url"):
+                    ok = self.update_url(new_url, stream_id, m3u_profile_id)
+                    if not ok:
+                        continue
+                else:
+                    self.url = new_url
+
+                self.current_stream_id = stream_id
+                self.url_switching = True
+                self.url_switch_start_time = time.time()
+                return True
+
+            return False
+        except Exception as e:
+            try:
+                logger.error(f"Error in _try_next_profile: {e}", exc_info=True)
+            except Exception:
+                pass
+            return False
     """Manages a connection to a TS stream without using raw sockets"""
 
     def __init__(self, channel_id, url, buffer, user_agent=None, transcode=False, stream_id=None, worker_id=None):
@@ -1459,6 +1552,9 @@ class StreamManager:
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
+        # profile-first: try another M3U profile for the same stream before alternate/backup
+        if self._try_next_profile():
+            return True
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
 
