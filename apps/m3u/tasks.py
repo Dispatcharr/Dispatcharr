@@ -26,7 +26,7 @@ from core.utils import (
     natural_sort_key,
 )
 from core.models import CoreSettings, UserAgent
-from .mac_portal_client import MacPortalClient, MacPortalError
+from .mac_portal_client import MacPortalClient, MacPortalErrorserAgent
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
@@ -1347,7 +1347,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
-        if not account.mac_address:
+        if not getattr(account, "mac_address", None):
             error_msg = "Missing MAC address for MAC account"
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
@@ -1385,7 +1385,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                 len(channels),
             )
 
-            # Normalize channels into extinf_data & groups like STD/XC
             for ch in channels:
                 group_title = ch.get("group") or "MAC"
                 if group_title not in groups:
@@ -1422,8 +1421,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
-
     else:
+
         # Here's the key change - use the success flag from fetch_m3u_lines
         lines, success = fetch_m3u_lines(account, use_cache)
         if not success:
@@ -2687,7 +2686,7 @@ def refresh_single_m3u_account(account_id):
                         completed_batches += 1  # Still count it to avoid hanging
 
             logger.info(f"Thread-based processing completed for account {account_id}")
-        else:
+        elif account.account_type == M3UAccount.Types.XC:
             # For XC accounts, get the groups with their custom properties containing xc_id
             logger.debug(f"Processing XC account with groups: {existing_groups}")
 
@@ -2726,7 +2725,7 @@ def refresh_single_m3u_account(account_id):
 
             if not all_xc_streams:
                 logger.warning("No streams collected from XC groups")
-                elif account.account_type == M3UAccount.Types.XC:
+            else:
                 # Now batch by stream count (like standard M3U processing)
                 batches = [
                     all_xc_streams[i : i + BATCH_SIZE]
