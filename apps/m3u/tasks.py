@@ -1400,12 +1400,15 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                     "raw": ch.get("raw"),
                 }
 
-                extinf_data.append(
+                 extinf_data.append(
                     {
-                        "tvg-id": ch_id,
-                        "tvg-name": ch_name,
-                        "group-title": group_title,
+                        "name": ch_name,
                         "url": ch_url,
+                        "attributes": {
+                            "tvg-id": ch_id,
+                            "tvg-name": ch_name,
+                            "group-title": group_title,
+                        },
                     }
                 )
 
