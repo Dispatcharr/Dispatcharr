@@ -66,6 +66,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      mac_address: '',
     },
 
     validate: {
@@ -99,6 +100,7 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        mac_address: m3uAccount.mac_address ?? '',
       });
 
       if (m3uAccount.account_type == 'XC') {
@@ -144,7 +146,7 @@ const M3U = ({
         file,
       });
 
-      if (create_epg) {
+      if (create_epg && values.account_type === 'XC') {
         API.addEPG({
           name: values.name,
           source_type: 'xmltv',
@@ -155,19 +157,17 @@ const M3U = ({
         });
       }
 
-      if (values.account_type != 'XC') {
-        notifications.show({
-          title: 'Fetching M3U Groups',
-          message:
-            'Configure group filters and auto sync settings once complete.',
-        });
+     if (values.account_type !== 'XC' && values.account_type !== 'MAC') {
+     notifications.show({
+    title: 'Fetching M3U Groups',
+    message:
+      'Configure group filters and auto sync settings once complete.',
+    });
 
-        // Don't prompt for group filters, but keeping this here
-        // in case we want to revive it
-        newPlaylist = null;
-        close();
-        return;
-      }
+     newPlaylist = null;
+     close();
+     return;
+    }
 
       // Fetch the updated playlist details (this also updates the store via API)
       const updatedPlaylist = await API.getPlaylist(newPlaylist.id);
@@ -262,7 +262,8 @@ const M3U = ({
                 description={
                   <>
                     Standard for direct M3U URLs, <br />
-                    Xtream Codes for panel-based services
+                    Xtream Codes for panel-based services, <br />
+		    MAC / STB-Portal for MAC-based STB portals
                   </>
                 }
                 data={[
@@ -274,10 +275,26 @@ const M3U = ({
                     value: 'XC',
                     label: 'Xtream Codes',
                   },
+	          {
+      		    value: 'MAC',
+                    label: 'MAC / STB-Portal',
+                  },
                 ]}
                 key={form.key('account_type')}
                 {...form.getInputProps('account_type')}
               />
+
+		{form.getValues().account_type === 'MAC' && (
+  		<TextInput
+  		  style={{ width: '100%' }}
+   		 id="mac_address"
+   		 name="mac_address"
+    		label="MAC Address"
+    		description="MAC address for STB-Portal accounts, e.g. 00:1A:79:12:34:56"
+   		 {...form.getInputProps('mac_address')}
+   		 key={form.key('mac_address')}
+		  />
+		)}
 
               {form.getValues().account_type == 'XC' && (
                 <Box>
