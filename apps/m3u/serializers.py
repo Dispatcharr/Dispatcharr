@@ -162,6 +162,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "account_type",
             "username",
             "password",
+            "mac_address",   # <--- HIER NEU# ...
             "stale_stream_days",
             "priority",
             "status",
