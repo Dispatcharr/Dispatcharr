@@ -1329,7 +1329,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
             )
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
-elif account.account_type == M3UAccount.Types.MAC:
+    elif account.account_type == M3UAccount.Types.MAC:
         logger.info(
             f"Processing MAC account {account_id} with portal URL: {account.server_url}"
         )
@@ -1337,84 +1337,6 @@ elif account.account_type == M3UAccount.Types.MAC:
         # Basic validation for MAC accounts
         if not account.server_url:
             error_msg = "Missing portal URL (server_url) for MAC account"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
-            )
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return error_msg, None
-
-        if not account.mac_address:
-            error_msg = "Missing MAC address for MAC account"
-            logger.error(error_msg)
-            account.status = M3UAccount.Status.ERROR
-            account.last_message = error_msg
-            account.save(update_fields=["status", "last_message"])
-            send_m3u_update(
-                account_id, "processing_groups", 100, status="error", error=error_msg
-            )
-            release_task_lock("refresh_m3u_account_groups", account_id)
-            return error_msg, None
-
-        try:
-            props = account.custom_properties or {}
-            proxy = props.get("proxy")
-            timezone = props.get("timezone", "Europe/Berlin")
-
-            client = MacPortalClient(
-                base_url=account.server_url,
-                mac=account.mac_address,
-                proxy=proxy,
-                timezone=timezone,
-            )
-
-            # Optional: fetch expiry info
-            try:
-                expiry_info = client.get_expires()
-                logger.info(f"MAC account {account_id} expiry info: {expiry_info}")
-            except MacPortalError as exp_err:
-                logger.warning(f"Could not fetch MAC expiry info: {exp_err}")
-
-            channels = client.get_channels()
-            logger.info(
-                "MAC account %s: received %s channels from portal",
-                account_id,
-                len(channels),
-            )
-
-            # Normalize channels into extinf_data & groups like STD
-            for ch in channels:
-                group_title = ch.get("group") or "MAC"
-                if group_title not in groups:
-                    groups[group_title] = {}
-
-                ch_id = str(ch.get("id"))
-                ch_name = ch.get("name")
-                ch_url = ch.get("url")
-
-                groups[group_title][ch_id] = {
-                    "name": ch_name,
-                    "url": ch_url,
-                    "raw": ch.get("raw"),
-                }
-
-                extinf_data.append(
-                    {
-                        "name": ch_name,
-                        "url": ch_url,
-                        "attributes": {
-                            "tvg-id": ch_id,
-                            "tvg-name": ch_name,
-                            "group-title": group_title,
-                        },
-                    }
-                )
-
-        except (MacPortalError, requests.RequestException) as e:
-            error_msg = f"Error fetching MAC portal data: {e}"
             logger.error(error_msg)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
