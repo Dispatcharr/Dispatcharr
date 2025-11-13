@@ -186,7 +186,7 @@ class MacPortalClient:
 
     # ------------- step 4: channels -------------
 
-    def get_all_channels_raw(self) -> List[dict]:
+    def get_all_channels_raw(self):
         if not self.token:
             self.handshake()
         portal = self.resolve_portal_url()
@@ -218,18 +218,44 @@ class MacPortalClient:
                 return p
         return None
 
-    def get_channels(self) -> List[dict]:
-        """Return normalized channels list."""
+    def get_channels(self):
+        """Return normalized channels list.
+
+        We try to map provider categories/groups onto our 'group' field.
+
+        Different portals use different keys for the group/category, so we
+        check several common ones in order.
+        """
         raw_list = self.get_all_channels_raw()
-        normalized: List[dict] = []
+        normalized = []
         for ch in raw_list:
             ch_id = ch.get("id")
             name = ch.get("name") or f"Channel {ch_id}"
-            group_title = ch.get("tv_genre_title") or ch.get("genre_title") or "MAC"
+
+            # Try several keys for group/category name
+            group_title = (
+                ch.get("tv_genre_title")
+                or ch.get("genre_title")
+                or ch.get("category_name")
+                or ch.get("cat_name")
+                or ch.get("group_name")
+                or ch.get("group_title")
+                or ch.get("genre_name")
+            )
+
+            if not group_title:
+                # fallback: some portals put numeric genre ID only
+                genre_id = ch.get("tv_genre_id") or ch.get("genre_id")
+                if genre_id is not None:
+                    group_title = f"Group {genre_id}"
+                else:
+                    group_title = "MAC"
+
             cmd = ch.get("cmd") or ""
             url = self._extract_stream_url(cmd)
             if not url:
                 continue
+
             normalized.append(
                 {
                     "id": ch_id,
@@ -239,4 +265,5 @@ class MacPortalClient:
                     "raw": ch,
                 }
             )
+        logger.info("Normalized %s MAC channels into groups", len(normalized))
         return normalized
