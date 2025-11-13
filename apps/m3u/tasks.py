@@ -1329,7 +1329,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
             )
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
-            
 elif account.account_type == M3UAccount.Types.MAC:
         logger.info(
             f"Processing MAC account {account_id} with portal URL: {account.server_url}"
@@ -1425,7 +1424,18 @@ elif account.account_type == M3UAccount.Types.MAC:
             )
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
-            
+
+        if not getattr(account, "mac_address", None):
+            error_msg = "Missing MAC address for MAC account"
+            logger.error(error_msg)
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = error_msg
+            account.save(update_fields=["status", "last_message"])
+            send_m3u_update(
+                account_id, "processing_groups", 100, status="error", error=error_msg
+            )
+            release_task_lock("refresh_m3u_account_groups", account_id)
+            return error_msg, None
 
         try:
             props = account.custom_properties or {}
