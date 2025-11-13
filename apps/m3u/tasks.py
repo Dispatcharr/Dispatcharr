@@ -2615,74 +2615,81 @@ def refresh_single_m3u_account(account_id):
         streams_created = 0
         streams_updated = 0
 
-        if account.account_type in (
-    M3UAccount.Types.STADNARD,
-    M3UAccount.Types.MAC,
-):
-    logger.debug(
-        f"Processing {account.account_type} account ({account_id}) with groups: {existing_groups}"
-    )
-    # Break into batches and process with threading - use global batch size
-    batches = [
-        extinf_data[i : i + BATCH_SIZE]
-        for i in range(0, len(extinf_data), BATCH_SIZE)
-    ]
-
-    logger.info(
-        f"Processing {len(extinf_data)} streams in {len(batches)} thread batches"
-    )
-
-    max_workers = min(2, len(batches))
-    logger.debug(f"Using {max_workers} threads for processing")
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_batch = {
-            executor.submit(
-                process_m3u_batch_direct,
-                account_id,
-                batch,
-                existing_groups,
-                hash_keys,
-            ): i
-            for i, batch in enumerate(batches)
-        }
-        # ... REST der Standard-Verarbeitung unverändert lassen ...
-
-elif account.account_type == M3UAccount.Types.XC:
-    # For XC accounts, get the groups with their custom properties containing xc_id
-    logger.debug(f"Processing XC account with groups: {existing_groups}")
-
-    channel_group_relationships = ChannelGroupM3UAccount.objects.filter(
-        m3u_account=account, enabled=True
-    ).select_related("channel_group")
-
-    filtered_groups = {}
-    for rel in channel_group_relationships:
-        group_name = rel.channel_group.name
-        group_id = rel.channel_group.id
-
-        custom_props = rel.custom_properties or {}
-        if "xc_id" in custom_props:
-            filtered_groups[group_name] = {
-                "xc_id": custom_props["xc_id"],
-                "channel_group_id": group_id,
-            }
+        if account.account_type == M3UAccount.Types.STADNARD:
             logger.debug(
-                f"Added group {group_name} with xc_id {custom_props['xc_id']}"
+                f"Processing Standard account ({account_id}) with groups: {existing_groups}"
             )
+            # Break into batches and process with threading - use global batch size
+            batches = [
+                extinf_data[i : i + BATCH_SIZE]
+                for i in range(0, len(extinf_data), BATCH_SIZE)
+            ]
+
+            logger.info(f"Processing {len(extinf_data)} streams in {len(batches)} thread batches")
+
+            # Use 2 threads for optimal database connection handling
+            max_workers = min(2, len(batches))
+            logger.debug(f"Using {max_workers} threads for processing")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit batch processing tasks using direct functions (now thread-safe)
+                future_to_batch = {
+                    executor.submit(process_m3u_batch_direct, account_id, batch, existing_groups, hash_keys): i
+                    for i, batch in enumerate(batches)
+                }
+
+                completed_batches = 0
+                total_batches = len(batches)
+
+                # Process completed batches as they finish
+                for future in as_completed(future_to_batch):
+                    batch_idx = future_to_batch[future]
+                    try:
+                        result = future.result()
+                        completed_batches += 1
+
+                        # Extract stream counts from result
+                        if isinstance(result, str):
+                            try:
+                                created_match = re.search(r"(\d+) created", result)
+                                updated_match = re.search(r"(\d+) updated", result)
+                                if created_match and updated_match:
+                                    created_count = int(created_match.group(1))
+                                    updated_count = int(updated_match.group(1))
+                                    streams_created += created_count
+                                    streams_updated += updated_count
+                            except (AttributeError, ValueError):
+                                pass
+
+                        # Send progress update
+                        progress = int((completed_batches / total_batches) * 100)
+                        current_elapsed = time.time() - start_time
+
+                        if progress > 0:
+                            estimated_total = (current_elapsed / progress) * 100
+                            time_remaining = max(0, estimated_total - current_elapsed)
+                        else:
+                            time_remaining = 0
+
+                        send_m3u_update(
+                            account_id,
+                            "parsing",
+                            progress,
+                            elapsed_time=current_elapsed,
+                            time_remaining=time_remaining,
+                            streams_processed=streams_created + streams_updated,
+                        )
+
+                        logger.debug(f"Thread batch {completed_batches}/{total_batches} completed")
+
+                    except Exception as e:
+                        logger.error(f"Error in thread batch {batch_idx}: {str(e)}")
+                        completed_batches += 1  # Still count it to avoid hanging
+
+            logger.info(f"Thread-based processing completed for account {account_id}")
         else:
-            logger.warning(
-                f"No xc_id found in custom properties for group {group_name}"
-            )
-
-    logger.info(
-        f"Filtered {len(filtered_groups)} groups for processing: {filtered_groups}"
-    )
-
-    logger.info(
-        "Fetching all XC streams from provider and filtering by enabled categories..."
-    )
-    all_xc_streams = collect_xc_streams(account_id, filtered_groups)
+            # For XC accounts, get the groups with their custom properties containing xc_id
+            logger.debug(f"Processing XC account with groups: {existing_groups}")
 
             # Get the ChannelGroupM3UAccount entries with their custom_properties
             channel_group_relationships = ChannelGroupM3UAccount.objects.filter(
