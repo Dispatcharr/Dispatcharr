@@ -174,7 +174,6 @@ const User = ({ user = null, isOpen, onClose }) => {
               description="Used for UI authentication"
               {...form.getInputProps('password')}
               key={form.key('password')}
-              disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
             />
 
             {showPermissions && (
