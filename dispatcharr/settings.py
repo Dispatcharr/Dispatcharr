@@ -14,6 +14,10 @@ if os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true":
 else:
     DEBUG = False
 
+# Basic Auth for M3U/EPG output
+M3U_BASIC_AUTH_ENABLED = os.environ.get("M3U_BASIC_AUTH_ENABLED", "false").lower() == "true"
+M3U_BASIC_AUTH_REALM = os.environ.get("M3U_BASIC_AUTH_REALM", "Dispatcharr M3U/EPG")
+
 ALLOWED_HOSTS = ["*"]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
