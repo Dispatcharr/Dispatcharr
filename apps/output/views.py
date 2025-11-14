@@ -23,18 +23,82 @@ from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
 import regex
+from django.conf import settings
+from django.contrib.auth import authenticate
 
 logger = logging.getLogger(__name__)
+
+
+def require_m3u_basic_auth(request):
+    """
+    Optional HTTP Basic Auth für /output/m3u und /output/epg.
+
+    Gesteuert über settings:
+      - M3U_BASIC_AUTH_ENABLED (bool via env)
+      - M3U_BASIC_AUTH_REALM (str via env)
+
+    Rückgabe:
+      (response, None) -> diese Response direkt zurückgeben (z.B. 401)
+      (None, user)     -> Auth erfolgreich, diesen User verwenden
+      (None, None)     -> Auth nicht aktiviert, anonym weitermachen
+    """
+    if not getattr(settings, "M3U_BASIC_AUTH_ENABLED", False):
+        # Basic Auth ist global deaktiviert
+        return None, None
+
+    auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+    realm = getattr(settings, "M3U_BASIC_AUTH_REALM", "Dispatcharr M3U/EPG")
+
+    if not auth_header.startswith("Basic "):
+        # Keine Credentials gesendet
+        response = HttpResponse("Authentication required", status=401)
+        response["WWW-Authenticate"] = f'Basic realm="{realm}"'
+        return response, None
+
+    try:
+        encoded = auth_header.split(" ", 1)[1].strip()
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except Exception as exc:
+        logger.warning("Invalid basic auth header: %s", exc)
+        response = HttpResponse("Invalid authentication header", status=401)
+        response["WWW-Authenticate"] = f'Basic realm="{realm}"'
+        return response, None
+
+    user = authenticate(request, username=username, password=password)
+    if user is None or not user.is_active:
+        # Falsche oder deaktivierte Credentials
+        response = HttpResponse("Invalid credentials", status=401)
+        response["WWW-Authenticate"] = f'Basic realm="{realm}"'
+        return response, None
+
+    # Erfolg
+    return None, user
+
 
 def m3u_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
+    # Wenn kein User von außen übergeben wurde, Basic Auth erzwingen (falls aktiviert)
+    if user is None:
+        auth_response, auth_user = require_m3u_basic_auth(request)
+        if auth_response is not None:
+            return auth_response
+        user = auth_user
+
     return generate_m3u(request, profile_name, user)
+
 
 def epg_endpoint(request, profile_name=None, user=None):
     if not network_access_allowed(request, "M3U_EPG"):
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    if user is None:
+        auth_response, auth_user = require_m3u_basic_auth(request)
+        if auth_response is not None:
+            return auth_response
+        user = auth_user
 
     return generate_epg(request, profile_name, user)
 
