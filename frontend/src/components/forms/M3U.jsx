@@ -67,6 +67,8 @@ const M3U = ({
       priority: 0,
       enable_vod: false,
       mac_address: '',
+      custom_properties: {},
+      proxy: '',
     },
 
     validate: {
@@ -121,7 +123,23 @@ const M3U = ({
   }, [form.values.account_type]);
 
   const onSubmit = async () => {
-    const { create_epg, ...values } = form.getValues();
+    const { create_epg, proxy, ...values } = form.getValues();
+
+    let custom_properties = {
+      ...(playlist?.custom_properties || {}),
+      ...(values.custom_properties || {}),
+    };
+
+    if (values.account_type === 'MAC') {
+      if (proxy && proxy.trim() !== '') {
+        custom_properties.proxy = proxy.trim();
+      } else {
+        delete custom_properties.proxy;
+      }
+    }
+
+    values.custom_properties = custom_properties;
+
 
     if (values.account_type == 'XC' && values.password == '') {
       // If account XC and no password input, assuming no password change
@@ -285,6 +303,7 @@ const M3U = ({
               />
 
 		{form.getValues().account_type === 'MAC' && (
+  		<>
   		<TextInput
   		  style={{ width: '100%' }}
    		 id="mac_address"
@@ -294,6 +313,17 @@ const M3U = ({
    		 {...form.getInputProps('mac_address')}
    		 key={form.key('mac_address')}
 		  />
+      <TextInput
+        style={{ width: '100%' }}
+        id="proxy"
+        name="proxy"
+        label="HTTP Proxy"
+        description="Optional HTTP proxy for MAC account requests, e.g. http://user:pass@host:port"
+        placeholder="http://host:port"
+        {...form.getInputProps('proxy')}
+        key={form.key('proxy')}
+      />
+      </>
 		)}
 
               {form.getValues().account_type == 'XC' && (
