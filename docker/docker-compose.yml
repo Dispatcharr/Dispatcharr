@@ -10,6 +10,9 @@ services:
       - db
       - redis
     environment:
+      - DISPATCHARR_DEBUG=false
+      - M3U_BASIC_AUTH_ENABLED=true
+      - M3U_BASIC_AUTH_REALM=Dispatcharr M3U
       - POSTGRES_HOST=db
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
