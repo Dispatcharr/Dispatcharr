@@ -8,7 +8,6 @@ from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.mac_portal_client import MacPortalClient, MacPortalError
 from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
 from uuid import UUID
@@ -63,8 +62,33 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
                 logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            # Get stream URL (no transformation for custom streams)
-            stream_url = stream.url
+            # Resolve MAC / STB-Portal command into a real URL if needed
+            input_url = stream.url
+            if m3u_account.account_type == M3UAccount.Types.MAC:
+                try:
+                    props = m3u_account.custom_properties or {}
+                    proxy = props.get("proxy")
+                    timezone = props.get("timezone", "Europe/Berlin")
+
+                    client = MacPortalClient(
+                        base_url=m3u_account.server_url,
+                        mac=m3u_account.mac_address,
+                        proxy=proxy,
+                        timezone=timezone,
+                    )
+
+                    stream_props = stream.custom_properties or {}
+                    cmd = stream_props.get("mac_cmd") or stream_props.get("cmd") or ""
+
+                    if not cmd:
+                        cmd = input_url
+
+                    input_url = client.create_link(cmd)
+                except Exception as e:
+                    logger.error(f"Failed to resolve MAC stream for direct preview (stream ID {stream.id}): {e}")
+                    return None, None, False, None
+
+            stream_url = input_url
 
             # Check if the stream has its own stream_profile set, otherwise use default
             if stream.stream_profile:
@@ -116,39 +140,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
             logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-
         # Generate stream URL based on the selected profile
         input_url = stream.url
-
-        # For MAC / STB-Portal accounts, resolve the portal command to a real stream URL
-        if m3u_account.account_type == M3UAccount.Types.MAC:
-            try:
-                # Build MAC portal client using the account settings
-                props = m3u_account.custom_properties or {}
-                proxy = props.get("proxy")
-                timezone = props.get("timezone", "Europe/Berlin")
-
-                client = MacPortalClient(
-                    base_url=m3u_account.server_url,
-                    mac=m3u_account.mac_address,
-                    proxy=proxy,
-                    timezone=timezone,
-                )
-
-                # Get the original channel command from custom_properties if available
-                stream_props = stream.custom_properties or {}
-                cmd = stream_props.get("mac_cmd") or stream_props.get("cmd") or ""
-
-                # Fallback – use the stored URL as command if no explicit cmd is present
-                if not cmd:
-                    cmd = input_url
-
-                # Resolve create_link -> final streaming URL
-                input_url = client.create_link(cmd)
-            except MacPortalError as e:
-                logger.error(f"Failed to resolve MAC stream for stream ID {stream.id}: {e}")
-                return None, None, False, None
-
         stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
         # Check if transcoding is needed
