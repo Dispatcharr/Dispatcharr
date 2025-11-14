@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def require_m3u_basic_auth(request):
     """
-    Optional HTTP Basic Auth für /output/m3u und /output/epg.
+    Optionale HTTP Basic Auth für /output/m3u und /output/epg.
 
     Gesteuert über settings:
       - M3U_BASIC_AUTH_ENABLED (bool via env)
@@ -77,7 +77,8 @@ def require_m3u_basic_auth(request):
 
 
 def m3u_endpoint(request, profile_name=None, user=None):
- return HttpResponse("TEST M3U ENDPOINT", status=418)
+    if not network_access_allowed(request, "M3U_EPG"):
+        return JsonResponse({"error": "Forbidden"}, status=403)
 
     # Wenn kein User von außen übergeben wurde, Basic Auth erzwingen (falls aktiviert)
     if user is None:
