@@ -1395,32 +1395,23 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                 ch_name = ch.get("name")
                 ch_url = ch.get("url")
 
-                
-                raw_ch = ch.get("raw") or {}
-                cmd = raw_ch.get("cmd") or ""
-
                 groups[group_title][ch_id] = {
                     "name": ch_name,
                     "url": ch_url,
-                    "raw": raw_ch,
+                    "raw": ch.get("raw"),
                 }
-
-                attributes = {
-                    "tvg-id": ch_id,
-                    "tvg-name": ch_name,
-                    "group-title": group_title,
-                }
-                if cmd:
-                    attributes["mac_cmd"] = cmd
 
                 extinf_data.append(
                     {
                         "name": ch_name,
                         "url": ch_url,
-                        "attributes": attributes,
+                        "attributes": {
+                            "tvg-id": ch_id,
+                            "tvg-name": ch_name,
+                            "group-title": group_title,
+                        },
                     }
                 )
-
 
         except (MacPortalError, requests.RequestException) as e:
             error_msg = f"Error fetching MAC portal data: {e}"
