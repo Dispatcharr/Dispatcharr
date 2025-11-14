@@ -282,6 +282,68 @@ class MacPortalClient:
 
         return data
 
+
+    def create_link(self, cmd: str) -> str:
+        """
+        Resolve a portal channel command into a final stream URL using itv/create_link.
+        """
+        if not cmd:
+            raise MacPortalError("Missing cmd for create_link")
+
+        if not self.token:
+            self.handshake()
+
+        portal = self.resolve_portal_url()
+        proxies = self._get_proxies()
+        headers = self._default_headers(with_auth=True)
+
+        params = {
+            "type": "itv",
+            "action": "create_link",
+            "cmd": cmd,
+            "series": "0",
+            "forced_storage": "false",
+            "disable_ad": "false",
+            "download": "false",
+            "force_ch_link_check": "false",
+            "JsHttpRequest": "1-xml",
+        }
+
+        try:
+            r = self.session.get(
+                portal,
+                params=params,
+                headers=headers,
+                cookies=self._cookies(),
+                proxies=proxies,
+                timeout=10,
+            )
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            raise MacPortalError(f"create_link request failed: {exc}")
+
+        try:
+            js = r.json().get("js") or {}
+        except Exception as exc:
+            raise MacPortalError(f"create_link invalid JSON: {exc}")
+
+        cmd_value = js.get("cmd")
+        if not cmd_value or not isinstance(cmd_value, str):
+            raise MacPortalError("create_link response without cmd field")
+
+        url = None
+        parts = cmd_value.split()
+        for part in reversed(parts):
+            if part.startswith("http://") or part.startswith("https://"):
+                url = part
+                break
+
+        if not url:
+            raise MacPortalError("Could not extract stream URL from create_link response")
+
+        return url
+
+
     def _extract_stream_url(self, cmd: str) -> Optional[str]:
         if not cmd:
             return None
