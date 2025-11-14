@@ -14,6 +14,9 @@ services:
       - REDIS_HOST=localhost
       - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info
+      - DISPATCHARR_DEBUG=false
+      - M3U_BASIC_AUTH_ENABLED=true
+      - M3U_BASIC_AUTH_REALM=Dispatcharr M3U
       # Process Priority Configuration (Optional)
       # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
       # Negative values require cap_add: SYS_NICE (uncomment below)
