@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AppShell,
   Box,
@@ -10,111 +11,34 @@ import {
   Stack,
   Switch,
   Text,
-  TextInput,
-  NumberInput,
-  Select,
   Divider,
   ActionIcon,
   SimpleGrid,
   Modal,
   FileInput,
+  Image,
+  Badge,
+  ThemeIcon,
+  Center,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { RefreshCcw, Trash2 } from 'lucide-react';
+import { RefreshCcw, Trash2, Settings, PlugZap } from 'lucide-react';
 import API from '../api';
 import { notifications } from '@mantine/notifications';
 
-const Field = ({ field, value, onChange }) => {
-  const common = { label: field.label, description: field.help_text };
-  const effective = value ?? field.default;
-  switch (field.type) {
-    case 'boolean':
-      return (
-        <Switch
-          checked={!!effective}
-          onChange={(e) => onChange(field.id, e.currentTarget.checked)}
-          label={field.label}
-          description={field.help_text}
-        />
-      );
-    case 'number':
-      return (
-        <NumberInput
-          value={value ?? field.default ?? 0}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'select':
-      return (
-        <Select
-          value={(value ?? field.default ?? '') + ''}
-          data={(field.options || []).map((o) => ({
-            value: o.value + '',
-            label: o.label,
-          }))}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'string':
-    default:
-      return (
-        <TextInput
-          value={value ?? field.default ?? ''}
-          onChange={(e) => onChange(field.id, e.currentTarget.value)}
-          {...common}
-        />
-      );
-  }
-};
-
 const PluginCard = ({
   plugin,
-  onSaveSettings,
-  onRunAction,
   onToggleEnabled,
   onRequireTrust,
   onRequestDelete,
 }) => {
-  const [settings, setSettings] = useState(plugin.settings || {});
-  const [saving, setSaving] = useState(false);
-  const [running, setRunning] = useState(false);
+  const navigate = useNavigate();
   const [enabled, setEnabled] = useState(!!plugin.enabled);
-  const [lastResult, setLastResult] = useState(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmConfig, setConfirmConfig] = useState({
-    title: '',
-    message: '',
-    onConfirm: null,
-  });
 
   // Keep local enabled state in sync with props (e.g., after import + enable)
   React.useEffect(() => {
     setEnabled(!!plugin.enabled);
   }, [plugin.enabled]);
-  // Sync settings if plugin changes identity
-  React.useEffect(() => {
-    setSettings(plugin.settings || {});
-  }, [plugin.key]);
-
-  const updateField = (id, val) => {
-    setSettings((prev) => ({ ...prev, [id]: val }));
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSaveSettings(plugin.key, settings);
-      notifications.show({
-        title: 'Saved',
-        message: `${plugin.name} settings updated`,
-        color: 'green',
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const missing = plugin.missing;
   return (
@@ -122,225 +46,116 @@ const PluginCard = ({
       shadow="sm"
       radius="md"
       withBorder
+      padding="lg"
       style={{ opacity: !missing && enabled ? 1 : 0.6 }}
     >
-      <Group justify="space-between" mb="xs" align="center">
-        <div>
-          <Text fw={600}>{plugin.name}</Text>
-          <Text size="sm" c="dimmed">
-            {plugin.description}
+      <Card.Section>
+        {/* Plugin logo or dark theme-compatible placeholder */}
+        {plugin.logo ? (
+          <Image
+            src={plugin.logo}
+            height={160}
+            alt={`${plugin.name} logo`}
+          />
+        ) : (
+          <Center
+            style={{
+              height: 160,
+              background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+              borderBottom: '1px solid #2A2A2E',
+            }}
+          >
+            <ThemeIcon
+              size={80}
+              radius="xl"
+              variant="light"
+              color="dark"
+              style={{
+                backgroundColor: 'rgba(100, 116, 139, 0.1)',
+                border: '2px solid rgba(100, 116, 139, 0.2)',
+              }}
+            >
+              <PlugZap size={48} color="#64748b" />
+            </ThemeIcon>
+          </Center>
+        )}
+      </Card.Section>
+
+      <Stack gap="sm" mt="md">
+        {/* Plugin name and version */}
+        <Group justify="space-between" align="flex-start">
+          <div style={{ flex: 1 }}>
+            <Text fw={600} size="lg">{plugin.name}</Text>
+            <Badge size="sm" variant="light" mt={4}>
+              v{plugin.version || '1.0.0'}
+            </Badge>
+          </div>
+          <Group gap="xs">
+            <Switch
+              checked={!missing && enabled}
+              onChange={async (e) => {
+                const next = e.currentTarget.checked;
+                if (next && !plugin.ever_enabled && onRequireTrust) {
+                  const ok = await onRequireTrust(plugin);
+                  if (!ok) {
+                    // Revert
+                    setEnabled(false);
+                    return;
+                  }
+                }
+                setEnabled(next);
+                const resp = await onToggleEnabled(plugin.key, next);
+                if (next && resp?.ever_enabled) {
+                  plugin.ever_enabled = true;
+                }
+              }}
+              size="sm"
+              onLabel="On"
+              offLabel="Off"
+              disabled={missing}
+            />
+          </Group>
+        </Group>
+
+        {/* Plugin description */}
+        <Text size="sm" c="dimmed">
+          {plugin.description}
+        </Text>
+
+        {missing && (
+          <Text size="sm" c="red" fw={500}>
+            Missing plugin files. Re-import or delete this entry.
           </Text>
-        </div>
-        <Group gap="xs" align="center">
-          <ActionIcon
+        )}
+
+        {/* Action buttons */}
+        <Group gap="xs" mt="xs">
+          {/* Settings Button */}
+          {!missing && enabled && plugin.fields && plugin.fields.length > 0 && (
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<Settings size={14} />}
+              onClick={() => navigate('/settings')}
+            >
+              Settings
+            </Button>
+          )}
+
+          {/* Delete Button */}
+          <Button
             variant="subtle"
             color="red"
-            title="Delete plugin"
+            size="xs"
+            leftSection={<Trash2 size={14} />}
             onClick={() => onRequestDelete && onRequestDelete(plugin)}
           >
-            <Trash2 size={16} />
-          </ActionIcon>
-          <Text size="xs" c="dimmed">
-            v{plugin.version || '1.0.0'}
-          </Text>
-          <Switch
-            checked={!missing && enabled}
-            onChange={async (e) => {
-              const next = e.currentTarget.checked;
-              if (next && !plugin.ever_enabled && onRequireTrust) {
-                const ok = await onRequireTrust(plugin);
-                if (!ok) {
-                  // Revert
-                  setEnabled(false);
-                  return;
-                }
-              }
-              setEnabled(next);
-              const resp = await onToggleEnabled(plugin.key, next);
-              if (next && resp?.ever_enabled) {
-                plugin.ever_enabled = true;
-              }
-            }}
-            size="xs"
-            onLabel="On"
-            offLabel="Off"
-            disabled={missing}
-          />
+            Delete
+          </Button>
         </Group>
-      </Group>
+      </Stack>
 
-      {missing && (
-        <Text size="sm" c="red">
-          Missing plugin files. Re-import or delete this entry.
-        </Text>
-      )}
-
-      {!missing && plugin.fields && plugin.fields.length > 0 && (
-        <Stack gap="xs" mt="sm">
-          {plugin.fields.map((f) => (
-            <Field
-              key={f.id}
-              field={f}
-              value={settings?.[f.id]}
-              onChange={updateField}
-            />
-          ))}
-          <Group>
-            <Button loading={saving} onClick={save} variant="default" size="xs">
-              Save Settings
-            </Button>
-          </Group>
-        </Stack>
-      )}
-
-      {!missing && plugin.actions && plugin.actions.length > 0 && (
-        <>
-          <Divider my="sm" />
-          <Stack gap="xs">
-            {plugin.actions.map((a) => (
-              <Group key={a.id} justify="space-between">
-                <div>
-                  <Text>{a.label}</Text>
-                  {a.description && (
-                    <Text size="sm" c="dimmed">
-                      {a.description}
-                    </Text>
-                  )}
-                </div>
-                <Button
-                  loading={running}
-                  disabled={!enabled}
-                  onClick={async () => {
-                    setRunning(true);
-                    setLastResult(null);
-                    try {
-                      // Determine if confirmation is required from action metadata or fallback field
-                      const actionConfirm = a.confirm;
-                      const confirmField = (plugin.fields || []).find(
-                        (f) => f.id === 'confirm'
-                      );
-                      let requireConfirm = false;
-                      let confirmTitle = `Run ${a.label}?`;
-                      let confirmMessage = `You're about to run "${a.label}" from "${plugin.name}".`;
-                      if (actionConfirm) {
-                        if (typeof actionConfirm === 'boolean') {
-                          requireConfirm = actionConfirm;
-                        } else if (typeof actionConfirm === 'object') {
-                          requireConfirm = actionConfirm.required !== false;
-                          if (actionConfirm.title)
-                            confirmTitle = actionConfirm.title;
-                          if (actionConfirm.message)
-                            confirmMessage = actionConfirm.message;
-                        }
-                      } else if (confirmField) {
-                        const settingVal = settings?.confirm;
-                        const effectiveConfirm =
-                          (settingVal !== undefined
-                            ? settingVal
-                            : confirmField.default) ?? false;
-                        requireConfirm = !!effectiveConfirm;
-                      }
-
-                      if (requireConfirm) {
-                        await new Promise((resolve) => {
-                          setConfirmConfig({
-                            title: confirmTitle,
-                            message: confirmMessage,
-                            onConfirm: resolve,
-                          });
-                          setConfirmOpen(true);
-                        });
-                      }
-
-                      // Save settings before running to ensure backend uses latest values
-                      try {
-                        await onSaveSettings(plugin.key, settings);
-                      } catch (e) {
-                        /* ignore, run anyway */
-                      }
-                      const resp = await onRunAction(plugin.key, a.id);
-                      if (resp?.success) {
-                        setLastResult(resp.result || {});
-                        const msg =
-                          resp.result?.message || 'Plugin action completed';
-                        notifications.show({
-                          title: plugin.name,
-                          message: msg,
-                          color: 'green',
-                        });
-                      } else {
-                        const err = resp?.error || 'Unknown error';
-                        setLastResult({ error: err });
-                        notifications.show({
-                          title: `${plugin.name} error`,
-                          message: String(err),
-                          color: 'red',
-                        });
-                      }
-                    } finally {
-                      setRunning(false);
-                    }
-                  }}
-                  size="xs"
-                >
-                  {running ? 'Running…' : 'Run'}
-                </Button>
-              </Group>
-            ))}
-            {running && (
-              <Text size="sm" c="dimmed">
-                Running action… please wait
-              </Text>
-            )}
-            {!running && lastResult?.file && (
-              <Text size="sm" c="dimmed">
-                Output: {lastResult.file}
-              </Text>
-            )}
-            {!running && lastResult?.error && (
-              <Text size="sm" c="red">
-                Error: {String(lastResult.error)}
-              </Text>
-            )}
-          </Stack>
-        </>
-      )}
-      <Modal
-        opened={confirmOpen}
-        onClose={() => {
-          setConfirmOpen(false);
-          setConfirmConfig({ title: '', message: '', onConfirm: null });
-        }}
-        title={confirmConfig.title}
-        centered
-      >
-        <Stack>
-          <Text size="sm">{confirmConfig.message}</Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              onClick={() => {
-                const cb = confirmConfig.onConfirm;
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-                cb && cb(true);
-              }}
-            >
-              Confirm
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+      {/* Plugin actions are displayed on dedicated plugin pages or Settings page accordions, not on cards */}
     </Card>
   );
 };
@@ -427,8 +242,6 @@ export default function PluginsPage() {
               <PluginCard
                 key={p.key}
                 plugin={p}
-                onSaveSettings={API.updatePluginSettings}
-                onRunAction={API.runPluginAction}
                 onToggleEnabled={async (key, next) => {
                   const resp = await API.setPluginEnabled(key, next);
                   if (resp?.ever_enabled !== undefined) {

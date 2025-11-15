@@ -37,6 +37,25 @@ class PluginsListAPIView(APIView):
         return Response({"plugins": pm.list_plugins()})
 
 
+class PluginsEnabledListAPIView(APIView):
+    """Returns only enabled plugins for Settings page integration."""
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def get(self, request):
+        pm = PluginManager.get()
+        pm.discover_plugins()
+        all_plugins = pm.list_plugins()
+        # Filter to only enabled plugins
+        enabled_plugins = [p for p in all_plugins if p.get("enabled", False)]
+        return Response({"plugins": enabled_plugins})
+
+
 class PluginReloadAPIView(APIView):
     def get_permissions(self):
         try:
@@ -259,11 +278,40 @@ class PluginEnabledAPIView(APIView):
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             cfg = PluginConfig.objects.get(key=key)
+            old_enabled = cfg.enabled
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
             if cfg.enabled and not cfg.ever_enabled:
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+
+            # Send WebSocket notification for instant UI updates
+            # Only send if the enabled state actually changed
+            if old_enabled != cfg.enabled:
+                try:
+                    from core.utils import send_websocket_update
+                    pm = PluginManager.get()
+                    # Get plugin from registry (already loaded, no need to discover again)
+                    plugin_info = pm.get_plugin(key)
+
+                    # Get navigation flag - default to False if plugin not found
+                    # plugin_info is a LoadedPlugin dataclass, not a dict
+                    has_navigation = False
+                    if plugin_info:
+                        has_navigation = getattr(plugin_info, 'navigation', False)
+
+                    send_websocket_update('updates', 'update', {
+                        'type': 'plugin_enabled_changed',
+                        'plugin_key': key,
+                        'plugin_name': cfg.name,
+                        'enabled': cfg.enabled,
+                        'navigation': has_navigation,
+                    })
+                    logger.info(f"Successfully sent plugin_enabled_changed WebSocket event for {key} (navigation={has_navigation})")
+                except Exception as e:
+                    # Log the error but don't fail the request
+                    logger.warning(f"Failed to send WebSocket update for plugin {key}: {e}")
+
             return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)

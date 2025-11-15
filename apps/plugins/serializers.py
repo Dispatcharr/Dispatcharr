@@ -14,6 +14,7 @@ class PluginFieldSerializer(serializers.Serializer):
     default = serializers.JSONField(required=False)
     help_text = serializers.CharField(required=False, allow_blank=True)
     options = serializers.ListField(child=serializers.DictField(), required=False)
+    section = serializers.CharField(required=False, allow_blank=True)
 
 
 class PluginSerializer(serializers.Serializer):
@@ -25,4 +26,5 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    navigation = serializers.BooleanField(default=False)
 
