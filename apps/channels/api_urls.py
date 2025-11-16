@@ -9,6 +9,7 @@ from .api_views import (
     BulkDeleteLogosAPIView,
     CleanupUnusedLogosAPIView,
     LogoViewSet,
+    BannerViewSet,
     ChannelProfileViewSet,
     UpdateChannelMembershipAPIView,
     BulkUpdateChannelMembershipAPIView,
@@ -30,6 +31,7 @@ router.register(r'streams', StreamViewSet, basename='stream')
 router.register(r'groups', ChannelGroupViewSet, basename='channel-group')
 router.register(r'channels', ChannelViewSet, basename='channel')
 router.register(r'logos', LogoViewSet, basename='logo')
+router.register(r'banners', BannerViewSet, basename='banner')
 router.register(r'profiles', ChannelProfileViewSet, basename='profile')
 router.register(r'recordings', RecordingViewSet, basename='recording')
 router.register(r'recurring-rules', RecurringRecordingRuleViewSet, basename='recurring-rule')

@@ -25,6 +25,7 @@ from .models import (
     Channel,
     ChannelGroup,
     Logo,
+    Banner,
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
@@ -35,6 +36,7 @@ from .serializers import (
     ChannelSerializer,
     ChannelGroupSerializer,
     LogoSerializer,
+    BannerSerializer,
     ChannelProfileMembershipSerializer,
     BulkChannelProfileMembershipSerializer,
     ChannelProfileSerializer,
@@ -408,6 +410,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             .select_related(
                 "channel_group",
                 "logo",
+                "banner",
                 "epg_data",
                 "stream_profile",
             )
@@ -1537,6 +1540,222 @@ class LogoViewSet(viewsets.ModelViewSet):
                 raise Http404("Unable to connect to logo server")
             except requests.RequestException as e:
                 logger.warning(f"Error fetching logo from {logo_url}: {e}")
+                raise Http404("Error fetching remote image")
+
+
+class BannerPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+class BannerViewSet(viewsets.ModelViewSet):
+    queryset = Banner.objects.all()
+    serializer_class = BannerSerializer
+    pagination_class = BannerPagination
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def get_permissions(self):
+        if self.action in ["upload"]:
+            return [IsAdmin()]
+
+        if self.action in ["cache"]:
+            return [AllowAny()]
+
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
+    def get_queryset(self):
+        """Optimize queryset with prefetch and add filtering"""
+        queryset = Banner.objects.prefetch_related('channels').order_by('name')
+
+        # Filter by specific IDs
+        ids = self.request.query_params.getlist('ids')
+        if ids:
+            try:
+                id_list = [int(id_str) for id_str in ids if id_str.isdigit()]
+                if id_list:
+                    queryset = queryset.filter(id__in=id_list)
+            except (ValueError, TypeError):
+                queryset = Banner.objects.none()
+
+        # Filter by usage
+        used_filter = self.request.query_params.get('used', None)
+        if used_filter == 'true':
+            queryset = queryset.filter(channels__isnull=False).distinct()
+        elif used_filter == 'false':
+            queryset = queryset.filter(channels__isnull=True)
+
+        # Filter by name
+        name_filter = self.request.query_params.get('name', None)
+        if name_filter:
+            queryset = queryset.filter(name__icontains=name_filter)
+
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        """Create a new banner entry"""
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            banner = serializer.save()
+            return Response(self.get_serializer(banner).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def update(self, request, *args, **kwargs):
+        """Update an existing banner"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if serializer.is_valid():
+            banner = serializer.save()
+            return Response(self.get_serializer(banner).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a banner and remove it from any channels using it"""
+        banner = self.get_object()
+        delete_file = request.query_params.get('delete_file', 'false').lower() == 'true'
+
+        # Check if it's a local file that should be deleted
+        if delete_file and banner.url and banner.url.startswith('/data/banners'):
+            try:
+                if os.path.exists(banner.url):
+                    os.remove(banner.url)
+                    logger.info(f"Deleted local banner file: {banner.url}")
+            except Exception as e:
+                logger.error(f"Failed to delete banner file {banner.url}: {str(e)}")
+                return Response(
+                    {"error": f"Failed to delete banner file: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        # Remove the banner from channels before deletion
+        if banner.channels.exists():
+            channel_count = banner.channels.count()
+            banner.channels.update(banner=None)
+            logger.info(f"Removed banner {banner.name} from {channel_count} channels before deletion")
+
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["post"])
+    def upload(self, request):
+        if "file" not in request.FILES:
+            return Response(
+                {"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file = request.FILES["file"]
+
+        # Validate file
+        try:
+            from dispatcharr.utils import validate_logo_file  # Reuse logo validation for banners
+            validate_logo_file(file)
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_name = file.name
+        file_path = os.path.join("/data/banners", file_name)
+
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "wb+") as destination:
+            for chunk in file.chunks():
+                destination.write(chunk)
+
+        # Mark file as processed in Redis to prevent file scanner notifications
+        try:
+            redis_client = RedisClient.get_client()
+            if redis_client:
+                redis_key = f"processed_file:{file_path}"
+                file_mtime = os.path.getmtime(file_path)
+                redis_client.setex(redis_key, 60 * 60 * 24 * 3, str(file_mtime))  # 3 day TTL
+                logger.debug(f"Marked uploaded banner file as processed in Redis: {file_path} (mtime: {file_mtime})")
+        except Exception as e:
+            logger.warning(f"Failed to mark banner file as processed in Redis: {e}")
+
+        # Get custom name from request data, fallback to filename
+        custom_name = request.data.get('name', '').strip()
+        banner_name = custom_name if custom_name else file_name
+
+        banner, _ = Banner.objects.get_or_create(
+            url=file_path,
+            defaults={
+                "name": banner_name,
+            },
+        )
+
+        serializer = self.get_serializer(banner)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny])
+    def cache(self, request, pk=None):
+        """Streams the banner file, whether it's local or remote."""
+        banner = self.get_object()
+        banner_url = banner.url
+
+        if banner_url.startswith("/data"):  # Local file
+            if not os.path.exists(banner_url):
+                raise Http404("Image not found")
+
+            content_type, _ = mimetypes.guess_type(banner_url)
+            if not content_type:
+                content_type = "image/jpeg"
+
+            response = StreamingHttpResponse(
+                open(banner_url, "rb"), content_type=content_type
+            )
+            response["Content-Disposition"] = 'inline; filename="{}"'.format(
+                os.path.basename(banner_url)
+            )
+            return response
+
+        else:  # Remote image
+            try:
+                try:
+                    default_user_agent_id = CoreSettings.get_default_user_agent_id()
+                    user_agent_obj = UserAgent.objects.get(id=int(default_user_agent_id))
+                    user_agent = user_agent_obj.user_agent
+                except (CoreSettings.DoesNotExist, UserAgent.DoesNotExist, ValueError):
+                    user_agent = 'Dispatcharr/1.0'
+
+                remote_response = requests.get(
+                    banner_url,
+                    stream=True,
+                    timeout=(3, 5),
+                    headers={'User-Agent': user_agent}
+                )
+                if remote_response.status_code == 200:
+                    content_type = remote_response.headers.get("Content-Type")
+
+                    if not content_type:
+                        content_type, _ = mimetypes.guess_type(banner_url)
+
+                    if not content_type:
+                        content_type = "image/jpeg"
+
+                    response = StreamingHttpResponse(
+                        remote_response.iter_content(chunk_size=8192),
+                        content_type=content_type,
+                    )
+                    response["Content-Disposition"] = 'inline; filename="{}"'.format(
+                        os.path.basename(banner_url)
+                    )
+                    return response
+                raise Http404("Remote image not found")
+            except requests.exceptions.Timeout:
+                logger.warning(f"Timeout fetching banner from {banner_url}")
+                raise Http404("Banner request timed out")
+            except requests.exceptions.ConnectionError:
+                logger.warning(f"Connection error fetching banner from {banner_url}")
+                raise Http404("Unable to connect to banner server")
+            except requests.RequestException as e:
+                logger.warning(f"Error fetching banner from {banner_url}: {e}")
                 raise Http404("Error fetching remote image")
 
 

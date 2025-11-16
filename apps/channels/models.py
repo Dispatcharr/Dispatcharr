@@ -257,6 +257,18 @@ class Channel(models.Model):
         blank=True,
         related_name="channels",
     )
+    banner = models.ForeignKey(
+        "Banner",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="channels",
+        help_text="Custom banner image for program listings",
+    )
+    convert_banner_to_portrait = models.BooleanField(
+        default=False,
+        help_text="Convert banner to portrait format (2:3 aspect ratio) with blurred background"
+    )
 
     # M2M to Stream now in the same file
     streams = models.ManyToManyField(
@@ -598,6 +610,14 @@ class ChannelGroupM3UAccount(models.Model):
 
 
 class Logo(models.Model):
+    name = models.CharField(max_length=255)
+    url = models.TextField(unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Banner(models.Model):
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
 

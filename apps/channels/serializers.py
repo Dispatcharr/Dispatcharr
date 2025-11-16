@@ -9,6 +9,7 @@ from .models import (
     ChannelStream,
     ChannelGroupM3UAccount,
     Logo,
+    Banner,
     ChannelProfile,
     ChannelProfileMembership,
     Recording,
@@ -81,6 +82,67 @@ class LogoSerializer(serializers.ModelSerializer):
             names.append(f"Channel: {channel.name}")
 
         # Calculate total count for "more" message
+        total_count = self.get_channel_count(obj)
+        if total_count > 5:
+            names.append(f"...and {total_count - 5} more")
+
+        return names
+
+
+class BannerSerializer(serializers.ModelSerializer):
+    cache_url = serializers.SerializerMethodField()
+    channel_count = serializers.SerializerMethodField()
+    is_used = serializers.SerializerMethodField()
+    channel_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Banner
+        fields = ["id", "name", "url", "cache_url", "channel_count", "is_used", "channel_names"]
+
+    def validate_url(self, value):
+        """Validate that the URL is unique for creation or update"""
+        if self.instance and self.instance.url == value:
+            return value
+
+        if Banner.objects.filter(url=value).exists():
+            raise serializers.ValidationError("A banner with this URL already exists.")
+
+        return value
+
+    def create(self, validated_data):
+        """Handle banner creation with proper URL validation"""
+        return Banner.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        """Handle banner updates"""
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
+    def get_cache_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(
+                reverse("api:channels:banner-cache", args=[obj.id])
+            )
+        return reverse("api:channels:banner-cache", args=[obj.id])
+
+    def get_channel_count(self, obj):
+        """Get the number of channels using this banner"""
+        return obj.channels.count()
+
+    def get_is_used(self, obj):
+        """Check if this banner is used by any channels"""
+        return obj.channels.exists()
+
+    def get_channel_names(self, obj):
+        """Get the names of channels using this banner (limited to first 5)"""
+        names = []
+        channels = obj.channels.all()[:5]
+        for channel in channels:
+            names.append(f"Channel: {channel.name}")
+
         total_count = self.get_channel_count(obj)
         if total_count > 5:
             names.append(f"...and {total_count - 5} more")
@@ -267,6 +329,13 @@ class ChannelSerializer(serializers.ModelSerializer):
         required=False,
     )
 
+    banner_id = serializers.PrimaryKeyRelatedField(
+        queryset=Banner.objects.all(),
+        source="banner",
+        allow_null=True,
+        required=False,
+    )
+
     auto_created_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -283,6 +352,8 @@ class ChannelSerializer(serializers.ModelSerializer):
             "stream_profile_id",
             "uuid",
             "logo_id",
+            "banner_id",
+            "convert_banner_to_portrait",
             "user_level",
             "auto_created",
             "auto_created_by",
