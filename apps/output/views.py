@@ -1117,6 +1117,34 @@ def generate_dummy_epg(
     return xml_lines
 
 
+def get_portrait_proxy_url(request, original_url):
+    """
+    Wrap image URL with portrait conversion proxy if enabled.
+
+    Args:
+        request: Django request object
+        original_url: Original image URL
+
+    Returns:
+        Portrait proxy URL if enabled, otherwise original URL
+    """
+    if not original_url:
+        return original_url
+
+    # Check if portrait conversion is enabled
+    try:
+        if CoreSettings.get_convert_banners_to_portrait():
+            from urllib.parse import quote
+            # Build absolute URL for the portrait proxy endpoint
+            base_url = build_absolute_uri_with_port(request, '/api/epg/poster-portrait/')
+            return f"{base_url}?url={quote(original_url)}"
+    except Exception as e:
+        logger.error(f"Error checking portrait conversion setting: {e}")
+
+    # Return original URL if disabled or error
+    return original_url
+
+
 def generate_epg(request, profile_name=None, user=None):
     """
     Dynamically generate an XMLTV (EPG) file using streaming response to handle keep-alives.
@@ -1370,9 +1398,10 @@ def generate_epg(request, profile_name=None, user=None):
                     if custom_data.get('new', False):
                         yield f"    <new />\n"
 
-                    # Icon/poster URL
+                    # Icon/poster URL (with portrait conversion if enabled)
                     if 'icon' in custom_data:
-                        yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
+                        icon_url = get_portrait_proxy_url(request, custom_data['icon'])
+                        yield f"    <icon src=\"{html.escape(icon_url)}\" />\n"
 
                     yield f"  </programme>\n"
 
@@ -1419,9 +1448,10 @@ def generate_epg(request, profile_name=None, user=None):
                             if custom_data.get('new', False):
                                 yield f"    <new />\n"
 
-                            # Icon/poster URL
+                            # Icon/poster URL (with portrait conversion if enabled)
                             if 'icon' in custom_data:
-                                yield f"    <icon src=\"{html.escape(custom_data['icon'])}\" />\n"
+                                icon_url = get_portrait_proxy_url(request, custom_data['icon'])
+                                yield f"    <icon src=\"{html.escape(icon_url)}\" />\n"
 
                             yield f"  </programme>\n"
 
@@ -1581,7 +1611,7 @@ def generate_epg(request, profile_name=None, user=None):
                                         attr_str = " ".join(attrs)
                                         program_xml.append(f'    <review {attr_str}>{html.escape(review["content"])}</review>')
 
-                            # Add images
+                            # Add images (with portrait conversion if enabled)
                             if "images" in custom_data and isinstance(custom_data["images"], list):
                                 for image in custom_data["images"]:
                                     if isinstance(image, dict) and "url" in image:
@@ -1590,7 +1620,9 @@ def generate_epg(request, profile_name=None, user=None):
                                             if attr in image:
                                                 attrs.append(f'{attr}="{html.escape(image[attr])}"')
                                         attr_str = " " + " ".join(attrs) if attrs else ""
-                                        program_xml.append(f'    <image{attr_str}>{html.escape(image["url"])}</image>')
+                                        # Use portrait proxy URL if enabled
+                                        image_url = get_portrait_proxy_url(request, image["url"])
+                                        program_xml.append(f'    <image{attr_str}>{html.escape(image_url)}</image>')
 
                             # Add enhanced credits handling
                             if "credits" in custom_data:
@@ -1632,9 +1664,10 @@ def generate_epg(request, profile_name=None, user=None):
                             if "country" in custom_data:
                                 program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
 
-                            # Add icon if available
+                            # Add icon if available (with portrait conversion if enabled)
                             if "icon" in custom_data:
-                                program_xml.append(f'    <icon src="{html.escape(custom_data["icon"])}" />')
+                                icon_url = get_portrait_proxy_url(request, custom_data["icon"])
+                                program_xml.append(f'    <icon src="{html.escape(icon_url)}" />')
 
                             # Add special flags as proper tags with enhanced handling
                             if custom_data.get("previously_shown", False):

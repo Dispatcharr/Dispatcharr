@@ -2,11 +2,14 @@ import logging, os
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.utils import timezone
+from django.http import StreamingHttpResponse, Http404
 from datetime import timedelta
+from pathlib import Path
 from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
 from .serializers import (
     ProgramDataSerializer,
@@ -19,6 +22,7 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
     permission_classes_by_method,
 )
+from core.models import CoreSettings
 
 logger = logging.getLogger(__name__)
 
@@ -416,4 +420,119 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+
+# ─────────────────────────────
+# 6) Portrait Poster Proxy
+# ─────────────────────────────
+@swagger_auto_schema(
+    method='get',
+    operation_description="Proxy endpoint that converts program banners to portrait format (2:3 aspect ratio) for Emby compatibility",
+    manual_parameters=[
+        openapi.Parameter(
+            'url',
+            openapi.IN_QUERY,
+            description="Original image URL to convert to portrait",
+            type=openapi.TYPE_STRING,
+            required=True
+        )
+    ],
+    responses={
+        200: "Portrait image (JPEG)",
+        400: "Missing or invalid URL parameter",
+        404: "Image not found or failed to process",
+        503: "Feature disabled in settings"
+    }
+)
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def poster_portrait_proxy(request):
+    """
+    Proxy endpoint that downloads, converts to portrait (2:3 ratio), caches, and serves program banners.
+
+    Usage: /api/epg/poster-portrait/?url=https://example.com/banner.jpg
+
+    - Checks if portrait conversion is enabled in settings
+    - Downloads image from provided URL
+    - Converts to 2:3 portrait aspect ratio using center crop
+    - Caches processed image locally (hash-based filename)
+    - Serves cached version on subsequent requests
+    """
+    from .image_utils import (
+        process_image_to_portrait,
+        get_processed_images_path,
+        generate_image_filename
+    )
+    from django.conf import settings
+    import mimetypes
+
+    # Check if feature is enabled
+    if not CoreSettings.get_convert_banners_to_portrait():
+        return Response(
+            {"error": "Portrait conversion is disabled in settings"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+    # Get URL parameter
+    image_url = request.query_params.get('url')
+    if not image_url:
+        return Response(
+            {"error": "Missing 'url' parameter"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    logger.info(f"Portrait proxy request for URL: {image_url}")
+
+    try:
+        # Check if already processed (cached)
+        filename = generate_image_filename(image_url)
+        processed_path = get_processed_images_path() / filename
+
+        if processed_path.exists():
+            logger.debug(f"Serving cached portrait image: {filename}")
+            # Serve cached file
+            content_type, _ = mimetypes.guess_type(str(processed_path))
+            if not content_type:
+                content_type = "image/jpeg"
+
+            response = StreamingHttpResponse(
+                open(processed_path, "rb"),
+                content_type=content_type
+            )
+            response["Content-Disposition"] = f'inline; filename="{filename}"'
+            response["Cache-Control"] = "public, max-age=86400"  # Cache for 24 hours
+            return response
+
+        # Process image (download, convert, save)
+        logger.info(f"Processing new portrait image for: {image_url}")
+        success, result = process_image_to_portrait(image_url)
+
+        if not success:
+            logger.error(f"Failed to process image: {result}")
+            raise Http404(f"Failed to process image: {result}")
+
+        # result is the relative path to the processed image
+        full_path = Path(settings.MEDIA_ROOT) / result
+
+        if not full_path.exists():
+            logger.error(f"Processed image not found: {full_path}")
+            raise Http404("Processed image not found")
+
+        # Serve the newly processed image
+        content_type, _ = mimetypes.guess_type(str(full_path))
+        if not content_type:
+            content_type = "image/jpeg"
+
+        response = StreamingHttpResponse(
+            open(full_path, "rb"),
+            content_type=content_type
+        )
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        response["Cache-Control"] = "public, max-age=86400"  # Cache for 24 hours
+        logger.info(f"Successfully served portrait image: {filename}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in portrait proxy: {e}", exc_info=True)
+        raise Http404(f"Image processing failed: {str(e)}")
 
