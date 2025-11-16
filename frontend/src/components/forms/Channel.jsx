@@ -13,7 +13,6 @@ import useLogosStore from '../../store/logos';
 import useBannersStore from '../../store/banners';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
-import BannerForm from './Banner';
 import {
   Box,
   Button,
@@ -402,9 +401,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       // Refresh channel profiles to update the membership information
       useChannelsStore.getState().fetchChannelProfiles();
 
+      // Refresh banners to update usage information
+      fetchAllBanners();
+
       setSubmitting(false);
       setTvgFilter('');
       setLogoFilter('');
+      setBannerFilter('');
       onClose();
     },
   });

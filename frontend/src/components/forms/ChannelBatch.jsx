@@ -343,6 +343,10 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         API.requeryChannels(),
         useChannelsStore.getState().fetchChannels(),
       ]);
+
+      // Refresh banners to update usage information
+      fetchAllBanners();
+
       onClose();
     } catch (error) {
       console.error('Failed to update channels:', error);
