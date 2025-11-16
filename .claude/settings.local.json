@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python manage.py makemigrations:*)",
       "Bash(find:*)",
-      "Bash(docker-compose ps:*)"
+      "Bash(docker-compose ps:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
