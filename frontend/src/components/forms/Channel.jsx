@@ -556,7 +556,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 onChange={formik.handleChange}
                 error={formik.errors.name ? formik.touched.name : ''}
                 size="xs"
-                style={{ flex: 1 }}
               />
 
               <Flex gap="sm">
