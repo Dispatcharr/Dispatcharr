@@ -1145,6 +1145,38 @@ def get_portrait_proxy_url(request, original_url):
     return original_url
 
 
+def get_program_icon_url(request, channel, program_icon_url=None):
+    """
+    Get the appropriate icon URL for a program, considering custom banners.
+
+    Args:
+        request: Django request object
+        channel: Channel object
+        program_icon_url: Original program poster/icon URL
+
+    Returns:
+        Final icon URL (custom banner if available, otherwise program icon)
+    """
+    # Check if channel has a custom banner
+    if channel.banner:
+        from django.urls import reverse
+        # Use the custom banner URL
+        banner_cache_url = request.build_absolute_uri(
+            reverse("api:channels:banner-cache", args=[channel.banner.id])
+        )
+
+        # Check if per-channel portrait conversion is enabled
+        if channel.convert_banner_to_portrait:
+            from urllib.parse import quote
+            base_url = build_absolute_uri_with_port(request, '/api/epg/poster-portrait/')
+            return f"{base_url}?url={quote(banner_cache_url)}"
+
+        return banner_cache_url
+
+    # No custom banner, use program icon as-is (no conversion)
+    return program_icon_url
+
+
 def generate_epg(request, profile_name=None, user=None):
     """
     Dynamically generate an XMLTV (EPG) file using streaming response to handle keep-alives.
@@ -1398,9 +1430,10 @@ def generate_epg(request, profile_name=None, user=None):
                     if custom_data.get('new', False):
                         yield f"    <new />\n"
 
-                    # Icon/poster URL (with portrait conversion if enabled)
-                    if 'icon' in custom_data:
-                        icon_url = get_portrait_proxy_url(request, custom_data['icon'])
+                    # Icon/poster URL (custom banner or program icon with portrait conversion if enabled)
+                    program_icon = custom_data.get('icon')
+                    icon_url = get_program_icon_url(request, channel, program_icon)
+                    if icon_url:
                         yield f"    <icon src=\"{html.escape(icon_url)}\" />\n"
 
                     yield f"  </programme>\n"
@@ -1448,9 +1481,10 @@ def generate_epg(request, profile_name=None, user=None):
                             if custom_data.get('new', False):
                                 yield f"    <new />\n"
 
-                            # Icon/poster URL (with portrait conversion if enabled)
-                            if 'icon' in custom_data:
-                                icon_url = get_portrait_proxy_url(request, custom_data['icon'])
+                            # Icon/poster URL (custom banner or program icon with portrait conversion if enabled)
+                            program_icon = custom_data.get('icon')
+                            icon_url = get_program_icon_url(request, channel, program_icon)
+                            if icon_url:
                                 yield f"    <icon src=\"{html.escape(icon_url)}\" />\n"
 
                             yield f"  </programme>\n"
@@ -1664,9 +1698,10 @@ def generate_epg(request, profile_name=None, user=None):
                             if "country" in custom_data:
                                 program_xml.append(f'    <country>{html.escape(custom_data["country"])}</country>')
 
-                            # Add icon if available (with portrait conversion if enabled)
-                            if "icon" in custom_data:
-                                icon_url = get_portrait_proxy_url(request, custom_data["icon"])
+                            # Add icon if available (custom banner or program icon with portrait conversion if enabled)
+                            program_icon = custom_data.get("icon")
+                            icon_url = get_program_icon_url(request, channel, program_icon)
+                            if icon_url:
                                 program_xml.append(f'    <icon src="{html.escape(icon_url)}" />')
 
                             # Add special flags as proper tags with enhanced handling
