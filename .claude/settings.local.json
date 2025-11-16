@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python manage.py makemigrations:*)",
+      "Bash(find:*)",
+      "Bash(docker-compose ps:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

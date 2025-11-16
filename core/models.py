@@ -163,6 +163,7 @@ DVR_COMSKIP_CUSTOM_PATH_KEY = slugify("DVR Comskip Custom Path")
 DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
 DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
 SYSTEM_TIME_ZONE_KEY = slugify("System Time Zone")
+CONVERT_BANNERS_TO_PORTRAIT_KEY = slugify("Convert Banners To Portrait")
 
 
 class CoreSettings(models.Model):
@@ -375,3 +376,12 @@ class CoreSettings(models.Model):
             return rules
         except Exception:
             return rules
+
+    @classmethod
+    def get_convert_banners_to_portrait(cls):
+        """Return boolean for converting program banners to portrait (2:3 aspect ratio)."""
+        try:
+            val = cls.objects.get(key=CONVERT_BANNERS_TO_PORTRAIT_KEY).value
+            return str(val).lower() in ("1", "true", "yes", "on")
+        except cls.DoesNotExist:
+            return False

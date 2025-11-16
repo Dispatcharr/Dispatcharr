@@ -159,6 +159,12 @@ class ProgramData(models.Model):
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
+    processed_images = models.JSONField(
+        default=list,
+        blank=True,
+        null=True,
+        help_text="Processed portrait images (2:3 ratio) stored locally. Array of dicts with 'original_url', 'local_path', 'type', etc."
+    )
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
