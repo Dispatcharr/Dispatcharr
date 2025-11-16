@@ -96,11 +96,14 @@ const useBannersStore = create((set, get) => ({
     }
   },
 
-  fetchAllBanners: async () => {
+  fetchAllBanners: async (force = false) => {
     const { isLoading, hasLoadedAll, banners } = get();
 
     // Prevent unnecessary reloading if we already have all banners
-    if (isLoading || (hasLoadedAll && Object.keys(banners).length > 0)) {
+    if (
+      !force &&
+      (isLoading || (hasLoadedAll && Object.keys(banners).length > 0))
+    ) {
       return Object.values(banners);
     }
 

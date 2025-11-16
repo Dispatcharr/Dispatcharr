@@ -35,6 +35,7 @@ import LazyLogo from '../LazyLogo';
 import logo from '../../images/logo.png';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
+import useLogosStore from '../../store/logos';
 import useBannersStore from '../../store/banners';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
@@ -49,6 +50,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     ensureLogosLoaded,
     isLoading: logosLoading,
   } = useChannelLogoSelection();
+
+  const fetchAllLogos = useLogosStore((s) => s.fetchAllLogos);
 
   const banners = useBannersStore((s) => s.banners);
   const fetchAllBanners = useBannersStore((s) => s.fetchAllBanners);
@@ -344,8 +347,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         useChannelsStore.getState().fetchChannels(),
       ]);
 
-      // Refresh banners to update usage information
-      fetchAllBanners();
+      // Refresh logos and banners to update usage information (force refresh to get updated channel counts)
+      fetchAllLogos(true);
+      fetchAllBanners(true);
 
       onClose();
     } catch (error) {

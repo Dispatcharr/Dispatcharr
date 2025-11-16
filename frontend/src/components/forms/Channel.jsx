@@ -62,6 +62,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   // Import the full logos store for duplicate checking
   const allLogos = useLogosStore((s) => s.logos);
+  const fetchAllLogos = useLogosStore((s) => s.fetchAllLogos);
 
   // Import banners store
   const banners = useBannersStore((s) => s.banners);
@@ -401,8 +402,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       // Refresh channel profiles to update the membership information
       useChannelsStore.getState().fetchChannelProfiles();
 
-      // Refresh banners to update usage information
-      fetchAllBanners();
+      // Refresh logos to update usage information (force refresh to get updated channel counts)
+      fetchAllLogos(true);
+
+      // Refresh banners to update usage information (force refresh to get updated channel counts)
+      fetchAllBanners(true);
 
       setSubmitting(false);
       setTvgFilter('');
