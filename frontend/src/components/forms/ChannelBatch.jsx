@@ -35,6 +35,7 @@ import LazyLogo from '../LazyLogo';
 import logo from '../../images/logo.png';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
+import useBannersStore from '../../store/banners';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const theme = useMantineTheme();
@@ -49,9 +50,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     isLoading: logosLoading,
   } = useChannelLogoSelection();
 
+  const banners = useBannersStore((s) => s.banners);
+  const fetchAllBanners = useBannersStore((s) => s.fetchAllBanners);
+
   useEffect(() => {
     ensureLogosLoaded();
   }, [ensureLogosLoaded]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchAllBanners();
+    }
+  }, [isOpen, fetchAllBanners]);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const epgs = useEPGsStore((s) => s.epgs);
@@ -61,6 +71,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [selectedChannelGroup, setSelectedChannelGroup] = useState('-1');
   const [selectedLogoId, setSelectedLogoId] = useState('-1');
+  const [selectedBannerId, setSelectedBannerId] = useState('-1');
+  const [convertBannerToPortrait, setConvertBannerToPortrait] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regexFind, setRegexFind] = useState('');
   const [regexReplace, setRegexReplace] = useState('');
@@ -72,6 +84,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
   const [logoFilter, setLogoFilter] = useState('');
+
+  const [bannerPopoverOpened, setBannerPopoverOpened] = useState(false);
+  const [bannerFilter, setBannerFilter] = useState('');
   // Confirmation dialog states
   const [confirmSetNamesOpen, setConfirmSetNamesOpen] = useState(false);
   const [confirmSetLogosOpen, setConfirmSetLogosOpen] = useState(false);
@@ -128,6 +143,21 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         const logoName = channelLogos[selectedLogoId]?.name || 'Selected Logo';
         changes.push(`• Logo: ${logoName}`);
       }
+    }
+
+    // Check banner
+    if (selectedBannerId && selectedBannerId !== '-1') {
+      if (selectedBannerId === '0') {
+        changes.push(`• Banner: Use Default`);
+      } else {
+        const bannerName = banners[selectedBannerId]?.name || 'Selected Banner';
+        changes.push(`• Banner: ${bannerName}`);
+      }
+    }
+
+    // Check convert banner to portrait
+    if (convertBannerToPortrait) {
+      changes.push(`• Convert Banner to 2:3 Portrait: Enabled`);
     }
 
     // Check stream profile
@@ -203,6 +233,20 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       }
     }
     delete values.logo;
+
+    // Handle banner_id similarly to logo_id
+    if (selectedBannerId && selectedBannerId !== '-1') {
+      if (selectedBannerId === '0') {
+        values.banner_id = null;
+      } else {
+        values.banner_id = parseInt(selectedBannerId);
+      }
+    }
+
+    // Handle convert_banner_to_portrait
+    if (convertBannerToPortrait) {
+      values.convert_banner_to_portrait = true;
+    }
 
     // Handle stream profile ID - convert special values
     if (!values.stream_profile_id || values.stream_profile_id === '-1') {
@@ -492,6 +536,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const filteredLogos = logoOptions.filter((logo) =>
     logo.name.toLowerCase().includes(logoFilter.toLowerCase())
+  );
+
+  const bannerOptions = useMemo(() => {
+    return [
+      { id: '-1', name: '(no change)' },
+      { id: '0', name: 'Use Default', isDefault: true },
+      ...Object.values(banners),
+    ];
+  }, [banners]);
+
+  const filteredBanners = bannerOptions.filter((banner) =>
+    banner.name.toLowerCase().includes(bannerFilter.toLowerCase())
   );
 
   if (!isOpen) {
@@ -882,6 +938,157 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   />
                 )}
               </Group>
+
+              <Group style={{ width: '100%' }} align="flex-end" gap="xs">
+                <Popover
+                  opened={bannerPopoverOpened}
+                  onChange={setBannerPopoverOpened}
+                  withArrow
+                >
+                  <Popover.Target>
+                    <TextInput
+                      label="Banner"
+                      readOnly
+                      value={
+                        selectedBannerId === '-1'
+                          ? '(no change)'
+                          : banners[selectedBannerId]?.name || 'Default'
+                      }
+                      onClick={() => setBannerPopoverOpened(true)}
+                      size="xs"
+                      style={{ flex: 1 }}
+                      rightSection={
+                        selectedBannerId !== '-1' && (
+                          <ActionIcon
+                            size="xs"
+                            variant="subtle"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedBannerId('-1');
+                            }}
+                          >
+                            <X size={12} />
+                          </ActionIcon>
+                        )
+                      }
+                    />
+                  </Popover.Target>
+                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                    <Group>
+                      <TextInput
+                        placeholder="Filter"
+                        value={bannerFilter}
+                        onChange={(event) =>
+                          setBannerFilter(event.currentTarget.value)
+                        }
+                        mb="xs"
+                        size="xs"
+                      />
+                    </Group>
+                    <ScrollArea style={{ height: 200 }}>
+                      {filteredBanners.length === 0 ? (
+                        <Center style={{ height: 200 }}>
+                          <Text size="sm" c="dimmed">
+                            {bannerFilter
+                              ? 'No banners match your filter'
+                              : 'No banners available'}
+                          </Text>
+                        </Center>
+                      ) : (
+                        <List
+                          height={200}
+                          itemCount={filteredBanners.length}
+                          itemSize={55}
+                          style={{ width: '100%' }}
+                        >
+                          {({ index, style }) => {
+                            const item = filteredBanners[index];
+                            return (
+                              <div
+                                style={{
+                                  ...style,
+                                  cursor: 'pointer',
+                                  padding: '5px',
+                                  borderRadius: '4px',
+                                }}
+                                onClick={() => {
+                                  setSelectedBannerId(item.id);
+                                  setBannerPopoverOpened(false);
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor =
+                                    'rgb(68, 68, 68)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor =
+                                    'transparent';
+                                }}
+                              >
+                                <Center
+                                  style={{
+                                    flexDirection: 'column',
+                                    gap: '2px',
+                                  }}
+                                >
+                                  {item.isDefault || item.id === '-1' ? (
+                                    <Text size="xs" c="dimmed">
+                                      {item.name}
+                                    </Text>
+                                  ) : item.id > 0 ? (
+                                    <>
+                                      <img
+                                        src={item.cache_url}
+                                        height="30"
+                                        style={{
+                                          maxWidth: 80,
+                                          objectFit: 'contain',
+                                        }}
+                                        alt={item.name || 'Banner'}
+                                      />
+                                      <Text
+                                        size="xs"
+                                        c="dimmed"
+                                        ta="center"
+                                        style={{
+                                          maxWidth: 80,
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {item.name}
+                                      </Text>
+                                    </>
+                                  ) : (
+                                    <Box h={30} />
+                                  )}
+                                </Center>
+                              </div>
+                            );
+                          }}
+                        </List>
+                      )}
+                    </ScrollArea>
+                  </Popover.Dropdown>
+                </Popover>
+                {selectedBannerId > 0 && (
+                  <img
+                    src={banners[selectedBannerId]?.cache_url}
+                    alt="channel banner"
+                    style={{ height: 24, marginBottom: 5, maxWidth: 60, objectFit: 'contain' }}
+                  />
+                )}
+              </Group>
+
+              <Checkbox
+                label="Convert to 2:3 Portrait"
+                description="Convert banner to portrait format with 2:3 aspect ratio and blurred background fill"
+                checked={convertBannerToPortrait}
+                onChange={(event) =>
+                  setConvertBannerToPortrait(event.currentTarget.checked)
+                }
+                size="xs"
+              />
 
               <Select
                 id="stream_profile_id"
