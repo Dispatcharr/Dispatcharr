@@ -1,18 +1,13 @@
-import React, { useEffect, useCallback, useState } from 'react';
-import { Box, Tabs, Flex, Text } from '@mantine/core';
+import React, { useEffect, useCallback } from 'react';
+import { Box, Flex, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import useBannersStore from '../store/banners';
-import useVODBannersStore from '../store/vodBanners';
 import BannersTable from '../components/tables/BannersTable';
-import VODBannersTable from '../components/tables/VODBannersTable';
 
 const BannersPage = () => {
   const { fetchAllBanners, needsAllBanners, banners } = useBannersStore();
-  const { totalCount } = useVODBannersStore();
-  const [activeTab, setActiveTab] = useState('channel');
 
   const channelBannersCount = Object.keys(banners).length;
-  const vodBannersCount = totalCount;
 
   const loadChannelBanners = useCallback(async () => {
     try {
@@ -69,28 +64,16 @@ const BannersPage = () => {
               Banners
             </Text>
             <Text size="sm" c="dimmed">
-              ({activeTab === 'channel' ? channelBannersCount : vodBannersCount}{' '}
+              ({channelBannersCount}{' '}
               banner
-              {(activeTab === 'channel' ? channelBannersCount : vodBannersCount) !==
-              1
-                ? 's'
-                : ''}
-              )
+              {channelBannersCount !== 1 ? 's' : ''})
             </Text>
           </Flex>
-
-          <Tabs value={activeTab} onChange={setActiveTab} variant="pills">
-            <Tabs.List>
-              <Tabs.Tab value="channel">Channel Banners</Tabs.Tab>
-              <Tabs.Tab value="vod">VOD Banners</Tabs.Tab>
-            </Tabs.List>
-          </Tabs>
         </Flex>
       </Box>
 
-      {/* Content based on active tab */}
-      {activeTab === 'channel' && <BannersTable />}
-      {activeTab === 'vod' && <VODBannersTable />}
+      {/* Channel Banners Table */}
+      <BannersTable />
     </Box>
   );
 };

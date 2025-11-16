@@ -1759,6 +1759,126 @@ class BannerViewSet(viewsets.ModelViewSet):
                 raise Http404("Error fetching remote image")
 
 
+class BulkDeleteBannersAPIView(APIView):
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @swagger_auto_schema(
+        operation_description="Bulk delete banners by ID",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["banner_ids"],
+            properties={
+                "banner_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    description="Banner IDs to delete",
+                )
+            },
+        ),
+        responses={204: "Banners deleted"},
+    )
+    def delete(self, request):
+        banner_ids = request.data.get("banner_ids", [])
+        delete_files = request.data.get("delete_files", False)
+
+        # Get banners and their usage info before deletion
+        banners_to_delete = Banner.objects.filter(id__in=banner_ids)
+        total_channels_affected = 0
+
+        for banner in banners_to_delete:
+            channel_count = banner.channels.count()
+            total_channels_affected += channel_count
+            # Remove banner from all channels
+            banner.channels.update(banner=None)
+
+        # Delete banner files if requested
+        if delete_files:
+            for banner in banners_to_delete:
+                if banner.url and banner.url.startswith('/data/banners'):
+                    try:
+                        if os.path.exists(banner.url):
+                            os.remove(banner.url)
+                            logger.info(f"Deleted local banner file: {banner.url}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete banner file {banner.url}: {str(e)}")
+
+        # Delete banners
+        deleted_count = banners_to_delete.count()
+        banners_to_delete.delete()
+
+        return Response(
+            {
+                "deleted_count": deleted_count,
+                "channels_affected": total_channels_affected,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CleanupUnusedBannersAPIView(APIView):
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @swagger_auto_schema(
+        operation_description="Delete all channel banners that are not used by any channels",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                "delete_files": openapi.Schema(
+                    type=openapi.TYPE_BOOLEAN,
+                    description="Whether to delete local banner files from disk",
+                    default=False
+                )
+            },
+        ),
+        responses={200: "Cleanup completed"},
+    )
+    def post(self, request):
+        """Delete all channel banners with no channel associations"""
+        delete_files = request.data.get("delete_files", False)
+
+        # Find banners that are not used by any channels
+        unused_banners = Banner.objects.filter(channels__isnull=True)
+        deleted_count = unused_banners.count()
+        banner_names = list(unused_banners.values_list('name', flat=True))
+        local_files_deleted = 0
+
+        # Handle file deletion for local files if requested
+        if delete_files:
+            for banner in unused_banners:
+                if banner.url and banner.url.startswith('/data/banners'):
+                    try:
+                        if os.path.exists(banner.url):
+                            os.remove(banner.url)
+                            local_files_deleted += 1
+                            logger.info(f"Deleted unused local banner file: {banner.url}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete banner file {banner.url}: {str(e)}")
+
+        # Delete unused banners
+        unused_banners.delete()
+
+        return Response(
+            {
+                "deleted_count": deleted_count,
+                "banner_names": banner_names,
+                "local_files_deleted": local_files_deleted,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class ChannelProfileViewSet(viewsets.ModelViewSet):
     queryset = ChannelProfile.objects.all()
     serializer_class = ChannelProfileSerializer
