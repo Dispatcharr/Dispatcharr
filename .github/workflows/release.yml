@@ -93,13 +93,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
@@ -109,8 +102,6 @@ jobs:
           tags: |
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
           build-args: |
             REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
             REPO_NAME=${{ needs.prepare.outputs.repo_name }}
@@ -132,13 +123,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Create multi-arch manifest tags
         run: |
           set -euo pipefail
@@ -156,15 +140,6 @@ jobs:
           # version tag
           docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION} \
             ghcr.io/${OWNER}/${REPO}:${VERSION}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-arm64
-
-          # Docker Hub manifests
-          # latest tag
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-arm64
-
-          # version tag
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION} \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-arm64
 
   create-release:
     needs: [prepare, create-manifest]

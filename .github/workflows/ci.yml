@@ -2,9 +2,9 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
   pull_request:
-    branches: [dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -110,13 +110,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       # use metadata from the prepare job
 
       - name: Build and push Docker image
@@ -133,8 +126,6 @@ jobs:
           tags: |
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           build-args: |
             REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
             REPO_NAME=${{ needs.prepare.outputs.repo_name }}
@@ -160,13 +151,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Create multi-arch manifest tags
         run: |
           set -euo pipefail
@@ -185,10 +169,3 @@ jobs:
           # version + timestamp tag
           docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
             ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
-
-          # also create Docker Hub manifests using the same username
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
-
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP} \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
