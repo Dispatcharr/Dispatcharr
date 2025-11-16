@@ -10,8 +10,10 @@ import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import useLogosStore from '../../store/logos';
+import useBannersStore from '../../store/banners';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
+import BannerForm from './Banner';
 import {
   Box,
   Button,
@@ -304,6 +306,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       tvc_guide_stationid: '',
       epg_data_id: '',
       logo_id: '',
+      banner_id: '',
+      convert_banner_to_portrait: false,
       user_level: '0',
     },
     validationSchema: Yup.object({
@@ -404,6 +408,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         tvc_guide_stationid: channel.tvc_guide_stationid || '',
         epg_data_id: channel.epg_data_id ?? '',
         logo_id: channel.logo_id ? `${channel.logo_id}` : '',
+        banner_id: channel.banner_id ? `${channel.banner_id}` : '',
+        convert_banner_to_portrait: channel.convert_banner_to_portrait || false,
         user_level: `${channel.user_level}`,
       });
 

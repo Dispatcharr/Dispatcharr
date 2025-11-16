@@ -2,6 +2,7 @@
 import useAuthStore from './store/auth';
 import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
+import useBannersStore from './store/banners';
 import useUserAgentsStore from './store/userAgents';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
@@ -1784,6 +1785,219 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to cleanup unused logos', e);
+      throw e;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Banner API Methods
+  // ─────────────────────────────────────────────────────────
+
+  static async getBanners(params = {}) {
+    try {
+      const queryParams = new URLSearchParams(params);
+      const response = await request(
+        `${host}/api/channels/banners/?${queryParams.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve banners', e);
+    }
+  }
+
+  static async getBannersByIds(bannerIds) {
+    try {
+      if (!bannerIds || bannerIds.length === 0) return [];
+
+      const params = new URLSearchParams();
+      bannerIds.forEach(id => params.append('ids', id));
+      // Disable pagination for ID-based queries to get all matching banners
+      params.append('no_pagination', 'true');
+
+      const response = await request(
+        `${host}/api/channels/banners/?${params.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve banners by IDs', e);
+      return [];
+    }
+  }
+
+  static async fetchBanners() {
+    try {
+      const response = await this.getBanners();
+      useBannersStore.getState().setBanners(response);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch banners', e);
+    }
+  }
+
+  static async fetchUsedBanners() {
+    try {
+      const response = await useBannersStore.getState().fetchUsedBanners();
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch used banners', e);
+    }
+  }
+
+  static async fetchBannersByIds(bannerIds) {
+    try {
+      const response = await useBannersStore.getState().fetchBannersByIds(bannerIds);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch banners by IDs', e);
+    }
+  }
+
+  static async uploadBanner(file, name = null) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // Add custom name if provided
+      if (name && name.trim()) {
+        formData.append('name', name.trim());
+      }
+
+      // Add timeout handling for file uploads
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+      const response = await fetch(`${host}/api/channels/banners/upload/`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          Authorization: `Bearer ${await API.getAuthToken()}`,
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        const error = new Error(`HTTP error! Status: ${response.status}`);
+        error.status = response.status;
+        error.response = response;
+        error.body = errorBody;
+        throw error;
+      }
+
+      const result = await response.json();
+      useBannersStore.getState().addBanner(result);
+      return result;
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        const timeoutError = new Error('Upload timed out. Please try again.');
+        timeoutError.code = 'NETWORK_ERROR';
+        throw timeoutError;
+      }
+      errorNotification('Failed to upload banner', e);
+      throw e;
+    }
+  }
+
+  static async createBanner(values) {
+    try {
+      // Use FormData for banner creation to match backend expectations
+      const formData = new FormData();
+      for (const [key, value] of Object.entries(values)) {
+        if (value !== null && value !== undefined) {
+          formData.append(key, value);
+        }
+      }
+
+      const response = await request(`${host}/api/channels/banners/`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      useBannersStore.getState().addBanner(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create banner', e);
+    }
+  }
+
+  static async updateBanner(id, values) {
+    try {
+      const response = await request(`${host}/api/channels/banners/${id}/`, {
+        method: 'PUT',
+        body: values, // This will be converted to JSON in the request function
+      });
+
+      useBannersStore.getState().updateBanner(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update banner', e);
+    }
+  }
+
+  static async deleteBanner(id, deleteFile = false) {
+    try {
+      const params = new URLSearchParams();
+      if (deleteFile) {
+        params.append('delete_file', 'true');
+      }
+
+      const url = `${host}/api/channels/banners/${id}/?${params.toString()}`;
+      await request(url, {
+        method: 'DELETE',
+      });
+
+      useBannersStore.getState().removeBanner(id);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete banner', e);
+    }
+  }
+
+  static async deleteBanners(ids, deleteFiles = false) {
+    try {
+      const body = { banner_ids: ids };
+      if (deleteFiles) {
+        body.delete_files = true;
+      }
+
+      await request(`${host}/api/channels/banners/bulk-delete/`, {
+        method: 'DELETE',
+        body: body,
+      });
+
+      // Remove multiple banners from store
+      ids.forEach((id) => {
+        useBannersStore.getState().removeBanner(id);
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete banners', e);
+    }
+  }
+
+  static async cleanupUnusedBanners(deleteFiles = false) {
+    try {
+      const body = {};
+      if (deleteFiles) {
+        body.delete_files = true;
+      }
+
+      const response = await request(`${host}/api/channels/banners/cleanup/`, {
+        method: 'POST',
+        body: body,
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to cleanup unused banners', e);
       throw e;
     }
   }
