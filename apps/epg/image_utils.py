@@ -111,7 +111,10 @@ def calculate_target_dimensions(original_width, original_height):
 
 def convert_to_portrait(image):
     """
-    Convert an image to portrait format with 2:3 aspect ratio by fitting the entire image with padding.
+    Convert an image to portrait format with 2:3 aspect ratio using blurred background fill.
+    This technique (also called "stylized pillarboxing") creates a professional look by:
+    1. Using a blurred/scaled version of the image as background
+    2. Centering the original image on top
 
     Args:
         image: PIL.Image object
@@ -119,6 +122,8 @@ def convert_to_portrait(image):
     Returns:
         PIL.Image object in portrait format (2:3 aspect ratio)
     """
+    from PIL import ImageFilter
+
     original_width, original_height = image.size
     target_ratio = TARGET_ASPECT_RATIO[0] / TARGET_ASPECT_RATIO[1]  # 2/3 = 0.666...
     current_ratio = original_width / original_height
@@ -133,19 +138,27 @@ def convert_to_portrait(image):
         new_height = original_height
         new_width = int(original_height * target_ratio)
 
-    # Create new canvas with black background
-    new_image = Image.new('RGB', (new_width, new_height), (0, 0, 0))
+    # Create blurred background by scaling and blurring the original image
+    background = image.copy()
+    background = background.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    # Apply heavy blur for aesthetic background effect
+    background = background.filter(ImageFilter.GaussianBlur(radius=20))
+
+    # Optional: darken the background slightly for better contrast
+    from PIL import ImageEnhance
+    enhancer = ImageEnhance.Brightness(background)
+    background = enhancer.enhance(0.6)  # Darken to 60% brightness
 
     # Calculate position to paste original image (centered)
     paste_x = (new_width - original_width) // 2
     paste_y = (new_height - original_height) // 2
 
-    # Paste original image onto canvas
-    new_image.paste(image, (paste_x, paste_y))
+    # Paste original image onto blurred background
+    background.paste(image, (paste_x, paste_y))
 
-    logger.info(f"Fitted image from {original_width}x{original_height} to {new_width}x{new_height} (2:3 ratio) with padding")
+    logger.info(f"Converted image from {original_width}x{original_height} to {new_width}x{new_height} (2:3 ratio) with blurred background")
 
-    return new_image
+    return background
 
 
 def process_image_to_portrait(url):
