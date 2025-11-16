@@ -17,9 +17,11 @@ import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
+import BannersPage from './pages/Banners';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
 import useLogosStore from './store/logos';
+import useBannersStore from './store/banners';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -81,10 +83,11 @@ const App = () => {
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
-          // Start background logo loading after app is fully initialized (only once)
+          // Start background logo and banner loading after app is fully initialized (only once)
           if (!backgroundLoadingStarted) {
             setBackgroundLoadingStarted(true);
             useLogosStore.getState().startBackgroundLoading();
+            useBannersStore.getState().startBackgroundLoading();
           }
         } else {
           await logout();
@@ -146,6 +149,7 @@ const App = () => {
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
+                        <Route path="/banners" element={<BannersPage />} />
                         <Route path="/vods" element={<VODsPage />} />
                       </>
                     ) : (

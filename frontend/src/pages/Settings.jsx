@@ -266,7 +266,6 @@ const SettingsPage = () => {
       'dvr-comskip-custom-path': '',
       'dvr-pre-offset-minutes': 0,
       'dvr-post-offset-minutes': 0,
-      'convert-banners-to-portrait': false,
     },
 
     validate: {
@@ -958,22 +957,6 @@ const SettingsPage = () => {
                           title="Saved Successfully"
                         />
                       )}
-                      <Switch
-                        label="Convert Program Banners to Portrait (2:3 ratio for Emby)"
-                        description="Automatically convert landscape program banners/posters to portrait format with 2:3 aspect ratio. Recommended for Emby servers."
-                        {...form.getInputProps('convert-banners-to-portrait', {
-                          type: 'checkbox',
-                        })}
-                        key={form.key('convert-banners-to-portrait')}
-                        id={
-                          settings['convert-banners-to-portrait']?.id ||
-                          'convert-banners-to-portrait'
-                        }
-                        name={
-                          settings['convert-banners-to-portrait']?.key ||
-                          'convert-banners-to-portrait'
-                        }
-                      />
                       <Flex justify="flex-end">
                         <Button type="submit" variant="default">
                           Save

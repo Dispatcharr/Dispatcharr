@@ -124,6 +124,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/logos',
           },
           {
+            label: 'Banner Manager',
+            icon: <FileImage size={20} />,
+            path: '/banners',
+          },
+          {
             label: 'Settings',
             icon: <LucideSettings size={20} />,
             path: '/settings',

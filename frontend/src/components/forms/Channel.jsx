@@ -10,8 +10,10 @@ import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import useLogosStore from '../../store/logos';
+import useBannersStore from '../../store/banners';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
+import BannerForm from './Banner';
 import {
   Box,
   Button,
@@ -34,6 +36,7 @@ import {
   NumberInput,
   Image,
   UnstyledButton,
+  Checkbox,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
@@ -61,10 +64,23 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   // Import the full logos store for duplicate checking
   const allLogos = useLogosStore((s) => s.logos);
 
+  // Banners store
+  const channelBanners = useBannersStore((s) => s.banners);
+  const fetchAllBanners = useBannersStore((s) => s.fetchAllBanners);
+  const bannersLoading = useBannersStore((s) => s.isLoading);
+
   // Ensure logos are loaded when component mounts
   useEffect(() => {
     ensureLogosLoaded();
   }, [ensureLogosLoaded]);
+
+  // Ensure banners are loaded when component mounts
+  useEffect(() => {
+    if (Object.keys(channelBanners).length === 0) {
+      fetchAllBanners();
+    }
+  }, [fetchAllBanners, channelBanners]);
+
   const streams = useStreamsStore((state) => state.streams);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const playlists = usePlaylistsStore((s) => s.playlists);
@@ -73,11 +89,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
 
   const [logoModalOpen, setLogoModalOpen] = useState(false);
+  const [bannerModalOpen, setBannerModalOpen] = useState(false);
   const [channelStreams, setChannelStreams] = useState([]);
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
   const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
+  const [bannerPopoverOpened, setBannerPopoverOpened] = useState(false);
   const [selectedEPG, setSelectedEPG] = useState('');
+  const [bannerFilter, setBannerFilter] = useState('');
   const [tvgFilter, setTvgFilter] = useState('');
   const [logoFilter, setLogoFilter] = useState('');
 
@@ -104,6 +123,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       ensureLogosLoaded(); // Refresh logos
     }
     setLogoModalOpen(false);
+  };
+
+  const handleBannerSuccess = ({ banner }) => {
+    if (banner && banner.id) {
+      formik.setFieldValue('banner_id', banner.id);
+      fetchAllBanners(); // Refresh banners
+    }
+    setBannerModalOpen(false);
   };
 
   const handleAutoMatchEpg = async () => {
@@ -304,6 +331,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       tvc_guide_stationid: '',
       epg_data_id: '',
       logo_id: '',
+      banner_id: '',
+      convert_banner_to_portrait: false,
       user_level: '0',
     },
     validationSchema: Yup.object({
@@ -404,6 +433,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         tvc_guide_stationid: channel.tvc_guide_stationid || '',
         epg_data_id: channel.epg_data_id ?? '',
         logo_id: channel.logo_id ? `${channel.logo_id}` : '',
+        banner_id: channel.banner_id ? `${channel.banner_id}` : '',
+        convert_banner_to_portrait: channel.convert_banner_to_portrait || false,
         user_level: `${channel.user_level}`,
       });
 
@@ -412,6 +443,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       formik.resetForm();
       setTvgFilter('');
       setLogoFilter('');
+      setBannerFilter('');
       setChannelStreams([]); // Ensure streams are cleared when adding a new channel
     }
   }, [channel, tvgsById, channelGroups]);
@@ -423,6 +455,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     );
     return options;
   }, [channelLogos]); // Only depend on channelLogos object
+
+  // Memoize banner options to prevent infinite re-renders during background loading
+  const bannerOptions = useMemo(() => {
+    const options = [{ id: '0', name: 'Default' }].concat(
+      Object.values(channelBanners)
+    );
+    return options;
+  }, [channelBanners]); // Only depend on channelBanners object
 
   // Update the handler for when channel group modal is closed
   const handleChannelGroupModalClose = (newGroup) => {
@@ -452,6 +492,10 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   const filteredLogos = logoOptions.filter((logo) =>
     logo.name.toLowerCase().includes(logoFilter.toLowerCase())
+  );
+
+  const filteredBanners = bannerOptions.filter((banner) =>
+    banner.name.toLowerCase().includes(bannerFilter.toLowerCase())
   );
 
   const filteredGroups = groupOptions.filter((group) =>
@@ -828,6 +872,158 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
             <Divider size="sm" orientation="vertical" />
 
+            <Stack justify="flex-start" style={{ flex: 1 }}>
+              <Group justify="space-between">
+                <Popover
+                  opened={bannerPopoverOpened}
+                  onChange={(opened) => {
+                    setBannerPopoverOpened(opened);
+                    if (opened && Object.keys(channelBanners).length === 0) {
+                      fetchAllBanners();
+                    }
+                  }}
+                  withArrow
+                >
+                  <Popover.Target>
+                    <TextInput
+                      id="banner_id"
+                      name="banner_id"
+                      label="Banner"
+                      readOnly
+                      value={
+                        channelBanners[formik.values.banner_id]?.name || 'Default'
+                      }
+                      onClick={() => {
+                        setBannerPopoverOpened(true);
+                      }}
+                      size="xs"
+                    />
+                  </Popover.Target>
+
+                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                    <Group>
+                      <TextInput
+                        placeholder="Filter"
+                        value={bannerFilter}
+                        onChange={(event) =>
+                          setBannerFilter(event.currentTarget.value)
+                        }
+                        mb="xs"
+                        size="xs"
+                      />
+                      {bannersLoading && (
+                        <Text size="xs" c="dimmed">
+                          Loading...
+                        </Text>
+                      )}
+                    </Group>
+
+                    <ScrollArea style={{ height: 200 }}>
+                      {filteredBanners.length === 0 ? (
+                        <Center style={{ height: 200 }}>
+                          <Text size="sm" c="dimmed">
+                            {bannerFilter
+                              ? 'No banners match your filter'
+                              : 'No banners available'}
+                          </Text>
+                        </Center>
+                      ) : (
+                        <List
+                          height={200}
+                          itemCount={filteredBanners.length}
+                          itemSize={75}
+                          style={{ width: '100%' }}
+                        >
+                          {({ index, style }) => (
+                            <div
+                              style={{
+                                ...style,
+                                cursor: 'pointer',
+                                padding: '5px',
+                                borderRadius: '4px',
+                              }}
+                              onClick={() => {
+                                formik.setFieldValue(
+                                  'banner_id',
+                                  filteredBanners[index].id
+                                );
+                                setBannerPopoverOpened(false);
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                  'rgb(68, 68, 68)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor =
+                                  'transparent';
+                              }}
+                            >
+                              <Center
+                                style={{ flexDirection: 'column', gap: '2px' }}
+                              >
+                                <img
+                                  src={filteredBanners[index].cache_url || logo}
+                                  height="40"
+                                  style={{ maxWidth: 120, objectFit: 'contain' }}
+                                  alt={filteredBanners[index].name}
+                                />
+                                <Text
+                                  size="xs"
+                                  style={{
+                                    maxWidth: 120,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {filteredBanners[index].name || 'Default'}
+                                </Text>
+                              </Center>
+                            </div>
+                          )}
+                        </List>
+                      )}
+                    </ScrollArea>
+                  </Popover.Dropdown>
+                </Popover>
+
+                <Stack gap="xs" align="center">
+                  {formik.values.banner_id && formik.values.banner_id !== '0' && channelBanners[formik.values.banner_id] ? (
+                    <img
+                      src={channelBanners[formik.values.banner_id].cache_url}
+                      alt="channel banner"
+                      style={{ height: 60, maxWidth: 120, objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <Text size="xs" c="dimmed">No banner</Text>
+                  )}
+                </Stack>
+              </Group>
+
+              <Button
+                onClick={() => setBannerModalOpen(true)}
+                fullWidth
+                variant="default"
+              >
+                Upload or Create Banner
+              </Button>
+
+              <Checkbox
+                label="Convert to 2:3 Portrait (for Emby)"
+                description="Convert banner to portrait format with 2:3 aspect ratio and blurred background fill"
+                checked={formik.values.convert_banner_to_portrait}
+                onChange={(event) =>
+                  formik.setFieldValue(
+                    'convert_banner_to_portrait',
+                    event.currentTarget.checked
+                  )
+                }
+                size="xs"
+              />
+            </Stack>
+
+            <Divider size="sm" orientation="vertical" />
+
             <Stack gap="5" style={{ flex: 1 }} justify="flex-start">
               <NumberInput
                 id="channel_number"
@@ -1064,6 +1260,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         isOpen={logoModalOpen}
         onClose={() => setLogoModalOpen(false)}
         onSuccess={handleLogoSuccess}
+      />
+
+      <BannerForm
+        isOpen={bannerModalOpen}
+        onClose={() => setBannerModalOpen(false)}
+        onSuccess={handleBannerSuccess}
       />
     </>
   );
