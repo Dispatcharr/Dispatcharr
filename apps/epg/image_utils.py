@@ -111,7 +111,7 @@ def calculate_target_dimensions(original_width, original_height):
 
 def convert_to_portrait(image):
     """
-    Convert an image to portrait format with 2:3 aspect ratio using center crop.
+    Convert an image to portrait format with 2:3 aspect ratio by fitting the entire image with padding.
 
     Args:
         image: PIL.Image object
@@ -120,20 +120,32 @@ def convert_to_portrait(image):
         PIL.Image object in portrait format (2:3 aspect ratio)
     """
     original_width, original_height = image.size
-    target_width, target_height = calculate_target_dimensions(original_width, original_height)
+    target_ratio = TARGET_ASPECT_RATIO[0] / TARGET_ASPECT_RATIO[1]  # 2/3 = 0.666...
+    current_ratio = original_width / original_height
 
-    # Calculate crop box for center crop
-    left = (original_width - target_width) // 2
-    top = (original_height - target_height) // 2
-    right = left + target_width
-    bottom = top + target_height
+    # Calculate target dimensions that will contain the entire original image
+    if current_ratio > target_ratio:
+        # Image is wider than target ratio - fit to width
+        new_width = original_width
+        new_height = int(original_width / target_ratio)
+    else:
+        # Image is taller than target ratio - fit to height
+        new_height = original_height
+        new_width = int(original_height * target_ratio)
 
-    # Crop to target dimensions
-    cropped_image = image.crop((left, top, right, bottom))
+    # Create new canvas with black background
+    new_image = Image.new('RGB', (new_width, new_height), (0, 0, 0))
 
-    logger.info(f"Converted image from {original_width}x{original_height} to {target_width}x{target_height} (2:3 ratio)")
+    # Calculate position to paste original image (centered)
+    paste_x = (new_width - original_width) // 2
+    paste_y = (new_height - original_height) // 2
 
-    return cropped_image
+    # Paste original image onto canvas
+    new_image.paste(image, (paste_x, paste_y))
+
+    logger.info(f"Fitted image from {original_width}x{original_height} to {new_width}x{new_height} (2:3 ratio) with padding")
+
+    return new_image
 
 
 def process_image_to_portrait(url):
