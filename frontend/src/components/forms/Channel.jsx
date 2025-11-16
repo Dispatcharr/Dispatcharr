@@ -13,6 +13,7 @@ import useLogosStore from '../../store/logos';
 import useBannersStore from '../../store/banners';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
+import BannerForm from './Banner';
 import {
   Box,
   Button,
@@ -87,6 +88,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
 
   const [logoModalOpen, setLogoModalOpen] = useState(false);
+  const [bannerModalOpen, setBannerModalOpen] = useState(false);
   const [channelStreams, setChannelStreams] = useState([]);
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
@@ -120,6 +122,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       ensureLogosLoaded(); // Refresh logos
     }
     setLogoModalOpen(false);
+  };
+
+  const handleBannerSuccess = ({ banner }) => {
+    if (banner && banner.id) {
+      formik.setFieldValue('banner_id', banner.id);
+      fetchAllBanners(true); // Refresh banners
+    }
+    setBannerModalOpen(false);
   };
 
   const handleAutoMatchEpg = async () => {
@@ -510,7 +520,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       <Modal
         opened={isOpen}
         onClose={onClose}
-        size={1000}
+        size={1100}
         title={
           <Group gap="5">
             <ListOrdered size="20" />
@@ -1029,6 +1039,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 }
                 size="xs"
               />
+
+              <Button
+                onClick={() => setBannerModalOpen(true)}
+                fullWidth
+                variant="default"
+              >
+                Upload or Create Banner
+              </Button>
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -1271,6 +1289,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         isOpen={logoModalOpen}
         onClose={() => setLogoModalOpen(false)}
         onSuccess={handleLogoSuccess}
+      />
+
+      <BannerForm
+        isOpen={bannerModalOpen}
+        onClose={() => setBannerModalOpen(false)}
+        onSuccess={handleBannerSuccess}
       />
     </>
   );
