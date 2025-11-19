@@ -138,6 +138,14 @@ class ChannelStatus:
                     'user_agent': client_data.get(b'user_agent', b'unknown').decode('utf-8'),
                     'worker_id': client_data.get(b'worker_id', b'unknown').decode('utf-8'),
                 }
+                
+                # Add username if available (XC API access)
+                if b'username' in client_data:
+                    client_info['username'] = client_data[b'username'].decode('utf-8')
+                
+                # Add access_type if available (M3U, HDHR, or XC)
+                if b'access_type' in client_data:
+                    client_info['access_type'] = client_data[b'access_type'].decode('utf-8')
 
                 if b'connected_at' in client_data:
                     connected_at = float(client_data[b'connected_at'].decode('utf-8'))
@@ -449,6 +457,16 @@ class ChannelStatus:
                     ip_address_bytes = proxy_server.redis_client.hget(client_key, 'ip_address')
                     if ip_address_bytes:
                         client_info['ip_address'] = safe_decode(ip_address_bytes)
+                    
+                    # Get username if available (XC API access)
+                    username_bytes = proxy_server.redis_client.hget(client_key, 'username')
+                    if username_bytes:
+                        client_info['username'] = safe_decode(username_bytes)
+                    
+                    # Get access_type if available (M3U, HDHR, or XC)
+                    access_type_bytes = proxy_server.redis_client.hget(client_key, 'access_type')
+                    if access_type_bytes:
+                        client_info['access_type'] = safe_decode(access_type_bytes)
 
                     # Just get connected_at for client age
                     connected_at_bytes = proxy_server.redis_client.hget(client_key, 'connected_at')
