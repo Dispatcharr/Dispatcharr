@@ -284,12 +284,12 @@ const VODCard = ({ vodContent }) => {
       padding="md"
       radius="md"
       withBorder
-      style={{
+      style: {
         color: '#fff',
         backgroundColor: '#27272A',
-        maxWidth: '700px',
+        maxWidth: '760px',
         width: '100%',
-      }}
+      }
     >
       <Stack style={{ position: 'relative' }}>
         {/* Header with poster and basic info */}
@@ -298,7 +298,7 @@ const VODCard = ({ vodContent }) => {
             style={{
               //width: '150px',
               height: '100px',
-              display: 'flex',
+              maxWidth: '760px',
               alignItems: 'center',
               justifyContent: 'center',
             }}
@@ -862,6 +862,7 @@ const ChannelCard = ({
       },
       {
         header: 'User',
+        id: 'user',
         accessorFn: (row) => {
           // Show username if XC API access
           if (row.username) {
@@ -989,6 +990,7 @@ const ChannelCard = ({
     }),
     headerCellRenderFns: {
       ip_address: renderHeaderCell,
+      user: renderHeaderCell,
       connected: renderHeaderCell,
       duration: renderHeaderCell,
       actions: renderHeaderCell,
