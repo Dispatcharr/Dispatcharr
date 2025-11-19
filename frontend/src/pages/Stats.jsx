@@ -284,13 +284,13 @@ const VODCard = ({ vodContent }) => {
       padding="md"
       radius="md"
       withBorder
-      style: {
-        color: '#fff',
-        backgroundColor: '#27272A',
-        maxWidth: '760px',
-        width: '100%',
-      }
-    >
+        style={{
+          color: '#fff',
+          backgroundColor: '#27272A',
+          maxWidth: '760px',
+          width: '100%',
+        }}
+      >
       <Stack style={{ position: 'relative' }}>
         {/* Header with poster and basic info */}
         <Group justify="space-between">
@@ -1298,7 +1298,11 @@ const ChannelCard = ({
           </Group>
         </Group>
 
-        <CustomTable table={channelClientsTable} />
+        <Box style={{ width: '100%', overflowX: 'auto', display: 'flex', justifyContent: 'center' }}>
+          <Box style={{ width: '100%' }}>
+            <CustomTable table={channelClientsTable} />
+          </Box>
+        </Box>
       </Stack>
     </Card>
   );
