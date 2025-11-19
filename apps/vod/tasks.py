@@ -1123,10 +1123,12 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Clear existing episodes for this account to handle deletions
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account=account
+        # Clear existing episode relations for this account to handle deletions
+        # Note: Only delete the M3UEpisodeRelation, not the Episode itself
+        # Episodes are deduplicated across accounts and may be shared
+        M3UEpisodeRelation.objects.filter(
+            episode__series=series,
+            m3u_account=account
         ).delete()
 
         # Process all episodes in batch
@@ -1308,9 +1310,45 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
 
     # Execute batch operations
     with transaction.atomic():
-        # Create new episodes
+        # Create new episodes with ignore_conflicts to handle race conditions
+        # where another account might create the same episode simultaneously
         if episodes_to_create:
-            Episode.objects.bulk_create(episodes_to_create)
+            Episode.objects.bulk_create(episodes_to_create, ignore_conflicts=True)
+
+            # Re-fetch episodes that were supposed to be created to get their actual IDs
+            # This handles both newly created episodes and ones that already existed
+            episode_keys_to_create = [
+                (ep.series_id, ep.season_number, ep.episode_number)
+                for ep in episodes_to_create
+            ]
+
+            # Build filter for all episode keys
+            from django.db.models import Q
+            episode_filter = Q()
+            for series_id, season_num, ep_num in episode_keys_to_create:
+                episode_filter |= Q(
+                    series_id=series_id,
+                    season_number=season_num,
+                    episode_number=ep_num
+                )
+
+            # Fetch actual episodes from database
+            actual_episodes = {
+                (ep.series_id, ep.season_number, ep.episode_number): ep
+                for ep in Episode.objects.filter(episode_filter)
+            }
+
+            # Update relations to point to the actual episodes
+            for relation in relations_to_create:
+                if relation.episode and not relation.episode.pk:
+                    # Episode was in episodes_to_create but may not have been inserted
+                    key = (
+                        relation.episode.series_id,
+                        relation.episode.season_number,
+                        relation.episode.episode_number
+                    )
+                    if key in actual_episodes:
+                        relation.episode = actual_episodes[key]
 
         # Update existing episodes
         if episodes_to_update:
