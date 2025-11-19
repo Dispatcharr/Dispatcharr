@@ -21,7 +21,13 @@ from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from .config_helper import ConfigHelper
-from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from .url_utils import (
+    get_alternate_streams,
+    get_stream_info_for_switch,
+    get_stream_object,
+    get_next_profiles_for_stream,
+    get_stream_info_for_profile,
+)
 
 logger = get_logger()
 
@@ -1459,6 +1465,120 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
+
+    def _try_next_profile(self) -> bool:
+        """Attempt to switch to another M3U profile of the SAME stream before alternate streams.
+
+        Returns True on successful switch, False otherwise."""
+        if not getattr(self, "current_stream_id", None):
+            return False
+
+        try:
+            redis_client = getattr(self.buffer, "redis_client", None)
+
+            # Load current M3U profile from Redis metadata if available
+            current_profile_id = None
+            if redis_client:
+                metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                md = redis_client.hgetall(metadata_key)
+                key = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
+                if md and key in md:
+                    try:
+                        current_profile_id = int(md[key].decode("utf-8"))
+                    except Exception:
+                        current_profile_id = None
+
+            candidates = get_next_profiles_for_stream(
+                self.channel_id,
+                self.current_stream_id,
+                exclude_profile_id=current_profile_id,
+            )
+            if not candidates:
+                logger.info(
+                    f"No additional M3U profiles available for stream {self.current_stream_id} on channel {self.channel_id}"
+                )
+                return False
+
+            for cand in candidates:
+                profile_id = cand["profile_id"]
+                info = get_stream_info_for_profile(self.channel_id, self.current_stream_id, profile_id)
+                if not info or "error" in info or not info.get("url"):
+                    logger.warning(
+                        f"Skipping profile {profile_id} for stream {self.current_stream_id} on channel {self.channel_id}: invalid info {info}"
+                    )
+                    continue
+
+                new_url = info["url"]
+                new_user_agent = info["user_agent"]
+                new_transcode = info["transcode"]
+                stream_id = info["stream_id"]
+                m3u_profile_id = info["m3u_profile_id"]
+
+                # Avoid switching to the same URL
+                if getattr(self, "url", None) and new_url == self.url:
+                    logger.debug(
+                        f"Profile {m3u_profile_id} for stream {stream_id} yields same URL as current, skipping."
+                    )
+                    continue
+
+                # Apply runtime parameters
+                self.user_agent = new_user_agent
+                self.transcode = new_transcode
+
+                # Update Redis metadata
+                if redis_client:
+                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                    redis_client.hset(
+                        metadata_key,
+                        mapping={
+                            ChannelMetadataField.URL: new_url,
+                            ChannelMetadataField.USER_AGENT: new_user_agent,
+                            ChannelMetadataField.STREAM_PROFILE: info["stream_profile"],
+                            ChannelMetadataField.M3U_PROFILE: str(m3u_profile_id),
+                            ChannelMetadataField.STREAM_ID: str(stream_id),
+                            ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                            ChannelMetadataField.STREAM_SWITCH_REASON: "profile_switch_on_start_failure",
+                        },
+                    )
+
+                    # Map stream_id -> m3u_profile_id
+                    try:
+                        redis_client.set(f"stream_profile:{stream_id}", str(m3u_profile_id), ex=3600)
+                    except Exception:
+                        logger.debug("Failed to update stream_profile mapping in Redis", exc_info=True)
+
+                    # Optional: channel_stream mapping if channel_db_id is available
+                    if getattr(self, "channel_db_id", None):
+                        try:
+                            redis_client.set(f"channel_stream:{self.channel_db_id}", str(stream_id), ex=3600)
+                        except Exception:
+                            logger.debug("Failed to update channel_stream mapping in Redis", exc_info=True)
+
+                # Apply new URL
+                if hasattr(self, "update_url"):
+                    ok = self.update_url(new_url, stream_id, m3u_profile_id)
+                    if not ok:
+                        logger.warning(
+                            f"update_url failed for profile {m3u_profile_id} / stream {stream_id} on channel {self.channel_id}"
+                        )
+                        continue
+                else:
+                    self.url = new_url
+
+                self.current_stream_id = stream_id
+                self.url_switching = True
+                self.url_switch_start_time = time.time()
+
+                logger.info(
+                    f"Switched to profile {m3u_profile_id} for stream {stream_id} on channel {self.channel_id} (URL: {new_url})"
+                )
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error in _try_next_profile: {e}", exc_info=True)
+            return False
+
     def _try_next_stream(self):
         """
         Try to switch to the next available stream for this channel.
@@ -1467,6 +1587,10 @@ class StreamManager:
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
+        # Profile-first: try another M3U profile for the same stream before alternate/backup streams
+        if self._try_next_profile():
+            return True
+
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
 
