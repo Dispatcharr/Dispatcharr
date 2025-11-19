@@ -2604,11 +2604,14 @@ def xc_series_stream(request, username, password, stream_id, extension):
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to series/episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
+    # Filter by stream_id (the provider's external ID), not episode_id
+    # When multiple accounts have the same stream_id, select based on account priority
+    episode_relation = M3UEpisodeRelation.objects.filter(
+        stream_id=stream_id,
+        m3u_account__is_active=True
+    ).select_related('episode', 'm3u_account').order_by('-m3u_account__priority', 'id').first()
 
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').get(**filters)
-    except M3UEpisodeRelation.DoesNotExist:
+    if not episode_relation:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
     # Redirect to the VOD proxy endpoint
