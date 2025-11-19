@@ -69,6 +69,34 @@ def stream_ts(request, channel_id):
                     f"[{client_id}] Client connected with user agent: {client_user_agent}"
                 )
                 break
+        
+        # Determine access method based on request path/referer
+        # This is called from stream_ts which is accessed via /proxy/ts/stream/<channel_id>
+        # Check the HTTP_REFERER or request path to determine source
+        access_type = None
+        username = None
+        
+        # Check if this request came from XC API (stream_xc sets xc_username attribute)
+        if hasattr(request, 'xc_username'):
+            access_type = "XC"
+            username = request.xc_username
+            logger.debug(f"[{client_id}] XC API access by user: {username}")
+        else:
+            # Check referer header to determine access method
+            referer = request.META.get('HTTP_REFERER', '')
+            request_path = request.META.get('PATH_INFO', '')
+            
+            # Check if this is coming from HDHR (hdhr URLs or HDHR user agents)
+            if '/hdhr/' in referer or 'HDHomeRun' in (client_user_agent or ''):
+                access_type = "HDHR"
+            # Check if coming from output/stream endpoint (M3U playlist)
+            elif '/output/stream/' in referer or request_path.startswith('/output/stream/'):
+                access_type = "M3U"
+            # Default to M3U if we can't determine
+            else:
+                access_type = "M3U"
+        
+        logger.debug(f"[{client_id}] Access type determined as: {access_type}")
 
         # Check if we need to reinitialize the channel
         needs_initialization = True
@@ -490,7 +518,7 @@ def stream_ts(request, channel_id):
         # Register client
         buffer = proxy_server.stream_buffers[channel_id]
         client_manager = proxy_server.client_managers[channel_id]
-        client_manager.add_client(client_id, client_ip, client_user_agent)
+        client_manager.add_client(client_id, client_ip, client_user_agent, username, access_type)
         logger.info(f"[{client_id}] Client registered with channel {channel_id}")
 
         # Create a stream generator for this client
@@ -553,6 +581,8 @@ def stream_xc(request, username, password, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
+    # Store XC API username in request for access tracking
+    request._request.xc_username = username
     return stream_ts(request._request, str(channel.uuid))
 
 
