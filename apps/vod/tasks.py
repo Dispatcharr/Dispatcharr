@@ -1313,9 +1313,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
         # Create new episodes with ignore_conflicts to handle race conditions
         # where another account might create the same episode simultaneously
         if episodes_to_create:
+            # Track which episode objects need their PKs resolved after bulk_create
+            # When using ignore_conflicts=True, PKs are NOT set on the objects
+            unsaved_episode_set = set(id(ep) for ep in episodes_to_create)
+
             Episode.objects.bulk_create(episodes_to_create, ignore_conflicts=True)
 
-            # Re-fetch episodes that were supposed to be created to get their actual IDs
+            # Re-fetch ALL episodes that were supposed to be created to get their actual IDs
             # This handles both newly created episodes and ones that already existed
             episode_keys_to_create = [
                 (ep.series_id, ep.season_number, ep.episode_number)
@@ -1338,10 +1342,10 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 for ep in Episode.objects.filter(episode_filter)
             }
 
-            # Update relations to point to the actual episodes
+            # Update ALL relations that reference episodes from episodes_to_create
+            # to point to the actual saved episodes from the database
             for relation in relations_to_create:
-                if relation.episode and not relation.episode.pk:
-                    # Episode was in episodes_to_create but may not have been inserted
+                if relation.episode and id(relation.episode) in unsaved_episode_set:
                     key = (
                         relation.episode.series_id,
                         relation.episode.season_number,
