@@ -104,6 +104,8 @@ class ChannelMetadataField:
     CHUNKS_SENT = "chunks_sent"
     STATS_UPDATED_AT = "stats_updated_at"
 
+    M3U_ACCOUNT = "m3u_account"
+
 # TS packet constants
 TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47

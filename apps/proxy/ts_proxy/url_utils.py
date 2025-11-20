@@ -564,10 +564,13 @@ def get_connections_left(m3u_profile_id: int) -> int:
         return 0
 
 
+
 # === BEGIN: profile-first failover helpers ===
 def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profile_id: Optional[int] = None) -> List[dict]:
-    """Return available M3U profiles for THIS stream in order (default first),
-    respecting max_streams and current usage. Optionally exclude the current profile."""
+    """
+    Return available M3U profiles for THIS stream in order (default first),
+    respecting max_streams and current usage. Optionally exclude the current profile.
+    """
     try:
         from core.utils import RedisClient
 
@@ -613,7 +616,6 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
                 except Exception:
                     channel_using_profile = False
 
-                # If this channel is already using that profile, subtract one
                 effective = current - (1 if channel_using_profile else 0)
                 if getattr(p, "max_streams", 0) != 0 and effective >= getattr(p, "max_streams", 0):
                     allowed = False
@@ -628,9 +630,10 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
 
 
 def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
-    """Build URL/User-Agent/Transcode for a fixed combination of Stream + M3U profile.
-
-    Returns a dict compatible with get_stream_info_for_switch(...)."""
+    """
+    Build URL/User-Agent/Transcode for a fixed combination of Stream + M3U profile.
+    Return schema compatible with get_stream_info_for_switch(...).
+    """
     try:
         channel = get_object_or_404(Channel, uuid=channel_id)
         stream = get_object_or_404(Stream, pk=stream_id)
