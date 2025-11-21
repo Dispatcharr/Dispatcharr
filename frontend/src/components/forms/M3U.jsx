@@ -53,7 +53,6 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [showCredentialFields, setShowCredentialFields] = useState(false);
-  const [proxyPreview, setProxyPreview] = useState('');
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -127,8 +126,6 @@ const M3U = ({
         proxy,
         multi_proxy_enabled: multiProxyEnabled,
       });
-
-      setProxyPreview(proxy || '');
 
       if (m3uAccount.account_type === 'XC') {
         setShowCredentialFields(true);
@@ -454,28 +451,16 @@ const M3U = ({
                     description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Komma oder Zeilenumbruch trennen."
                     placeholder="http://proxy1:port1, http://proxy2:port2"
                     {...form.getInputProps('proxy')}
-                    value={proxyPreview}
-                    onChange={(event) => {
-                      const v = event.currentTarget.value;
-                      setProxyPreview(v);
-                      form.setFieldValue('proxy', v);
-                    }}
                     key={form.key('proxy')}
                   />
                   <Checkbox
                     mt="xs"
                     id="multi_proxy_enabled"
                     name="multi_proxy_enabled"
-                    label="Multi-Proxy aktiv"
-                    description="Aktiv, wenn im Feld oben mehr als ein Proxy per Komma oder Zeilenumbruch eingetragen ist."
-                    checked={
-                      form.values.account_type === 'MAC' &&
-                      (proxyPreview || '')
-                        .replace(/\r/g, '\n')
-                        .split(/[\n,]/)
-                        .map((p) => p.trim())
-                        .filter(Boolean).length > 1
-                    }
+                    label="Multi-Proxy aktivieren"
+                    description="Wird automatisch aktiv, wenn mehr als ein Proxy im Feld definiert ist."
+                    {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
+                    key={form.key('multi_proxy_enabled')}
                     readOnly
                     disabled
                   />
