@@ -448,7 +448,7 @@ const M3U = ({
                     id="proxy"
                     name="proxy"
                     label="HTTP Proxy"
-                    description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Leerzeichen, Komma oder Zeilenumbruch trennen."
+                    description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Komma oder Zeilenumbruch trennen."
                     placeholder="http://proxy1:port1, http://proxy2:port2"
                     {...form.getInputProps('proxy')}
                     key={form.key('proxy')}
@@ -462,6 +462,7 @@ const M3U = ({
                     {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
                     key={form.key('multi_proxy_enabled')}
                     readOnly
+                    disabled
                   />
                 </>
               )}
