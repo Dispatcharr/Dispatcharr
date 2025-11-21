@@ -448,7 +448,7 @@ const M3U = ({
                     id="proxy"
                     name="proxy"
                     label="HTTP Proxy"
-                    description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Komma oder Zeilenumbruch trennen."
+                    description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Leerzeichen, Komma oder Zeilenumbruch trennen."
                     placeholder="http://proxy1:port1, http://proxy2:port2"
                     {...form.getInputProps('proxy')}
                     key={form.key('proxy')}
@@ -462,7 +462,6 @@ const M3U = ({
                     {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
                     key={form.key('multi_proxy_enabled')}
                     readOnly
-                    disabled
                   />
                 </>
               )}
@@ -516,17 +515,17 @@ const M3U = ({
               )}
 
               {form.getValues().account_type !== 'MAC' && (
-                <>
-                  <FileInput
-                    id="file"
-                    label="Upload files"
-                    placeholder="Upload files"
-                    description="Upload a local M3U file instead of using URL"
-                    onChange={setFile}
-                  />
+                <FileInput
+                  id="file"
+                  label="Upload files"
+                  placeholder="Upload files"
+                  description="Upload a local M3U file instead of using URL"
+                  onChange={setFile}
+                />
+              )}
 
-                  {form.getValues().account_type === 'MAC' && macs.length > 0 && (
-                    <Box mt="sm">
+              {macs.length > 0 && (
+                <Box mt="sm">
                       <Group justify="space-between" align="center" mb={4}>
                         <Box fw={500}>MAC-Status</Box>
                         <Button
@@ -611,8 +610,6 @@ const M3U = ({
                       </Table>
                     </Box>
                   )}
-                </>
-              )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
