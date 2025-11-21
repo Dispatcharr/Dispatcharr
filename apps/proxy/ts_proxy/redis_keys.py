@@ -84,16 +84,24 @@ class RedisKeys:
         """Key indicating active transcode process"""
         return f"ts_proxy:channel:{channel_id}:transcode_active"
 
-    @staticmethod
-    def client_metadata(channel_id, client_id):
-        """Key for client metadata hash"""
-        return f"ts_proxy:channel:{channel_id}:clients:{client_id}"
+
     @staticmethod
     def m3u_profile_cooldown(profile_id):
-        """Key for cooldown marker of a specific M3U profile (to avoid retrying bad profiles)."""
+        """Key to track cooldown for a specific M3U profile (per MAC / profile).
+
+        Value is irrelevant (we just check existence); TTL defines the cooldown window.
+        """
         return f"ts_proxy:m3u_profile:{profile_id}:cooldown"
 
     @staticmethod
     def m3u_account_cooldown(account_id):
-        """Key for cooldown marker of a specific M3U account (prepared, disabled by default)."""
+        """Key to track cooldown for a whole M3U account.
+
+        Prepared for optional account-wide cooldown. Not used by default.
+        """
         return f"ts_proxy:m3u_account:{account_id}:cooldown"
+
+    @staticmethod
+    def client_metadata(channel_id, client_id):
+        """Key for client metadata hash"""
+        return f"ts_proxy:channel:{channel_id}:clients:{client_id}"
