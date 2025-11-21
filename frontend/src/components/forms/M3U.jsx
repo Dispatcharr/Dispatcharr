@@ -73,7 +73,6 @@ const M3U = ({
       mac_address: '',
       custom_properties: {},
       proxy: '',
-      multi_proxy_enabled: false,
     },
 
     validate: {
@@ -144,7 +143,6 @@ const M3U = ({
     }
   }, [form.values.account_type]);
 
-
   const onSubmit = async () => {
     const { create_epg, proxy, ...values } = form.getValues();
 
@@ -153,21 +151,21 @@ const M3U = ({
       ...(values.custom_properties || {}),
     };
 
-    const proxyString = proxy || '';
-    const parsedProxies = proxyString
-      .replace(/\r/g, '\n')
-      .split(/[\n,]/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    const multiProxyEnabled = values.account_type === 'MAC' && parsedProxies.length > 1;
-
     if (values.account_type === 'MAC') {
       if (proxy && proxy.trim() !== '') {
         custom_properties.proxy = proxy.trim();
       } else {
         delete custom_properties.proxy;
       }
+
+      const proxyString = proxy || '';
+      const proxies = proxyString
+        .replace(/\r/g, '\n')
+        .split(/[\n,]/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      const multiProxyEnabled = proxies.length > 1;
 
       if (multiProxyEnabled) {
         custom_properties.multi_proxy_enabled = true;
@@ -449,8 +447,8 @@ const M3U = ({
                     mt="xs"
                     id="multi_proxy_enabled"
                     name="multi_proxy_enabled"
-                    label="Multi-Proxy aktivieren"
-                    description="Wird automatisch aktiv, wenn mehr als ein Proxy im Feld definiert ist."
+                    label="Multi-Proxy aktiv"
+                    description="Aktiv, wenn im Feld oben mehr als ein Proxy per Komma oder Zeilenumbruch eingetragen ist."
                     checked={
                       form.values.account_type === 'MAC' &&
                       (form.values.proxy || '')
