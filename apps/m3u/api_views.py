@@ -17,7 +17,7 @@ from django.conf import settings
 from .tasks import refresh_m3u_groups
 import json
 
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile, M3UAccountMac
 from core.models import UserAgent
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
@@ -263,6 +263,172 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 {"error": f"Failed to update group settings: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    def _delete_expired_macs_impl(self, account):
+        """
+        Interne Logik zum Löschen abgelaufener/unklarer MACs.
+        Löscht EXPIRED und UNKNOWN, sortiert Prioritäten neu und
+        aktualisiert das mac_address-Feld auf Basis der verbleibenden MACs.
+        Gibt (deleted_count, remaining_addresses) zurück.
+        """
+        from .models import M3UAccountMac
+        from django.db import transaction
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        if account.account_type != M3UAccount.Types.MAC:
+            return 0, []
+
+        with transaction.atomic():
+            qs = account.macs.filter(
+                status__in=[
+                    M3UAccountMac.Status.EXPIRED,
+                    M3UAccountMac.Status.UNKNOWN,
+                ]
+            )
+            deleted_count = qs.count()
+            qs.delete()
+
+            remaining = list(account.macs.order_by("priority", "id"))
+            # Prioritäten neu setzen
+            for idx, m in enumerate(remaining):
+                if m.priority != idx:
+                    m.priority = idx
+                    m.save(update_fields=["priority"])
+
+            # mac_address-Feld aus verbleibenden MACs aufbauen
+            mac_list = [m.address for m in remaining]
+            account.mac_address = " ".join(mac_list)
+            account.save(update_fields=["mac_address"])
+
+        logger.info(
+            "Deleted %s expired/unknown MACs for account %s; remaining MACs: %s",
+            deleted_count,
+            account.id,
+            mac_list,
+        )
+        return deleted_count, mac_list
+
+    @action(detail=True, methods=["post"], url_path="delete-expired-macs")
+    def delete_expired_macs(self, request, pk=None):
+        """
+        Löscht alle EXPIRED- und UNKNOWN-MAC-Einträge für diesen Account.
+        Wird vom Button im M3U-Manager verwendet (Pfad: delete-expired-macs/).
+        """
+        account = self.get_object()
+
+        deleted_count, mac_list = self._delete_expired_macs_impl(account)
+
+        # Aktualisierte Account-Daten zurückgeben (inkl. frischer MAC-Liste)
+        serializer = self.get_serializer(account)
+        return Response(
+            {
+                "deleted": deleted_count,
+                "account": serializer.data,
+                "remaining_macs": mac_list,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="delete_expired_macs")
+    def delete_expired_macs_underscore(self, request, pk=None):
+        """
+        Alias-Endpoint mit Unterstrich im Pfad, falls das Frontend
+        /delete_expired_macs/ verwendet. Verwendet die gleiche Logik.
+        """
+        account = self.get_object()
+        deleted_count, mac_list = self._delete_expired_macs_impl(account)
+        serializer = self.get_serializer(account)
+        return Response(
+            {
+                "deleted": deleted_count,
+                "account": serializer.data,
+                "remaining_macs": mac_list,
+            }
+        )
+
+    @action(detail=True, methods=["delete"], url_path=r"macs/(?P<mac_id>[^/.]+)")
+    def delete_single_mac(self, request, pk=None, mac_id=None):
+        """
+        Löscht eine einzelne MAC anhand ihrer ID (für das rote X im UI).
+        """
+        from .models import M3UAccountMac
+
+        account = self.get_object()
+        try:
+            mac_obj = account.macs.get(id=mac_id)
+        except M3UAccountMac.DoesNotExist:
+            return Response(
+                {"error": "MAC not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        mac_obj.delete()
+
+        # Prioritäten neu setzen und mac_address aktualisieren
+        remaining = list(account.macs.order_by("priority", "id"))
+        for idx, m in enumerate(remaining):
+            if m.priority != idx:
+                m.priority = idx
+                m.save(update_fields=["priority"])
+
+        account.mac_address = " ".join(m.address for m in remaining)
+        account.save(update_fields=["mac_address"])
+
+        serializer = self.get_serializer(account)
+        return Response(
+            {
+                "account": serializer.data,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="reorder-macs")
+    def reorder_macs(self, request, pk=None):
+        """
+        Passt die Reihenfolge (Priorität) der MACs an.
+        Erwartet im Body: {"order": [mac_id1, mac_id2, ...]} in gewünschter Reihenfolge.
+        """
+        from .models import M3UAccountMac
+
+        account = self.get_object()
+        order = request.data.get("order", [])
+        if not isinstance(order, list):
+            return Response(
+                {"error": "Field 'order' must be a list of MAC IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Map bestehende MACs nach ID
+        mac_qs = account.macs.all()
+        mac_map = {str(m.id): m for m in mac_qs}
+
+        next_idx = 0
+        # Zuerst die IDs aus 'order' in genau dieser Reihenfolge
+        for mac_id in order:
+            m = mac_map.pop(str(mac_id), None)
+            if m is None:
+                continue
+            if m.priority != next_idx:
+                m.priority = next_idx
+                m.save(update_fields=["priority"])
+            next_idx += 1
+
+        # Alle übrigen MACs hinten anhängen
+        for m in mac_map.values():
+            if m.priority != next_idx:
+                m.priority = next_idx
+                m.save(update_fields=["priority"])
+            next_idx += 1
+
+        remaining = list(account.macs.order_by("priority", "id"))
+        account.mac_address = " ".join(m.address for m in remaining)
+        account.save(update_fields=["mac_address"])
+
+        serializer = self.get_serializer(account)
+        return Response(
+            {
+                "account": serializer.data,
+            }
+        )
 
 
 class M3UFilterViewSet(viewsets.ModelViewSet):

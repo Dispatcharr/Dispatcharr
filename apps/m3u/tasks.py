@@ -12,11 +12,75 @@ from celery import shared_task, current_app, group
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from .models import M3UAccount
+from .models import M3UAccount, M3UAccountMac
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.utils import timezone
+
+from datetime import datetime
+
+def _parse_mac_portal_expiry(expiry_info):
+    """
+    Versucht, eine vom Portal gelieferte Ablaufinfo (z.B. "February 28, 2026, 1:13 pm")
+    in ein (expires_at, expires_text)-Tuple zu übersetzen.
+    expires_at ist, falls ermittelbar, ein timezone-aware datetime, ansonsten None.
+    expires_text ist immer ein String (zur Anzeige im UI).
+    """
+    from django.utils import timezone as dj_timezone
+
+    if expiry_info is None:
+        return None, None
+
+    if isinstance(expiry_info, datetime):
+        # Bereits ein Datum
+        dt = expiry_info
+        if dj_timezone.is_naive(dt):
+            dt = dj_timezone.make_aware(dt, dj_timezone.get_current_timezone())
+        return dt, dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    expires_text = str(expiry_info).strip()
+    if not expires_text:
+        return None, None
+
+    # Typische Portal-Formate (eng. Monatsnamen)
+    formats = [
+        "%B %d, %Y, %I:%M %p",  # February 28, 2026, 1:13 pm
+        "%B %d, %Y %I:%M %p",
+        "%B %d, %Y",            # February 28, 2026
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y",
+    ]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(expires_text, fmt)
+            if dj_timezone.is_naive(dt):
+                dt = dj_timezone.make_aware(dt, dj_timezone.get_current_timezone())
+            return dt, expires_text
+        except Exception:
+            continue
+
+    # Unix-Timestamp (10-stelliger Sekundenwert) versuchen
+    import re as _re
+    m = _re.search(r"\b(1\d{9})\b", expires_text)
+    if m:
+        try:
+            ts = int(m.group(1))
+            dt = datetime.fromtimestamp(ts, tz=dj_timezone.utc)
+            return dt, expires_text
+        except Exception:
+            pass
+
+    # Nichts erkannt → nur Text zurückgeben
+    return None, expires_text
+
+
+
 import time
 import json
 from core.utils import (
@@ -26,10 +90,10 @@ from core.utils import (
     natural_sort_key,
 )
 from core.models import CoreSettings, UserAgent
+from .mac_portal_client import MacPortalClient, MacPortalError
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
-from .utils import normalize_stream_url
 
 logger = logging.getLogger(__name__)
 
@@ -220,10 +284,6 @@ def fetch_m3u_lines(account, use_cache=False):
                         # Has HTTP URLs, might be a simple M3U without headers
                         is_valid_m3u = True
                         logger.info("Content validated as M3U: contains HTTP URLs")
-                    elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in content_lines):
-                        # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
-                        is_valid_m3u = True
-                        logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
 
                     if not is_valid_m3u:
                         # Log what we actually received for debugging
@@ -439,51 +499,25 @@ def get_case_insensitive_attr(attributes, key, default=""):
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
-    This function removes the "#EXTINF:" prefix, then extracts all key="value" attributes,
-    and treats everything after the last attribute as the display name.
+    This function removes the "#EXTINF:" prefix, then splits the remaining
+    string on the first comma that is not enclosed in quotes.
 
     Returns a dictionary with:
       - 'attributes': a dict of attribute key/value pairs (e.g. tvg-id, tvg-logo, group-title)
-      - 'display_name': the text after the attributes (the fallback display name)
+      - 'display_name': the text after the comma (the fallback display name)
       - 'name': the value from tvg-name (if present) or the display name otherwise.
     """
     if not line.startswith("#EXTINF:"):
         return None
     content = line[len("#EXTINF:") :].strip()
-
-    # Single pass: extract all attributes AND track the last attribute position
-    # This regex matches both key="value" and key='value' patterns
-    attrs = {}
-    last_attr_end = 0
-
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
-        key = match.group(1)
-        value = match.group(3)
-        attrs[key] = value
-        last_attr_end = match.end()
-
-    # Everything after the last attribute (skipping leading comma and whitespace) is the display name
-    if last_attr_end > 0:
-        remaining = content[last_attr_end:].strip()
-        # Remove leading comma if present
-        if remaining.startswith(','):
-            remaining = remaining[1:].strip()
-        display_name = remaining
-    else:
-        # No attributes found, try the old comma-split method as fallback
-        parts = content.split(',', 1)
-        if len(parts) == 2:
-            display_name = parts[1].strip()
-        else:
-            display_name = content.strip()
-
-    # Use tvg-name attribute if available; otherwise try tvc-guide-title, then fall back to display name.
-    name = get_case_insensitive_attr(attrs, "tvg-name", None)
-    if not name:
-        name = get_case_insensitive_attr(attrs, "tvc-guide-title", None)
-    if not name:
-        name = display_name
+    # Split on the first comma that is not inside quotes.
+    parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', content, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    attributes_part, display_name = parts[0], parts[1].strip()
+    attrs = dict(re.findall(r'([^\s]+)="([^"]+)"', attributes_part) + re.findall(r"([^\s]+)='([^']+)'", attributes_part))
+    # Use tvg-name attribute if available; otherwise, use the display name.
+    name = get_case_insensitive_attr(attrs, "tvg-name", display_name)
     return {"attributes": attrs, "display_name": display_name, "name": name}
 
 
@@ -1217,14 +1251,52 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
 
-                        # Queue async profile refresh task to run in background
-                        # This prevents any delay in the main refresh process
+                        # Save account information to all active profiles
                         try:
-                            logger.info(f"Queueing background profile refresh for account {account.name}")
-                            refresh_account_profiles.delay(account.id)
-                        except Exception as e:
-                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
-                            # Don't fail the main refresh if profile refresh can't be queued
+                            from apps.m3u.models import M3UAccountProfile
+
+                            profiles = M3UAccountProfile.objects.filter(
+                                m3u_account=account,
+                                is_active=True
+                            )
+
+                            # Update each profile with account information using its own transformed credentials
+                            for profile in profiles:
+                                try:
+                                    # Get transformed credentials for this specific profile
+                                    profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
+
+                                    # Create a separate XC client for this profile's credentials
+                                    with XCClient(
+                                        profile_url,
+                                        profile_username,
+                                        profile_password,
+                                        user_agent_string
+                                    ) as profile_client:
+                                        # Authenticate with this profile's credentials
+                                        if profile_client.authenticate():
+                                            # Get account information specific to this profile's credentials
+                                            profile_account_info = profile_client.get_account_info()
+
+                                            # Merge with existing custom_properties if they exist
+                                            existing_props = profile.custom_properties or {}
+                                            existing_props.update(profile_account_info)
+                                            profile.custom_properties = existing_props
+                                            profile.save(update_fields=['custom_properties'])
+
+                                            logger.info(f"Updated account information for profile '{profile.name}' with transformed credentials")
+                                        else:
+                                            logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
+
+                                except Exception as profile_error:
+                                    logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                                    # Continue with other profiles even if one fails
+
+                            logger.info(f"Processed account information for {profiles.count()} profiles for account {account.name}")
+
+                        except Exception as save_error:
+                            logger.warning(f"Failed to process profile account information: {str(save_error)}")
+                            # Don't fail the whole process if saving account info fails
 
                     except Exception as e:
                         error_msg = f"Failed to authenticate with XC server: {str(e)}"
@@ -1321,7 +1393,364 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
             )
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
+    elif account.account_type == M3UAccount.Types.MAC:
+        logger.info(
+            f"Processing MAC account {account_id} with portal URL: {account.server_url}"
+        )
+
+        # Basic validation for MAC accounts
+        if not account.server_url:
+            error_msg = "Missing portal URL (server_url) for MAC account"
+            logger.error(error_msg)
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = error_msg
+            account.save(update_fields=["status", "last_message"])
+            send_m3u_update(
+                account_id, "processing_groups", 100, status="error", error=error_msg
+            )
+            release_task_lock("refresh_m3u_account_groups", account_id)
+            return error_msg, None
+
+        # sicherstellen, dass aus mac_address ggf. MAC-Objekte entstanden sind
+        account._ensure_macs_from_mac_address()
+        mac_entries = list(account.macs.all().order_by("priority", "id"))
+
+        if not mac_entries:
+            error_msg = "Missing MAC address for MAC account"
+            logger.error(error_msg)
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = error_msg
+            account.save(update_fields=["status", "last_message"])
+            send_m3u_update(
+                account_id, "processing_groups", 100, status="error", error=error_msg
+            )
+            release_task_lock("refresh_m3u_account_groups", account_id)
+            return error_msg, None
+
+        primary_channels = None
+
+        # Prepare HTTP proxy rotation for MAC checks (per account, reused across MACs)
+        props = account.custom_properties or {}
+        proxy_value = props.get("proxy")
+        tz_name_default = props.get("timezone", "Europe/Berlin")
+        multi_enabled = bool(props.get("multi_proxy_enabled", False))
+
+        # Parse proxy list: support comma, whitespace or newline separated values
+        proxy_list = []
+        if isinstance(proxy_value, str):
+            raw = proxy_value.replace("\r", "\n")
+            raw = raw.replace(",", "\n")
+            parts = [p.strip() for p in raw.split() if p.strip()]
+            seen = set()
+            for p in parts:
+                if p not in seen:
+                    seen.add(p)
+                    proxy_list.append(p)
+        elif isinstance(proxy_value, (list, tuple)):
+            seen = set()
+            for p in proxy_value:
+                if not p:
+                    continue
+                s = str(p).strip()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                proxy_list.append(s)
+
+        # If no proxies are configured, use direct connection (None)
+        if not proxy_list:
+            proxy_list = [None]
+        elif not multi_enabled:
+            # Single-proxy mode: always use first configured proxy only
+            proxy_list = [proxy_list[0]]
+
+        dead_proxies = set()
+
+        for mac_index, mac_entry in enumerate(mac_entries):
+            mac_value = mac_entry.address
+            logger.info(
+                "MAC account %s: checking MAC %s (priority %s)",
+                account_id,
+                mac_value,
+                mac_entry.priority,
+            )
+
+            tz_name = tz_name_default
+
+            # Build working proxy set for this run (skip proxies that already failed hard)
+            working_proxies = [p for p in proxy_list if p not in dead_proxies]
+
+            if not working_proxies:
+                # No working proxies left
+                if proxy_list == [None]:
+                    # No proxies configured at all -> direct connection only
+                    working_proxies = [None]
+                else:
+                    # Proxies are configured but all considered dead.
+                    # IMPORTANT: Do NOT fall back to direct connection if any proxy is configured.
+                    logger.warning(
+                        "MAC account %s: all configured proxies are marked dead, skipping MAC %s without direct fallback",
+                        account_id,
+                        mac_value,
+                    )
+                    continue
+
+            # Rotate proxies per MAC only if multi-proxy is enabled and we have >1
+            if multi_enabled and len(working_proxies) > 1:
+                # MAC1->proxy1, MAC2->proxy2, ..., with dead proxies skipped
+                start_index = mac_index % len(working_proxies)
+                ordered_proxies = working_proxies[start_index:] + working_proxies[:start_index]
+            else:
+                ordered_proxies = working_proxies
+
+            mac_value = mac_entry.address
+            logger.info(
+                "MAC account %s: checking MAC %s (priority %s)",
+                account_id,
+                mac_value,
+                mac_entry.priority,
+            )
+
+            tz_name = tz_name_default
+
+
+            # Build working proxy set for this run (skip proxies that already failed hard)
+            working_proxies = [p for p in proxy_list if p not in dead_proxies]
+
+            if not working_proxies:
+                # All proxies considered dead -> fall back once to direct connection (proxy=None)
+                working_proxies = [None]
+            # Rotate proxies per MAC: MAC1->proxy1, MAC2->proxy2, ..., with dead proxies skipped
+            start_index = mac_index % len(working_proxies)
+            ordered_proxies = working_proxies[start_index:] + working_proxies[:start_index]
+
+            final_status = None
+            final_expires_at = None
+            final_expires_text = None
+            last_error = None
+
+            for proxy in ordered_proxies:
+                logger.info(
+                    "MAC account %s: trying MAC %s with proxy %s",
+                    account_id,
+                    mac_value,
+                    proxy,
+                )
+                expires_at = None
+                expires_text = None
+                attempt_status = None
+
+                try:
+                    client = MacPortalClient(
+                        base_url=account.server_url,
+                        mac=mac_value,
+                        proxy=proxy,
+                        timezone=tz_name,
+                    )
+
+                    # Ablaufinfo (fürs UI + Status)
+                    expiry_info = None
+                    try:
+                        expiry_info = client.get_expires()
+                        logger.info(
+                            "MAC account %s (%s) expiry info: %s",
+                            account_id,
+                            mac_value,
+                            expiry_info,
+                        )
+                    except MacPortalError as exp_err:
+                        # Treat explicit portal errors as potential expiry info
+                        logger.warning(
+                            "Could not fetch MAC expiry info for %s: %s",
+                            mac_value,
+                            exp_err,
+                        )
+                        mac_entry.last_error = str(exp_err)
+                        low = str(exp_err).lower()
+                        if "expir" in low or "no active" in low or "ended" in low or "expired" in low:
+                            attempt_status = M3UAccountMac.Status.EXPIRED
+                        else:
+                            attempt_status = M3UAccountMac.Status.ERROR
+
+                    if expiry_info is not None:
+                        expires_at, expires_text = _parse_mac_portal_expiry(expiry_info)
+
+                    # Channels nur laden, wenn noch keine Primary gewählt
+                    channels = None
+                    if primary_channels is None:
+                        channels = client.get_channels()
+                        logger.info(
+                            "MAC account %s (MAC %s): received %s channels from portal",
+                            account_id,
+                            mac_value,
+                            len(channels),
+                        )
+                        primary_channels = channels
+                    else:
+                        channels = primary_channels
+
+                    # Wenn wir noch keinen Status aus dem Expiry-Block haben, aus expires_at/text bestimmen
+                    if attempt_status is None:
+                        now_ts = timezone.now()
+                        if expires_at is not None:
+                            if expires_at <= now_ts:
+                                attempt_status = M3UAccountMac.Status.EXPIRED
+                            else:
+                                attempt_status = M3UAccountMac.Status.VALID
+                        elif expires_text:
+                            low = (expires_text or "").lower()
+                            if "expir" in low or "no active" in low or "ended" in low or "expired" in low:
+                                attempt_status = M3UAccountMac.Status.EXPIRED
+                            else:
+                                attempt_status = M3UAccountMac.Status.VALID
+                        else:
+                            attempt_status = M3UAccountMac.Status.UNKNOWN
+
+                    # Valid/Expired -> fertig mit dieser MAC, keinen weiteren Proxy testen
+                    if attempt_status in (
+                        M3UAccountMac.Status.VALID,
+                        M3UAccountMac.Status.EXPIRED,
+                    ):
+                        final_status = attempt_status
+                        final_expires_at = expires_at
+                        final_expires_text = expires_text
+                        break
+
+                    # ERROR/UNKNOWN mit funktionierendem Proxy -> nächsten Proxy probieren
+                    last_error = MacPortalError(
+                        f"MAC {mac_value} returned status {attempt_status} with proxy {proxy}"
+                    )
+                    continue
+
+                except (MacPortalError, requests.RequestException) as e:
+                    # Classify error as proxy-level or MAC-level.
+                    # - MAC-level (e.g. invalid handshake, 401/403/404) -> keep proxy, try next proxy / MAC.
+                    # - Proxy/network-level (timeouts, connection errors, DNS, 5xx, etc.) -> mark proxy as dead.
+                    last_error = e
+                    mac_entry.last_error = str(e)
+
+                    proxy_is_dead = False
+
+                    # MacPortalError is considered a MAC-level problem (invalid handshake, bad JSON, etc.)
+                    if isinstance(e, MacPortalError):
+                        proxy_is_dead = False
+                    elif isinstance(e, requests.HTTPError):
+                        status_code = None
+                        try:
+                            if e.response is not None:
+                                status_code = e.response.status_code
+                        except Exception:
+                            status_code = None
+                        # 401/403/404 -> MAC ungültig, Proxy bleibt leben
+                        if status_code in (401, 403, 404):
+                            proxy_is_dead = False
+                        else:
+                            proxy_is_dead = True
+                    else:
+                        # Sonstige RequestException: Timeout, ConnectionError, DNS etc. -> Proxy als tot markieren
+                        proxy_is_dead = True
+
+                    if proxy_is_dead and proxy is not None:
+                        dead_proxies.add(proxy)
+                        logger.warning(
+                            "MAC %s failed during refresh for account %s with proxy %s (proxy marked dead): %s",
+                            mac_value,
+                            account_id,
+                            proxy,
+                            e,
+                        )
+                    else:
+                        logger.warning(
+                            "MAC %s failed during refresh for account %s with proxy %s (proxy kept, MAC-level error): %s",
+                            mac_value,
+                            account_id,
+                            proxy,
+                            e,
+                        )
+
+                    # Fehler: nächsten Proxy für diese MAC probieren
+                    continue
+            # Proxy-Schleife fertig -> finalen Status für diese MAC bestimmen
+            mac_entry.last_checked = timezone.now()
+            mac_entry.expires_at = final_expires_at
+            mac_entry.expires_text = final_expires_text
+
+            if final_status is not None:
+                mac_entry.status = final_status
+                mac_entry.last_error = None
+            else:
+                # Kein erfolgreicher Proxy -> Status aus letztem Fehler ableiten
+                if last_error is not None:
+                    msg = str(last_error).lower()
+                    if "expir" in msg or "no active" in msg or "ended" in msg or "expired" in msg:
+                        mac_entry.status = M3UAccountMac.Status.EXPIRED
+                    else:
+                        mac_entry.status = M3UAccountMac.Status.ERROR
+                else:
+                    mac_entry.status = M3UAccountMac.Status.UNKNOWN
+
+            mac_entry.save(
+                update_fields=[
+                    "expires_at",
+                    "expires_text",
+                    "status",
+                    "last_checked",
+                    "last_error",
+                ]
+            )
+
+        if primary_channels is None:
+            error_msg = "Error fetching MAC portal data: no working MAC found"
+            logger.error(error_msg)
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = error_msg
+            account.save(update_fields=["status", "last_message"])
+            send_m3u_update(
+                account_id, "processing_groups", 100, status="error", error=error_msg
+            )
+            release_task_lock("refresh_m3u_account_groups", account_id)
+            return error_msg, None
+
+        # ab hier: wie bisher – nur dass wir primary_channels verwenden
+        channels = primary_channels
+
+        for ch in channels:
+            group_title = ch.get("group") or "MAC"
+            if group_title not in groups:
+                groups[group_title] = {}
+
+            ch_id = str(ch.get("id"))
+            ch_name = ch.get("name")
+            ch_url = ch.get("url")
+
+            raw_ch = ch.get("raw") or {}
+            cmd = raw_ch.get("cmd") or ""
+
+            groups[group_title][ch_id] = {
+                "name": ch_name,
+                "url": ch_url,
+                "raw": raw_ch,
+            }
+
+            attributes = {
+                "tvg-id": ch_id,
+                "tvg-name": ch_name,
+                "group-title": group_title,
+            }
+            if cmd:
+                attributes["mac_cmd"] = cmd
+
+            extinf_data.append(
+                {
+                    "name": ch_name,
+                    "url": ch_url,
+                    "attributes": attributes,
+                }
+            )
+
+
     else:
+
         # Here's the key change - use the success flag from fetch_m3u_lines
         lines, success = fetch_m3u_lines(account, use_cache)
         if not success:
@@ -1366,12 +1795,10 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                     )
                     problematic_lines.append((line_index + 1, line[:200]))
 
-            elif extinf_data and (line.startswith("http") or line.startswith("rtsp") or line.startswith("rtp") or line.startswith("udp")):
+            elif extinf_data and line.startswith("http"):
                 url_count += 1
-                # Normalize UDP URLs only (e.g., remove VLC-specific @ prefix)
-                normalized_url = normalize_stream_url(line) if line.startswith("udp") else line
                 # Associate URL with the last EXTINF line
-                extinf_data[-1]["url"] = normalized_url
+                extinf_data[-1]["url"] = line
                 valid_stream_count += 1
 
                 # Periodically log progress for large files
@@ -2232,106 +2659,6 @@ def get_transformed_credentials(account, profile=None):
 
 
 @shared_task
-def refresh_account_profiles(account_id):
-    """Refresh account information for all active profiles of an XC account.
-
-    This task runs asynchronously in the background after account refresh completes.
-    It includes rate limiting delays between profile authentications to prevent provider bans.
-    """
-    from django.conf import settings
-    import time
-
-    try:
-        account = M3UAccount.objects.get(id=account_id, is_active=True)
-
-        if account.account_type != M3UAccount.Types.XC:
-            logger.debug(f"Account {account_id} is not XC type, skipping profile refresh")
-            return f"Account {account_id} is not an XtreamCodes account"
-
-        from apps.m3u.models import M3UAccountProfile
-
-        profiles = M3UAccountProfile.objects.filter(
-            m3u_account=account,
-            is_active=True
-        )
-
-        if not profiles.exists():
-            logger.info(f"No active profiles found for account {account.name}")
-            return f"No active profiles for account {account_id}"
-
-        # Get user agent for this account
-        try:
-            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            if account.user_agent_id:
-                from core.models import UserAgent
-                ua_obj = UserAgent.objects.get(id=account.user_agent_id)
-                if ua_obj and hasattr(ua_obj, "user_agent") and ua_obj.user_agent:
-                    user_agent_string = ua_obj.user_agent
-        except Exception as e:
-            logger.warning(f"Error getting user agent, using fallback: {str(e)}")
-        logger.debug(f"Using user agent for profile refresh: {user_agent_string}")
-        # Get rate limiting delay from settings
-        profile_delay = getattr(settings, 'XC_PROFILE_REFRESH_DELAY', 2.5)
-
-        profiles_updated = 0
-        profiles_failed = 0
-
-        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
-
-        for idx, profile in enumerate(profiles):
-            try:
-                # Add delay between profiles to prevent rate limiting (except for first profile)
-                if idx > 0:
-                    logger.info(f"Waiting {profile_delay}s before refreshing next profile to avoid rate limiting")
-                    time.sleep(profile_delay)
-
-                # Get transformed credentials for this specific profile
-                profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
-
-                # Create a separate XC client for this profile's credentials
-                with XCClient(
-                    profile_url,
-                    profile_username,
-                    profile_password,
-                    user_agent_string
-                ) as profile_client:
-                    # Authenticate with this profile's credentials
-                    if profile_client.authenticate():
-                        # Get account information specific to this profile's credentials
-                        profile_account_info = profile_client.get_account_info()
-
-                        # Merge with existing custom_properties if they exist
-                        existing_props = profile.custom_properties or {}
-                        existing_props.update(profile_account_info)
-                        profile.custom_properties = existing_props
-                        profile.save(update_fields=['custom_properties'])
-
-                        profiles_updated += 1
-                        logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
-                    else:
-                        profiles_failed += 1
-                        logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
-
-            except Exception as profile_error:
-                profiles_failed += 1
-                logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
-                # Continue with other profiles even if one fails
-
-        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
-        logger.info(result_msg)
-        return result_msg
-
-    except M3UAccount.DoesNotExist:
-        error_msg = f"Account {account_id} not found"
-        logger.error(error_msg)
-        return error_msg
-    except Exception as e:
-        error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
-
-
-@shared_task
 def refresh_account_info(profile_id):
     """Refresh only the account information for a specific M3U profile."""
     if not acquire_task_lock("refresh_account_info", profile_id):
@@ -2615,7 +2942,7 @@ def refresh_single_m3u_account(account_id):
         streams_created = 0
         streams_updated = 0
 
-        if account.account_type == M3UAccount.Types.STADNARD:
+        if account.account_type in (M3UAccount.Types.STADNARD, M3UAccount.Types.MAC):
             logger.debug(
                 f"Processing Standard account ({account_id}) with groups: {existing_groups}"
             )
@@ -2687,7 +3014,7 @@ def refresh_single_m3u_account(account_id):
                         completed_batches += 1  # Still count it to avoid hanging
 
             logger.info(f"Thread-based processing completed for account {account_id}")
-        else:
+        elif account.account_type == M3UAccount.Types.XC:
             # For XC accounts, get the groups with their custom properties containing xc_id
             logger.debug(f"Processing XC account with groups: {existing_groups}")
 
