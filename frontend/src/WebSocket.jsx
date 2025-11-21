@@ -572,10 +572,10 @@ export const WebsocketProvider = ({ children }) => {
               // Update the store with progress information
               updateEPGProgress(parsedEvent.data);
 
-              // If we have source/account info, update the EPG source status
-              if (parsedEvent.data.source || parsedEvent.data.account) {
+              // If we have source_id/account info, update the EPG source status
+              if (parsedEvent.data.source_id || parsedEvent.data.account) {
                 const sourceId =
-                  parsedEvent.data.source || parsedEvent.data.account;
+                  parsedEvent.data.source_id || parsedEvent.data.account;
                 const epg = epgs[sourceId];
 
                 if (epg) {
