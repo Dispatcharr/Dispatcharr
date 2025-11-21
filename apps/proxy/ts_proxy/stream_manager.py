@@ -21,167 +21,11 @@ from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from .config_helper import ConfigHelper
-from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object, get_next_profiles_for_stream, get_stream_info_for_profile
 
 logger = get_logger()
 
 class StreamManager:
-
-    def _try_next_profile(self) -> bool:
-        """
-        Attempt to switch to another M3U profile of the SAME stream when startup fails.
-        Returns True on successful switch.
-        """
-        try:
-            from .url_utils import get_next_profiles_for_stream, get_stream_info_for_profile
-            from .redis_keys import RedisKeys
-            from .constants import ChannelMetadataField
-            import time
-
-            current_profile_id = None
-            if hasattr(self, "buffer") and getattr(self.buffer, "redis_client", None):
-                metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                md = self.buffer.redis_client.hgetall(metadata_key)
-                key = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
-                if md and key in md:
-                    try:
-                        current_profile_id = int(md[key].decode("utf-8"))
-                    except Exception:
-                        current_profile_id = None
-
-            if not getattr(self, "current_stream_id", None):
-                return False
-
-            candidates = get_next_profiles_for_stream(
-                self.channel_id,
-                self.current_stream_id,
-                exclude_profile_id=current_profile_id,
-            )
-            if not candidates:
-                logger.warning(
-                    "No candidate M3U profiles found for stream %s on channel %s",
-                    getattr(self, "current_stream_id", None),
-                    self.channel_id,
-                )
-                return False
-
-            # Filter out profiles we've already tried for this stream in this manager
-            untried_candidates = []
-            for cand in candidates:
-                pid = cand.get("profile_id")
-                if hasattr(self, "tried_profile_ids") and self.tried_profile_ids and pid in self.tried_profile_ids:
-                    logger.info(
-                        "Skipping already tried M3U profile %s for stream %s on channel %s",
-                        pid,
-                        getattr(self, "current_stream_id", None),
-                        self.channel_id,
-                    )
-                    continue
-                untried_candidates.append(cand)
-
-            if not untried_candidates:
-                logger.warning(
-                    "All M3U profiles for stream %s have already been tried for channel %s",
-                    getattr(self, "current_stream_id", None),
-                    self.channel_id,
-                )
-                return False
-
-            # Optional: access Redis for cooldown check
-            redis_client = None
-            if hasattr(self, "buffer") and getattr(self.buffer, "redis_client", None):
-                redis_client = self.buffer.redis_client
-
-            for cand in untried_candidates:
-                pid = cand["profile_id"]
-
-                # If profile is currently in cooldown, skip it
-                if redis_client is not None:
-                    try:
-                        cooldown_key = RedisKeys.m3u_profile_cooldown(pid)
-                        if redis_client.exists(cooldown_key):
-                            logger.info(
-                                "Skipping M3U profile %s for stream %s on channel %s because it is in cooldown.",
-                                pid,
-                                getattr(self, "current_stream_id", None),
-                                self.channel_id,
-                            )
-                            continue
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to check cooldown for M3U profile %s: %s",
-                            pid,
-                            e,
-                        )
-
-                info = get_stream_info_for_profile(self.channel_id, self.current_stream_id, pid)
-                if not info or "error" in info or not info.get("url"):
-                    continue
-
-                new_url = info["url"]
-                new_user_agent = info["user_agent"]
-                new_transcode = info["transcode"]
-                stream_id = info["stream_id"]
-                m3u_profile_id = info["m3u_profile_id"]
-
-                # Remember that we have tried this profile for the current stream
-                if hasattr(self, "tried_profile_ids"):
-                    try:
-                        self.tried_profile_ids.add(m3u_profile_id)
-                    except Exception:
-                        pass
-
-                # Avoid switching to same URL
-                if getattr(self, "url", None) and new_url == self.url:
-                    continue
-
-                # Apply runtime params
-                self.user_agent = new_user_agent
-                self.transcode = new_transcode
-
-                # Update metadata
-                if hasattr(self, "buffer") and getattr(self.buffer, "redis_client", None):
-                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                    self.buffer.redis_client.hset(metadata_key, mapping={
-                        ChannelMetadataField.URL: new_url,
-                        ChannelMetadataField.USER_AGENT: new_user_agent,
-                        ChannelMetadataField.STREAM_PROFILE: info["stream_profile"],
-                        ChannelMetadataField.M3U_PROFILE: str(m3u_profile_id),
-                        ChannelMetadataField.STREAM_ID: str(stream_id),
-                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_switch_on_start_failure",
-                    })
-                    # map stream_id -> m3u_profile_id
-                    try:
-                        self.buffer.redis_client.set(f"stream_profile:{stream_id}", str(m3u_profile_id), ex=3600)
-                    except Exception:
-                        pass
-                    if hasattr(self, "channel_db_id") and self.channel_db_id:
-                        try:
-                            self.buffer.redis_client.set(f"channel_stream:{self.channel_db_id}", str(stream_id), ex=3600)
-                        except Exception:
-                            pass
-
-                # Apply URL via existing update method if available, or set directly
-                if hasattr(self, "update_url"):
-                    ok = self.update_url(new_url, stream_id, m3u_profile_id)
-                    if not ok:
-                        continue
-                else:
-                    self.url = new_url
-
-                self.current_stream_id = stream_id
-                self.url_switching = True
-                self.url_switch_start_time = time.time()
-                return True
-
-            return False
-        except Exception as e:
-            try:
-                logger.error(f"Error in _try_next_profile: {e}", exc_info=True)
-            except Exception:
-                pass
-            return False
     """Manages a connection to a TS stream without using raw sockets"""
 
     def __init__(self, channel_id, url, buffer, user_agent=None, transcode=False, stream_id=None, worker_id=None):
@@ -226,8 +70,6 @@ class StreamManager:
         # Add tracking for tried streams and current stream
         self.current_stream_id = stream_id
         self.tried_stream_ids = set()
-
-        # Track which M3U profiles have already been tried for the current stream
         self.tried_profile_ids = set()
 
         # IMPROVED LOGGING: Better handle and track stream ID
@@ -386,11 +228,12 @@ class StreamManager:
                         # Continue with normal flow
 
                 # Check stream type before connecting
-                stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type == StreamType.HLS:
-                    logger.info(f"Detected HLS stream: {self.url} for channel {self.channel_id}")
-                    logger.info(f"HLS streams will be handled with FFmpeg for now - future version will support HLS natively for channel {self.channel_id}")
-                    # Enable transcoding for HLS streams
+                self.stream_type = detect_stream_type(self.url)
+                if self.transcode == False and self.stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
+                    stream_type_name = "HLS" if self.stream_type == StreamType.HLS else ("RTSP/RTP" if self.stream_type == StreamType.RTSP else "UDP")
+                    logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
+                    logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
+                    # Enable transcoding for HLS, RTSP/RTP, and UDP streams
                     self.transcode = True
                     # We'll override the stream profile selection with ffmpeg in the transcoding section
                     self.force_ffmpeg = True
@@ -446,7 +289,6 @@ class StreamManager:
                         # If we've reached max retries, mark this URL as failed
                         if self.retry_count >= self.max_retries:
                             url_failed = True
-                            self._set_profile_cooldown()
                             logger.warning(f"Maximum retry attempts ({self.max_retries}) reached for URL: {self.url} for channel: {self.channel_id}")
                         else:
                             # Wait with exponential backoff before retrying
@@ -461,7 +303,6 @@ class StreamManager:
 
                         if self.retry_count >= self.max_retries:
                             url_failed = True
-                            self._set_profile_cooldown()
                         else:
                             # Wait with exponential backoff before retrying
                             timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
@@ -469,6 +310,8 @@ class StreamManager:
                             gevent.sleep(timeout)  # REPLACE time.sleep(timeout)
 
                 # If URL failed and we're still running, try switching to another stream
+                if url_failed:
+                    self._set_profile_cooldown()
                 if url_failed and self.running:
                     logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
@@ -581,7 +424,7 @@ class StreamManager:
                 from core.models import StreamProfile
                 try:
                     stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
-                    logger.info("Using FFmpeg stream profile for HLS content")
+                    logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
                 except StreamProfile.DoesNotExist:
                     # Fall back to channel's profile if FFmpeg not found
                     stream_profile = channel.get_stream_profile()
@@ -591,6 +434,13 @@ class StreamManager:
 
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+
+            # For UDP streams, remove any user_agent parameters from the command
+            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                # Filter out any arguments that contain the user_agent value or related headers
+                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
             # Modified to capture stderr instead of discarding it
@@ -1109,10 +959,10 @@ class StreamManager:
                         logger.debug(f"Updated m3u profile for channel {self.channel_id} to use profile from stream {stream_id}")
                     else:
                         logger.warning(f"Failed to update stream profile for channel {self.channel_id}")
-                    
+
             except Exception as e:
                 logger.error(f"Error updating stream profile for channel {self.channel_id}: {e}")
-                
+
             finally:
                 # Always close database connection after profile update
                 try:
@@ -1612,6 +1462,132 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
+
+    def _try_next_profile(self) -> bool:
+    """
+    Attempt to switch to another M3U profile of the SAME stream before trying alternate streams.
+
+    Returns:
+        bool: True on successful switch, False otherwise
+    """
+    try:
+        if not getattr(self, "current_stream_id", None):
+            return False
+
+        redis_client = getattr(self.buffer, "redis_client", None)
+
+        current_profile_id = None
+        if redis_client:
+            metadata_key = RedisKeys.channel_metadata(self.channel_id)
+            md = redis_client.hgetall(metadata_key)
+            key = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
+            if md and key in md:
+                try:
+                    current_profile_id = int(md[key].decode("utf-8"))
+                except Exception:
+                    current_profile_id = None
+
+        # Mark current profile as tried
+        if current_profile_id is not None:
+            self.tried_profile_ids.add(int(current_profile_id))
+
+        candidates = get_next_profiles_for_stream(
+            self.channel_id,
+            self.current_stream_id,
+            exclude_profile_id=current_profile_id,
+        )
+        if not candidates:
+            logger.info(
+                f"No additional M3U profiles available for stream {self.current_stream_id} on channel {self.channel_id}"
+            )
+            return False
+
+        import time as _time
+
+        for cand in candidates:
+            pid = int(cand.get("profile_id"))
+
+            # Only try each profile once per StreamManager lifetime
+            if pid in self.tried_profile_ids:
+                logger.info(
+                    "Skipping already tried M3U profile %s for stream %s on channel %s",
+                    pid,
+                    self.current_stream_id,
+                    self.channel_id,
+                )
+                continue
+
+            info = get_stream_info_for_profile(self.channel_id, self.current_stream_id, pid)
+            if not info or "error" in info or not info.get("url"):
+                logger.warning(
+                    f"Skipping profile {pid} for stream {self.current_stream_id} on channel {self.channel_id}: invalid info {info}"
+                )
+                continue
+
+            new_url = info["url"]
+            new_user_agent = info["user_agent"]
+            new_transcode = info["transcode"]
+            stream_id = info["stream_id"]
+            m3u_profile_id = info["m3u_profile_id"]
+
+            # Avoid switching to exactly the same URL
+            if getattr(self, "url", None) and new_url == self.url:
+                logger.debug(
+                    f"Profile {m3u_profile_id} for stream {stream_id} yields same URL as current, skipping."
+                )
+                continue
+
+            # Apply runtime params
+            self.user_agent = new_user_agent
+            self.transcode = new_transcode
+
+            if redis_client:
+                metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                redis_client.hset(
+                    metadata_key,
+                    mapping={
+                        ChannelMetadataField.URL: new_url,
+                        ChannelMetadataField.USER_AGENT: new_user_agent,
+                        ChannelMetadataField.STREAM_PROFILE: info["stream_profile"],
+                        ChannelMetadataField.M3U_PROFILE: str(m3u_profile_id),
+                        ChannelMetadataField.STREAM_ID: str(stream_id),
+                        ChannelMetadataField.STREAM_SWITCH_TIME: str(_time.time()),
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "profile_switch_on_start_failure",
+                    },
+                )
+                try:
+                    redis_client.set(f"stream_profile:{stream_id}", str(m3u_profile_id), ex=3600)
+                except Exception:
+                    logger.debug("Failed to update stream_profile mapping in Redis", exc_info=True)
+
+            # Update URL
+            if hasattr(self, "update_url"):
+                ok = self.update_url(new_url, stream_id, m3u_profile_id)
+                if not ok:
+                    logger.warning(
+                        f"update_url failed for profile {m3u_profile_id} / stream {stream_id} on channel {self.channel_id}"
+                    )
+                    continue
+            else:
+                self.url = new_url
+
+            self.current_stream_id = stream_id
+            self.url_switching = True
+            self.url_switch_start_time = _time.time()
+
+            # Mark this profile as tried
+            self.tried_profile_ids.add(m3u_profile_id)
+
+            logger.info(
+                f"Switched to profile {m3u_profile_id} for stream {stream_id} on channel {self.channel_id} (URL: {new_url})"
+            )
+            return True
+
+        return False
+
+    except Exception as e:
+        logger.error(f"Error in _try_next_profile: {e}", exc_info=True)
+        return False
     def _try_next_stream(self):
         """
         Try to switch to the next available stream for this channel.
@@ -1620,9 +1596,10 @@ class StreamManager:
         Returns:
             bool: True if successfully switched to a new stream, False otherwise
         """
-        # profile-first: try another M3U profile for the same stream before alternate/backup
+        # profile-first: try another M3U profile for the same stream before alternate/backup streams
         if self._try_next_profile():
             return True
+
         try:
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
 
@@ -1683,10 +1660,6 @@ class StreamManager:
                 # Update stream ID tracking
                 self.current_stream_id = stream_id
 
-                # New stream: reset profile-level tried set so profiles can be retried on this stream
-                if hasattr(self, "tried_profile_ids"):
-                    self.tried_profile_ids.clear()
-
                 # Store the new user agent and transcode settings
                 self.user_agent = new_user_agent
                 self.transcode = new_transcode
@@ -1719,73 +1692,65 @@ class StreamManager:
             return False
 
     # Add a new helper method to safely reset the URL switching state
+
+    def _set_profile_cooldown(self):
+    """
+    Put the current M3U profile (and optionally account) on a 12h cooldown in Redis.
+
+    This prevents repeatedly trying clearly failing profiles over and over again.
+    Account cooldown code is prepared but commented out so you can enable it later if desired.
+    """
+    try:
+        if not hasattr(self, "buffer") or not getattr(self.buffer, "redis_client", None):
+            return
+
+        redis_client = self.buffer.redis_client
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        md = redis_client.hgetall(metadata_key)
+        if not md:
+            return
+
+        # Current profile
+        key_profile = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
+        profile_id = md.get(key_profile)
+        if profile_id:
+            try:
+                profile_id_int = int(profile_id.decode("utf-8"))
+                cooldown_key = RedisKeys.m3u_profile_cooldown(profile_id_int)
+                redis_client.setex(cooldown_key, 12 * 3600, "1")
+                logger.warning(
+                    "Put M3U profile %s on 12h cooldown after failures for channel %s",
+                    profile_id_int,
+                    self.channel_id,
+                )
+            except Exception:
+                logger.exception("Failed to set profile cooldown in Redis")
+
+        # Optional: account cooldown (prepared, disabled by default)
+        # key_account = ChannelMetadataField.M3U_ACCOUNT.encode("utf-8")
+        # m3u_account_id = md.get(key_account)
+        # if m3u_account_id:
+        #     try:
+        #         m3u_account_id_int = int(m3u_account_id.decode("utf-8"))
+        #         account_cooldown_key = RedisKeys.m3u_account_cooldown(m3u_account_id_int)
+        #         redis_client.setex(account_cooldown_key, 12 * 3600, "1")
+        #         logger.warning(
+        #             "Put M3U account %s on 12h cooldown after failures for channel %s "
+        #             "(ACCOUNT COOLDOWN IS INACTIVE BY DEFAULT - you enabled it manually).",
+        #             m3u_account_id_int,
+        #             self.channel_id,
+        #         )
+        #     except Exception:
+        #         logger.exception("Failed to set account cooldown in Redis")
+
+    except Exception as e:
+        logger.error(
+            "Failed to set profile/account cooldown after URL failure on channel %s: %s",
+            self.channel_id,
+            e,
+        )
     def _reset_url_switching_state(self):
         """Safely reset the URL switching state if it gets stuck"""
         self.url_switching = False
         self.url_switch_start_time = 0
         logger.info(f"Reset URL switching state for channel {self.channel_id}")
-
-    def _set_profile_cooldown(self):
-        """Put the current M3U profile (and optionally account) on a 12h cooldown in Redis.
-
-        This prevents repeatedly trying clearly failing profiles over and over again.
-        Account cooldown code is prepared but commented out so you can enable it later if desired.
-        """
-        try:
-            if not hasattr(self, "buffer") or not getattr(self.buffer, "redis_client", None):
-                return
-
-            redis_client = self.buffer.redis_client
-            metadata_key = RedisKeys.channel_metadata(self.channel_id)
-            md = redis_client.hgetall(metadata_key)
-            if not md:
-                return
-
-            # Determine current profile from channel metadata
-            key_profile = ChannelMetadataField.M3U_PROFILE.encode("utf-8")
-            m3u_profile_id = None
-            if key_profile in md:
-                try:
-                    m3u_profile_id = md[key_profile].decode("utf-8")
-                except Exception:
-                    m3u_profile_id = md[key_profile]
-
-            if m3u_profile_id:
-                cooldown_key = RedisKeys.m3u_profile_cooldown(m3u_profile_id)
-                # 12 hours cooldown
-                redis_client.setex(cooldown_key, 12 * 3600, "1")
-                logger.warning(
-                    "Put M3U profile %s on 12h cooldown after failures for channel %s",
-                    m3u_profile_id,
-                    self.channel_id,
-                )
-
-            # OPTIONAL: Account-wide cooldown (prepared but inactive by default).
-            # To enable, uncomment the following block AND make sure ChannelMetadataField
-            # has a suitable field for the account identifier.
-            #
-            # key_account = ChannelMetadataField.M3U_ACCOUNT.encode("utf-8")
-            # m3u_account_id = None
-            # if key_account in md:
-            #     try:
-            #         m3u_account_id = md[key_account].decode("utf-8")
-            #     except Exception:
-            #         m3u_account_id = md[key_account]
-            #
-            # if m3u_account_id:
-            #     account_cooldown_key = RedisKeys.m3u_account_cooldown(m3u_account_id)
-            #     redis_client.setex(account_cooldown_key, 12 * 3600, "1")
-            #     logger.warning(
-            #         "Put M3U account %s on 12h cooldown after failures for channel %s "
-            #         "(ACCOUNT COOLDOWN IS INACTIVE BY DEFAULT - you enabled it manually).",
-            #         m3u_account_id,
-            #         self.channel_id,
-            #     )
-
-        except Exception as e:
-            logger.error(
-                "Failed to set profile/account cooldown after URL failure on channel %s: %s",
-                self.channel_id,
-                e,
-            )
-

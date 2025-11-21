@@ -19,7 +19,7 @@ class ConfigHelper:
     @staticmethod
     def connection_timeout():
         """Get connection timeout in seconds"""
-        return ConfigHelper.get('CONNECTION_TIMEOUT', 20)
+        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
 
     @staticmethod
     def client_wait_timeout():
@@ -79,7 +79,7 @@ class ConfigHelper:
     @staticmethod
     def url_switch_timeout():
         """Get URL switch timeout in seconds (max time allowed for a stream switch operation)"""
-        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 4)  # Default to 20 seconds
+        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 4)
 
     @staticmethod
     def failover_grace_period():

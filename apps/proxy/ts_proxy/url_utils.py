@@ -10,6 +10,7 @@ from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
+from .redis_keys import RedisKeys
 from uuid import UUID
 import requests
 
@@ -564,12 +565,11 @@ def get_connections_left(m3u_profile_id: int) -> int:
         return 0
 
 
-
 # === BEGIN: profile-first failover helpers ===
 def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profile_id: Optional[int] = None) -> List[dict]:
     """
     Return available M3U profiles for THIS stream in order (default first),
-    respecting max_streams and current usage. Optionally exclude the current profile.
+    respecting max_streams, current usage, and cooldown markers. Optionally exclude the current profile.
     """
     try:
         from core.utils import RedisClient
@@ -585,7 +585,6 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
         other_profiles = [p for p in profiles_qs if not getattr(p, "is_default", False)]
         ordered = ([default_profile] if default_profile else []) + other_profiles
 
-        # Redis for connection counters
         try:
             redis_client = RedisClient.get_client()
         except Exception:
@@ -597,6 +596,22 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
                 continue
             if exclude_profile_id and int(p.id) == int(exclude_profile_id):
                 continue
+
+            # Skip profiles that are on cooldown
+            if redis_client:
+                try:
+                    cooldown_key = RedisKeys.m3u_profile_cooldown(p.id)
+                    if redis_client.exists(cooldown_key):
+                        logger.info(
+                            "Skipping M3U profile %s for stream %s on channel %s due to active cooldown",
+                            p.id,
+                            stream.id,
+                            channel.id,
+                        )
+                        continue
+                except Exception:
+                    # Ignore cooldown check failures, fall back to normal behavior
+                    pass
 
             allowed = True
             if redis_client:
@@ -642,7 +657,14 @@ def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id:
         input_url = stream.url
         stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
-        stream_profile = channel.get_stream_profile()
+        # Reuse the same logic as in get_stream_info_for_switch
+        if stream.stream_profile:
+            stream_profile = stream.stream_profile
+        else:
+            stream_profile = StreamProfile.objects.get(
+                id=CoreSettings.get_default_stream_profile_id()
+            )
+
         transcode = False if (stream_profile is None or stream_profile.is_proxy()) else True
         profile_value = stream_profile.id if stream_profile else None
 
