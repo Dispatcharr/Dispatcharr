@@ -172,35 +172,50 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
     try:
         channel_or_stream = get_stream_object(channel_id)
 
+        
         # Handle direct stream preview (custom streams)
         if isinstance(channel_or_stream, Stream):
             stream = channel_or_stream
             logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
 
-            # For custom streams, we need to get the M3U account and profile
+            # For custom streams, we need to get the M3U account and default profile
             m3u_account = stream.m3u_account
             if not m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
                 return None, None, False, None
 
-            # Get the default profile for this M3U account (custom streams use default)
             m3u_profiles = m3u_account.profiles.all()
-            profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+            profile = next((obj for obj in m3u_profiles if getattr(obj, "is_default", False)), None)
 
             if not profile:
                 logger.error(f"No default profile found for M3U account {m3u_account.id}")
                 return None, None, False, None
 
-            # Get the appropriate user agent
+            # Determine user agent
             stream_user_agent = m3u_account.get_user_agent().user_agent
             if stream_user_agent is None:
                 stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
                 logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            # Get stream URL (no transformation for custom streams)
-            stream_url = stream.url
+            # Build stream URL:
+            # - for MAC accounts: resolve via portal + MAC failover
+            # - otherwise: use normal pattern-based URL transform
+            if m3u_account.account_type == M3UAccount.Types.MAC:
+                stream_url, mac_used, error = _resolve_mac_stream_with_failover(m3u_account, stream)
+                if not stream_url:
+                    logger.error(
+                        "Failed to resolve MAC stream for preview of stream %s on account %s: %s",
+                        stream.id,
+                        m3u_account.id,
+                        error,
+                    )
+                    return None, None, False, None
+            else:
+                m3u_profile = profile
+                input_url = stream.url
+                stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
-            # Check if the stream has its own stream_profile set, otherwise use default
+            # Determine stream profile (per-stream or default)
             if stream.stream_profile:
                 stream_profile = stream.stream_profile
                 logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
@@ -210,8 +225,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 )
                 logger.debug(f"Using default stream profile: {stream_profile.name}")
 
-            # Check if transcoding is needed
-            if stream_profile.is_proxy() or stream_profile is None:
+            # Decide whether transcoding is needed
+            if stream_profile is None or stream_profile.is_proxy():
                 transcode = False
             else:
                 transcode = True
@@ -320,7 +335,15 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     try:
         from core.utils import RedisClient
 
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         redis_client = RedisClient.get_client()
 
         # Use the target stream if specified, otherwise use current stream
@@ -715,7 +738,15 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
     try:
         from core.utils import RedisClient
 
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         stream = get_object_or_404(Stream, pk=stream_id)
         m3u_account = stream.m3u_account
         if not m3u_account:
@@ -790,7 +821,15 @@ def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id:
     Return schema compatible with get_stream_info_for_switch(...).
     """
     try:
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         stream = get_object_or_404(Stream, pk=stream_id)
         m3u_profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
 
