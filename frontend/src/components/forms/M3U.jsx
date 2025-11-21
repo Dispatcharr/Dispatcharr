@@ -53,6 +53,7 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [showCredentialFields, setShowCredentialFields] = useState(false);
+  const [proxyPreview, setProxyPreview] = useState('');
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -73,6 +74,7 @@ const M3U = ({
       mac_address: '',
       custom_properties: {},
       proxy: '',
+      multi_proxy_enabled: false,
     },
 
     validate: {
@@ -126,6 +128,8 @@ const M3U = ({
         multi_proxy_enabled: multiProxyEnabled,
       });
 
+      setProxyPreview(proxy || '');
+
       if (m3uAccount.account_type === 'XC') {
         setShowCredentialFields(true);
       } else {
@@ -143,8 +147,26 @@ const M3U = ({
     }
   }, [form.values.account_type]);
 
+  // Auto-detect multi-proxy: if more than one proxy is configured, enable it
+  useEffect(() => {
+    if (form.values.account_type !== 'MAC') {
+      form.setFieldValue('multi_proxy_enabled', false);
+      return;
+    }
+
+    const proxy = form.values.proxy || '';
+
+    const proxies = proxy
+      .replace(/\r/g, '\n')
+      .split(/[\n,]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    form.setFieldValue('multi_proxy_enabled', proxies.length > 1);
+  }, [form.values.proxy, form.values.account_type]);
+
   const onSubmit = async () => {
-    const { create_epg, proxy, ...values } = form.getValues();
+    const { create_epg, proxy, multi_proxy_enabled, ...values } = form.getValues();
 
     let custom_properties = {
       ...(playlist?.custom_properties || {}),
@@ -158,16 +180,7 @@ const M3U = ({
         delete custom_properties.proxy;
       }
 
-      const proxyString = proxy || '';
-      const proxies = proxyString
-        .replace(/\r/g, '\n')
-        .split(/[\n,]/)
-        .map((p) => p.trim())
-        .filter(Boolean);
-
-      const multiProxyEnabled = proxies.length > 1;
-
-      if (multiProxyEnabled) {
+      if (multi_proxy_enabled) {
         custom_properties.multi_proxy_enabled = true;
       } else {
         delete custom_properties.multi_proxy_enabled;
@@ -441,6 +454,12 @@ const M3U = ({
                     description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Komma oder Zeilenumbruch trennen."
                     placeholder="http://proxy1:port1, http://proxy2:port2"
                     {...form.getInputProps('proxy')}
+                    value={proxyPreview}
+                    onChange={(event) => {
+                      const v = event.currentTarget.value;
+                      setProxyPreview(v);
+                      form.setFieldValue('proxy', v);
+                    }}
                     key={form.key('proxy')}
                   />
                   <Checkbox
@@ -451,7 +470,7 @@ const M3U = ({
                     description="Aktiv, wenn im Feld oben mehr als ein Proxy per Komma oder Zeilenumbruch eingetragen ist."
                     checked={
                       form.values.account_type === 'MAC' &&
-                      (form.values.proxy || '')
+                      (proxyPreview || '')
                         .replace(/\r/g, '\n')
                         .split(/[\n,]/)
                         .map((p) => p.trim())
