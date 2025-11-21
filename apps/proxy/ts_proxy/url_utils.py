@@ -38,20 +38,21 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
     try:
         channel_or_stream = get_stream_object(channel_id)
 
+        
         # Handle direct stream preview (custom streams)
         if isinstance(channel_or_stream, Stream):
             stream = channel_or_stream
             logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
 
-            # For custom streams, we need to get the M3U account and profile
+            # For preview we still rely on the associated M3U account/profile
             m3u_account = stream.m3u_account
             if not m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
                 return None, None, False, None
 
-            # Get the default profile for this M3U account (custom streams use default)
+            # Use the default profile for this M3U account
             m3u_profiles = m3u_account.profiles.all()
-            profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+            profile = next((obj for obj in m3u_profiles if getattr(obj, "is_default", False)), None)
 
             if not profile:
                 logger.error(f"No default profile found for M3U account {m3u_account.id}")
@@ -63,8 +64,10 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
                 logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            # Get stream URL (no transformation for custom streams)
-            stream_url = stream.url
+            # Apply same URL transform logic as for normal channel playback
+            m3u_profile = profile
+            input_url = stream.url
+            stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
             # Check if the stream has its own stream_profile set, otherwise use default
             if stream.stream_profile:
@@ -179,7 +182,15 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     try:
         from core.utils import RedisClient
 
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         redis_client = RedisClient.get_client()
 
         # Use the target stream if specified, otherwise use current stream
@@ -574,7 +585,15 @@ def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profil
     try:
         from core.utils import RedisClient
 
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         stream = get_object_or_404(Stream, pk=stream_id)
         m3u_account = stream.m3u_account
         if not m3u_account:
@@ -650,7 +669,15 @@ def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id:
     Return schema compatible with get_stream_info_for_switch(...).
     """
     try:
-        channel = get_object_or_404(Channel, uuid=channel_id)
+        obj = get_stream_object(channel_id)
+        if isinstance(obj, Channel):
+            channel = obj
+        else:
+            logger.info(
+                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
+                channel_id,
+            )
+            return []
         stream = get_object_or_404(Stream, pk=stream_id)
         m3u_profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
 
