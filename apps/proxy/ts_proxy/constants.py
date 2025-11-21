@@ -40,6 +40,7 @@ class StreamType:
 
 # Channel metadata field names stored in Redis
 class ChannelMetadataField:
+    M3U_ACCOUNT = "m3u_account"
     # Basic fields
     URL = "url"
     USER_AGENT = "user_agent"
@@ -103,8 +104,6 @@ class ChannelMetadataField:
     WORKER_ID = "worker_id"
     CHUNKS_SENT = "chunks_sent"
     STATS_UPDATED_AT = "stats_updated_at"
-
-    M3U_ACCOUNT = "m3u_account"
 
 # TS packet constants
 TS_PACKET_SIZE = 188
