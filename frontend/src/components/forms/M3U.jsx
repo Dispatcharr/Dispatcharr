@@ -144,31 +144,23 @@ const M3U = ({
     }
   }, [form.values.account_type]);
 
-  // Auto-detect multi-proxy: if more than one proxy is configured, enable it
-  useEffect(() => {
-    if (form.values.account_type !== 'MAC') {
-      form.setFieldValue('multi_proxy_enabled', false);
-      return;
-    }
-
-    const proxy = form.values.proxy || '';
-
-    const proxies = proxy
-      .replace(/\r/g, '\n')
-      .split(/[\n,]/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    form.setFieldValue('multi_proxy_enabled', proxies.length > 1);
-  }, [form.values.proxy, form.values.account_type]);
 
   const onSubmit = async () => {
-    const { create_epg, proxy, multi_proxy_enabled, ...values } = form.getValues();
+    const { create_epg, proxy, ...values } = form.getValues();
 
     let custom_properties = {
       ...(playlist?.custom_properties || {}),
       ...(values.custom_properties || {}),
     };
+
+    const proxyString = proxy || '';
+    const parsedProxies = proxyString
+      .replace(/\r/g, '\n')
+      .split(/[\n,]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const multiProxyEnabled = values.account_type === 'MAC' && parsedProxies.length > 1;
 
     if (values.account_type === 'MAC') {
       if (proxy && proxy.trim() !== '') {
@@ -177,7 +169,7 @@ const M3U = ({
         delete custom_properties.proxy;
       }
 
-      if (multi_proxy_enabled) {
+      if (multiProxyEnabled) {
         custom_properties.multi_proxy_enabled = true;
       } else {
         delete custom_properties.multi_proxy_enabled;
@@ -459,8 +451,14 @@ const M3U = ({
                     name="multi_proxy_enabled"
                     label="Multi-Proxy aktivieren"
                     description="Wird automatisch aktiv, wenn mehr als ein Proxy im Feld definiert ist."
-                    {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
-                    key={form.key('multi_proxy_enabled')}
+                    checked={
+                      form.values.account_type === 'MAC' &&
+                      (form.values.proxy || '')
+                        .replace(/\r/g, '\n')
+                        .split(/[\n,]/)
+                        .map((p) => p.trim())
+                        .filter(Boolean).length > 1
+                    }
                     readOnly
                     disabled
                   />
