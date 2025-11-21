@@ -1172,21 +1172,19 @@ const LiveGroupFilter = ({
                             }}
                             data={[
                               { value: '0', label: 'No EPG (Disabled)' },
-                              ...[...epgSources]
-                                .sort((a, b) => a.name.localeCompare(b.name))
-                                .map((source) => ({
-                                  value: source.id.toString(),
-                                  label: `${source.name} (${
-                                    source.source_type === 'dummy'
-                                      ? 'Dummy'
-                                      : source.source_type === 'xmltv'
-                                        ? 'XMLTV'
-                                        : source.source_type ===
-                                            'schedules_direct'
-                                          ? 'Schedules Direct'
-                                          : source.source_type
-                                  })`,
-                                })),
+                              ...epgSources.map((source) => ({
+                                value: source.id.toString(),
+                                label: `${source.name} (${
+                                  source.source_type === 'dummy'
+                                    ? 'Dummy'
+                                    : source.source_type === 'xmltv'
+                                      ? 'XMLTV'
+                                      : source.source_type ===
+                                          'schedules_direct'
+                                        ? 'Schedules Direct'
+                                        : source.source_type
+                                })`,
+                              })),
                             ]}
                             clearable
                             searchable
