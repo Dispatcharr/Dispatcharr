@@ -112,21 +112,15 @@ const App = () => {
               height: 0,
             }}
             navbar={{
-              width: isAuthenticated
-                ? open
-                  ? drawerWidth
-                  : miniDrawerWidth
-                : 0,
+              width: open ? drawerWidth : miniDrawerWidth,
             }}
           >
-            {isAuthenticated && (
-              <Sidebar
-                drawerWidth={drawerWidth}
-                miniDrawerWidth={miniDrawerWidth}
-                collapsed={!open}
-                toggleDrawer={toggleDrawer}
-              />
-            )}
+            <Sidebar
+              drawerWidth
+              miniDrawerWidth
+              collapsed={!open}
+              toggleDrawer={toggleDrawer}
+            />
 
             <AppShell.Main>
               <Box
