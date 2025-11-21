@@ -514,7 +514,7 @@ const M3U = ({
                 </Box>
               )}
 
-              {form.getValues().account_type !== 'XC' && (
+              {form.getValues().account_type === 'M3U' && (
                 <>
                   <FileInput
                     id="file"
