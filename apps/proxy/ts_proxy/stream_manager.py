@@ -1717,7 +1717,7 @@ class StreamManager:
                 try:
                     profile_id_int = int(profile_id.decode("utf-8"))
                     cooldown_key = RedisKeys.m3u_profile_cooldown(profile_id_int)
-                    redis_client.setex(cooldown_key, 12 * 3600, "1")
+                    redis_client.setex(cooldown_key, 1 * 3600, "1")
                     logger.warning(
                         "Put M3U profile %s on 12h cooldown after failures for channel %s",
                         profile_id_int,
