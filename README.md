@@ -1,3 +1,17 @@
+### NEW Features ###
+
+Failover, if Stream Profil 1 not will work try to run with Profil 2 (if set) otherwise take the backup stream
+
+MAC Integration mit proxy support
+
+M3u & EPG secured by basic Auth
+
+
+
+
+
+
+
 # 🎬 Dispatcharr — Your Ultimate IPTV & Stream Management Companion
 <p align="center">
   <img src="https://raw.githubusercontent.com/Dispatcharr/Dispatcharr/refs/heads/main/frontend/src/images/logo.png" height="200" alt="Dispatcharr Logo" />
