@@ -73,6 +73,7 @@ const M3U = ({
       mac_address: '',
       custom_properties: {},
       proxy: '',
+      multi_proxy_enabled: false,
     },
 
     validate: {
@@ -92,6 +93,14 @@ const M3U = ({
         m3uAccount.custom_properties.proxy
           ? m3uAccount.custom_properties.proxy
           : '';
+
+      const proxies = (proxy || '')
+        .replace(/\r/g, '\n')
+        .split(/[\n,]/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      const multiProxyEnabled = proxies.length > 1;
 
       form.setValues({
         name: m3uAccount.name,
@@ -115,6 +124,7 @@ const M3U = ({
         enable_vod: m3uAccount.enable_vod || false,
         mac_address: m3uAccount.mac_address ?? '',
         proxy,
+        multi_proxy_enabled: multiProxyEnabled,
       });
 
       if (m3uAccount.account_type === 'XC') {
@@ -134,8 +144,26 @@ const M3U = ({
     }
   }, [form.values.account_type]);
 
+  // Auto-detect multi-proxy: if more than one proxy is configured, enable it
+  useEffect(() => {
+    if (form.values.account_type !== 'MAC') {
+      form.setFieldValue('multi_proxy_enabled', false);
+      return;
+    }
+
+    const proxy = form.values.proxy || '';
+
+    const proxies = proxy
+      .replace(/\r/g, '\n')
+      .split(/[\n,]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    form.setFieldValue('multi_proxy_enabled', proxies.length > 1);
+  }, [form.values.proxy, form.values.account_type]);
+
   const onSubmit = async () => {
-    const { create_epg, proxy, ...values } = form.getValues();
+    const { create_epg, proxy, multi_proxy_enabled, ...values } = form.getValues();
 
     let custom_properties = {
       ...(playlist?.custom_properties || {}),
@@ -148,6 +176,15 @@ const M3U = ({
       } else {
         delete custom_properties.proxy;
       }
+
+      if (multi_proxy_enabled) {
+        custom_properties.multi_proxy_enabled = true;
+      } else {
+        delete custom_properties.multi_proxy_enabled;
+      }
+    } else {
+      // For non-MAC accounts we never keep multi-proxy enabled
+      delete custom_properties.multi_proxy_enabled;
     }
 
     values.custom_properties = custom_properties;
@@ -415,6 +452,16 @@ const M3U = ({
                     placeholder="http://proxy1:port1, http://proxy2:port2"
                     {...form.getInputProps('proxy')}
                     key={form.key('proxy')}
+                  />
+                  <Checkbox
+                    mt="xs"
+                    id="multi_proxy_enabled"
+                    name="multi_proxy_enabled"
+                    label="Multi-Proxy aktivieren"
+                    description="Wird automatisch aktiv, wenn mehr als ein Proxy im Feld definiert ist."
+                    {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
+                    key={form.key('multi_proxy_enabled')}
+                    readOnly
                   />
                 </>
               )}
