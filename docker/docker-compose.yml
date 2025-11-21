@@ -1,22 +1,22 @@
 services:
-  web:
-    image: ghcr.io/dispatcharr/dispatcharr:latest
-    container_name: dispatcharr_web
+  dispatcharr:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: sbeimel/dispatcharr:0.12.0-02 # original war -> ghcr.io/dispatcharr/dispatcharr:latest
+    container_name: dispatcharr
     ports:
       - 9191:9191
     volumes:
-      - ./data:/data
-    depends_on:
-      - db
-      - redis
+      - dispatcharr_data:/data
     environment:
-      - POSTGRES_HOST=db
-      - POSTGRES_DB=dispatcharr
-      - POSTGRES_USER=dispatch
-      - POSTGRES_PASSWORD=secret
-      - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
+      - DISPATCHARR_ENV=aio
+      - REDIS_HOST=localhost
+      - CELERY_BROKER_URL=redis://localhost:6379/0
       - DISPATCHARR_LOG_LEVEL=info
+      - DISPATCHARR_DEBUG=false
+      - M3U_BASIC_AUTH_ENABLED=true
+      - M3U_BASIC_AUTH_REALM=Dispatcharr M3U
       # Process Priority Configuration (Optional)
       # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
       # Negative values require cap_add: SYS_NICE (uncomment below)
