@@ -1371,6 +1371,15 @@ export default class API {
     }
   }
 
+  static async getEnabledPlugins() {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/enabled/`);
+      return response.plugins || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve enabled plugins', e);
+    }
+  }
+
   static async reloadPlugins() {
     try {
       const response = await request(`${host}/api/plugins/plugins/reload/`, {

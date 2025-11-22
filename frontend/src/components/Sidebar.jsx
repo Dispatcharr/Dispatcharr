@@ -1,6 +1,7 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
+import usePluginsStore from '../store/plugins';
 import {
   ListOrdered,
   Play,
@@ -86,11 +87,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     timestamp: null,
   });
   const [userFormOpen, setUserFormOpen] = useState(false);
+  const [pluginNavItems, setPluginNavItems] = useState([]);
+
+  // Subscribe to plugin state changes
+  const pluginStateVersion = usePluginsStore((s) => s.pluginStateVersion);
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
+  // Base Navigation Items
+  const baseNavItems =
     authUser && authUser.user_level == USER_LEVELS.ADMIN
       ? [
           {
@@ -143,6 +148,38 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/settings',
           },
         ];
+
+  // Combine base nav items with plugin nav items
+  const navItems = [...baseNavItems, ...pluginNavItems];
+
+  // Fetch enabled plugins with navigation=true on mount and when plugin state changes
+  useEffect(() => {
+    if (!isAuthenticated) {
+      console.log('[Sidebar] Not authenticated, skipping plugin fetch');
+      return;
+    }
+
+    const fetchPluginNavItems = async () => {
+      try {
+        console.log('[Sidebar] Fetching enabled plugins... (version:', pluginStateVersion, ')');
+        const plugins = await API.getEnabledPlugins();
+        console.log('[Sidebar] Received plugins:', plugins);
+        const navPlugins = plugins
+          .filter(p => p.navigation === true)
+          .map(p => ({
+            label: p.name,
+            icon: <PlugZap size={20} />,
+            path: `/plugin/${p.key}`,
+          }));
+        console.log('[Sidebar] Setting plugin nav items:', navPlugins);
+        setPluginNavItems(navPlugins);
+      } catch (error) {
+        console.error('[Sidebar] Failed to load plugin navigation items:', error);
+      }
+    };
+
+    fetchPluginNavItems();
+  }, [isAuthenticated, pluginStateVersion]);
 
   // Fetch environment settings including version on component mount
   useEffect(() => {

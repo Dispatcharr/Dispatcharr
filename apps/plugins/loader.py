@@ -23,6 +23,7 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    navigation: bool = False  # If True, plugin gets its own navigation menu item
 
 
 class PluginManager:
@@ -122,6 +123,7 @@ class PluginManager:
         description = getattr(instance, "description", "")
         fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
+        navigation = getattr(instance, "navigation", False)
 
         self._registry[key] = LoadedPlugin(
             key=key,
@@ -132,6 +134,7 @@ class PluginManager:
             instance=instance,
             fields=fields,
             actions=actions,
+            navigation=navigation,
         )
 
     def _sync_db_with_registry(self):
@@ -185,6 +188,7 @@ class PluginManager:
                     "fields": lp.fields or [],
                     "settings": (conf.settings if conf else {}),
                     "actions": lp.actions or [],
+                    "navigation": lp.navigation,
                     "missing": False,
                 }
             )
@@ -205,6 +209,7 @@ class PluginManager:
                     "fields": [],
                     "settings": conf.settings or {},
                     "actions": [],
+                    "navigation": False,  # Missing plugins can't have navigation
                     "missing": True,
                 }
             )
