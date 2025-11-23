@@ -94,11 +94,6 @@ class RedisKeys:
         return f"ts_proxy:m3u_profile:{profile_id}:cooldown"
 
     @staticmethod
-    def mac_cooldown(account_id, mac_id):
-        """Key for cooldown marker of a specific MAC on an M3U account."""
-        return f"ts_proxy:m3u_account:{account_id}:mac:{mac_id}:cooldown"
-
-    @staticmethod
     def m3u_account_cooldown(account_id):
         """Key for cooldown marker of a specific M3U account (prepared, disabled by default)."""
         return f"ts_proxy:m3u_account:{account_id}:cooldown"
