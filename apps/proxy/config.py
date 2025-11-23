@@ -6,7 +6,7 @@ class BaseConfig:
     DEFAULT_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20' # Will only be used if connection to settings fail
     CHUNK_SIZE = 8192
     CLIENT_POLL_INTERVAL = 0.1
-    MAX_RETRIES = 1
+    MAX_RETRIES = 2
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
     CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
