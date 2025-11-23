@@ -33,6 +33,12 @@ def _resolve_mac_stream_with_failover(
     if m3u_account.account_type != M3UAccount.Types.MAC:
         return stream.url, None, None
 
+    try:
+        from core.utils import RedisClient
+        redis_client = RedisClient.get_client()
+    except Exception:
+        redis_client = None
+
     props = m3u_account.custom_properties or {}
     proxy_value = props.get("proxy")
     timezone = props.get("timezone", "Europe/Berlin")
@@ -80,6 +86,27 @@ def _resolve_mac_stream_with_failover(
 
     # Try each MAC, and for each MAC, try each configured proxy until one works
     for mac_entry in candidates:
+        # Skip MACs that are currently on cooldown
+        if redis_client:
+            try:
+                cooldown_key = RedisKeys.mac_cooldown(m3u_account.id, mac_entry.id)
+                if redis_client.exists(cooldown_key):
+                    logger.info(
+                        "Skipping MAC %s (id=%s) for account %s due to active cooldown",
+                        mac_entry.address,
+                        mac_entry.id,
+                        m3u_account.id,
+                    )
+                    continue
+            except Exception:
+                logger.warning(
+                    "Failed to check cooldown for MAC %s (id=%s) on account %s",
+                    mac_entry.address,
+                    mac_entry.id,
+                    m3u_account.id,
+                    exc_info=True,
+                )
+
         mac_value = mac_entry.address
         last_error_for_mac: Optional[str] = None
 

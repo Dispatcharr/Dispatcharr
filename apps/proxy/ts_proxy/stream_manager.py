@@ -1541,19 +1541,32 @@ class StreamManager:
 
                 if mac_entry:
                     try:
-                        mac_entry.status = M3UAccountMac.Status.ERROR
-                        mac_entry.last_error = "runtime_stream_failure"
+                        redis_client = getattr(self.buffer, 'redis_client', None)
+                        hours = ConfigHelper.get('PROFILE_COOLDOWN_HOURS', 1)
+                        ttl = int(hours * 3600)
+                        if redis_client:
+                            cooldown_key = RedisKeys.mac_cooldown(m3u_account.id, mac_entry.id)
+                            redis_client.setex(cooldown_key, ttl, '1')
+                            logger.info(
+                                "Placed MAC %s (id=%s) on account %s into cooldown for %s hour(s) due to runtime failure on channel %s",
+                                current_mac_value,
+                                mac_entry.id,
+                                m3u_account.id,
+                                hours,
+                                self.channel_id,
+                            )
+                        mac_entry.last_error = 'runtime_stream_failure'
                         mac_entry.last_checked = timezone.now()
-                        mac_entry.save(update_fields=["status", "last_error", "last_checked"])
+                        mac_entry.save(update_fields=['last_error', 'last_checked'])
                         logger.info(
-                            "Marked MAC %s on account %s as ERROR due to runtime failure on channel %s",
+                            "Placed MAC %s on account %s into cooldown (without setting ERROR) due to runtime failure on channel %s",
                             current_mac_value,
                             m3u_account.id,
                             self.channel_id,
                         )
                     except Exception:
                         logger.warning(
-                            "Failed to mark MAC %s as ERROR for account %s during MAC failover",
+                            "Failed to place MAC %s into cooldown for account %s during MAC failover",
                             current_mac_value,
                             m3u_account.id,
                             exc_info=True,
