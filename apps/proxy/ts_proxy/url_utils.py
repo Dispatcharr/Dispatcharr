@@ -89,7 +89,6 @@ def _resolve_mac_stream_with_failover(
     # Busy MACs werden nur verwendet, wenn der Stream bereits läuft; beim Start
     # sollen sie übersprungen werden. Wenn alle MACs busy sind, geben wir einen
     # Fehler zurück, damit die Profil-/Backupstream-Logik greifen kann.
-    return url, mac_entry, None
             except MacPortalError as e:
                 # MAC-level error (expired / unauthorized / etc.) → mark MAC and stop trying further proxies for it
                 msg = str(e)
