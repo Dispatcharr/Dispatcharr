@@ -332,7 +332,7 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                     backup_used = False
                     if 'get_next_profiles_for_stream' in globals() and 'get_stream_info_for_profile' in globals():
                         try:
-                            channel_uuid = str(channel.id)
+                            channel_key = channel_id
                             next_profiles = get_next_profiles_for_stream(
                                 channel_uuid,
                                 stream.id,
