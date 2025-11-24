@@ -89,6 +89,62 @@ def _resolve_mac_stream_with_failover(
     # Busy MACs werden nur verwendet, wenn der Stream bereits läuft; beim Start
     # sollen sie übersprungen werden. Wenn alle MACs busy sind, geben wir einen
     # Fehler zurück, damit die Profil-/Backupstream-Logik greifen kann.
+    if redis_client:
+        free_candidates: list[M3UAccountMac] = []
+        busy_candidates: list[M3UAccountMac] = []
+        try:
+            for m in candidates:
+                try:
+                    busy_key = RedisKeys.mac_busy(m.id)
+                    is_busy = bool(redis_client.exists(busy_key))
+                except Exception:
+                    is_busy = False
+                if is_busy:
+                    busy_candidates.append(m)
+                else:
+                    free_candidates.append(m)
+        except Exception:
+            # Fallback: wenn irgendetwas schief geht, benutzen wir die Original-Liste
+            free_candidates = candidates
+            busy_candidates = []
+
+        if free_candidates:
+            candidates = free_candidates
+        elif candidates:
+            # Alle MACs sind busy → nicht erzwingen, sondern direkt Fehler liefern,
+            # damit der Aufrufer auf Backupstreams/andere Profile ausweichen kann.
+            logger.warning(
+                "All candidate MACs are currently busy for MAC account %s – skipping MAC usage",
+                m3u_account.id,
+            )
+            return None, None, "All MACs busy"
+    # Wenn kein Redis verfügbar ist, benutzen wir die Original-Kandidatenliste.
+
+    # Try each MAC, and for each MAC, try each configured proxy until one works
+    for mac_entry in candidates:
+        mac_value = mac_entry.address
+        last_error_for_mac: Optional[str] = None
+
+        for proxy in proxy_list:
+            try:
+                client = MacPortalClient(
+                    base_url=m3u_account.server_url,
+                    mac=mac_value,
+                    proxy=proxy,
+                    timezone=timezone,
+                )
+                url = client.create_link(cmd)
+                # Successfully built link → mark valid and return
+                try:
+                    mac_entry.status = M3UAccountMac.Status.VALID
+                    mac_entry.last_checked = timezone.now()
+                    mac_entry.last_error = None
+                    mac_entry.save(update_fields=["status", "last_checked", "last_error"])
+                except Exception:
+                    pass
+
+                return url, mac_entry, None
+
             except MacPortalError as e:
                 # MAC-level error (expired / unauthorized / etc.) → mark MAC and stop trying further proxies for it
                 msg = str(e)

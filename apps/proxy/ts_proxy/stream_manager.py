@@ -260,26 +260,36 @@ class StreamManager:
                             connection_result = self._establish_http_connection()
 
                         if connection_result:
-                            # Mark MAC busy
-                            try:
-                                from core.utils import RedisClient
-                                redis_client = RedisClient.get_client()
-                                if redis_client:
-                                    from urllib.parse import urlparse, parse_qs
-                                    parsed=urlparse(self.url or "")
-                                    qs=parse_qs(parsed.query or "")
-                                    mac_vals=qs.get("mac") or qs.get("MAC") or []
-                                    if mac_vals:
-                                        mac_value=mac_vals[0]
-                                        from apps.m3u.models import M3UAccountMac
-                                        mac_entry=M3UAccountMac.objects.filter(address__iexact=mac_value).first()
-                                        if mac_entry:
-                                            busy_key = RedisKeys.mac_busy(mac_entry.id)
-                                            redis_client.set(busy_key,"1")
-                            except Exception:
-                                pass
                             # Store connection start time to measure success duration
                             connection_start_time = time.time()
+                            # Mark MAC as busy in Redis once the stream is actually running
+                            try:
+                                if hasattr(self, 'buffer') and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                                    parsed = urlparse(self.url or '')
+                                    qs = parse_qs(parsed.query or '')
+                                    mac_vals = qs.get('mac') or qs.get('MAC') or []
+                                    if mac_vals:
+                                        mac_value = mac_vals[0]
+                                        try:
+                                            mac_entry = M3UAccountMac.objects.filter(address__iexact=mac_value).first()
+                                        except Exception:
+                                            mac_entry = None
+                                        if mac_entry:
+                                            busy_key = RedisKeys.mac_busy(mac_entry.id)
+                                            self.buffer.redis_client.set(busy_key, '1')
+                                            logger.debug(
+                                                'Marked MAC %s (id=%s) as busy for channel %s',
+                                                mac_value,
+                                                mac_entry.id,
+                                                self.channel_id,
+                                            )
+                            except Exception:
+                                logger.debug(
+                                    'Failed to set busy marker for current MAC on channel %s',
+                                    self.channel_id,
+                                    exc_info=True,
+                                )
+
 
                             # Successfully connected - read stream data until disconnect/error
                             self._process_stream_data()
@@ -1195,24 +1205,6 @@ class StreamManager:
                     connection_result = self._establish_http_connection()
 
                 if connection_result:
-                            # Mark MAC busy
-                    try:
-                        from core.utils import RedisClient
-                        redis_client = RedisClient.get_client()
-                        if redis_client:
-                            from urllib.parse import urlparse, parse_qs
-                            parsed=urlparse(self.url or "")
-                            qs=parse_qs(parsed.query or "")
-                            mac_vals=qs.get("mac") or qs.get("MAC") or []
-                            if mac_vals:
-                                mac_value=mac_vals[0]
-                                from apps.m3u.models import M3UAccountMac
-                                mac_entry=M3UAccountMac.objects.filter(address__iexact=mac_value).first()
-                                if mac_entry:
-                                    busy_key = RedisKeys.mac_busy(mac_entry.id)
-                                    redis_client.set(busy_key,"1")
-                    except Exception:
-                        pass
                     self.connection_start_time = time.time()
                     logger.info(f"Reconnect successful for channel {self.channel_id}")
                     return True
