@@ -1196,23 +1196,23 @@ class StreamManager:
 
                 if connection_result:
                             # Mark MAC busy
-                            try:
-                                from core.utils import RedisClient
-                                redis_client = RedisClient.get_client()
-                                if redis_client:
-                                    from urllib.parse import urlparse, parse_qs
-                                    parsed=urlparse(self.url or "")
-                                    qs=parse_qs(parsed.query or "")
-                                    mac_vals=qs.get("mac") or qs.get("MAC") or []
-                                    if mac_vals:
-                                        mac_value=mac_vals[0]
-                                        from apps.m3u.models import M3UAccountMac
-                                        mac_entry=M3UAccountMac.objects.filter(address__iexact=mac_value).first()
-                                        if mac_entry:
-                                            busy_key = RedisKeys.mac_busy(mac_entry.id)
-                                            redis_client.set(busy_key,"1")
-                            except Exception:
-                                pass
+                    try:
+                        from core.utils import RedisClient
+                        redis_client = RedisClient.get_client()
+                        if redis_client:
+                            from urllib.parse import urlparse, parse_qs
+                            parsed=urlparse(self.url or "")
+                            qs=parse_qs(parsed.query or "")
+                            mac_vals=qs.get("mac") or qs.get("MAC") or []
+                            if mac_vals:
+                                mac_value=mac_vals[0]
+                                from apps.m3u.models import M3UAccountMac
+                                mac_entry=M3UAccountMac.objects.filter(address__iexact=mac_value).first()
+                                if mac_entry:
+                                    busy_key = RedisKeys.mac_busy(mac_entry.id)
+                                    redis_client.set(busy_key,"1")
+                    except Exception:
+                        pass
                     self.connection_start_time = time.time()
                     logger.info(f"Reconnect successful for channel {self.channel_id}")
                     return True
