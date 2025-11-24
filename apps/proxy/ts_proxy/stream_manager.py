@@ -914,6 +914,44 @@ class StreamManager:
                 owner_key = RedisKeys.channel_owner(self.channel_id)
                 current_owner = self.buffer.redis_client.get(owner_key)
 
+                # Beim Stoppen eines Streams die ggf. gesetzte MAC-Busy-Markierung
+                # wieder aufheben. Dazu versuchen wir, die aktuell verwendete MAC
+                # aus der URL zu ermitteln und den passenden M3UAccountMac-Eintrag
+                # zu finden.
+                try:
+                    parsed = urlparse(self.url or "")
+                    qs = parse_qs(parsed.query or "")
+                    mac_vals = qs.get("mac") or qs.get("MAC") or []
+                    if mac_vals:
+                        mac_value = mac_vals[0]
+                        try:
+                            mac_entry = M3UAccountMac.objects.filter(address__iexact=mac_value).first()
+                        except Exception:
+                            mac_entry = None
+                        if mac_entry:
+                            try:
+                                busy_key = RedisKeys.mac_busy(mac_entry.id)
+                                self.buffer.redis_client.delete(busy_key)
+                                logger.debug(
+                                    "Cleared busy marker for MAC %s (id=%s) on channel %s during stop()",
+                                    mac_value,
+                                    mac_entry.id,
+                                    self.channel_id,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Failed to clear busy marker for MAC %s during stop() on channel %s",
+                                    mac_value,
+                                    self.channel_id,
+                                    exc_info=True,
+                                )
+                except Exception:
+                    logger.debug(
+                        "Failed to inspect current MAC when stopping stream for channel %s",
+                        self.channel_id,
+                        exc_info=True,
+                    )
+
         # Cancel all buffer check timers
         for timer in list(self._buffer_check_timers):
             try:
@@ -1558,6 +1596,27 @@ class StreamManager:
                             m3u_account.id,
                             exc_info=True,
                         )
+
+                    # Unmark this MAC as busy (its Stream ist abgebrochen, sie steht für neue
+                    # Sessions nicht mehr zur Verfügung, wird aber auch nicht künstlich als
+                    # busy gehalten).
+                    try:
+                        from core.utils import RedisClient
+                        redis_client = RedisClient.get_client()
+                    except Exception:
+                        redis_client = None
+
+                    if redis_client:
+                        try:
+                            busy_key = RedisKeys.mac_busy(mac_entry.id)
+                            redis_client.delete(busy_key)
+                        except Exception:
+                            logger.debug(
+                                "Failed to clear busy marker for MAC %s on account %s during MAC failover",
+                                current_mac_value,
+                                m3u_account.id,
+                                exc_info=True,
+                            )
 
             # Ask url_utils (via get_stream_info_for_profile) for a new URL on the SAME profile.
             # Because we have just marked the previous MAC as ERROR, the resolver will pick the next MAC.

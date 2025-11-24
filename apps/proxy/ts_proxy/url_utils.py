@@ -61,6 +61,13 @@ def _resolve_mac_stream_with_failover(
     if not proxy_list:
         proxy_list = [None]
 
+    # Try to get a Redis client for MAC busy tracking (optional).
+    try:
+        from core.utils import RedisClient  # imported lazily to avoid circular imports
+        redis_client = RedisClient.get_client()
+    except Exception:
+        redis_client = None
+
     # determine command for the portal
     stream_props = stream.custom_properties or {}
     cmd = stream_props.get("mac_cmd") or stream_props.get("cmd") or stream.url
@@ -77,6 +84,41 @@ def _resolve_mac_stream_with_failover(
     if not candidates:
         logger.error(f"No candidate MACs available for account {m3u_account.id}")
         return None, None, "No candidate MACs available"
+
+    # If Redis is available, prefer MACs that are not currently busy.
+    # Busy MACs werden nur verwendet, wenn der Stream bereits läuft; beim Start
+    # sollen sie übersprungen werden. Wenn alle MACs busy sind, geben wir einen
+    # Fehler zurück, damit die Profil-/Backupstream-Logik greifen kann.
+    if redis_client:
+        free_candidates: list[M3UAccountMac] = []
+        busy_candidates: list[M3UAccountMac] = []
+        try:
+            for m in candidates:
+                try:
+                    busy_key = RedisKeys.mac_busy(m.id)
+                    is_busy = bool(redis_client.exists(busy_key))
+                except Exception:
+                    is_busy = False
+                if is_busy:
+                    busy_candidates.append(m)
+                else:
+                    free_candidates.append(m)
+        except Exception:
+            # Fallback: wenn irgendetwas schief geht, benutzen wir die Original-Liste
+            free_candidates = candidates
+            busy_candidates = []
+
+        if free_candidates:
+            candidates = free_candidates
+        elif candidates:
+            # Alle MACs sind busy → nicht erzwingen, sondern direkt Fehler liefern,
+            # damit der Aufrufer auf Backupstreams/andere Profile ausweichen kann.
+            logger.warning(
+                "All candidate MACs are currently busy for MAC account %s – skipping MAC usage",
+                m3u_account.id,
+            )
+            return None, None, "All MACs busy"
+    # Wenn kein Redis verfügbar ist, benutzen wir die Original-Kandidatenliste.
 
     # Try each MAC, and for each MAC, try each configured proxy until one works
     for mac_entry in candidates:
@@ -100,6 +142,22 @@ def _resolve_mac_stream_with_failover(
                     mac_entry.save(update_fields=["status", "last_checked", "last_error"])
                 except Exception:
                     pass
+
+                # Mark this MAC as busy in Redis so that concurrently started streams
+                # bevorzugt andere MACs verwenden. Die Freigabe passiert explizit beim
+                # Stream-Stop bzw. bei MAC-Failover.
+                if redis_client:
+                    try:
+                        busy_key = RedisKeys.mac_busy(mac_entry.id)
+                        redis_client.set(busy_key, "1")
+                    except Exception:
+                        logger.debug(
+                            "Failed to set busy marker for MAC %s (account %s) in Redis",
+                            mac_value,
+                            m3u_account.id,
+                            exc_info=True,
+                        )
+
                 return url, mac_entry, None
             except MacPortalError as e:
                 # MAC-level error (expired / unauthorized / etc.) → mark MAC and stop trying further proxies for it
