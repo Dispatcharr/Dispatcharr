@@ -117,7 +117,7 @@ def _resolve_mac_stream_with_failover(
                 "All candidate MACs are currently busy for MAC account %s – skipping MAC usage",
                 m3u_account.id,
             )
-            return None, None, "All MACs busy"
+            return None, None, "MAC_FAILOVER_FAILED"
     # Wenn kein Redis verfügbar ist, benutzen wir die Original-Kandidatenliste.
 
     # Try each MAC, and for each MAC, try each configured proxy until one works
