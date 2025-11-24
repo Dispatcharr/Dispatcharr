@@ -178,7 +178,25 @@ def stream_ts(request, channel_id):
                 # On first failure, check if the error is retryable
                 if attempt == 1:
                     _, _, error_reason = channel.get_stream()
-                    if error_reason and "maximum connection limits" not in error_reason:
+
+        # NEW: handle MAC failover failure → trigger profile failover / backupstream
+        if error_reason == "MAC_FAILOVER_FAILED":
+            logger.warning(f"[{{client_id}}] MAC failover failed, switching to backup stream")
+            should_retry = False
+            break
+
+                    # NEW: MAC failover → immediately stop retrying and switch to backup
+if error_reason == "MAC_FAILOVER_FAILED":
+    logger.warning(f"[{client_id}] MAC failover failed → switching to backup stream")
+    should_retry = False
+
+# Non-MAC errors
+elif error_reason and "maximum connection limits" not in error_reason:
+    logger.warning(
+        f"[{client_id}] Not retrying (error not related to connection limits): {error_reason}"
+    )
+    should_retry = False
+
                         logger.warning(
                             f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
                         )
