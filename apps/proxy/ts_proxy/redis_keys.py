@@ -97,8 +97,3 @@ class RedisKeys:
     def m3u_account_cooldown(account_id):
         """Key for cooldown marker of a specific M3U account (prepared, disabled by default)."""
         return f"ts_proxy:m3u_account:{account_id}:cooldown"
-
-    @staticmethod
-    def mac_busy(mac_id):
-        """Key indicating that a MAC address is currently in use by an active stream."""
-        return f"ts_proxy:mac:{mac_id}:busy"
