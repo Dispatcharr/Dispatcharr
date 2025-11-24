@@ -315,62 +315,6 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             stream_url, mac_used, error = _resolve_mac_stream_with_failover(m3u_account, stream)
             if not stream_url:
                 logger.error(f"Failed to resolve MAC stream for channel {channel_id}: {error}")
-                # Wenn alle MACs belegt sind, direkt auf Backup-Profile/Backup-Streams ausweichen
-                if error == "All MACs busy":
-                    logger.info(
-                        "All MACs busy for MAC account %s on channel %s – trying backup profiles/streams",
-                        m3u_account.id,
-                        channel_id,
-                    )
-                    try:
-                        # exclude current profile, so we only consider echte Backup-Profile
-                        from .url_utils import get_next_profiles_for_stream, get_stream_info_for_profile  # type: ignore
-                    except Exception:
-                        get_next_profiles_for_stream = None
-                        get_stream_info_for_profile = None
-
-                    backup_used = False
-                    if 'get_next_profiles_for_stream' in globals() and 'get_stream_info_for_profile' in globals():
-                        try:
-                            channel_key = channel_id
-                            next_profiles = get_next_profiles_for_stream(
-                                channel_uuid,
-                                stream.id,
-                                exclude_profile_id=m3u_profile.id,
-                            )
-                        except Exception:
-                            next_profiles = []
-
-                        for cand in next_profiles or []:
-                            profile_id = cand.get("profile_id")
-                            if not profile_id:
-                                continue
-                            info = get_stream_info_for_profile(channel_uuid, stream.id, profile_id)
-                            if not info or info.get("error") or not info.get("url"):
-                                continue
-
-                            stream_url = info["url"]
-                            # user agent ggf. aktualisieren, falls Backup-Profil eigenen UA hat
-                            stream_user_agent = info.get("user_agent") or stream_user_agent
-                            transcode = info.get("transcode", False)
-                            stream_profile = info.get("stream_profile")
-                            stream_profile_id = getattr(stream_profile, "id", None)
-
-                            logger.info(
-                                "Using backup M3U profile %s for channel %s after MAC pool exhausted on primary profile %s",
-                                profile_id,
-                                channel_id,
-                                m3u_profile.id,
-                            )
-                            backup_used = True
-                            # Direkt zurückgeben – wir haben einen funktionierenden Backup-Stream
-                            return stream_url, stream_user_agent, transcode, stream_profile_id
-
-                    if not backup_used:
-                        logger.error(
-                            "All MACs busy for channel %s and no usable backup profile/stream found – failing",
-                            channel_id,
-                        )
                 return None, None, False, None
         else:
             input_url = stream.url
