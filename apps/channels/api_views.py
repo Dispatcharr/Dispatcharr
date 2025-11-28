@@ -715,140 +715,152 @@ class ChannelViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=["post"], url_path="from-stream")
     def from_stream(self, request):
-        stream_id = request.data.get("stream_id")
-        if not stream_id:
-            return Response(
-                {"error": "Missing stream_id"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        stream = get_object_or_404(Stream, pk=stream_id)
-        channel_group = stream.channel_group
-
-        name = request.data.get("name")
-
-
-        if name is None:
-            name = stream.name
-
-        # Check if client provided a channel_number; if not, auto-assign one.
-        stream_custom_props = stream.custom_properties or {}
-        channel_number = request.data.get("channel_number")
-
-        if channel_number is None:
-            # Channel number not provided by client, check stream properties or auto-assign
-            if "tvg-chno" in stream_custom_props:
-                channel_number = float(stream_custom_props["tvg-chno"])
-            elif "channel-number" in stream_custom_props:
-                channel_number = float(stream_custom_props["channel-number"])
-            elif "num" in stream_custom_props:
-                channel_number = float(stream_custom_props["num"])
-        elif channel_number == 0:
-            # Special case: 0 means ignore provider numbers and auto-assign
-            channel_number = None
-
-        if channel_number is None:
-            # Still None, auto-assign the next available channel number
-            channel_number = Channel.get_next_available_channel_number()
-
-
         try:
-            channel_number = float(channel_number)
-        except ValueError:
-            return Response(
-                {"error": "channel_number must be an integer."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        # If the provided number is already used, return an error.
-        if Channel.objects.filter(channel_number=channel_number).exists():
-            channel_number = Channel.get_next_available_channel_number(channel_number)
-        # Get the tvc_guide_stationid from custom properties if it exists
-        tvc_guide_stationid = None
-        if "tvc-guide-stationid" in stream_custom_props:
-            tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
-
-        channel_data = {
-            "channel_number": channel_number,
-            "name": name,
-            "tvg_id": stream.tvg_id,
-            "tvc_guide_stationid": tvc_guide_stationid,
-            "streams": [stream_id],
-        }
-
-        # Only add channel_group_id if the stream has a channel group
-        if channel_group:
-            channel_data["channel_group_id"] = channel_group.id
-
-        if stream.logo_url:
-            # Import validation function
-            from apps.channels.tasks import validate_logo_url
-            validated_logo_url = validate_logo_url(stream.logo_url)
-            if validated_logo_url:
-                logo, _ = Logo.objects.get_or_create(
-                    url=validated_logo_url, defaults={"name": stream.name or stream.tvg_id}
+            stream_id = request.data.get("stream_id")
+            if not stream_id:
+                return Response(
+                    {"error": "Missing stream_id"}, status=status.HTTP_400_BAD_REQUEST
                 )
-                channel_data["logo_id"] = logo.id
+            stream = get_object_or_404(Stream, pk=stream_id)
+            channel_group = stream.channel_group
 
-        # Attempt to find existing EPGs with the same tvg-id
-        epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
-        if epgs:
-            channel_data["epg_data_id"] = epgs.first().id
+            name = request.data.get("name")
 
-        serializer = self.get_serializer(data=channel_data)
-        serializer.is_valid(raise_exception=True)
 
-        with transaction.atomic():
-            channel = serializer.save()
-            channel.streams.add(stream)
+            if name is None:
+                name = stream.name
 
-            # Handle channel profile membership
-            channel_profile_ids = request.data.get("channel_profile_ids")
-            if channel_profile_ids is not None:
-                # Normalize single ID to array
-                if not isinstance(channel_profile_ids, list):
-                    channel_profile_ids = [channel_profile_ids]
+            # Check if client provided a channel_number; if not, auto-assign one.
+            stream_custom_props = stream.custom_properties or {}
+            channel_number = request.data.get("channel_number")
 
-            if channel_profile_ids:
-                # Add channel only to the specified profiles
-                try:
-                    channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
-                    if len(channel_profiles) != len(channel_profile_ids):
-                        missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
+            if channel_number is None:
+                # Channel number not provided by client, check stream properties or auto-assign
+                if "tvg-chno" in stream_custom_props:
+                    channel_number = float(stream_custom_props["tvg-chno"])
+                elif "channel-number" in stream_custom_props:
+                    channel_number = float(stream_custom_props["channel-number"])
+                elif "num" in stream_custom_props:
+                    channel_number = float(stream_custom_props["num"])
+            elif channel_number == 0:
+                # Special case: 0 means ignore provider numbers and auto-assign
+                channel_number = None
+
+            if channel_number is None:
+                # Still None, auto-assign the next available channel number
+                channel_number = Channel.get_next_available_channel_number()
+
+
+            try:
+                channel_number = float(channel_number)
+            except ValueError:
+                return Response(
+                    {"error": "channel_number must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # If the provided number is already used, return an error.
+            if Channel.objects.filter(channel_number=channel_number).exists():
+                channel_number = Channel.get_next_available_channel_number(channel_number)
+            # Get the tvc_guide_stationid from custom properties if it exists
+            tvc_guide_stationid = None
+            if "tvc-guide-stationid" in stream_custom_props:
+                tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
+
+            channel_data = {
+                "channel_number": channel_number,
+                "name": name,
+                "tvg_id": stream.tvg_id,
+                "tvc_guide_stationid": tvc_guide_stationid,
+                "streams": [stream_id],
+            }
+
+            # Only add channel_group_id if the stream has a channel group
+            if channel_group:
+                channel_data["channel_group_id"] = channel_group.id
+
+            if stream.logo_url:
+                # Import validation function
+                from apps.channels.tasks import validate_logo_url
+                validated_logo_url = validate_logo_url(stream.logo_url)
+                if validated_logo_url:
+                    logo, _ = Logo.objects.get_or_create(
+                        url=validated_logo_url, defaults={"name": stream.name or stream.tvg_id}
+                    )
+                    channel_data["logo_id"] = logo.id
+
+            # Attempt to find existing EPGs with the same tvg-id
+            epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
+            if epgs:
+                channel_data["epg_data_id"] = epgs.first().id
+
+            serializer = self.get_serializer(data=channel_data)
+            serializer.is_valid(raise_exception=True)
+
+            with transaction.atomic():
+                channel = serializer.save()
+                channel.streams.add(stream)
+
+                # Handle channel profile membership
+                channel_profile_ids = request.data.get("channel_profile_ids")
+                if channel_profile_ids is not None:
+                    # Normalize single ID to array
+                    if not isinstance(channel_profile_ids, list):
+                        channel_profile_ids = [channel_profile_ids]
+
+                if channel_profile_ids:
+                    # Add channel only to the specified profiles
+                    try:
+                        channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
+                        if len(channel_profiles) != len(channel_profile_ids):
+                            missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
+                            return Response(
+                                {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+
+                        ChannelProfileMembership.objects.bulk_create([
+                            ChannelProfileMembership(
+                                channel_profile=profile,
+                                channel=channel,
+                                enabled=True
+                            )
+                            for profile in channel_profiles
+                        ])
+                    except Exception as e:
                         return Response(
-                            {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
+                            {"error": f"Error creating profile memberships: {str(e)}"},
                             status=status.HTTP_400_BAD_REQUEST,
                         )
-
+                else:
+                    # Default behavior: add to all profiles
+                    profiles = ChannelProfile.objects.all()
                     ChannelProfileMembership.objects.bulk_create([
-                        ChannelProfileMembership(
-                            channel_profile=profile,
-                            channel=channel,
-                            enabled=True
-                        )
-                        for profile in channel_profiles
+                        ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                        for profile in profiles
                     ])
-                except Exception as e:
-                    return Response(
-                        {"error": f"Error creating profile memberships: {str(e)}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-            else:
-                # Default behavior: add to all profiles
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
 
-        # Send WebSocket notification for single channel creation
-        from core.utils import send_websocket_update
-        send_websocket_update('updates', 'update', {
-            'type': 'channels_created',
-            'count': 1,
-            'channel_id': channel.id,
-            'channel_name': channel.name,
-            'channel_number': channel.channel_number
-        })
+            # Send WebSocket notification for single channel creation
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                'type': 'channels_created',
+                'count': 1,
+                'channel_id': channel.id,
+                'channel_name': channel.name,
+                'channel_number': channel.channel_number
+            })
 
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            import traceback
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error creating channel from stream: {str(e)}")
+            logger.error(traceback.format_exc())
+            return Response(
+                {"error": f"Failed to create channel: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @swagger_auto_schema(
         method="post",

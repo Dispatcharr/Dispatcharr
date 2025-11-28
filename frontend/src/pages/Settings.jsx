@@ -653,10 +653,24 @@ const SettingsPage = () => {
     setHlsOutputSettingsSaved(false);
 
     try {
-      const result = await API.updateSetting({
-        ...settings['hls-output-settings'],
+      const hlsOutputSetting = settings['hls-output-settings'];
+      const settingData = {
+        key: 'hls-output-settings',
         value: JSON.stringify(hlsOutputSettingsForm.getValues()),
-      });
+      };
+
+      let result;
+      if (hlsOutputSetting?.id) {
+        // Setting exists, update it
+        result = await API.updateSetting({
+          id: hlsOutputSetting.id,
+          ...settingData,
+        });
+      } else {
+        // Setting doesn't exist, create it
+        result = await API.createSetting(settingData);
+      }
+
       if (result) {
         setHlsOutputSettingsSaved(true);
       }
