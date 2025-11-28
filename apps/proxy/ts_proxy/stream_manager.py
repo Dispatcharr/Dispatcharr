@@ -511,6 +511,20 @@ class StreamManager:
 
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
+            # Create HLS output directory if this is an HLS profile
+            if stream_profile and stream_profile.name and stream_profile.name.startswith("HLS"):
+                import os
+
+                # HLS files are always written to /data/hls in the container
+                channel_uuid = str(channel.uuid) if hasattr(channel, 'uuid') else self.channel_id
+                hls_channel_dir = os.path.join('/data/hls', str(channel_uuid))
+
+                try:
+                    os.makedirs(hls_channel_dir, exist_ok=True)
+                    logger.info(f"Created HLS output directory: {hls_channel_dir}")
+                except Exception as e:
+                    logger.error(f"Failed to create HLS output directory {hls_channel_dir}: {e}")
+
             # Modified to capture stderr instead of discarding it
             self.transcode_process = subprocess.Popen(
                 self.transcode_cmd,

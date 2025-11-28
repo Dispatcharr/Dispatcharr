@@ -256,7 +256,7 @@ class CoreSettings(models.Model):
                 "segment_duration": 4,
                 "playlist_size": 10,
                 "dvr_window_seconds": 7200,
-                "storage_path": "/var/www/hls",
+                "storage_path": "/path/to/hls",
                 "segment_cache_ttl": 86400,
                 "playlist_cache_ttl": 2,
             }

@@ -59,8 +59,10 @@ def serve_playlist(request, channel_uuid, quality):
     try:
         # Get HLS output settings
         settings = CoreSettings.get_hls_output_settings()
-        storage_path = settings.get('storage_path', '/var/www/hls')
-        
+
+        # HLS files are always in /data/hls in the container
+        storage_path = '/data/hls'
+
         # Build playlist file path
         playlist_path = os.path.join(storage_path, channel_uuid, f"{quality}.m3u8")
         
@@ -104,8 +106,10 @@ def serve_segment(request, channel_uuid, quality, segment_name):
     try:
         # Get HLS output settings
         settings = CoreSettings.get_hls_output_settings()
-        storage_path = settings.get('storage_path', '/var/www/hls')
-        
+
+        # HLS files are always in /data/hls in the container
+        storage_path = '/data/hls'
+
         # Build segment file path
         segment_path = os.path.join(storage_path, channel_uuid, segment_name)
         

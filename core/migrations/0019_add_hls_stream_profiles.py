@@ -18,8 +18,8 @@ def create_hls_profiles(apps, schema_editor):
                 "-s 1920x1080 -c:a aac -b:a 192k -ar 48000 "
                 "-f hls -hls_time 4 -hls_list_size 10 -hls_flags delete_segments+append_list "
                 "-hls_segment_type mpegts "
-                "-hls_segment_filename /var/www/hls/{channelUuid}/1080p_%03d.ts "
-                "/var/www/hls/{channelUuid}/1080p.m3u8"
+                "-hls_segment_filename /data/hls/{channelUuid}/1080p_%03d.ts "
+                "/data/hls/{channelUuid}/1080p.m3u8"
             ),
             "locked": True,
             "is_active": True,
@@ -37,8 +37,8 @@ def create_hls_profiles(apps, schema_editor):
                 "-s 1280x720 -c:a aac -b:a 128k -ar 48000 "
                 "-f hls -hls_time 4 -hls_list_size 10 -hls_flags delete_segments+append_list "
                 "-hls_segment_type mpegts "
-                "-hls_segment_filename /var/www/hls/{channelUuid}/720p_%03d.ts "
-                "/var/www/hls/{channelUuid}/720p.m3u8"
+                "-hls_segment_filename /data/hls/{channelUuid}/720p_%03d.ts "
+                "/data/hls/{channelUuid}/720p.m3u8"
             ),
             "locked": True,
             "is_active": True,
@@ -56,8 +56,8 @@ def create_hls_profiles(apps, schema_editor):
                 "-s 854x480 -c:a aac -b:a 96k -ar 48000 "
                 "-f hls -hls_time 4 -hls_list_size 10 -hls_flags delete_segments+append_list "
                 "-hls_segment_type mpegts "
-                "-hls_segment_filename /var/www/hls/{channelUuid}/480p_%03d.ts "
-                "/var/www/hls/{channelUuid}/480p.m3u8"
+                "-hls_segment_filename /data/hls/{channelUuid}/480p_%03d.ts "
+                "/data/hls/{channelUuid}/480p.m3u8"
             ),
             "locked": True,
             "is_active": True,
@@ -74,8 +74,8 @@ def create_hls_profiles(apps, schema_editor):
                 "-c copy "
                 "-f hls -hls_time 4 -hls_list_size 10 -hls_flags delete_segments+append_list "
                 "-hls_segment_type mpegts "
-                "-hls_segment_filename /var/www/hls/{channelUuid}/stream_%03d.ts "
-                "/var/www/hls/{channelUuid}/stream.m3u8"
+                "-hls_segment_filename /data/hls/{channelUuid}/stream_%03d.ts "
+                "/data/hls/{channelUuid}/stream.m3u8"
             ),
             "locked": True,
             "is_active": True,
