@@ -251,14 +251,15 @@ class CoreSettings(models.Model):
             settings_json = cls.objects.get(key=HLS_OUTPUT_SETTINGS_KEY).value
             return json.loads(settings_json)
         except (cls.DoesNotExist, json.JSONDecodeError):
-            # Return defaults if not found or invalid JSON
+            # Return defaults optimized for low latency and high quality
+            # These defaults prioritize instant playback and minimal buffering
             return {
-                "segment_duration": 4,
-                "playlist_size": 10,
-                "dvr_window_seconds": 7200,
-                "storage_path": "/path/to/hls",
-                "segment_cache_ttl": 86400,
-                "playlist_cache_ttl": 2,
+                "segment_duration": 2,  # 2 seconds for low latency (balance between latency and overhead)
+                "playlist_size": 6,  # Keep 6 segments (12 seconds of content for smooth playback)
+                "dvr_window_seconds": 3600,  # 1 hour DVR window (7200 = 2 hours is too much for live)
+                "storage_path": "/path/to/hls",  # User configures host path that maps to /data in container
+                "segment_cache_ttl": 10,  # 10 seconds cache for segments (low latency, segments expire quickly)
+                "playlist_cache_ttl": 1,  # 1 second cache for playlists (instant updates)
             }
 
     @classmethod

@@ -330,12 +330,19 @@ const SettingsPage = () => {
     }, {}),
   });
 
+  // Optimized defaults for low latency, high quality HLS streaming
+  const HLS_OUTPUT_DEFAULTS = {
+    segment_duration: 2,  // 2 seconds for low latency
+    playlist_size: 6,  // 6 segments = 12 seconds of content
+    dvr_window_seconds: 3600,  // 1 hour DVR window
+    storage_path: '/path/to/hls',  // User configures host path
+    segment_cache_ttl: 10,  // 10 seconds cache for segments
+    playlist_cache_ttl: 1,  // 1 second cache for playlists
+  };
+
   const hlsOutputSettingsForm = useForm({
     mode: 'controlled',
-    initialValues: Object.keys(HLS_OUTPUT_SETTINGS_OPTIONS).reduce((acc, key) => {
-      acc[key] = '';
-      return acc;
-    }, {}),
+    initialValues: HLS_OUTPUT_DEFAULTS,
   });
 
   useEffect(() => {
@@ -659,16 +666,7 @@ const SettingsPage = () => {
   };
 
   const resetHlsOutputSettingsToDefaults = () => {
-    const defaultValues = {
-      segment_duration: 4,
-      playlist_size: 10,
-      dvr_window_seconds: 7200,
-      storage_path: '/var/www/hls',
-      segment_cache_ttl: 86400,
-      playlist_cache_ttl: 2,
-    };
-
-    hlsOutputSettingsForm.setValues(defaultValues);
+    hlsOutputSettingsForm.setValues(HLS_OUTPUT_DEFAULTS);
   };
 
   const saveNetworkAccess = async () => {
