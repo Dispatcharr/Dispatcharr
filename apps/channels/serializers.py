@@ -283,8 +283,6 @@ class ChannelSerializer(serializers.ModelSerializer):
             "epg_data_id",
             "streams",
             "stream_profile_id",
-            "hls_output_enabled",
-            "hls_output_profile_id",
             "uuid",
             "logo_id",
             "user_level",
