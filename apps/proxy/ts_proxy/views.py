@@ -4,7 +4,7 @@ import time
 import random
 import re
 import pathlib
-from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect
+from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from apps.proxy.config import TSConfig as Config
@@ -84,11 +84,18 @@ def stream_ts(request, channel_id):
                 if state_field in metadata:
                     channel_state = metadata[state_field].decode("utf-8")
 
-                    if channel_state:
-                        # Channel is being initialized or already active - no need for reinitialization
+                    # Active/running states - channel is operational, don't reinitialize
+                    if channel_state in [
+                        ChannelState.ACTIVE,
+                        ChannelState.WAITING_FOR_CLIENTS,
+                        ChannelState.BUFFERING,
+                        ChannelState.INITIALIZING,
+                        ChannelState.CONNECTING,
+                        ChannelState.STOPPING,
+                    ]:
                         needs_initialization = False
                         logger.debug(
-                            f"[{client_id}] Channel {channel_id} already in state {channel_state}, skipping initialization"
+                            f"[{client_id}] Channel {channel_id} in state {channel_state}, skipping initialization"
                         )
 
                         # Special handling for initializing/connecting states
@@ -98,19 +105,34 @@ def stream_ts(request, channel_id):
                         ]:
                             channel_initializing = True
                             logger.debug(
-                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait for completion"
+                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
                             )
+                    # Terminal states - channel needs cleanup before reinitialization
+                    elif channel_state in [
+                        ChannelState.ERROR,
+                        ChannelState.STOPPED,
+                    ]:
+                        needs_initialization = True
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} in terminal state {channel_state}, will reinitialize"
+                        )
+                    # Unknown/empty state - check if owner is alive
                     else:
-                        # Only check for owner if channel is in a valid state
                         owner_field = ChannelMetadataField.OWNER.encode("utf-8")
                         if owner_field in metadata:
                             owner = metadata[owner_field].decode("utf-8")
                             owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
                             if proxy_server.redis_client.exists(owner_heartbeat_key):
-                                # Owner is still active, so we don't need to reinitialize
+                                # Owner is still active with unknown state - don't reinitialize
                                 needs_initialization = False
                                 logger.debug(
-                                    f"[{client_id}] Channel {channel_id} has active owner {owner}"
+                                    f"[{client_id}] Channel {channel_id} has active owner {owner}, skipping init"
+                                )
+                            else:
+                                # Owner dead - needs reinitialization
+                                needs_initialization = True
+                                logger.warning(
+                                    f"[{client_id}] Channel {channel_id} owner {owner} is dead, will reinitialize"
                                 )
 
         # Start initialization if needed
@@ -292,6 +314,15 @@ def stream_ts(request, channel_id):
                     logger.info(
                         f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
                     )
+
+                    # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
+                    # because Django's HttpResponseRedirect blocks them for security
+                    if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
+                        logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
+                        response = HttpResponse(status=301)
+                        response['Location'] = final_url
+                        return response
+
                     return HttpResponseRedirect(final_url)
                 else:
                     logger.error(

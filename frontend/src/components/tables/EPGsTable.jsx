@@ -131,6 +131,12 @@ const EPGsTable = () => {
 
   const toggleActive = async (epg) => {
     try {
+      // Validate that epg is a valid object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('toggleActive called with invalid epg:', epg);
+        return;
+      }
+
       // Send only the is_active field to trigger our special handling
       await API.updateEPG(
         {

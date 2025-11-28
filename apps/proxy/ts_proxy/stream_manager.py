@@ -16,6 +16,7 @@ from apps.proxy.config import TSConfig as Config
 from apps.channels.models import Channel, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings
+from core.utils import log_system_event
 from .stream_buffer import StreamBuffer
 from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
@@ -227,9 +228,9 @@ class StreamManager:
                         # Continue with normal flow
 
                 # Check stream type before connecting
-                stream_type = detect_stream_type(self.url)
-                if self.transcode == False and stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
-                    stream_type_name = "HLS" if stream_type == StreamType.HLS else ("RTSP/RTP" if stream_type == StreamType.RTSP else "UDP")
+                self.stream_type = detect_stream_type(self.url)
+                if self.transcode == False and self.stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
+                    stream_type_name = "HLS" if self.stream_type == StreamType.HLS else ("RTSP/RTP" if self.stream_type == StreamType.RTSP else "UDP")
                     logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
                     logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
                     # Enable transcoding for HLS, RTSP/RTP, and UDP streams
@@ -260,6 +261,20 @@ class StreamManager:
                             # Store connection start time to measure success duration
                             connection_start_time = time.time()
 
+                            # Log reconnection event if this is a retry (not first attempt)
+                            if self.retry_count > 0:
+                                try:
+                                    channel_obj = Channel.objects.get(uuid=self.channel_id)
+                                    log_system_event(
+                                        'channel_reconnect',
+                                        channel_id=self.channel_id,
+                                        channel_name=channel_obj.name,
+                                        attempt=self.retry_count + 1,
+                                        max_attempts=self.max_retries
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Could not log reconnection event: {e}")
+
                             # Successfully connected - read stream data until disconnect/error
                             self._process_stream_data()
                             # If we get here, the connection was closed/failed
@@ -289,6 +304,20 @@ class StreamManager:
                         if self.retry_count >= self.max_retries:
                             url_failed = True
                             logger.warning(f"Maximum retry attempts ({self.max_retries}) reached for URL: {self.url} for channel: {self.channel_id}")
+
+                            # Log connection error event
+                            try:
+                                channel_obj = Channel.objects.get(uuid=self.channel_id)
+                                log_system_event(
+                                    'channel_error',
+                                    channel_id=self.channel_id,
+                                    channel_name=channel_obj.name,
+                                    error_type='connection_failed',
+                                    url=self.url[:100] if self.url else None,
+                                    attempts=self.max_retries
+                                )
+                            except Exception as e:
+                                logger.error(f"Could not log connection error event: {e}")
                         else:
                             # Wait with exponential backoff before retrying
                             timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
@@ -302,6 +331,21 @@ class StreamManager:
 
                         if self.retry_count >= self.max_retries:
                             url_failed = True
+
+                            # Log connection error event with exception details
+                            try:
+                                channel_obj = Channel.objects.get(uuid=self.channel_id)
+                                log_system_event(
+                                    'channel_error',
+                                    channel_id=self.channel_id,
+                                    channel_name=channel_obj.name,
+                                    error_type='connection_exception',
+                                    error_message=str(e)[:200],
+                                    url=self.url[:100] if self.url else None,
+                                    attempts=self.max_retries
+                                )
+                            except Exception as log_error:
+                                logger.error(f"Could not log connection error event: {log_error}")
                         else:
                             # Wait with exponential backoff before retrying
                             timeout = min(.25 * self.retry_count, 3)  # Cap at 3 seconds
@@ -431,6 +475,13 @@ class StreamManager:
 
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+
+            # For UDP streams, remove any user_agent parameters from the command
+            if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
+                # Filter out any arguments that contain the user_agent value or related headers
+                self.transcode_cmd = [arg for arg in self.transcode_cmd if self.user_agent not in arg and 'user-agent' not in arg.lower() and 'user_agent' not in arg.lower()]
+                logger.debug(f"Removed user_agent parameters from UDP stream command for channel: {self.channel_id}")
+
             logger.debug(f"Starting transcode process: {self.transcode_cmd} for channel: {self.channel_id}")
 
             # Modified to capture stderr instead of discarding it
@@ -695,6 +746,19 @@ class StreamManager:
                                 # Reset buffering state
                                 self.buffering = False
                                 self.buffering_start_time = None
+
+                                # Log failover event
+                                try:
+                                    channel_obj = Channel.objects.get(uuid=self.channel_id)
+                                    log_system_event(
+                                        'channel_failover',
+                                        channel_id=self.channel_id,
+                                        channel_name=channel_obj.name,
+                                        reason='buffering_timeout',
+                                        duration=buffering_duration
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Could not log failover event: {e}")
                             else:
                                 logger.error(f"Failed to switch to next stream for channel {self.channel_id} after buffering timeout")
                 else:
@@ -702,6 +766,19 @@ class StreamManager:
                     self.buffering = True
                     self.buffering_start_time = time.time()
                     logger.warning(f"Buffering started for channel {self.channel_id} - speed: {ffmpeg_speed}x")
+
+                    # Log system event for buffering
+                    try:
+                        channel_obj = Channel.objects.get(uuid=self.channel_id)
+                        log_system_event(
+                            'channel_buffering',
+                            channel_id=self.channel_id,
+                            channel_name=channel_obj.name,
+                            speed=ffmpeg_speed
+                        )
+                    except Exception as e:
+                        logger.error(f"Could not log buffering event: {e}")
+
                 # Log buffering warning
                 logger.debug(f"FFmpeg speed on channel {self.channel_id} is below {self.buffering_speed} ({ffmpeg_speed}x) - buffering detected")
                 # Set channel state to buffering
@@ -997,6 +1074,19 @@ class StreamManager:
                 except Exception as e:
                     logger.warning(f"Failed to reset buffer position: {e}")
 
+            # Log stream switch event
+            try:
+                channel_obj = Channel.objects.get(uuid=self.channel_id)
+                log_system_event(
+                    'stream_switch',
+                    channel_id=self.channel_id,
+                    channel_name=channel_obj.name,
+                    new_url=new_url[:100] if new_url else None,
+                    stream_id=stream_id
+                )
+            except Exception as e:
+                logger.error(f"Could not log stream switch event: {e}")
+
             return True
         except Exception as e:
             logger.error(f"Error during URL update for channel {self.channel_id}: {e}", exc_info=True)
@@ -1115,6 +1205,19 @@ class StreamManager:
                 if connection_result:
                     self.connection_start_time = time.time()
                     logger.info(f"Reconnect successful for channel {self.channel_id}")
+
+                    # Log reconnection event
+                    try:
+                        channel_obj = Channel.objects.get(uuid=self.channel_id)
+                        log_system_event(
+                            'channel_reconnect',
+                            channel_id=self.channel_id,
+                            channel_name=channel_obj.name,
+                            reason='health_monitor'
+                        )
+                    except Exception as e:
+                        logger.error(f"Could not log reconnection event: {e}")
+
                     return True
                 else:
                     logger.warning(f"Reconnect failed for channel {self.channel_id}")
@@ -1192,25 +1295,17 @@ class StreamManager:
                 logger.debug(f"Error closing socket for channel {self.channel_id}: {e}")
                 pass
 
-        # Enhanced transcode process cleanup with more aggressive termination
+        # Enhanced transcode process cleanup with immediate termination
         if self.transcode_process:
             try:
-                # First try polite termination
-                logger.debug(f"Terminating transcode process for channel {self.channel_id}")
-                self.transcode_process.terminate()
+                logger.debug(f"Killing transcode process for channel {self.channel_id}")
+                self.transcode_process.kill()
 
-                # Give it a short time to terminate gracefully
+                # Give it a very short time to die
                 try:
-                    self.transcode_process.wait(timeout=1.0)
+                    self.transcode_process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    # If it doesn't terminate quickly, kill it
-                    logger.warning(f"Transcode process didn't terminate within timeout, killing forcefully for channel {self.channel_id}")
-                    self.transcode_process.kill()
-
-                    try:
-                        self.transcode_process.wait(timeout=1.0)
-                    except subprocess.TimeoutExpired:
-                        logger.error(f"Failed to kill transcode process even with force for channel {self.channel_id}")
+                    logger.error(f"Failed to kill transcode process even with force for channel {self.channel_id}")
             except Exception as e:
                 logger.debug(f"Error terminating transcode process for channel {self.channel_id}: {e}")
 

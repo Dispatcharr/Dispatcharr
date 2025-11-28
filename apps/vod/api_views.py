@@ -18,7 +18,7 @@ from apps.accounts.permissions import (
 )
 from .models import (
     Series, VODCategory, Movie, Episode, VODLogo,
-    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation
+    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from .serializers import (
     MovieSerializer,
@@ -475,6 +475,59 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def list(self, request, *args, **kwargs):
+        """Override list to ensure Uncategorized categories and relations exist for all XC accounts with VOD enabled"""
+        from apps.m3u.models import M3UAccount
+
+        # Ensure Uncategorized categories exist
+        movie_category, _ = VODCategory.objects.get_or_create(
+            name="Uncategorized",
+            category_type="movie",
+            defaults={}
+        )
+
+        series_category, _ = VODCategory.objects.get_or_create(
+            name="Uncategorized",
+            category_type="series",
+            defaults={}
+        )
+
+        # Get all active XC accounts with VOD enabled
+        xc_accounts = M3UAccount.objects.filter(
+            account_type=M3UAccount.Types.XC,
+            is_active=True
+        )
+
+        for account in xc_accounts:
+            if account.custom_properties:
+                custom_props = account.custom_properties or {}
+                vod_enabled = custom_props.get("enable_vod", False)
+
+                if vod_enabled:
+                    # Ensure relations exist for this account
+                    auto_enable_new = custom_props.get("auto_enable_new_groups_vod", True)
+
+                    M3UVODCategoryRelation.objects.get_or_create(
+                        category=movie_category,
+                        m3u_account=account,
+                        defaults={
+                            'enabled': auto_enable_new,
+                            'custom_properties': {}
+                        }
+                    )
+
+                    M3UVODCategoryRelation.objects.get_or_create(
+                        category=series_category,
+                        m3u_account=account,
+                        defaults={
+                            'enabled': auto_enable_new,
+                            'custom_properties': {}
+                        }
+                    )
+
+        # Now proceed with normal list operation
+        return super().list(request, *args, **kwargs)
 
 
 class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):

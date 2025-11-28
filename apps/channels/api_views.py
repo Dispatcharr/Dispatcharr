@@ -435,8 +435,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):
         """
-        Bulk edit channels.
-        Expects a list of channels with their updates.
+        Bulk edit channels efficiently.
+        Validates all updates first, then applies in a single transaction.
         """
         data = request.data
         if not isinstance(data, list):
@@ -445,63 +445,94 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        updated_channels = []
-        errors = []
+        # Extract IDs and validate presence
+        channel_updates = {}
+        missing_ids = []
 
-        for channel_data in data:
+        for i, channel_data in enumerate(data):
             channel_id = channel_data.get("id")
             if not channel_id:
-                errors.append({"error": "Channel ID is required"})
-                continue
+                missing_ids.append(f"Item {i}: Channel ID is required")
+            else:
+                channel_updates[channel_id] = channel_data
 
-            try:
-                channel = Channel.objects.get(id=channel_id)
+        if missing_ids:
+            return Response(
+                {"errors": missing_ids},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-                # Handle channel_group_id properly - convert string to integer if needed
-                if 'channel_group_id' in channel_data:
-                    group_id = channel_data['channel_group_id']
-                    if group_id is not None:
-                        try:
-                            channel_data['channel_group_id'] = int(group_id)
-                        except (ValueError, TypeError):
-                            channel_data['channel_group_id'] = None
+        # Fetch all channels at once (one query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Use the serializer to validate and update
-                serializer = ChannelSerializer(
-                    channel, data=channel_data, partial=True
-                )
+        # Validate and prepare updates
+        validated_updates = []
+        errors = []
 
-                if serializer.is_valid():
-                    updated_channel = serializer.save()
-                    updated_channels.append(updated_channel)
-                else:
-                    errors.append({
-                        "channel_id": channel_id,
-                        "errors": serializer.errors
-                    })
+        for channel_id, channel_data in channel_updates.items():
+            channel = channels_dict.get(channel_id)
 
-            except Channel.DoesNotExist:
+            if not channel:
                 errors.append({
                     "channel_id": channel_id,
                     "error": "Channel not found"
                 })
-            except Exception as e:
+                continue
+
+            # Handle channel_group_id conversion
+            if 'channel_group_id' in channel_data:
+                group_id = channel_data['channel_group_id']
+                if group_id is not None:
+                    try:
+                        channel_data['channel_group_id'] = int(group_id)
+                    except (ValueError, TypeError):
+                        channel_data['channel_group_id'] = None
+
+            # Validate with serializer
+            serializer = ChannelSerializer(
+                channel, data=channel_data, partial=True
+            )
+
+            if serializer.is_valid():
+                validated_updates.append((channel, serializer.validated_data))
+            else:
                 errors.append({
                     "channel_id": channel_id,
-                    "error": str(e)
+                    "errors": serializer.errors
                 })
 
         if errors:
             return Response(
-                {"errors": errors, "updated_count": len(updated_channels)},
+                {"errors": errors, "updated_count": len(validated_updates)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Serialize the updated channels for response
-        serialized_channels = ChannelSerializer(updated_channels, many=True).data
+        # Apply all updates in a transaction
+        with transaction.atomic():
+            for channel, validated_data in validated_updates:
+                for key, value in validated_data.items():
+                    setattr(channel, key, value)
+
+            # Single bulk_update query instead of individual saves
+            channels_to_update = [channel for channel, _ in validated_updates]
+            if channels_to_update:
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=list(validated_updates[0][1].keys()),
+                    batch_size=100
+                )
+
+        # Return the updated objects (already in memory)
+        serialized_channels = ChannelSerializer(
+            [channel for channel, _ in validated_updates],
+            many=True,
+            context=self.get_serializer_context()
+        ).data
 
         return Response({
-            "message": f"Successfully updated {len(updated_channels)} channels",
+            "message": f"Successfully updated {len(validated_updates)} channels",
             "channels": serialized_channels
         })
 
@@ -1039,8 +1070,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def batch_set_epg(self, request):
         """Efficiently associate multiple channels with EPG data at once."""
         associations = request.data.get("associations", [])
-        channels_updated = 0
-        programs_refreshed = 0
+
+        if not associations:
+            return Response(
+                {"error": "associations list is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Extract channel IDs upfront
+        channel_updates = {}
         unique_epg_ids = set()
 
         for assoc in associations:
@@ -1050,39 +1088,58 @@ class ChannelViewSet(viewsets.ModelViewSet):
             if not channel_id:
                 continue
 
-            try:
-                # Get the channel
-                channel = Channel.objects.get(id=channel_id)
+            channel_updates[channel_id] = epg_data_id
+            if epg_data_id:
+                unique_epg_ids.add(epg_data_id)
 
-                # Set the EPG data
-                channel.epg_data_id = epg_data_id
-                channel.save(update_fields=["epg_data"])
-                channels_updated += 1
+        # Batch fetch all channels (single query)
+        channels_dict = {
+            c.id: c for c in Channel.objects.filter(id__in=channel_updates.keys())
+        }
 
-                # Track unique EPG data IDs
-                if epg_data_id:
-                    unique_epg_ids.add(epg_data_id)
-
-            except Channel.DoesNotExist:
+        # Collect channels to update
+        channels_to_update = []
+        for channel_id, epg_data_id in channel_updates.items():
+            if channel_id not in channels_dict:
                 logger.error(f"Channel with ID {channel_id} not found")
-            except Exception as e:
-                logger.error(
-                    f"Error setting EPG data for channel {channel_id}: {str(e)}"
+                continue
+
+            channel = channels_dict[channel_id]
+            channel.epg_data_id = epg_data_id
+            channels_to_update.append(channel)
+
+        # Bulk update all channels (single query)
+        if channels_to_update:
+            with transaction.atomic():
+                Channel.objects.bulk_update(
+                    channels_to_update,
+                    fields=["epg_data_id"],
+                    batch_size=100
                 )
+
+        channels_updated = len(channels_to_update)
 
         # Trigger program refresh for unique EPG data IDs (skip dummy EPGs)
         from apps.epg.tasks import parse_programs_for_tvg_id
         from apps.epg.models import EPGData
 
+        # Batch fetch EPG data (single query)
+        epg_data_dict = {
+            epg.id: epg
+            for epg in EPGData.objects.filter(id__in=unique_epg_ids).select_related('epg_source')
+        }
+
+        programs_refreshed = 0
         for epg_id in unique_epg_ids:
-            try:
-                epg_data = EPGData.objects.select_related('epg_source').get(id=epg_id)
-                # Only refresh non-dummy EPG sources
-                if epg_data.epg_source.source_type != 'dummy':
-                    parse_programs_for_tvg_id.delay(epg_id)
-                    programs_refreshed += 1
-            except EPGData.DoesNotExist:
+            epg_data = epg_data_dict.get(epg_id)
+            if not epg_data:
                 logger.error(f"EPGData with ID {epg_id} not found")
+                continue
+
+            # Only refresh non-dummy EPG sources
+            if epg_data.epg_source.source_type != 'dummy':
+                parse_programs_for_tvg_id.delay(epg_id)
+                programs_refreshed += 1
 
         return Response(
             {

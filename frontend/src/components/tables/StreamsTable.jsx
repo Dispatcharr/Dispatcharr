@@ -13,6 +13,7 @@ import {
   ArrowUpDown,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  Search,
 } from 'lucide-react';
 import {
   TextInput,
@@ -735,6 +736,7 @@ const StreamsTable = () => {
               size="xs"
               variant="unstyled"
               className="table-input-header"
+              leftSection={<Search size={14} opacity={0.5} />}
             />
             <Center>
               {React.createElement(sortingIcon, {

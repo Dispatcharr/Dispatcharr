@@ -923,8 +923,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
             </Stack>
           </Group>
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-            <Button type="submit" variant="default" disabled={isSubmitting}>
-              Submit
+            <Button
+              type="submit"
+              variant="default"
+              disabled={isSubmitting}
+              loading={isSubmitting}
+              loaderProps={{ type: 'dots' }}
+            >
+              {isSubmitting ? 'Saving...' : 'Submit'}
             </Button>
           </Flex>
         </form>

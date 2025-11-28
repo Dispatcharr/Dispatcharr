@@ -50,9 +50,17 @@ const useEPGsStore = create((set) => ({
     })),
 
   updateEPG: (epg) =>
-    set((state) => ({
-      epgs: { ...state.epgs, [epg.id]: epg },
-    })),
+    set((state) => {
+      // Validate that epg is an object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('updateEPG called with invalid epg:', epg);
+        return state;
+      }
+
+      return {
+        epgs: { ...state.epgs, [epg.id]: epg },
+      };
+    }),
 
   removeEPGs: (epgIds) =>
     set((state) => {
@@ -66,6 +74,12 @@ const useEPGsStore = create((set) => ({
 
   updateEPGProgress: (data) =>
     set((state) => {
+      // Validate that data is an object with a source
+      if (!data || typeof data !== 'object' || !data.source) {
+        console.error('updateEPGProgress called with invalid data:', data);
+        return state;
+      }
+
       // Early exit if source doesn't exist in our EPGs store
       if (!state.epgs[data.source] && !data.status) {
         return state;

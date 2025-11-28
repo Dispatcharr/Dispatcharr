@@ -1048,8 +1048,10 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
               type="submit"
               variant="default"
               disabled={formik.isSubmitting}
+              loading={formik.isSubmitting}
+              loaderProps={{ type: 'dots' }}
             >
-              Submit
+              {formik.isSubmitting ? 'Saving...' : 'Submit'}
             </Button>
           </Flex>
         </form>

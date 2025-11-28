@@ -14,6 +14,7 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
 from ..url_utils import get_stream_info_for_switch
+from core.utils import log_system_event
 
 logger = logging.getLogger("ts_proxy")
 
@@ -598,7 +599,7 @@ class ChannelService:
     def _update_stream_stats_in_db(stream_id, **stats):
         """Update stream stats in database"""
         from django.db import connection
-        
+
         try:
             from apps.channels.models import Stream
             from django.utils import timezone
@@ -624,7 +625,7 @@ class ChannelService:
         except Exception as e:
             logger.error(f"Error updating stream stats in database for stream {stream_id}: {e}")
             return False
-            
+
         finally:
             # Always close database connection after update
             try:
@@ -700,6 +701,7 @@ class ChannelService:
             RedisKeys.events_channel(channel_id),
             json.dumps(switch_request)
         )
+
         return True
 
     @staticmethod

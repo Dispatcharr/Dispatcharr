@@ -570,14 +570,22 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'epg_refresh':
-              // Update the store with progress information
-              updateEPGProgress(parsedEvent.data);
-
-              // If we have source/account info, update the EPG source status
+              // If we have source/account info, check if EPG exists before processing
               if (parsedEvent.data.source || parsedEvent.data.account) {
                 const sourceId =
                   parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
+                
+                // Only update progress if the EPG still exists in the store
+                // This prevents crashes when receiving updates for deleted EPGs
+                if (epg) {
+                  // Update the store with progress information
+                  updateEPGProgress(parsedEvent.data);
+                } else {
+                  // EPG was deleted, ignore this update
+                  console.debug(`Ignoring EPG refresh update for deleted EPG ${sourceId}`);
+                  break;
+                }
 
                 if (epg) {
                   // Check for any indication of an error (either via status or error field)

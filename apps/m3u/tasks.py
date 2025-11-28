@@ -24,6 +24,7 @@ from core.utils import (
     acquire_task_lock,
     release_task_lock,
     natural_sort_key,
+    log_system_event,
 )
 from core.models import CoreSettings, UserAgent
 from asgiref.sync import async_to_sync
@@ -1217,52 +1218,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
 
-                        # Save account information to all active profiles
+                        # Queue async profile refresh task to run in background
+                        # This prevents any delay in the main refresh process
                         try:
-                            from apps.m3u.models import M3UAccountProfile
-
-                            profiles = M3UAccountProfile.objects.filter(
-                                m3u_account=account,
-                                is_active=True
-                            )
-
-                            # Update each profile with account information using its own transformed credentials
-                            for profile in profiles:
-                                try:
-                                    # Get transformed credentials for this specific profile
-                                    profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
-
-                                    # Create a separate XC client for this profile's credentials
-                                    with XCClient(
-                                        profile_url,
-                                        profile_username,
-                                        profile_password,
-                                        user_agent_string
-                                    ) as profile_client:
-                                        # Authenticate with this profile's credentials
-                                        if profile_client.authenticate():
-                                            # Get account information specific to this profile's credentials
-                                            profile_account_info = profile_client.get_account_info()
-
-                                            # Merge with existing custom_properties if they exist
-                                            existing_props = profile.custom_properties or {}
-                                            existing_props.update(profile_account_info)
-                                            profile.custom_properties = existing_props
-                                            profile.save(update_fields=['custom_properties'])
-
-                                            logger.info(f"Updated account information for profile '{profile.name}' with transformed credentials")
-                                        else:
-                                            logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
-
-                                except Exception as profile_error:
-                                    logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
-                                    # Continue with other profiles even if one fails
-
-                            logger.info(f"Processed account information for {profiles.count()} profiles for account {account.name}")
-
-                        except Exception as save_error:
-                            logger.warning(f"Failed to process profile account information: {str(save_error)}")
-                            # Don't fail the whole process if saving account info fails
+                            logger.info(f"Queueing background profile refresh for account {account.name}")
+                            refresh_account_profiles.delay(account.id)
+                        except Exception as e:
+                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
+                            # Don't fail the main refresh if profile refresh can't be queued
 
                     except Exception as e:
                         error_msg = f"Failed to authenticate with XC server: {str(e)}"
@@ -2270,6 +2233,106 @@ def get_transformed_credentials(account, profile=None):
 
 
 @shared_task
+def refresh_account_profiles(account_id):
+    """Refresh account information for all active profiles of an XC account.
+
+    This task runs asynchronously in the background after account refresh completes.
+    It includes rate limiting delays between profile authentications to prevent provider bans.
+    """
+    from django.conf import settings
+    import time
+
+    try:
+        account = M3UAccount.objects.get(id=account_id, is_active=True)
+
+        if account.account_type != M3UAccount.Types.XC:
+            logger.debug(f"Account {account_id} is not XC type, skipping profile refresh")
+            return f"Account {account_id} is not an XtreamCodes account"
+
+        from apps.m3u.models import M3UAccountProfile
+
+        profiles = M3UAccountProfile.objects.filter(
+            m3u_account=account,
+            is_active=True
+        )
+
+        if not profiles.exists():
+            logger.info(f"No active profiles found for account {account.name}")
+            return f"No active profiles for account {account_id}"
+
+        # Get user agent for this account
+        try:
+            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            if account.user_agent_id:
+                from core.models import UserAgent
+                ua_obj = UserAgent.objects.get(id=account.user_agent_id)
+                if ua_obj and hasattr(ua_obj, "user_agent") and ua_obj.user_agent:
+                    user_agent_string = ua_obj.user_agent
+        except Exception as e:
+            logger.warning(f"Error getting user agent, using fallback: {str(e)}")
+        logger.debug(f"Using user agent for profile refresh: {user_agent_string}")
+        # Get rate limiting delay from settings
+        profile_delay = getattr(settings, 'XC_PROFILE_REFRESH_DELAY', 2.5)
+
+        profiles_updated = 0
+        profiles_failed = 0
+
+        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
+
+        for idx, profile in enumerate(profiles):
+            try:
+                # Add delay between profiles to prevent rate limiting (except for first profile)
+                if idx > 0:
+                    logger.info(f"Waiting {profile_delay}s before refreshing next profile to avoid rate limiting")
+                    time.sleep(profile_delay)
+
+                # Get transformed credentials for this specific profile
+                profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
+
+                # Create a separate XC client for this profile's credentials
+                with XCClient(
+                    profile_url,
+                    profile_username,
+                    profile_password,
+                    user_agent_string
+                ) as profile_client:
+                    # Authenticate with this profile's credentials
+                    if profile_client.authenticate():
+                        # Get account information specific to this profile's credentials
+                        profile_account_info = profile_client.get_account_info()
+
+                        # Merge with existing custom_properties if they exist
+                        existing_props = profile.custom_properties or {}
+                        existing_props.update(profile_account_info)
+                        profile.custom_properties = existing_props
+                        profile.save(update_fields=['custom_properties'])
+
+                        profiles_updated += 1
+                        logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
+                    else:
+                        profiles_failed += 1
+                        logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
+
+            except Exception as profile_error:
+                profiles_failed += 1
+                logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                # Continue with other profiles even if one fails
+
+        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
+        logger.info(result_msg)
+        return result_msg
+
+    except M3UAccount.DoesNotExist:
+        error_msg = f"Account {account_id} not found"
+        logger.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
+
+
+@shared_task
 def refresh_account_info(profile_id):
     """Refresh only the account information for a specific M3U profile."""
     if not acquire_task_lock("refresh_account_info", profile_id):
@@ -2777,6 +2840,17 @@ def refresh_single_m3u_account(account_id):
         )
         account.updated_at = timezone.now()
         account.save(update_fields=["status", "last_message", "updated_at"])
+
+        # Log system event for M3U refresh
+        log_system_event(
+            event_type='m3u_refresh',
+            account_name=account.name,
+            elapsed_time=round(elapsed_time, 2),
+            streams_created=streams_created,
+            streams_updated=streams_updated,
+            streams_deleted=streams_deleted,
+            total_processed=streams_processed,
+        )
 
         # Send final update with complete metrics and explicitly include success status
         send_m3u_update(

@@ -23,6 +23,7 @@ import {
   ArrowUpNarrowWide,
   ArrowUpDown,
   ArrowDownWideNarrow,
+  Search,
 } from 'lucide-react';
 import {
   Box,
@@ -949,6 +950,7 @@ const ChannelsTable = ({}) => {
               size="xs"
               variant="unstyled"
               className="table-input-header"
+              leftSection={<Search size={14} opacity={0.5} />}
             />
             <Center>
               {React.createElement(sortingIcon, {

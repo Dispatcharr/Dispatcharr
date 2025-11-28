@@ -39,6 +39,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
         # Handle direct stream preview (custom streams)
         if isinstance(channel_or_stream, Stream):
+            from core.utils import RedisClient
+
             stream = channel_or_stream
             logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
 
@@ -48,12 +50,43 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 logger.error(f"Stream {stream.id} has no M3U account")
                 return None, None, False, None
 
-            # Get the default profile for this M3U account (custom streams use default)
-            m3u_profiles = m3u_account.profiles.all()
-            profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+            # Get active profiles for this M3U account
+            m3u_profiles = m3u_account.profiles.filter(is_active=True)
+            default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
 
-            if not profile:
-                logger.error(f"No default profile found for M3U account {m3u_account.id}")
+            if not default_profile:
+                logger.error(f"No default active profile found for M3U account {m3u_account.id}")
+                return None, None, False, None
+
+            # Check profiles in order: default first, then others
+            profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
+
+            # Try to find an available profile with connection capacity
+            redis_client = RedisClient.get_client()
+            selected_profile = None
+
+            for profile in profiles:
+                logger.info(profile)
+
+                # Check connection availability
+                if redis_client:
+                    profile_connections_key = f"profile_connections:{profile.id}"
+                    current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+                    # Check if profile has available slots (or unlimited connections)
+                    if profile.max_streams == 0 or current_connections < profile.max_streams:
+                        selected_profile = profile
+                        logger.debug(f"Selected profile {profile.id} with {current_connections}/{profile.max_streams} connections for stream preview")
+                        break
+                    else:
+                        logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
+                else:
+                    # No Redis available, use first active profile
+                    selected_profile = profile
+                    break
+
+            if not selected_profile:
+                logger.error(f"No profiles available with connection capacity for M3U account {m3u_account.id}")
                 return None, None, False, None
 
             # Get the appropriate user agent
@@ -62,8 +95,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
                 stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
                 logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            # Get stream URL (no transformation for custom streams)
-            stream_url = stream.url
+            # Get stream URL with the selected profile's URL transformation
+            stream_url = transform_url(stream.url, selected_profile.search_pattern, selected_profile.replace_pattern)
 
             # Check if the stream has its own stream_profile set, otherwise use default
             if stream.stream_profile:
@@ -402,6 +435,9 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     """
     Validate if a stream URL is accessible without downloading the full content.
 
+    Note: UDP/RTP/RTSP streams are automatically considered valid as they cannot
+    be validated via HTTP methods.
+
     Args:
         url (str): The URL to validate
         user_agent (str): User agent to use for the request
@@ -410,6 +446,12 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     Returns:
         tuple: (is_valid, final_url, status_code, message)
     """
+    # Check if URL uses non-HTTP protocols (UDP/RTP/RTSP)
+    # These cannot be validated via HTTP methods, so we skip validation
+    if url.startswith(('udp://', 'rtp://', 'rtsp://')):
+        logger.info(f"Skipping HTTP validation for non-HTTP protocol: {url}")
+        return True, url, 200, "Non-HTTP protocol (UDP/RTP/RTSP) - validation skipped"
+
     try:
         # Create session with proper headers
         session = requests.Session()

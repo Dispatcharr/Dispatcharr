@@ -15,6 +15,7 @@ import {
   Text,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 
 const EPG = ({ epg = null, isOpen, onClose }) => {
   const [sourceType, setSourceType] = useState('xmltv');
@@ -40,6 +41,16 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
     const values = form.getValues();
 
     if (epg?.id) {
+      // Validate that we have a valid EPG object before updating
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        notifications.show({
+          title: 'Error',
+          message: 'Invalid EPG data. Please close and reopen this form.',
+          color: 'red',
+        });
+        return;
+      }
+
       await API.updateEPG({ id: epg.id, ...values });
     } else {
       await API.addEPG(values);

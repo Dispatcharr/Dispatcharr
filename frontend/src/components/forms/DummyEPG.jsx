@@ -728,6 +728,16 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   const handleSubmit = async (values) => {
     try {
       if (epg?.id) {
+        // Validate that we have a valid EPG object before updating
+        if (!epg || typeof epg !== 'object' || !epg.id) {
+          notifications.show({
+            title: 'Error',
+            message: 'Invalid EPG data. Please close and reopen this form.',
+            color: 'red',
+          });
+          return;
+        }
+
         await API.updateEPG({ ...values, id: epg.id });
         notifications.show({
           title: 'Success',

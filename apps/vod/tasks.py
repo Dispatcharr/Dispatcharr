@@ -127,6 +127,37 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     """Refresh movie content using single API call for all movies"""
     logger.info(f"Refreshing movies for account {account.name}")
 
+    # Ensure "Uncategorized" category exists for movies without a category
+    uncategorized_category, created = VODCategory.objects.get_or_create(
+        name="Uncategorized",
+        category_type="movie",
+        defaults={}
+    )
+
+    # Ensure there's a relation for the Uncategorized category
+    account_custom_props = account.custom_properties or {}
+    auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+
+    uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
+        category=uncategorized_category,
+        m3u_account=account,
+        defaults={
+            'enabled': auto_enable_new,
+            'custom_properties': {}
+        }
+    )
+
+    if created:
+        logger.info(f"Created 'Uncategorized' category for movies")
+    if rel_created:
+        logger.info(f"Created relation for 'Uncategorized' category (enabled={auto_enable_new})")
+
+    # Add uncategorized category to relations dict for easy access
+    relations[uncategorized_category.id] = uncategorized_relation
+
+    # Add to categories_by_provider with a special key for items without category
+    categories_by_provider['__uncategorized__'] = uncategorized_category
+
     # Get all movies in a single API call
     logger.info("Fetching all movies from provider...")
     all_movies_data = client.get_vod_streams()  # No category_id = get all movies
@@ -149,6 +180,37 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
     """Refresh series content using single API call for all series"""
     logger.info(f"Refreshing series for account {account.name}")
+
+    # Ensure "Uncategorized" category exists for series without a category
+    uncategorized_category, created = VODCategory.objects.get_or_create(
+        name="Uncategorized",
+        category_type="series",
+        defaults={}
+    )
+
+    # Ensure there's a relation for the Uncategorized category
+    account_custom_props = account.custom_properties or {}
+    auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+
+    uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
+        category=uncategorized_category,
+        m3u_account=account,
+        defaults={
+            'enabled': auto_enable_new,
+            'custom_properties': {}
+        }
+    )
+
+    if created:
+        logger.info(f"Created 'Uncategorized' category for series")
+    if rel_created:
+        logger.info(f"Created relation for 'Uncategorized' category (enabled={auto_enable_new})")
+
+    # Add uncategorized category to relations dict for easy access
+    relations[uncategorized_category.id] = uncategorized_relation
+
+    # Add to categories_by_provider with a special key for items without category
+    categories_by_provider['__uncategorized__'] = uncategorized_category
 
     # Get all series in a single API call
     logger.info("Fetching all series from provider...")
@@ -240,6 +302,7 @@ def batch_create_categories(categories_data, category_type, account):
     M3UVODCategoryRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
     # Delete orphaned category relationships (categories no longer in the M3U source)
+    # Exclude "Uncategorized" from cleanup as it's a special category we manage
     current_category_ids = set(existing_categories[name].id for name in category_names)
     existing_relations = M3UVODCategoryRelation.objects.filter(
         m3u_account=account,
@@ -248,7 +311,7 @@ def batch_create_categories(categories_data, category_type, account):
 
     relations_to_delete = [
         rel for rel in existing_relations
-        if rel.category_id not in current_category_ids
+        if rel.category_id not in current_category_ids and rel.category.name != "Uncategorized"
     ]
 
     if relations_to_delete:
@@ -331,7 +394,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     logger.debug("Skipping disabled category")
                     continue
             else:
-                logger.warning(f"No category ID provided for movie {name}")
+                # Assign to Uncategorized category if no category_id provided
+                logger.debug(f"No category ID provided for movie {name}, assigning to 'Uncategorized'")
+                category = categories.get('__uncategorized__')
+                if category:
+                    movie_data['_category_id'] = category.id
+                    # Check if uncategorized is disabled
+                    relation = relations.get(category.id, None)
+                    if relation and not relation.enabled:
+                        logger.debug("Skipping disabled 'Uncategorized' category")
+                        continue
 
             # Extract metadata
             year = extract_year_from_data(movie_data, 'name')
@@ -633,7 +705,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     logger.debug("Skipping disabled category")
                     continue
             else:
-                logger.warning(f"No category ID provided for series {name}")
+                # Assign to Uncategorized category if no category_id provided
+                logger.debug(f"No category ID provided for series {name}, assigning to 'Uncategorized'")
+                category = categories.get('__uncategorized__')
+                if category:
+                    series_data['_category_id'] = category.id
+                    # Check if uncategorized is disabled
+                    relation = relations.get(category.id, None)
+                    if relation and not relation.enabled:
+                        logger.debug("Skipping disabled 'Uncategorized' category")
+                        continue
 
             # Extract metadata
             year = extract_year(series_data.get('releaseDate', ''))

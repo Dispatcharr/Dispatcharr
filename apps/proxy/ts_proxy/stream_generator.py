@@ -8,6 +8,8 @@ import logging
 import threading
 import gevent  # Add this import at the top of your file
 from apps.proxy.config import TSConfig as Config
+from apps.channels.models import Channel
+from core.utils import log_system_event
 from .server import ProxyServer
 from .utils import create_ts_packet, get_logger
 from .redis_keys import RedisKeys
@@ -87,6 +89,20 @@ class StreamGenerator:
             # Setup streaming parameters and verify resources
             if not self._setup_streaming():
                 return
+
+            # Log client connect event
+            try:
+                channel_obj = Channel.objects.get(uuid=self.channel_id)
+                log_system_event(
+                    'client_connect',
+                    channel_id=self.channel_id,
+                    channel_name=channel_obj.name,
+                    client_ip=self.client_ip,
+                    client_id=self.client_id,
+                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None
+                )
+            except Exception as e:
+                logger.error(f"Could not log client connect event: {e}")
 
             # Main streaming loop
             for chunk in self._stream_data_generator():
@@ -438,6 +454,22 @@ class StreamGenerator:
             local_clients = client_manager.remove_client(self.client_id)
             total_clients = client_manager.get_total_client_count()
             logger.info(f"[{self.client_id}] Disconnected after {elapsed:.2f}s (local: {local_clients}, total: {total_clients})")
+
+            # Log client disconnect event
+            try:
+                channel_obj = Channel.objects.get(uuid=self.channel_id)
+                log_system_event(
+                    'client_disconnect',
+                    channel_id=self.channel_id,
+                    channel_name=channel_obj.name,
+                    client_ip=self.client_ip,
+                    client_id=self.client_id,
+                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
+                    duration=round(elapsed, 2),
+                    bytes_sent=self.bytes_sent
+                )
+            except Exception as e:
+                logger.error(f"Could not log client disconnect event: {e}")
 
             # Schedule channel shutdown if no clients left
             if not stream_released:  # Only if we haven't already released the stream

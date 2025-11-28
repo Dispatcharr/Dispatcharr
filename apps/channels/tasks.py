@@ -1434,6 +1434,18 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     logger.info(f"Starting recording for channel {channel.name}")
 
+    # Log system event for recording start
+    try:
+        from core.utils import log_system_event
+        log_system_event(
+            'recording_start',
+            channel_id=channel.uuid,
+            channel_name=channel.name,
+            recording_id=recording_id
+        )
+    except Exception as e:
+        logger.error(f"Could not log recording start event: {e}")
+
     # Try to resolve the Recording row up front
     recording_obj = None
     try:
@@ -1826,6 +1838,20 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         )
         # After the loop, the file and response are closed automatically.
         logger.info(f"Finished recording for channel {channel.name}")
+
+        # Log system event for recording end
+        try:
+            from core.utils import log_system_event
+            log_system_event(
+                'recording_end',
+                channel_id=channel.uuid,
+                channel_name=channel.name,
+                recording_id=recording_id,
+                interrupted=interrupted,
+                bytes_written=bytes_written
+            )
+        except Exception as e:
+            logger.error(f"Could not log recording end event: {e}")
 
     # Remux TS to MKV container
     remux_success = False

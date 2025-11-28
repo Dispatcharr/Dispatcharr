@@ -170,7 +170,7 @@ export default class API {
 
   static async logout() {
     return await request(`${host}/api/accounts/auth/logout/`, {
-      auth: false,
+      auth: true,  // Send JWT token so backend can identify the user
       method: 'POST',
     });
   }
@@ -462,7 +462,16 @@ export default class API {
         }
       );
 
-      // Don't automatically update the store here - let the caller handle it
+      // Show success notification
+      if (response.message) {
+        notifications.show({
+          title: 'Channels Updated',
+          message: response.message,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
@@ -1044,7 +1053,19 @@ export default class API {
   }
 
   static async updateEPG(values, isToggle = false) {
+    // Validate that values is an object
+    if (!values || typeof values !== 'object') {
+      console.error('updateEPG called with invalid values:', values);
+      return;
+    }
+
     const { id, ...payload } = values;
+
+    // Validate that we have an ID and payload is an object
+    if (!id || typeof payload !== 'object') {
+      console.error('updateEPG: invalid id or payload', { id, payload });
+      return;
+    }
 
     try {
       // If this is just toggling the active state, make a simpler request
@@ -2479,6 +2500,23 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update playback position', e);
+    }
+  }
+
+  static async getSystemEvents(limit = 100, offset = 0, eventType = null) {
+    try {
+      const params = new URLSearchParams();
+      params.append('limit', limit);
+      params.append('offset', offset);
+      if (eventType) {
+        params.append('event_type', eventType);
+      }
+      const response = await request(
+        `${host}/api/core/system-events/?${params.toString()}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve system events', e);
     }
   }
 }

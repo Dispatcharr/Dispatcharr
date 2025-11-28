@@ -1,5 +1,5 @@
 """
 Dispatcharr version information.
 """
-__version__ = '0.11.2'  # Follow semantic versioning (MAJOR.MINOR.PATCH)
+__version__ = '0.12.0'  # Follow semantic versioning (MAJOR.MINOR.PATCH)
 __timestamp__ = None    # Set during CI/CD build process

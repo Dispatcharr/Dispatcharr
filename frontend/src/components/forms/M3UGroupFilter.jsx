@@ -77,27 +77,29 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
     }
 
     setGroupStates(
-      playlist.channel_groups.map((group) => {
-        // Parse custom_properties if present
-        let customProps = {};
-        if (group.custom_properties) {
-          try {
-            customProps =
-              typeof group.custom_properties === 'string'
-                ? JSON.parse(group.custom_properties)
-                : group.custom_properties;
-          } catch (e) {
-            customProps = {};
+      playlist.channel_groups
+        .filter((group) => channelGroups[group.channel_group]) // Filter out groups that don't exist
+        .map((group) => {
+          // Parse custom_properties if present
+          let customProps = {};
+          if (group.custom_properties) {
+            try {
+              customProps =
+                typeof group.custom_properties === 'string'
+                  ? JSON.parse(group.custom_properties)
+                  : group.custom_properties;
+            } catch (e) {
+              customProps = {};
+            }
           }
-        }
-        return {
-          ...group,
-          name: channelGroups[group.channel_group].name,
-          auto_channel_sync: group.auto_channel_sync || false,
-          auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
-          custom_properties: customProps,
-        };
-      })
+          return {
+            ...group,
+            name: channelGroups[group.channel_group].name,
+            auto_channel_sync: group.auto_channel_sync || false,
+            auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
+            custom_properties: customProps,
+          };
+        })
     );
   }, [playlist, channelGroups]);
 

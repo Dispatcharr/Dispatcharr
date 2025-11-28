@@ -17,7 +17,9 @@ import {
   Table,
   Divider,
 } from '@mantine/core';
-import { Play } from 'lucide-react';
+import { Play, Copy } from 'lucide-react';
+import { notifications } from '@mantine/notifications';
+import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
@@ -260,6 +262,39 @@ const SeriesModal = ({ series, opened, onClose }) => {
       streamUrl = `${window.location.origin}${streamUrl}`;
     }
     showVideo(streamUrl, 'vod', episode);
+  };
+
+  const getEpisodeStreamUrl = (episode) => {
+    let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
+
+    // Add selected provider as query parameter if available
+    if (selectedProvider) {
+      // Use stream_id for most specific selection, fallback to account_id
+      if (selectedProvider.stream_id) {
+        streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
+      } else {
+        streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
+      }
+    }
+
+    if (env_mode === 'dev') {
+      streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;
+    } else {
+      streamUrl = `${window.location.origin}${streamUrl}`;
+    }
+    return streamUrl;
+  };
+
+  const handleCopyEpisodeLink = async (episode) => {
+    const streamUrl = getEpisodeStreamUrl(episode);
+    const success = await copyToClipboard(streamUrl);
+    notifications.show({
+      title: success ? 'Link Copied!' : 'Copy Failed',
+      message: success
+        ? 'Episode link copied to clipboard'
+        : 'Failed to copy link to clipboard',
+      color: success ? 'green' : 'red',
+    });
   };
 
   const handleEpisodeRowClick = (episode) => {
@@ -611,20 +646,34 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                   </Text>
                                 </Table.Td>
                                 <Table.Td>
-                                  <ActionIcon
-                                    variant="filled"
-                                    color="blue"
-                                    size="sm"
-                                    disabled={
-                                      providers.length > 0 && !selectedProvider
-                                    }
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handlePlayEpisode(episode);
-                                    }}
-                                  >
-                                    <Play size={12} />
-                                  </ActionIcon>
+                                  <Group spacing="xs">
+                                    <ActionIcon
+                                      variant="filled"
+                                      color="blue"
+                                      size="sm"
+                                      disabled={
+                                        providers.length > 0 &&
+                                        !selectedProvider
+                                      }
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handlePlayEpisode(episode);
+                                      }}
+                                    >
+                                      <Play size={12} />
+                                    </ActionIcon>
+                                    <ActionIcon
+                                      variant="outline"
+                                      color="gray"
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCopyEpisodeLink(episode);
+                                      }}
+                                    >
+                                      <Copy size={12} />
+                                    </ActionIcon>
+                                  </Group>
                                 </Table.Td>
                               </Table.Tr>
                               {expandedEpisode === episode.id && (

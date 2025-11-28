@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory
+from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
@@ -1495,6 +1495,15 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         epg_source.last_message = f"Successfully processed {program_count} programs across {channel_count} channels. Updated: {updated_count}."
         epg_source.updated_at = timezone.now()
         epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
+
+        # Log system event for EPG refresh
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=epg_source.name,
+            programs=program_count,
+            channels=channel_count,
+            updated=updated_count,
+        )
 
         # Send completion notification with status
         send_epg_update(epg_source.id, "parsing_programs", 100,
