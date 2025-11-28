@@ -256,12 +256,7 @@ class ChannelSerializer(serializers.ModelSerializer):
         required=False,
     )
 
-    hls_output_profile_id = serializers.PrimaryKeyRelatedField(
-        queryset=HLSOutputProfile.objects.all(),
-        source="hls_output_profile",
-        allow_null=True,
-        required=False,
-    )
+
 
     streams = serializers.PrimaryKeyRelatedField(
         queryset=Stream.objects.all(), many=True, required=False
