@@ -79,6 +79,15 @@ class ProxySettingsSerializer(serializers.Serializer):
             raise serializers.ValidationError("Buffering timeout must be between 0 and 300 seconds")
         return value
 
+class HlsOutputSettingsSerializer(serializers.Serializer):
+    """Serializer for HLS output settings stored as JSON in CoreSettings"""
+    segment_duration = serializers.IntegerField(min_value=2, max_value=10)
+    playlist_size = serializers.IntegerField(min_value=3, max_value=20)
+    dvr_window_seconds = serializers.IntegerField(min_value=0, max_value=86400)
+    storage_path = serializers.CharField(max_length=255)
+    segment_cache_ttl = serializers.IntegerField(min_value=0, max_value=86400)
+    playlist_cache_ttl = serializers.IntegerField(min_value=0, max_value=60)
+
     def validate_buffering_speed(self, value):
         if value < 0.1 or value > 10.0:
             raise serializers.ValidationError("Buffering speed must be between 0.1 and 10.0")

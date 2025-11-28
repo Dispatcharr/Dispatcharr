@@ -14,6 +14,7 @@ import {
   Tv2,
   ScreenShare,
   Scroll,
+  Video,
   SquareMinus,
   CirclePlay,
   SquarePen,
@@ -66,6 +67,7 @@ import { USER_LEVELS } from '../../constants';
 const m3uUrlBase = `${window.location.protocol}//${window.location.host}/output/m3u`;
 const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/epg`;
 const hdhrUrlBase = `${window.location.protocol}//${window.location.host}/hdhr`;
+const hlsUrlBase = `${window.location.protocol}//${window.location.host}/hls-output`;
 
 const ChannelEnabledSwitch = React.memo(
   ({ rowId, selectedProfileId, selectedTableIds }) => {
@@ -301,6 +303,7 @@ const ChannelsTable = ({}) => {
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
   const [m3uUrl, setM3UUrl] = useState(m3uUrlBase);
+  const [hlsUrl, setHLSUrl] = useState(hlsUrlBase);
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -324,6 +327,9 @@ const ChannelsTable = ({}) => {
     cachedlogos: true,
     tvg_id_source: 'channel_number',
     days: 0,
+  });
+  const [hlsParams, setHlsParams] = useState({
+    quality: 'master',
   });
 
   /**
@@ -621,6 +627,19 @@ const ChannelsTable = ({}) => {
     const baseUrl = epgUrl;
     return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
   };
+
+  const buildHLSUrl = () => {
+    // For master playlist, return base URL + /master.m3u8
+    // For specific quality, return base URL + /channel/{uuid}/{quality}.m3u8
+    // Note: This generates a generic URL - actual channel-specific URLs would need channel UUID
+    if (hlsParams.quality === 'master') {
+      return `${hlsUrl}/master.m3u8`;
+    } else {
+      // Generic URL format - users would replace {channel-uuid} with actual UUID
+      return `${hlsUrl}/channel/{channel-uuid}/${hlsParams.quality}.m3u8`;
+    }
+  };
+
   // Example copy URLs
   const copyM3UUrl = async () => {
     const success = await copyToClipboard(buildM3UUrl());
@@ -651,6 +670,17 @@ const ChannelsTable = ({}) => {
       message: success
         ? 'The HDHR URL has been copied to your clipboard.'
         : 'Failed to copy HDHR URL to clipboard',
+      color: success ? 'green' : 'red',
+    });
+  };
+
+  const copyHLSUrl = async () => {
+    const success = await copyToClipboard(buildHLSUrl());
+    notifications.show({
+      title: success ? 'HLS URL Copied!' : 'Copy Failed',
+      message: success
+        ? 'The HLS URL has been copied to your clipboard.'
+        : 'Failed to copy HLS URL to clipboard',
       color: success ? 'green' : 'red',
     });
   };
@@ -1303,6 +1333,76 @@ const ChannelsTable = ({}) => {
                           days: value || 0,
                         }))
                       }
+                    />
+                  </Stack>
+                </Popover.Dropdown>
+              </Popover>
+              <Popover
+                withArrow
+                shadow="md"
+                zIndex={1000}
+                position="bottom-start"
+                withinPortal
+              >
+                <Popover.Target>
+                  <Button
+                    leftSection={<Video size={18} />}
+                    size="compact-sm"
+                    p={5}
+                    variant="subtle"
+                    style={{
+                      borderColor: theme.palette.custom.purpleMain,
+                      color: theme.palette.custom.purpleMain,
+                    }}
+                  >
+                    HLS
+                  </Button>
+                </Popover.Target>
+                <Popover.Dropdown>
+                  <Stack
+                    gap="sm"
+                    style={{
+                      minWidth: 300,
+                      maxWidth: 'min(450px, 85vw)',
+                      width: 'max-content',
+                    }}
+                    onClick={stopPropagation}
+                    onMouseDown={stopPropagation}
+                  >
+                    <TextInput
+                      value={buildHLSUrl()}
+                      size="xs"
+                      readOnly
+                      label="Generated URL"
+                      rightSection={
+                        <ActionIcon
+                          onClick={copyHLSUrl}
+                          size="sm"
+                          variant="transparent"
+                          color="gray.5"
+                        >
+                          <Copy size="16" />
+                        </ActionIcon>
+                      }
+                    />
+                    <Select
+                      label="Quality"
+                      size="xs"
+                      value={hlsParams.quality}
+                      onChange={(value) =>
+                        setHlsParams((prev) => ({
+                          ...prev,
+                          quality: value,
+                        }))
+                      }
+                      comboboxProps={{ withinPortal: false }}
+                      data={[
+                        { value: 'master', label: 'Master Playlist (All Qualities)' },
+                        { value: '1080p', label: '1080p' },
+                        { value: '720p', label: '720p' },
+                        { value: '480p', label: '480p' },
+                        { value: 'copy', label: 'Copy (No Transcoding)' },
+                      ]}
                     />
                   </Stack>
                 </Popover.Dropdown>

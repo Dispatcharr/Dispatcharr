@@ -318,20 +318,6 @@ class Channel(models.Model):
         help_text="Timestamp when this channel was last updated"
     )
 
-    # HLS Output Settings
-    hls_output_enabled = models.BooleanField(
-        default=False,
-        help_text="Enable HLS output streaming for this channel"
-    )
-    hls_output_profile = models.ForeignKey(
-        'hls_output.HLSOutputProfile',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='channels',
-        help_text="HLS output profile to use for this channel"
-    )
-
     def clean(self):
         # Enforce unique channel_number within a given group
         existing = Channel.objects.filter(

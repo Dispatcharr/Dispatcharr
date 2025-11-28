@@ -21,7 +21,6 @@ from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
 from core.utils import validate_flexible_url
-from apps.proxy.hls_output.models import HLSOutputProfile
 
 
 class LogoSerializer(serializers.ModelSerializer):

@@ -32,13 +32,13 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
-import HLSOutputSettings from '../components/HLSOutputSettings';
 import useLocalStorage from '../hooks/useLocalStorage';
 import useAuthStore from '../store/auth';
 import {
   USER_LEVELS,
   NETWORK_ACCESS_OPTIONS,
   PROXY_SETTINGS_OPTIONS,
+  HLS_OUTPUT_SETTINGS_OPTIONS,
   REGION_CHOICES,
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
@@ -212,6 +212,7 @@ const SettingsPage = () => {
     useState([]);
 
   const [proxySettingsSaved, setProxySettingsSaved] = useState(false);
+  const [hlsOutputSettingsSaved, setHlsOutputSettingsSaved] = useState(false);
   const [generalSettingsSaved, setGeneralSettingsSaved] = useState(false);
   const [rehashingStreams, setRehashingStreams] = useState(false);
   const [rehashSuccess, setRehashSuccess] = useState(false);
@@ -329,6 +330,14 @@ const SettingsPage = () => {
     }, {}),
   });
 
+  const hlsOutputSettingsForm = useForm({
+    mode: 'controlled',
+    initialValues: Object.keys(HLS_OUTPUT_SETTINGS_OPTIONS).reduce((acc, key) => {
+      acc[key] = '';
+      return acc;
+    }, {}),
+  });
+
   useEffect(() => {
     if (settings) {
       const formValues = Object.entries(settings).reduce(
@@ -389,6 +398,15 @@ const SettingsPage = () => {
           proxySettingsForm.setValues(proxySettings);
         } catch (error) {
           console.error('Error parsing proxy settings:', error);
+        }
+      }
+
+      if (settings['hls-output-settings']?.value) {
+        try {
+          const hlsOutputSettings = JSON.parse(settings['hls-output-settings'].value);
+          hlsOutputSettingsForm.setValues(hlsOutputSettings);
+        } catch (error) {
+          console.error('Error parsing HLS output settings:', error);
         }
       }
 
@@ -622,6 +640,35 @@ const SettingsPage = () => {
     };
 
     proxySettingsForm.setValues(defaultValues);
+  };
+
+  const onHlsOutputSettingsSubmit = async () => {
+    setHlsOutputSettingsSaved(false);
+
+    try {
+      const result = await API.updateSetting({
+        ...settings['hls-output-settings'],
+        value: JSON.stringify(hlsOutputSettingsForm.getValues()),
+      });
+      if (result) {
+        setHlsOutputSettingsSaved(true);
+      }
+    } catch (error) {
+      console.error('Error saving HLS output settings:', error);
+    }
+  };
+
+  const resetHlsOutputSettingsToDefaults = () => {
+    const defaultValues = {
+      segment_duration: 4,
+      playlist_size: 10,
+      dvr_window_seconds: 7200,
+      storage_path: '/var/www/hls',
+      segment_cache_ttl: 86400,
+      playlist_cache_ttl: 2,
+    };
+
+    hlsOutputSettingsForm.setValues(defaultValues);
   };
 
   const saveNetworkAccess = async () => {
@@ -1458,12 +1505,89 @@ const SettingsPage = () => {
                 </Accordion.Panel>
               </Accordion.Item>
 
-              <Accordion.Item value="hls-output">
+              <Accordion.Item value="hls-output-settings">
                 <Accordion.Control>
                   <Box>HLS Output</Box>
                 </Accordion.Control>
                 <Accordion.Panel>
-                  <HLSOutputSettings />
+                  <form
+                    onSubmit={hlsOutputSettingsForm.onSubmit(onHlsOutputSettingsSubmit)}
+                  >
+                    <Stack gap="sm">
+                      {hlsOutputSettingsSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        ></Alert>
+                      )}
+                      {Object.entries(HLS_OUTPUT_SETTINGS_OPTIONS).map(
+                        ([key, config]) => {
+                          const isNumericField = [
+                            'segment_duration',
+                            'playlist_size',
+                            'dvr_window_seconds',
+                            'segment_cache_ttl',
+                            'playlist_cache_ttl',
+                          ].includes(key);
+
+                          if (isNumericField) {
+                            return (
+                              <NumberInput
+                                key={key}
+                                label={config.label}
+                                {...hlsOutputSettingsForm.getInputProps(key)}
+                                description={config.description || null}
+                                min={0}
+                                max={
+                                  key === 'segment_duration'
+                                    ? 10
+                                    : key === 'playlist_size'
+                                      ? 20
+                                      : key === 'dvr_window_seconds'
+                                        ? 86400
+                                        : key === 'segment_cache_ttl'
+                                          ? 86400
+                                          : 60
+                                }
+                              />
+                            );
+                          } else {
+                            return (
+                              <TextInput
+                                key={key}
+                                label={config.label}
+                                {...hlsOutputSettingsForm.getInputProps(key)}
+                                description={config.description || null}
+                              />
+                            );
+                          }
+                        }
+                      )}
+
+                      <Flex
+                        mih={50}
+                        gap="xs"
+                        justify="space-between"
+                        align="flex-end"
+                      >
+                        <Button
+                          variant="subtle"
+                          color="gray"
+                          onClick={resetHlsOutputSettingsToDefaults}
+                        >
+                          Reset to Defaults
+                        </Button>
+                        <Button
+                          type="submit"
+                          disabled={hlsOutputSettingsForm.submitting}
+                          variant="default"
+                        >
+                          Save
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  </form>
                 </Accordion.Panel>
               </Accordion.Item>
             </>

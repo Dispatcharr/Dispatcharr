@@ -57,6 +57,33 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
 };
 
+export const HLS_OUTPUT_SETTINGS_OPTIONS = {
+  segment_duration: {
+    label: 'Segment Duration',
+    description: 'Target duration for each HLS segment in seconds (2-10)',
+  },
+  playlist_size: {
+    label: 'Playlist Size',
+    description: 'Number of segments to keep in the live playlist (3-20)',
+  },
+  dvr_window_seconds: {
+    label: 'DVR Window',
+    description: 'DVR window duration in seconds (0-86400, 0 = disabled)',
+  },
+  storage_path: {
+    label: 'Storage Path',
+    description: 'Base path for HLS segment storage',
+  },
+  segment_cache_ttl: {
+    label: 'Segment Cache TTL',
+    description: 'Time-to-live for segments in seconds',
+  },
+  playlist_cache_ttl: {
+    label: 'Playlist Cache TTL',
+    description: 'Time-to-live for playlists in seconds',
+  },
+};
+
 export const M3U_FILTER_TYPES = [
   {
     label: 'Group',

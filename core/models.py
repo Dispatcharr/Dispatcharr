@@ -42,7 +42,7 @@ class StreamProfile(models.Model):
         blank=True,
     )
     parameters = models.TextField(
-        help_text="Command-line parameters. Use {userAgent} and {streamUrl} as placeholders.",
+        help_text="Command-line parameters. Use {userAgent}, {streamUrl}, {channelId}, {channelUuid} as placeholders.",
         blank=True,
     )
     locked = models.BooleanField(
@@ -121,7 +121,18 @@ class StreamProfile(models.Model):
             return True
         return False
 
-    def build_command(self, stream_url, user_agent):
+    def build_command(self, stream_url, user_agent, **kwargs):
+        """
+        Build command with placeholder replacements.
+
+        Args:
+            stream_url: The stream URL
+            user_agent: The user agent string
+            **kwargs: Additional placeholders (channelId, channelUuid, etc.)
+
+        Returns:
+            List of command arguments
+        """
         if self.is_proxy():
             return []
 
@@ -129,6 +140,11 @@ class StreamProfile(models.Model):
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
         }
+
+        # Add any additional placeholders from kwargs
+        for key, value in kwargs.items():
+            placeholder = f"{{{key}}}"
+            replacements[placeholder] = str(value)
 
         # Split the command and iterate through each part to apply replacements
         cmd = [self.command] + [
@@ -152,6 +168,7 @@ PREFERRED_REGION_KEY = slugify("Preferred Region")
 AUTO_IMPORT_MAPPED_FILES = slugify("Auto-Import Mapped Files")
 NETWORK_ACCESS = slugify("Network Access")
 PROXY_SETTINGS_KEY = slugify("Proxy Settings")
+HLS_OUTPUT_SETTINGS_KEY = slugify("HLS Output Settings")
 DVR_TV_TEMPLATE_KEY = slugify("DVR TV Template")
 DVR_MOVIE_TEMPLATE_KEY = slugify("DVR Movie Template")
 DVR_SERIES_RULES_KEY = slugify("DVR Series Rules")
@@ -224,6 +241,24 @@ class CoreSettings(models.Model):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+            }
+
+    @classmethod
+    def get_hls_output_settings(cls):
+        """Retrieve HLS output settings as dict (or return defaults if not found)."""
+        try:
+            import json
+            settings_json = cls.objects.get(key=HLS_OUTPUT_SETTINGS_KEY).value
+            return json.loads(settings_json)
+        except (cls.DoesNotExist, json.JSONDecodeError):
+            # Return defaults if not found or invalid JSON
+            return {
+                "segment_duration": 4,
+                "playlist_size": 10,
+                "dvr_window_seconds": 7200,
+                "storage_path": "/var/www/hls",
+                "segment_cache_ttl": 86400,
+                "playlist_cache_ttl": 2,
             }
 
     @classmethod

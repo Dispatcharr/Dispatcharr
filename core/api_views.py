@@ -18,12 +18,14 @@ from .models import (
     STREAM_HASH_KEY,
     NETWORK_ACCESS,
     PROXY_SETTINGS_KEY,
+    HLS_OUTPUT_SETTINGS_KEY,
 )
 from .serializers import (
     UserAgentSerializer,
     StreamProfileSerializer,
     CoreSettingsSerializer,
     ProxySettingsSerializer,
+    HlsOutputSettingsSerializer,
 )
 
 import socket
@@ -223,6 +225,83 @@ class ProxySettingsViewSet(viewsets.ViewSet):
         elif request.method == 'PATCH':
             return self.partial_update(request)
 
+
+class HlsOutputSettingsViewSet(viewsets.ViewSet):
+    """
+    API endpoint for HLS output settings stored as JSON in CoreSettings.
+    """
+    serializer_class = HlsOutputSettingsSerializer
+
+    def _get_or_create_settings(self):
+        """Get or create the HLS output settings CoreSettings entry"""
+        try:
+            settings_obj = CoreSettings.objects.get(key=HLS_OUTPUT_SETTINGS_KEY)
+            settings_data = json.loads(settings_obj.value)
+        except (CoreSettings.DoesNotExist, json.JSONDecodeError):
+            # Create default settings
+            settings_data = {
+                "segment_duration": 4,
+                "playlist_size": 10,
+                "dvr_window_seconds": 7200,
+                "storage_path": "/var/www/hls",
+                "segment_cache_ttl": 86400,
+                "playlist_cache_ttl": 2,
+            }
+            settings_obj, created = CoreSettings.objects.get_or_create(
+                key=HLS_OUTPUT_SETTINGS_KEY,
+                defaults={
+                    "name": "HLS Output Settings",
+                    "value": json.dumps(settings_data)
+                }
+            )
+        return settings_obj, settings_data
+
+    def list(self, request):
+        """Return HLS output settings"""
+        settings_obj, settings_data = self._get_or_create_settings()
+        return Response(settings_data)
+
+    def retrieve(self, request, pk=None):
+        """Return HLS output settings regardless of ID"""
+        settings_obj, settings_data = self._get_or_create_settings()
+        return Response(settings_data)
+
+    def update(self, request, pk=None):
+        """Update HLS output settings"""
+        settings_obj, current_data = self._get_or_create_settings()
+
+        serializer = HlsOutputSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Update the JSON data
+        settings_obj.value = json.dumps(serializer.validated_data)
+        settings_obj.save()
+
+        return Response(serializer.validated_data)
+
+    def partial_update(self, request, pk=None):
+        """Partially update HLS output settings"""
+        settings_obj, current_data = self._get_or_create_settings()
+
+        # Merge current data with new data
+        updated_data = {**current_data, **request.data}
+
+        serializer = HlsOutputSettingsSerializer(data=updated_data)
+        serializer.is_valid(raise_exception=True)
+
+        # Update the JSON data
+        settings_obj.value = json.dumps(serializer.validated_data)
+        settings_obj.save()
+
+        return Response(serializer.validated_data)
+
+    @action(detail=False, methods=['get', 'patch'])
+    def settings(self, request):
+        """Get or update the HLS output settings."""
+        if request.method == 'GET':
+            return self.list(request)
+        elif request.method == 'PATCH':
+            return self.partial_update(request)
 
 
 @swagger_auto_schema(

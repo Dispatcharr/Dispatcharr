@@ -495,7 +495,13 @@ class StreamManager:
                 stream_profile = channel.get_stream_profile()
 
             # Build and start transcode command
-            self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
+            # Pass channel information for HLS profiles that need it
+            self.transcode_cmd = stream_profile.build_command(
+                self.url,
+                self.user_agent,
+                channelId=channel.id if hasattr(channel, 'id') else self.channel_id,
+                channelUuid=str(channel.uuid) if hasattr(channel, 'uuid') else self.channel_id
+            )
 
             # For UDP streams, remove any user_agent parameters from the command
             if hasattr(self, 'stream_type') and self.stream_type == StreamType.UDP:
