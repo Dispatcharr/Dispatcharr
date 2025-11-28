@@ -25,7 +25,6 @@ class HLSOutputProfileAdmin(admin.ModelAdmin):
         'enable_abr',
         'enable_ll_hls',
         'auto_cleanup',
-        'enable_auto_restart',
         'use_memory_storage'
     ]
     
@@ -69,8 +68,7 @@ class HLSOutputProfileAdmin(admin.ModelAdmin):
         ('Cleanup Settings', {
             'fields': (
                 'auto_cleanup',
-                'cleanup_interval_seconds',
-                'enable_auto_restart'
+                'cleanup_interval_seconds'
             )
         }),
         ('Caching Settings', {

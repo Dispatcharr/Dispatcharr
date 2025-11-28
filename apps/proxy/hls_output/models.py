@@ -174,7 +174,7 @@ class HLSStream(models.Model):
 
     # Relationships
     channel = models.ForeignKey(
-        'core.Channel',
+        'channels.Channel',
         on_delete=models.CASCADE,
         related_name='hls_streams'
     )

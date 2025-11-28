@@ -324,7 +324,7 @@ class Channel(models.Model):
         help_text="Enable HLS output streaming for this channel"
     )
     hls_output_profile = models.ForeignKey(
-        'proxy.HLSOutputProfile',
+        'hls_output.HLSOutputProfile',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
