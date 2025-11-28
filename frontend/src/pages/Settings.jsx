@@ -32,6 +32,7 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
+import HLSOutputSettings from '../components/HLSOutputSettings';
 import useLocalStorage from '../hooks/useLocalStorage';
 import useAuthStore from '../store/auth';
 import {
@@ -1454,6 +1455,15 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="hls-output">
+                <Accordion.Control>
+                  <Box>HLS Output</Box>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <HLSOutputSettings />
                 </Accordion.Panel>
               </Accordion.Item>
             </>

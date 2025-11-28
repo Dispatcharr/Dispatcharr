@@ -41,6 +41,9 @@ urlpatterns = [
     # Add proxy apps - Move these before the catch-all
     path("proxy/", include(("apps.proxy.urls", "proxy"), namespace="proxy")),
     path("proxy", RedirectView.as_view(url="/proxy/", permanent=True)),
+    # HLS Output
+    path("hls/", include(("apps.proxy.hls_output.urls", "hls_output"), namespace="hls_output")),
+    path("hls", RedirectView.as_view(url="/hls/", permanent=True)),
     # xc
     re_path("player_api.php", xc_player_api, name="xc_player_api"),
     re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),

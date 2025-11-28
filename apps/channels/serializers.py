@@ -21,6 +21,7 @@ from django.urls import reverse
 from rest_framework import serializers
 from django.utils import timezone
 from core.utils import validate_flexible_url
+from apps.proxy.hls_output.models import HLSOutputProfile
 
 
 class LogoSerializer(serializers.ModelSerializer):
@@ -256,6 +257,13 @@ class ChannelSerializer(serializers.ModelSerializer):
         required=False,
     )
 
+    hls_output_profile_id = serializers.PrimaryKeyRelatedField(
+        queryset=HLSOutputProfile.objects.all(),
+        source="hls_output_profile",
+        allow_null=True,
+        required=False,
+    )
+
     streams = serializers.PrimaryKeyRelatedField(
         queryset=Stream.objects.all(), many=True, required=False
     )
@@ -281,6 +289,8 @@ class ChannelSerializer(serializers.ModelSerializer):
             "epg_data_id",
             "streams",
             "stream_profile_id",
+            "hls_output_enabled",
+            "hls_output_profile_id",
             "uuid",
             "logo_id",
             "user_level",
