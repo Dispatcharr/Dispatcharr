@@ -15,7 +15,7 @@ import {
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import { IconCheck, IconAlertCircle } from '@tabler/icons-react';
+import { Check, AlertCircle } from 'lucide-react';
 import API from '../api';
 
 const HLSOutputSettings = () => {
@@ -127,7 +127,7 @@ const HLSOutputSettings = () => {
         title: 'Error',
         message: 'Failed to load profile',
         color: 'red',
-        icon: <IconAlertCircle />,
+        icon: <AlertCircle size={16} />,
       });
     }
   };
@@ -146,7 +146,7 @@ const HLSOutputSettings = () => {
           title: 'Invalid JSON',
           message: 'Qualities field must be valid JSON',
           color: 'red',
-          icon: <IconAlertCircle />,
+          icon: <AlertCircle size={16} />,
         });
         setLoading(false);
         return;
@@ -172,7 +172,7 @@ const HLSOutputSettings = () => {
         title: 'Success',
         message: 'HLS Output profile saved successfully',
         color: 'green',
-        icon: <IconCheck />,
+        icon: <Check size={16} />,
       });
 
       setTimeout(() => setSaved(false), 3000);
@@ -181,7 +181,7 @@ const HLSOutputSettings = () => {
         title: 'Error',
         message: error.response?.data?.detail || 'Failed to save profile',
         color: 'red',
-        icon: <IconAlertCircle />,
+        icon: <AlertCircle size={16} />,
       });
     } finally {
       setLoading(false);
@@ -200,7 +200,7 @@ const HLSOutputSettings = () => {
         title: 'Success',
         message: 'Profile deleted successfully',
         color: 'green',
-        icon: <IconCheck />,
+        icon: <Check size={16} />,
       });
 
       form.reset();
@@ -211,7 +211,7 @@ const HLSOutputSettings = () => {
         title: 'Error',
         message: 'Failed to delete profile',
         color: 'red',
-        icon: <IconAlertCircle />,
+        icon: <AlertCircle size={16} />,
       });
     }
   };
