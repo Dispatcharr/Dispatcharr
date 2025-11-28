@@ -100,7 +100,7 @@ def remove_hls_profiles(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0014_alter_coresettings_value'),
+        ('core', '0018_alter_systemevent_event_type'),
     ]
 
     operations = [
