@@ -7,7 +7,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('channels', '0030_alter_stream_url'),
+        ('dispatcharr_channels', '0030_alter_stream_url'),
         ('hls_output', '0001_initial'),
     ]
 

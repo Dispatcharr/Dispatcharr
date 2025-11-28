@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('channels', '0001_initial'),
+        ('dispatcharr_channels', '0001_initial'),
     ]
 
     operations = [
@@ -43,7 +43,7 @@ class Migration(migrations.Migration):
                 ('use_memory_storage', models.BooleanField(default=False, help_text='Use memory storage (/dev/shm)')),
                 ('auto_cleanup', models.BooleanField(default=True, help_text='Automatically cleanup old segments')),
                 ('cleanup_interval_seconds', models.IntegerField(default=60, help_text='Cleanup interval in seconds')),
-                ('enable_auto_restart', models.BooleanField(default=True, help_text='Auto-restart on errors')),
+                ('enable_nginx_cache', models.BooleanField(default=True, help_text='Enable Nginx caching for HLS delivery')),
                 ('playlist_cache_ttl', models.IntegerField(default=2, help_text='Playlist cache TTL in seconds')),
                 ('segment_cache_ttl', models.IntegerField(default=86400, help_text='Segment cache TTL in seconds')),
                 ('enable_cdn', models.BooleanField(default=False, help_text='Enable CDN integration')),
@@ -62,7 +62,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('stream_id', models.UUIDField(default=uuid.uuid4, unique=True, editable=False)),
-                ('channel', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='hls_streams', to='channels.channel')),
+                ('channel', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='hls_streams', to='dispatcharr_channels.channel')),
                 ('profile', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='streams', to='hls_output.hlsoutputprofile')),
                 ('status', models.CharField(
                     max_length=20,
