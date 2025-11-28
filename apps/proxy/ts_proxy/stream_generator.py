@@ -90,8 +90,12 @@ class StreamGenerator:
             if not self._setup_streaming():
                 return
 
-            # Log client connect event
+            # Log client connect event (only for channel UUIDs, not stream hashes)
             try:
+                from uuid import UUID
+                # Validate that channel_id is a valid UUID
+                UUID(self.channel_id)
+
                 channel_obj = Channel.objects.get(uuid=self.channel_id)
                 log_system_event(
                     'client_connect',
@@ -101,6 +105,9 @@ class StreamGenerator:
                     client_id=self.client_id,
                     user_agent=self.client_user_agent[:100] if self.client_user_agent else None
                 )
+            except (ValueError, AttributeError):
+                # Not a valid UUID - it's a stream hash, skip event logging
+                logger.debug(f"Client {self.client_id} connected to stream hash {self.channel_id[:16]}...")
             except Exception as e:
                 logger.error(f"Could not log client connect event: {e}")
 
@@ -455,8 +462,12 @@ class StreamGenerator:
             total_clients = client_manager.get_total_client_count()
             logger.info(f"[{self.client_id}] Disconnected after {elapsed:.2f}s (local: {local_clients}, total: {total_clients})")
 
-            # Log client disconnect event
+            # Log client disconnect event (only for channel UUIDs, not stream hashes)
             try:
+                from uuid import UUID
+                # Validate that channel_id is a valid UUID
+                UUID(self.channel_id)
+
                 channel_obj = Channel.objects.get(uuid=self.channel_id)
                 log_system_event(
                     'client_disconnect',
@@ -468,6 +479,9 @@ class StreamGenerator:
                     duration=round(elapsed, 2),
                     bytes_sent=self.bytes_sent
                 )
+            except (ValueError, AttributeError):
+                # Not a valid UUID - it's a stream hash, skip event logging
+                logger.debug(f"Client {self.client_id} disconnected from stream hash {self.channel_id[:16]}... (duration: {round(elapsed, 2)}s, bytes: {self.bytes_sent})")
             except Exception as e:
                 logger.error(f"Could not log client disconnect event: {e}")
 

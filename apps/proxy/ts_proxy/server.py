@@ -623,7 +623,12 @@ class ProxyServer:
             self.stream_managers[channel_id] = stream_manager
 
             # Log channel start event
+            # Only log if channel_id is a valid UUID (not a stream hash)
             try:
+                from uuid import UUID
+                # Validate that channel_id is a valid UUID
+                UUID(channel_id)
+
                 channel_obj = Channel.objects.get(uuid=channel_id)
 
                 # Get stream name if stream_id is available
@@ -642,6 +647,9 @@ class ProxyServer:
                     stream_name=stream_name,
                     stream_id=channel_stream_id
                 )
+            except (ValueError, AttributeError):
+                # channel_id is not a valid UUID (probably a stream hash), skip logging
+                logger.debug(f"Skipping channel start event logging for non-UUID identifier: {channel_id[:16]}...")
             except Exception as e:
                 logger.error(f"Could not log channel start event: {e}")
 
@@ -885,10 +893,11 @@ class ProxyServer:
                 logger.info(f"Released ownership of channel {channel_id}")
 
                 # Log channel stop event (after cleanup, before releasing ownership section ends)
+                # Handle both channel UUIDs and stream hashes
                 try:
-                    channel_obj = Channel.objects.get(uuid=channel_id)
+                    from uuid import UUID
 
-                    # Calculate runtime and get total bytes from metadata
+                    # Calculate runtime and get total bytes from metadata (common for both)
                     runtime = None
                     total_bytes = None
                     if self.redis_client:
@@ -909,15 +918,24 @@ class ProxyServer:
                                 except Exception:
                                     pass
 
-                    log_system_event(
-                        'channel_stop',
-                        channel_id=channel_id,
-                        channel_name=channel_obj.name,
-                        runtime=runtime,
-                        total_bytes=total_bytes
-                    )
+                    # Try to validate as UUID first (for channels)
+                    try:
+                        UUID(channel_id)
+                        # It's a valid UUID - log as channel stop event
+                        channel_obj = Channel.objects.get(uuid=channel_id)
+                        log_system_event(
+                            'channel_stop',
+                            channel_id=channel_id,
+                            channel_name=channel_obj.name,
+                            runtime=runtime,
+                            total_bytes=total_bytes
+                        )
+                    except (ValueError, AttributeError):
+                        # Not a valid UUID - it's a stream hash, skip event logging
+                        # Stream hash monitoring doesn't use SystemEvent logging
+                        logger.debug(f"Stream hash {channel_id[:16]}... stopped (runtime: {runtime}s, bytes: {total_bytes})")
                 except Exception as e:
-                    logger.error(f"Could not log channel stop event: {e}")
+                    logger.error(f"Could not log stop event: {e}")
 
             # Always clean up local resources - WITH SAFE CHECKS
             if channel_id in self.stream_managers:

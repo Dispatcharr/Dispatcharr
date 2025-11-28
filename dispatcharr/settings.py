@@ -201,6 +201,9 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     "visibility_timeout": 3600,  # Time in seconds that a task remains invisible during retries
 }
 
+# Celery 6.0 compatibility - retain existing behavior for broker connection retries on startup
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 

@@ -264,6 +264,10 @@ class StreamManager:
                             # Log reconnection event if this is a retry (not first attempt)
                             if self.retry_count > 0:
                                 try:
+                                    from uuid import UUID
+                                    # Validate that channel_id is a valid UUID
+                                    UUID(self.channel_id)
+
                                     channel_obj = Channel.objects.get(uuid=self.channel_id)
                                     log_system_event(
                                         'channel_reconnect',
@@ -272,6 +276,9 @@ class StreamManager:
                                         attempt=self.retry_count + 1,
                                         max_attempts=self.max_retries
                                     )
+                                except (ValueError, AttributeError):
+                                    # Not a valid UUID - it's a stream hash, skip event logging
+                                    logger.debug(f"Stream hash {self.channel_id[:16]}... reconnected (attempt {self.retry_count + 1}/{self.max_retries})")
                                 except Exception as e:
                                     logger.error(f"Could not log reconnection event: {e}")
 
@@ -307,6 +314,10 @@ class StreamManager:
 
                             # Log connection error event
                             try:
+                                from uuid import UUID
+                                # Validate that channel_id is a valid UUID
+                                UUID(self.channel_id)
+
                                 channel_obj = Channel.objects.get(uuid=self.channel_id)
                                 log_system_event(
                                     'channel_error',
@@ -316,6 +327,9 @@ class StreamManager:
                                     url=self.url[:100] if self.url else None,
                                     attempts=self.max_retries
                                 )
+                            except (ValueError, AttributeError):
+                                # Not a valid UUID - it's a stream hash, skip event logging
+                                logger.debug(f"Stream hash {self.channel_id[:16]}... connection failed after {self.max_retries} attempts")
                             except Exception as e:
                                 logger.error(f"Could not log connection error event: {e}")
                         else:
@@ -334,6 +348,10 @@ class StreamManager:
 
                             # Log connection error event with exception details
                             try:
+                                from uuid import UUID
+                                # Validate that channel_id is a valid UUID
+                                UUID(self.channel_id)
+
                                 channel_obj = Channel.objects.get(uuid=self.channel_id)
                                 log_system_event(
                                     'channel_error',
@@ -344,6 +362,9 @@ class StreamManager:
                                     url=self.url[:100] if self.url else None,
                                     attempts=self.max_retries
                                 )
+                            except (ValueError, AttributeError):
+                                # Not a valid UUID - it's a stream hash, skip event logging
+                                logger.debug(f"Stream hash {self.channel_id[:16]}... connection exception after {self.max_retries} attempts: {str(e)[:100]}")
                             except Exception as log_error:
                                 logger.error(f"Could not log connection error event: {log_error}")
                         else:
@@ -749,6 +770,10 @@ class StreamManager:
 
                                 # Log failover event
                                 try:
+                                    from uuid import UUID
+                                    # Validate that channel_id is a valid UUID
+                                    UUID(self.channel_id)
+
                                     channel_obj = Channel.objects.get(uuid=self.channel_id)
                                     log_system_event(
                                         'channel_failover',
@@ -757,6 +782,9 @@ class StreamManager:
                                         reason='buffering_timeout',
                                         duration=buffering_duration
                                     )
+                                except (ValueError, AttributeError):
+                                    # Not a valid UUID - it's a stream hash, skip event logging
+                                    logger.debug(f"Stream hash {self.channel_id[:16]}... failover due to buffering timeout ({buffering_duration:.1f}s)")
                                 except Exception as e:
                                     logger.error(f"Could not log failover event: {e}")
                             else:
@@ -769,6 +797,10 @@ class StreamManager:
 
                     # Log system event for buffering
                     try:
+                        from uuid import UUID
+                        # Validate that channel_id is a valid UUID
+                        UUID(self.channel_id)
+
                         channel_obj = Channel.objects.get(uuid=self.channel_id)
                         log_system_event(
                             'channel_buffering',
@@ -776,6 +808,9 @@ class StreamManager:
                             channel_name=channel_obj.name,
                             speed=ffmpeg_speed
                         )
+                    except (ValueError, AttributeError):
+                        # Not a valid UUID - it's a stream hash, skip event logging
+                        logger.debug(f"Stream hash {self.channel_id[:16]}... buffering detected (speed: {ffmpeg_speed}x)")
                     except Exception as e:
                         logger.error(f"Could not log buffering event: {e}")
 
@@ -1076,6 +1111,10 @@ class StreamManager:
 
             # Log stream switch event
             try:
+                from uuid import UUID
+                # Validate that channel_id is a valid UUID
+                UUID(self.channel_id)
+
                 channel_obj = Channel.objects.get(uuid=self.channel_id)
                 log_system_event(
                     'stream_switch',
@@ -1084,6 +1123,9 @@ class StreamManager:
                     new_url=new_url[:100] if new_url else None,
                     stream_id=stream_id
                 )
+            except (ValueError, AttributeError):
+                # Not a valid UUID - it's a stream hash, skip event logging
+                logger.debug(f"Stream hash {self.channel_id[:16]}... switched to new URL (stream_id: {stream_id})")
             except Exception as e:
                 logger.error(f"Could not log stream switch event: {e}")
 
@@ -1208,6 +1250,10 @@ class StreamManager:
 
                     # Log reconnection event
                     try:
+                        from uuid import UUID
+                        # Validate that channel_id is a valid UUID
+                        UUID(self.channel_id)
+
                         channel_obj = Channel.objects.get(uuid=self.channel_id)
                         log_system_event(
                             'channel_reconnect',
@@ -1215,6 +1261,9 @@ class StreamManager:
                             channel_name=channel_obj.name,
                             reason='health_monitor'
                         )
+                    except (ValueError, AttributeError):
+                        # Not a valid UUID - it's a stream hash, skip event logging
+                        logger.debug(f"Stream hash {self.channel_id[:16]}... reconnected via health monitor")
                     except Exception as e:
                         logger.error(f"Could not log reconnection event: {e}")
 
