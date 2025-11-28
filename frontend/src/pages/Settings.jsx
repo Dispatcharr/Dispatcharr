@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import API from '../api';
+import API, { request, errorNotification, host } from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
 import useStreamProfilesStore from '../store/streamProfiles';
@@ -653,29 +653,18 @@ const SettingsPage = () => {
     setHlsOutputSettingsSaved(false);
 
     try {
-      const hlsOutputSetting = settings['hls-output-settings'];
-      const settingData = {
-        key: 'hls-output-settings',
-        value: JSON.stringify(hlsOutputSettingsForm.getValues()),
-      };
+      // HLS settings use a dedicated endpoint, not the generic settings endpoint
+      const response = await request(`${host}/api/core/hls-output-settings/1/`, {
+        method: 'PATCH',
+        body: hlsOutputSettingsForm.getValues(),
+      });
 
-      let result;
-      if (hlsOutputSetting?.id) {
-        // Setting exists, update it
-        result = await API.updateSetting({
-          id: hlsOutputSetting.id,
-          ...settingData,
-        });
-      } else {
-        // Setting doesn't exist, create it
-        result = await API.createSetting(settingData);
-      }
-
-      if (result) {
+      if (response) {
         setHlsOutputSettingsSaved(true);
       }
     } catch (error) {
       console.error('Error saving HLS output settings:', error);
+      errorNotification('Failed to save HLS output settings', error);
     }
   };
 
