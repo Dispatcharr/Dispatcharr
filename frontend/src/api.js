@@ -1503,6 +1503,18 @@ export default class API {
     }
   }
 
+  static async updateHlsOutputSettings(values) {
+    try {
+      const response = await request(`${host}/api/core/hls-output-settings/1/`, {
+        method: 'PATCH',
+        body: values,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update HLS output settings', e);
+    }
+  }
+
   static async getChannelStats(uuid = null) {
     try {
       const response = await request(`${host}/proxy/ts/status`);
