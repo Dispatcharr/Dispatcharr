@@ -69,6 +69,7 @@ docker run -d \
 ```
 
 > Customize ports and volumes to fit your setup.
+> Note: certain environments require you to set the `DISPATCHARR_PORT` environment variable to match your port or the docker startup scripts will fail.
 
 ---
 
