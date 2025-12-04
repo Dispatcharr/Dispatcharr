@@ -67,3 +67,16 @@
 .tv-guide {
   position: relative;
 }
+
+/* Hide bottom horizontal scrollbar for the guide's virtualized list only */
+.tv-guide .guide-list-outer {
+  /* Allow horizontal scrolling but hide the scrollbar visually */
+  overflow-x: auto !important;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+/* Also hide scrollbars visually across browsers for the outer container */
+.tv-guide .guide-list-outer::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}

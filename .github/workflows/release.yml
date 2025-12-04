@@ -43,6 +43,10 @@ jobs:
           NEW_VERSION=$(python -c "import version; print(f'{version.__version__}')")
           echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
 
+      - name: Update Changelog
+        run: |
+          python scripts/update_changelog.py ${{ steps.update_version.outputs.new_version }}
+
       - name: Set repository metadata
         id: meta
         run: |
@@ -54,7 +58,7 @@ jobs:
 
       - name: Commit and Tag
         run: |
-          git add version.py
+          git add version.py CHANGELOG.md
           git commit -m "Release v${{ steps.update_version.outputs.new_version }}"
           git tag -a "v${{ steps.update_version.outputs.new_version }}" -m "Release v${{ steps.update_version.outputs.new_version }}"
           git push origin main --tags

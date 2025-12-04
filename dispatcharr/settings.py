@@ -52,6 +52,11 @@ EPG_BATCH_SIZE = 1000  # Number of records to process in a batch
 EPG_MEMORY_LIMIT = 512  # Memory limit in MB before forcing garbage collection
 EPG_ENABLE_MEMORY_MONITORING = True  # Whether to monitor memory usage during processing
 
+# XtreamCodes Rate Limiting Settings
+# Delay between profile authentications when refreshing multiple profiles
+# This prevents providers from temporarily banning users with many profiles
+XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5'))  # seconds between profile refreshes
+
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
 DATABASE_CONN_MAX_AGE = (
@@ -135,6 +140,7 @@ else:
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "secret"),
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": int(os.environ.get("POSTGRES_PORT", 5432)),
+            "CONN_MAX_AGE": DATABASE_CONN_MAX_AGE,
         }
     }
 

@@ -1,11 +1,77 @@
-from django.urls import reverse
 from rest_framework import serializers
+from django.urls import reverse
 from .models import (
-    Series, VODCategory, Movie, Episode,
+    Series, VODCategory, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
-from apps.channels.serializers import LogoSerializer
 from apps.m3u.serializers import M3UAccountSerializer
+
+
+class VODLogoSerializer(serializers.ModelSerializer):
+    cache_url = serializers.SerializerMethodField()
+    movie_count = serializers.SerializerMethodField()
+    series_count = serializers.SerializerMethodField()
+    is_used = serializers.SerializerMethodField()
+    item_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VODLogo
+        fields = ["id", "name", "url", "cache_url", "movie_count", "series_count", "is_used", "item_names"]
+
+    def validate_url(self, value):
+        """Validate that the URL is unique for creation or update"""
+        if self.instance and self.instance.url == value:
+            return value
+
+        if VODLogo.objects.filter(url=value).exists():
+            raise serializers.ValidationError("A VOD logo with this URL already exists.")
+
+        return value
+
+    def create(self, validated_data):
+        """Handle logo creation with proper URL validation"""
+        return VODLogo.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        """Handle logo updates"""
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
+    def get_cache_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(
+                reverse("api:vod:vodlogo-cache", args=[obj.id])
+            )
+        return reverse("api:vod:vodlogo-cache", args=[obj.id])
+
+    def get_movie_count(self, obj):
+        """Get the number of movies using this logo"""
+        return obj.movie.count() if hasattr(obj, 'movie') else 0
+
+    def get_series_count(self, obj):
+        """Get the number of series using this logo"""
+        return obj.series.count() if hasattr(obj, 'series') else 0
+
+    def get_is_used(self, obj):
+        """Check if this logo is used by any movies or series"""
+        return (hasattr(obj, 'movie') and obj.movie.exists()) or (hasattr(obj, 'series') and obj.series.exists())
+
+    def get_item_names(self, obj):
+        """Get the list of movies and series using this logo"""
+        names = []
+
+        if hasattr(obj, 'movie'):
+            for movie in obj.movie.all()[:10]:  # Limit to 10 items for performance
+                names.append(f"Movie: {movie.name}")
+
+        if hasattr(obj, 'series'):
+            for series in obj.series.all()[:10]:  # Limit to 10 items for performance
+                names.append(f"Series: {series.name}")
+
+        return names
 
 
 class M3UVODCategoryRelationSerializer(serializers.ModelSerializer):
@@ -31,21 +97,9 @@ class VODCategorySerializer(serializers.ModelSerializer):
             "m3u_accounts",
         ]
 
-def _build_logo_cache_url(request, logo_id):
-    if not logo_id:
-        return None
-    cache_path = reverse("api:channels:logo-cache", args=[logo_id])
-    if request:
-        return request.build_absolute_uri(cache_path)
-    return cache_path
-
-
 class SeriesSerializer(serializers.ModelSerializer):
-    logo = LogoSerializer(read_only=True)
+    logo = VODLogoSerializer(read_only=True)
     episode_count = serializers.SerializerMethodField()
-    library_sources = serializers.SerializerMethodField()
-    series_image = serializers.SerializerMethodField()
-    backdrop_path = serializers.SerializerMethodField()
 
     class Meta:
         model = Series
@@ -54,128 +108,21 @@ class SeriesSerializer(serializers.ModelSerializer):
     def get_episode_count(self, obj):
         return obj.episodes.count()
 
-    def get_library_sources(self, obj):
-        sources = []
-        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
-            library = item.library
-            sources.append(
-                {
-                    "library_id": library.id,
-                    "library_name": library.name,
-                    "media_item_id": item.id,
-                }
-        )
-        return sources
-
-    def get_series_image(self, obj):
-        request = self.context.get("request")
-        if obj.logo_id:
-            cache_url = _build_logo_cache_url(request, obj.logo_id)
-            return cache_url or (obj.logo.url if obj.logo else None)
-
-        custom = obj.custom_properties or {}
-        return custom.get("poster_url") or custom.get("cover")
-
-    def get_backdrop_path(self, obj):
-        custom = obj.custom_properties or {}
-        if "backdrop_path" in custom and isinstance(custom["backdrop_path"], list):
-            return custom["backdrop_path"]
-        backdrop_url = custom.get("backdrop_url")
-        if backdrop_url:
-            return [backdrop_url]
-        return []
-
 
 class MovieSerializer(serializers.ModelSerializer):
-    logo = LogoSerializer(read_only=True)
-    library_sources = serializers.SerializerMethodField()
-    movie_image = serializers.SerializerMethodField()
-    backdrop_path = serializers.SerializerMethodField()
+    logo = VODLogoSerializer(read_only=True)
 
     class Meta:
         model = Movie
         fields = '__all__'
 
-    def get_library_sources(self, obj):
-        sources = []
-        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
-            library = item.library
-            sources.append(
-                {
-                    "library_id": library.id,
-                    "library_name": library.name,
-                    "media_item_id": item.id,
-                }
-        )
-        return sources
-
-    def get_movie_image(self, obj):
-        request = self.context.get("request")
-        if obj.logo_id:
-            cache_url = _build_logo_cache_url(request, obj.logo_id)
-            return cache_url or (obj.logo.url if obj.logo else None)
-
-        custom = obj.custom_properties or {}
-        return custom.get("poster_url") or custom.get("cover")
-
-    def get_backdrop_path(self, obj):
-        custom = obj.custom_properties or {}
-        if "backdrop_path" in custom and isinstance(custom["backdrop_path"], list):
-            return custom["backdrop_path"]
-        backdrop_url = custom.get("backdrop_url")
-        if backdrop_url:
-            return [backdrop_url]
-        return []
-
 
 class EpisodeSerializer(serializers.ModelSerializer):
     series = SeriesSerializer(read_only=True)
-    library_sources = serializers.SerializerMethodField()
-    movie_image = serializers.SerializerMethodField()
-    backdrop_path = serializers.SerializerMethodField()
 
     class Meta:
         model = Episode
         fields = '__all__'
-
-    def get_library_sources(self, obj):
-        sources = []
-        for item in obj.library_items.select_related("library").filter(library__use_as_vod_source=True):
-            library = item.library
-            sources.append(
-                {
-                    "library_id": library.id,
-                    "library_name": library.name,
-                    "media_item_id": item.id,
-                }
-        )
-        return sources
-
-    def get_movie_image(self, obj):
-        custom = obj.custom_properties or {}
-        if custom.get("poster_url"):
-            return custom["poster_url"]
-        if obj.series_id and obj.series and obj.series.logo_id:
-            request = self.context.get("request")
-            return _build_logo_cache_url(request, obj.series.logo_id) or (
-                obj.series.logo.url if obj.series.logo else None
-            )
-        return None
-
-    def get_backdrop_path(self, obj):
-        custom = obj.custom_properties or {}
-        if isinstance(custom.get("backdrop_path"), list):
-            return custom["backdrop_path"]
-        backdrop_url = custom.get("backdrop_url")
-        if backdrop_url:
-            return [backdrop_url]
-        if obj.series_id and obj.series:
-            series_custom = obj.series.custom_properties or {}
-            if isinstance(series_custom.get("backdrop_path"), list):
-                return series_custom["backdrop_path"]
-            if series_custom.get("backdrop_url"):
-                return [series_custom["backdrop_url"]]
-        return []
 
 
 class M3USeriesRelationSerializer(serializers.ModelSerializer):
@@ -345,7 +292,7 @@ class M3UEpisodeRelationSerializer(serializers.ModelSerializer):
 
 class EnhancedSeriesSerializer(serializers.ModelSerializer):
     """Enhanced serializer for series with provider information"""
-    logo = LogoSerializer(read_only=True)
+    logo = VODLogoSerializer(read_only=True)
     providers = M3USeriesRelationSerializer(source='m3u_relations', many=True, read_only=True)
     episode_count = serializers.SerializerMethodField()
 

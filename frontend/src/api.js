@@ -170,7 +170,7 @@ export default class API {
 
   static async logout() {
     return await request(`${host}/api/accounts/auth/logout/`, {
-      auth: false,
+      auth: true,  // Send JWT token so backend can identify the user
       method: 'POST',
     });
   }
@@ -462,7 +462,16 @@ export default class API {
         }
       );
 
-      // Don't automatically update the store here - let the caller handle it
+      // Show success notification
+      if (response.message) {
+        notifications.show({
+          title: 'Channels Updated',
+          message: response.message,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
@@ -1044,7 +1053,19 @@ export default class API {
   }
 
   static async updateEPG(values, isToggle = false) {
+    // Validate that values is an object
+    if (!values || typeof values !== 'object') {
+      console.error('updateEPG called with invalid values:', values);
+      return;
+    }
+
     const { id, ...payload } = values;
+
+    // Validate that we have an ID and payload is an object
+    if (!id || typeof payload !== 'object') {
+      console.error('updateEPG: invalid id or payload', { id, payload });
+      return;
+    }
 
     try {
       // If this is just toggling the active state, make a simpler request
@@ -1115,6 +1136,21 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification(`Failed to refresh EPG ${id}`, e);
+    }
+  }
+
+  static async getTimezones() {
+    try {
+      const response = await request(`${host}/api/core/timezones/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve timezones', e);
+      // Return fallback data instead of throwing
+      return {
+        timezones: ['UTC', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific'],
+        grouped: {},
+        count: 5
+      };
     }
   }
 
@@ -1802,6 +1838,77 @@ export default class API {
     }
   }
 
+  // VOD Logo Methods
+  static async getVODLogos(params = {}) {
+    try {
+      // Transform usage filter to match backend expectations
+      const apiParams = { ...params };
+      if (apiParams.usage === 'used') {
+        apiParams.used = 'true';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'unused') {
+        apiParams.used = 'false';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'movies') {
+        apiParams.used = 'movies';
+        delete apiParams.usage;
+      } else if (apiParams.usage === 'series') {
+        apiParams.used = 'series';
+        delete apiParams.usage;
+      }
+
+      const queryParams = new URLSearchParams(apiParams);
+      const response = await request(
+        `${host}/api/vod/vodlogos/?${queryParams.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve VOD logos', e);
+      throw e;
+    }
+  }
+
+  static async deleteVODLogo(id) {
+    try {
+      await request(`${host}/api/vod/vodlogos/${id}/`, {
+        method: 'DELETE',
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete VOD logo', e);
+      throw e;
+    }
+  }
+
+  static async deleteVODLogos(ids) {
+    try {
+      await request(`${host}/api/vod/vodlogos/bulk-delete/`, {
+        method: 'DELETE',
+        body: { logo_ids: ids },
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete VOD logos', e);
+      throw e;
+    }
+  }
+
+  static async cleanupUnusedVODLogos() {
+    try {
+      const response = await request(`${host}/api/vod/vodlogos/cleanup/`, {
+        method: 'POST',
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to cleanup unused VOD logos', e);
+      throw e;
+    }
+  }
+
   static async getChannelProfiles() {
     try {
       const response = await request(`${host}/api/channels/profiles/`);
@@ -2146,9 +2253,15 @@ export default class API {
 
       // If successful, requery channels to update UI
       if (response.success) {
+        // Build message based on whether EPG sources need refreshing
+        let message = `Updated ${response.channels_updated} channel${response.channels_updated !== 1 ? 's' : ''}`;
+        if (response.programs_refreshed > 0) {
+          message += `, refreshing ${response.programs_refreshed} EPG source${response.programs_refreshed !== 1 ? 's' : ''}`;
+        }
+
         notifications.show({
           title: 'EPG Association',
-          message: `Updated ${response.channels_updated} channels, refreshing ${response.programs_refreshed} EPG sources.`,
+          message: message,
           color: 'blue',
         });
 
@@ -2795,6 +2908,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to load media stream info', e);
       throw e;
+    }
+  }
+
+  static async getSystemEvents(limit = 100, offset = 0, eventType = null) {
+    try {
+      const params = new URLSearchParams();
+      params.append('limit', limit);
+      params.append('offset', offset);
+      if (eventType) {
+        params.append('event_type', eventType);
+      }
+      const response = await request(
+        `${host}/api/core/system-events/?${params.toString()}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve system events', e);
     }
   }
 }

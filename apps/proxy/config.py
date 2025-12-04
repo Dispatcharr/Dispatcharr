@@ -1,4 +1,6 @@
 """Shared configuration between proxy types"""
+import time
+from django.db import connection
 
 class BaseConfig:
     DEFAULT_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20' # Will only be used if connection to settings fail
@@ -12,13 +14,29 @@ class BaseConfig:
     BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
 
+    # Cache for proxy settings (class-level, shared across all instances)
+    _proxy_settings_cache = None
+    _proxy_settings_cache_time = 0
+    _proxy_settings_cache_ttl = 10  # Cache for 10 seconds
+
     @classmethod
     def get_proxy_settings(cls):
-        """Get proxy settings from CoreSettings JSON data with fallback to defaults"""
+        """Get proxy settings from CoreSettings JSON data with fallback to defaults (cached)"""
+        # Check if cache is still valid
+        now = time.time()
+        if cls._proxy_settings_cache is not None and (now - cls._proxy_settings_cache_time) < cls._proxy_settings_cache_ttl:
+            return cls._proxy_settings_cache
+
+        # Cache miss or expired - fetch from database
         try:
             from core.models import CoreSettings
-            return CoreSettings.get_proxy_settings()
+            settings = CoreSettings.get_proxy_settings()
+            cls._proxy_settings_cache = settings
+            cls._proxy_settings_cache_time = now
+            return settings
+
         except Exception:
+            # Return defaults if database query fails
             return {
                 "buffering_timeout": 15,
                 "buffering_speed": 1.0,
@@ -26,6 +44,13 @@ class BaseConfig:
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
             }
+
+        finally:
+            # Always close the connection after reading settings
+            try:
+                connection.close()
+            except Exception:
+                pass
 
     @classmethod
     def get_redis_chunk_ttl(cls):
@@ -69,10 +94,10 @@ class TSConfig(BaseConfig):
     CLEANUP_INTERVAL = 60  # Check for inactive channels every 60 seconds
 
     # Client tracking settings
-    CLIENT_RECORD_TTL = 5  # How long client records persist in Redis (seconds). Client will be considered MIA after this time.
+    CLIENT_RECORD_TTL = 60  # How long client records persist in Redis (seconds). Client will be considered MIA after this time.
     CLEANUP_CHECK_INTERVAL = 1  # How often to check for disconnected clients (seconds)
-    CLIENT_HEARTBEAT_INTERVAL = 1  # How often to send client heartbeats (seconds)
-    GHOST_CLIENT_MULTIPLIER = 5.0  # How many heartbeat intervals before client considered ghost (5 would mean 5 secondsif heartbeat interval is 1)
+    CLIENT_HEARTBEAT_INTERVAL = 5  # How often to send client heartbeats (seconds)
+    GHOST_CLIENT_MULTIPLIER = 6.0  # How many heartbeat intervals before client considered ghost (6 would mean 36 seconds if heartbeat interval is 6)
     CLIENT_WAIT_TIMEOUT = 30  # Seconds to wait for client to connect
 
     # Stream health and recovery settings

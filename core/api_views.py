@@ -6,10 +6,12 @@ import logging
 from typing import Optional
 from rest_framework import viewsets, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes, action
 from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 from .models import (
     UserAgent,
     StreamProfile,
@@ -395,25 +397,130 @@ def rehash_streams_endpoint(request):
         # Get the current hash keys from settings
         hash_key_setting = CoreSettings.objects.get(key=STREAM_HASH_KEY)
         hash_keys = hash_key_setting.value.split(",")
-        
+
         # Queue the rehash task
         task = rehash_streams.delay(hash_keys)
-        
+
         return Response({
             "success": True,
             "message": "Stream rehashing task has been queued",
             "task_id": task.id
         }, status=status.HTTP_200_OK)
-        
+
     except CoreSettings.DoesNotExist:
         return Response({
             "success": False,
             "message": "Hash key settings not found"
         }, status=status.HTTP_400_BAD_REQUEST)
-        
+
     except Exception as e:
         logger.error(f"Error triggering rehash streams: {e}")
         return Response({
             "success": False,
             "message": "Failed to trigger rehash task"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ─────────────────────────────
+# Timezone List API
+# ─────────────────────────────
+class TimezoneListView(APIView):
+    """
+    API endpoint that returns all available timezones supported by pytz.
+    Returns a list of timezone names grouped by region for easy selection.
+    This is a general utility endpoint that can be used throughout the application.
+    """
+
+    def get_permissions(self):
+        return [Authenticated()]
+
+    @swagger_auto_schema(
+        operation_description="Get list of all supported timezones",
+        responses={200: openapi.Response('List of timezones with grouping by region')}
+    )
+    def get(self, request):
+        import pytz
+
+        # Get all common timezones (excludes deprecated ones)
+        all_timezones = sorted(pytz.common_timezones)
+
+        # Group by region for better UX
+        grouped = {}
+        for tz in all_timezones:
+            if '/' in tz:
+                region = tz.split('/')[0]
+                if region not in grouped:
+                    grouped[region] = []
+                grouped[region].append(tz)
+            else:
+                # Handle special zones like UTC, GMT, etc.
+                if 'Other' not in grouped:
+                    grouped['Other'] = []
+                grouped['Other'].append(tz)
+
+        return Response({
+            'timezones': all_timezones,
+            'grouped': grouped,
+            'count': len(all_timezones)
+        })
+
+
+# ─────────────────────────────
+# System Events API
+# ─────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_system_events(request):
+    """
+    Get recent system events (channel start/stop, buffering, client connections, etc.)
+
+    Query Parameters:
+        limit: Number of events to return per page (default: 100, max: 1000)
+        offset: Number of events to skip (for pagination, default: 0)
+        event_type: Filter by specific event type (optional)
+    """
+    from core.models import SystemEvent
+
+    try:
+        # Get pagination params
+        limit = min(int(request.GET.get('limit', 100)), 1000)
+        offset = int(request.GET.get('offset', 0))
+
+        # Start with all events
+        events = SystemEvent.objects.all()
+
+        # Filter by event_type if provided
+        event_type = request.GET.get('event_type')
+        if event_type:
+            events = events.filter(event_type=event_type)
+
+        # Get total count before applying pagination
+        total_count = events.count()
+
+        # Apply offset and limit for pagination
+        events = events[offset:offset + limit]
+
+        # Serialize the data
+        events_data = [{
+            'id': event.id,
+            'event_type': event.event_type,
+            'event_type_display': event.get_event_type_display(),
+            'timestamp': event.timestamp.isoformat(),
+            'channel_id': str(event.channel_id) if event.channel_id else None,
+            'channel_name': event.channel_name,
+            'details': event.details
+        } for event in events]
+
+        return Response({
+            'events': events_data,
+            'count': len(events_data),
+            'total': total_count,
+            'offset': offset,
+            'limit': limit
+        })
+
+    except Exception as e:
+        logger.error(f"Error fetching system events: {e}")
+        return Response({
+            'error': 'Failed to fetch system events'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

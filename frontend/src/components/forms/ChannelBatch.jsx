@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import useChannelsStore from '../../store/channels';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
+import useEPGsStore from '../../store/epgs';
 import ChannelGroupForm from './ChannelGroup';
 import {
   Box,
@@ -53,6 +54,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   }, [ensureLogosLoaded]);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
+  const epgs = useEPGsStore((s) => s.epgs);
+  const tvgs = useEPGsStore((s) => s.tvgs);
+  const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
 
   const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [selectedChannelGroup, setSelectedChannelGroup] = useState('-1');
@@ -60,6 +64,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regexFind, setRegexFind] = useState('');
   const [regexReplace, setRegexReplace] = useState('');
+  const [selectedDummyEpgId, setSelectedDummyEpgId] = useState(null);
 
   const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
   const [groupFilter, setGroupFilter] = useState('');
@@ -71,9 +76,21 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [confirmSetNamesOpen, setConfirmSetNamesOpen] = useState(false);
   const [confirmSetLogosOpen, setConfirmSetLogosOpen] = useState(false);
   const [confirmSetTvgIdsOpen, setConfirmSetTvgIdsOpen] = useState(false);
-  const [confirmClearEpgsOpen, setConfirmClearEpgsOpen] = useState(false);
+  const [confirmBatchUpdateOpen, setConfirmBatchUpdateOpen] = useState(false);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+
+  // Fetch EPG sources when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      fetchEPGs();
+    }
+  }, [isOpen, fetchEPGs]);
+
+  // Get dummy EPG sources
+  const dummyEpgSources = useMemo(() => {
+    return Object.values(epgs).filter((epg) => epg.source_type === 'dummy');
+  }, [epgs]);
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -85,7 +102,88 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     },
   });
 
+  // Build confirmation message based on selected changes
+  const getConfirmationMessage = () => {
+    const changes = [];
+    const values = form.getValues();
+
+    // Check for regex name changes
+    if (regexFind.trim().length > 0) {
+      changes.push(
+        `• Name Change: Apply regex find "${regexFind}" replace with "${regexReplace || ''}"`
+      );
+    }
+
+    // Check channel group
+    if (selectedChannelGroup && selectedChannelGroup !== '-1') {
+      const groupName = channelGroups[selectedChannelGroup]?.name || 'Unknown';
+      changes.push(`• Channel Group: ${groupName}`);
+    }
+
+    // Check logo
+    if (selectedLogoId && selectedLogoId !== '-1') {
+      if (selectedLogoId === '0') {
+        changes.push(`• Logo: Use Default`);
+      } else {
+        const logoName = channelLogos[selectedLogoId]?.name || 'Selected Logo';
+        changes.push(`• Logo: ${logoName}`);
+      }
+    }
+
+    // Check stream profile
+    if (values.stream_profile_id && values.stream_profile_id !== '-1') {
+      if (values.stream_profile_id === '0') {
+        changes.push(`• Stream Profile: Use Default`);
+      } else {
+        const profileName =
+          streamProfiles[values.stream_profile_id]?.name || 'Selected Profile';
+        changes.push(`• Stream Profile: ${profileName}`);
+      }
+    }
+
+    // Check user level
+    if (values.user_level && values.user_level !== '-1') {
+      const userLevelLabel =
+        USER_LEVEL_LABELS[values.user_level] || values.user_level;
+      changes.push(`• User Level: ${userLevelLabel}`);
+    }
+
+    // Check dummy EPG
+    if (selectedDummyEpgId) {
+      if (selectedDummyEpgId === 'clear') {
+        changes.push(`• EPG: Clear Assignment (use default dummy)`);
+      } else {
+        const epgName = epgs[selectedDummyEpgId]?.name || 'Selected EPG';
+        changes.push(`• Dummy EPG: ${epgName}`);
+      }
+    }
+
+    return changes;
+  };
+
+  const handleSubmit = () => {
+    const changes = getConfirmationMessage();
+
+    // If no changes detected, show notification
+    if (changes.length === 0) {
+      notifications.show({
+        title: 'No Changes',
+        message: 'Please select at least one field to update.',
+        color: 'orange',
+      });
+      return;
+    }
+
+    // Skip warning if suppressed
+    if (isWarningSuppressed('batch-update-channels')) {
+      return onSubmit();
+    }
+
+    setConfirmBatchUpdateOpen(true);
+  };
+
   const onSubmit = async () => {
+    setConfirmBatchUpdateOpen(false);
     setIsSubmitting(true);
 
     const values = {
@@ -126,6 +224,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     try {
       const applyRegex = regexFind.trim().length > 0;
 
+      // First, handle standard field updates (name, group, logo, etc.)
       if (applyRegex) {
         // Build per-channel updates to apply unique names via regex
         let flags = 'g';
@@ -153,8 +252,46 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         });
 
         await API.bulkUpdateChannels(updates);
-      } else {
+      } else if (Object.keys(values).length > 0) {
         await API.updateChannels(channelIds, values);
+      }
+
+      // Then, handle EPG assignment if a dummy EPG was selected
+      if (selectedDummyEpgId) {
+        if (selectedDummyEpgId === 'clear') {
+          // Clear EPG assignments
+          const associations = channelIds.map((id) => ({
+            channel_id: id,
+            epg_data_id: null,
+          }));
+          await API.batchSetEPG(associations);
+        } else {
+          // Assign the selected dummy EPG
+          const selectedEpg = epgs[selectedDummyEpgId];
+          if (selectedEpg && selectedEpg.epg_data_count > 0) {
+            // Convert to number for comparison since Select returns string
+            const epgSourceId = parseInt(selectedDummyEpgId, 10);
+
+            // Check if we already have EPG data loaded in the store
+            let epgData = tvgs.find((data) => data.epg_source === epgSourceId);
+
+            // If not in store, fetch it
+            if (!epgData) {
+              const epgDataList = await API.getEPGData();
+              epgData = epgDataList.find(
+                (data) => data.epg_source === epgSourceId
+              );
+            }
+
+            if (epgData) {
+              const associations = channelIds.map((id) => ({
+                channel_id: id,
+                epg_data_id: epgData.id,
+              }));
+              await API.batchSetEPG(associations);
+            }
+          }
+        }
       }
 
       // Refresh both the channels table data and the main channels store
@@ -305,49 +442,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     }
   };
 
-  const handleClearEpgs = async () => {
-    if (!channelIds || channelIds.length === 0) {
-      notifications.show({
-        title: 'No Channels Selected',
-        message: 'No channels to update.',
-        color: 'orange',
-      });
-      return;
-    }
-
-    // Skip warning if suppressed
-    if (isWarningSuppressed('batch-clear-epgs')) {
-      return executeClearEpgs();
-    }
-
-    setConfirmClearEpgsOpen(true);
-  };
-
-  const executeClearEpgs = async () => {
-    try {
-      // Clear EPG assignments (set to null/dummy) using existing batchSetEPG API
-      const associations = channelIds.map((id) => ({
-        channel_id: id,
-        epg_data_id: null,
-      }));
-
-      await API.batchSetEPG(associations);
-
-      // batchSetEPG already shows a notification and refreshes channels
-      // Close the modal
-      setConfirmClearEpgsOpen(false);
-      onClose();
-    } catch (error) {
-      console.error('Failed to clear EPG assignments:', error);
-      notifications.show({
-        title: 'Error',
-        message: 'Failed to clear EPG assignments.',
-        color: 'red',
-      });
-      setConfirmClearEpgsOpen(false);
-    }
-  };
-
   // useEffect(() => {
   //   // const sameStreamProfile = channels.every(
   //   //   (channel) => channel.stream_profile_id == channels[0].stream_profile_id
@@ -418,7 +512,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         }
         styles={{ hannontent: { '--mantine-color-body': '#27272A' } }}
       >
-        <form onSubmit={form.onSubmit(onSubmit)}>
+        <form onSubmit={form.onSubmit(handleSubmit)}>
           <Group justify="space-between" align="top">
             <Stack gap="5" style={{ flex: 1 }}>
               <Paper withBorder p="xs" radius="md">
@@ -484,20 +578,30 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                     Set TVG-IDs from EPG
                   </Button>
                 </Group>
-                <Group gap="xs" wrap="nowrap" mt="xs">
-                  <Button
+                <Divider my="xs" />
+                <Stack gap="xs">
+                  <Text size="xs" fw={600}>
+                    Assign Dummy EPG
+                  </Text>
+                  <Select
                     size="xs"
-                    variant="light"
-                    color="red"
-                    onClick={handleClearEpgs}
-                    style={{ flex: 1 }}
-                  >
-                    Clear EPG (Set to Dummy)
-                  </Button>
-                </Group>
+                    placeholder="Select a dummy EPG..."
+                    data={[
+                      { value: 'clear', label: '(Clear EPG Assignment)' },
+                      ...dummyEpgSources.map((epg) => ({
+                        value: String(epg.id),
+                        label: epg.name,
+                      })),
+                    ]}
+                    value={selectedDummyEpgId}
+                    onChange={setSelectedDummyEpgId}
+                    clearable
+                  />
+                </Stack>
                 <Text size="xs" c="dimmed" mt="xs">
                   Updates channel names, logos, and TVG-IDs based on their
-                  assigned EPG data, or clear EPG assignments to use dummy EPG
+                  assigned EPG data, or assign a custom dummy EPG to selected
+                  channels
                 </Text>
               </Paper>
 
@@ -819,8 +923,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
             </Stack>
           </Group>
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-            <Button type="submit" variant="default" disabled={isSubmitting}>
-              Submit
+            <Button
+              type="submit"
+              variant="default"
+              disabled={isSubmitting}
+              loading={isSubmitting}
+              loaderProps={{ type: 'dots' }}
+            >
+              {isSubmitting ? 'Saving...' : 'Submit'}
             </Button>
           </Flex>
         </form>
@@ -895,22 +1005,42 @@ This action cannot be undone.`}
       />
 
       <ConfirmationDialog
-        opened={confirmClearEpgsOpen}
-        onClose={() => setConfirmClearEpgsOpen(false)}
-        onConfirm={executeClearEpgs}
-        title="Confirm Clear EPG Assignments"
+        opened={confirmBatchUpdateOpen}
+        onClose={() => setConfirmBatchUpdateOpen(false)}
+        onConfirm={onSubmit}
+        title="Confirm Batch Update"
         message={
-          <div style={{ whiteSpace: 'pre-line' }}>
-            {`Are you sure you want to clear EPG assignments for ${channelIds?.length || 0} selected channels?
-
-This will set all selected channels to use dummy EPG data.
-
-This action cannot be undone.`}
+          <div>
+            <Text mb="md">
+              You are about to apply the following changes to{' '}
+              <strong>{channelIds?.length || 0}</strong> selected channel
+              {(channelIds?.length || 0) !== 1 ? 's' : ''}:
+            </Text>
+            <Paper
+              withBorder
+              p="sm"
+              style={{ backgroundColor: 'rgba(0, 0, 0, 0.2)' }}
+            >
+              <Stack gap="xs">
+                {getConfirmationMessage().map((change, index) => (
+                  <Text
+                    key={index}
+                    size="sm"
+                    style={{ fontFamily: 'monospace' }}
+                  >
+                    {change}
+                  </Text>
+                ))}
+              </Stack>
+            </Paper>
+            <Text mt="md" size="sm" c="dimmed">
+              This action cannot be undone.
+            </Text>
           </div>
         }
-        confirmLabel="Clear EPGs"
+        confirmLabel="Apply Changes"
         cancelLabel="Cancel"
-        actionKey="batch-clear-epgs"
+        actionKey="batch-update-channels"
         onSuppressChange={suppressWarning}
         size="md"
       />

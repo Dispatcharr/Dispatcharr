@@ -16,11 +16,20 @@ import {
   Box,
   MultiSelect,
   Tooltip,
+  Popover,
+  ScrollArea,
+  Center,
 } from '@mantine/core';
 import { Info } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import { CircleCheck, CircleX } from 'lucide-react';
+import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
+import { FixedSizeList as List } from 'react-window';
+import LazyLogo from '../LazyLogo';
+import LogoForm from './Logo';
+import logo from '../../images/logo.png';
+import API from '../../api';
 
 // Custom item component for MultiSelect with tooltip
 const OptionWithTooltip = forwardRef(
@@ -45,6 +54,21 @@ const LiveGroupFilter = ({
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const fetchStreamProfiles = useStreamProfilesStore((s) => s.fetchProfiles);
   const [groupFilter, setGroupFilter] = useState('');
+  const [epgSources, setEpgSources] = useState([]);
+
+  // Logo selection functionality
+  const {
+    logos: channelLogos,
+    ensureLogosLoaded,
+    isLoading: logosLoading,
+  } = useChannelLogoSelection();
+  const [logoModalOpen, setLogoModalOpen] = useState(false);
+  const [currentEditingGroupId, setCurrentEditingGroupId] = useState(null);
+
+  // Ensure logos are loaded when component mounts
+  useEffect(() => {
+    ensureLogosLoaded();
+  }, [ensureLogosLoaded]);
 
   // Fetch stream profiles when component mounts
   useEffect(() => {
@@ -52,6 +76,19 @@ const LiveGroupFilter = ({
       fetchStreamProfiles();
     }
   }, [streamProfiles.length, fetchStreamProfiles]);
+
+  // Fetch EPG sources when component mounts
+  useEffect(() => {
+    const fetchEPGSources = async () => {
+      try {
+        const sources = await API.getEPGs();
+        setEpgSources(sources || []);
+      } catch (error) {
+        console.error('Failed to fetch EPG sources:', error);
+      }
+    };
+    fetchEPGSources();
+  }, []);
 
   useEffect(() => {
     if (Object.keys(channelGroups).length === 0) {
@@ -68,7 +105,7 @@ const LiveGroupFilter = ({
               typeof group.custom_properties === 'string'
                 ? JSON.parse(group.custom_properties)
                 : group.custom_properties;
-          } catch (e) {
+          } catch {
             customProps = {};
           }
         }
@@ -115,21 +152,27 @@ const LiveGroupFilter = ({
     );
   };
 
-  // Toggle force_dummy_epg in custom_properties for a group
-  const toggleForceDummyEPG = (id) => {
-    setGroupStates(
-      groupStates.map((state) => {
-        if (state.channel_group == id) {
-          const customProps = { ...(state.custom_properties || {}) };
-          customProps.force_dummy_epg = !customProps.force_dummy_epg;
-          return {
-            ...state,
-            custom_properties: customProps,
-          };
-        }
-        return state;
-      })
-    );
+  // Handle logo selection from LogoForm
+  const handleLogoSuccess = ({ logo }) => {
+    if (logo && logo.id && currentEditingGroupId !== null) {
+      setGroupStates(
+        groupStates.map((state) => {
+          if (state.channel_group === currentEditingGroupId) {
+            return {
+              ...state,
+              custom_properties: {
+                ...state.custom_properties,
+                custom_logo_id: logo.id,
+              },
+            };
+          }
+          return state;
+        })
+      );
+      ensureLogosLoaded(); // Refresh logos
+    }
+    setLogoModalOpen(false);
+    setCurrentEditingGroupId(null);
   };
 
   const selectAll = () => {
@@ -270,10 +313,10 @@ const LiveGroupFilter = ({
                         placeholder="Select options..."
                         data={[
                           {
-                            value: 'force_dummy_epg',
-                            label: 'Force Dummy EPG',
+                            value: 'force_epg',
+                            label: 'Force EPG Source',
                             description:
-                              'Assign a dummy EPG to all channels in this group if no EPG is matched',
+                              'Force a specific EPG source for all auto-synced channels, or disable EPG assignment entirely',
                           },
                           {
                             value: 'group_override',
@@ -311,12 +354,22 @@ const LiveGroupFilter = ({
                             description:
                               'Assign a specific stream profile to all channels in this group during auto sync',
                           },
+                          {
+                            value: 'custom_logo',
+                            label: 'Custom Logo',
+                            description:
+                              'Assign a custom logo to all auto-synced channels in this group',
+                          },
                         ]}
                         itemComponent={OptionWithTooltip}
                         value={(() => {
                           const selectedValues = [];
-                          if (group.custom_properties?.force_dummy_epg) {
-                            selectedValues.push('force_dummy_epg');
+                          if (
+                            group.custom_properties?.custom_epg_id !==
+                              undefined ||
+                            group.custom_properties?.force_dummy_epg
+                          ) {
+                            selectedValues.push('force_epg');
                           }
                           if (
                             group.custom_properties?.group_override !==
@@ -356,6 +409,12 @@ const LiveGroupFilter = ({
                           ) {
                             selectedValues.push('stream_profile_assignment');
                           }
+                          if (
+                            group.custom_properties?.custom_logo_id !==
+                            undefined
+                          ) {
+                            selectedValues.push('custom_logo');
+                          }
                           return selectedValues;
                         })()}
                         onChange={(values) => {
@@ -369,13 +428,25 @@ const LiveGroupFilter = ({
                                   ...(state.custom_properties || {}),
                                 };
 
-                                // Handle force_dummy_epg
-                                if (
-                                  selectedOptions.includes('force_dummy_epg')
-                                ) {
-                                  newCustomProps.force_dummy_epg = true;
+                                // Handle force_epg
+                                if (selectedOptions.includes('force_epg')) {
+                                  // Migrate from old force_dummy_epg if present
+                                  if (
+                                    newCustomProps.force_dummy_epg &&
+                                    newCustomProps.custom_epg_id === undefined
+                                  ) {
+                                    // Migrate: force_dummy_epg=true becomes custom_epg_id=null
+                                    newCustomProps.custom_epg_id = null;
+                                    delete newCustomProps.force_dummy_epg;
+                                  } else if (
+                                    newCustomProps.custom_epg_id === undefined
+                                  ) {
+                                    // New configuration: initialize with null (no EPG/default dummy)
+                                    newCustomProps.custom_epg_id = null;
+                                  }
                                 } else {
-                                  delete newCustomProps.force_dummy_epg;
+                                  // Only remove custom_epg_id when deselected
+                                  delete newCustomProps.custom_epg_id;
                                 }
 
                                 // Handle group_override
@@ -473,6 +544,17 @@ const LiveGroupFilter = ({
                                   }
                                 } else {
                                   delete newCustomProps.stream_profile_id;
+                                }
+
+                                // Handle custom_logo
+                                if (selectedOptions.includes('custom_logo')) {
+                                  if (
+                                    newCustomProps.custom_logo_id === undefined
+                                  ) {
+                                    newCustomProps.custom_logo_id = null;
+                                  }
+                                } else {
+                                  delete newCustomProps.custom_logo_id;
                                 }
 
                                 return {
@@ -801,6 +883,317 @@ const LiveGroupFilter = ({
                           />
                         </Tooltip>
                       )}
+
+                      {/* Show logo selector only if custom_logo is selected */}
+                      {group.custom_properties?.custom_logo_id !==
+                        undefined && (
+                        <Box>
+                          <Group justify="space-between">
+                            <Popover
+                              opened={group.logoPopoverOpened || false}
+                              onChange={(opened) => {
+                                setGroupStates(
+                                  groupStates.map((state) => {
+                                    if (
+                                      state.channel_group ===
+                                      group.channel_group
+                                    ) {
+                                      return {
+                                        ...state,
+                                        logoPopoverOpened: opened,
+                                      };
+                                    }
+                                    return state;
+                                  })
+                                );
+                                if (opened) {
+                                  ensureLogosLoaded();
+                                }
+                              }}
+                              withArrow
+                            >
+                              <Popover.Target>
+                                <TextInput
+                                  label="Custom Logo"
+                                  readOnly
+                                  value={
+                                    channelLogos[
+                                      group.custom_properties?.custom_logo_id
+                                    ]?.name || 'Default'
+                                  }
+                                  onClick={() => {
+                                    setGroupStates(
+                                      groupStates.map((state) => {
+                                        if (
+                                          state.channel_group ===
+                                          group.channel_group
+                                        ) {
+                                          return {
+                                            ...state,
+                                            logoPopoverOpened: true,
+                                          };
+                                        }
+                                        return {
+                                          ...state,
+                                          logoPopoverOpened: false,
+                                        };
+                                      })
+                                    );
+                                  }}
+                                  size="xs"
+                                />
+                              </Popover.Target>
+
+                              <Popover.Dropdown
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
+                                <Group>
+                                  <TextInput
+                                    placeholder="Filter logos..."
+                                    size="xs"
+                                    value={group.logoFilter || ''}
+                                    onChange={(e) => {
+                                      const val = e.currentTarget.value;
+                                      setGroupStates(
+                                        groupStates.map((state) =>
+                                          state.channel_group ===
+                                          group.channel_group
+                                            ? {
+                                                ...state,
+                                                logoFilter: val,
+                                              }
+                                            : state
+                                        )
+                                      );
+                                    }}
+                                  />
+                                  {logosLoading && (
+                                    <Text size="xs" c="dimmed">
+                                      Loading...
+                                    </Text>
+                                  )}
+                                </Group>
+
+                                <ScrollArea style={{ height: 200 }}>
+                                  {(() => {
+                                    const logoOptions = [
+                                      { id: '0', name: 'Default' },
+                                      ...Object.values(channelLogos),
+                                    ];
+                                    const filteredLogos = logoOptions.filter(
+                                      (logo) =>
+                                        logo.name
+                                          .toLowerCase()
+                                          .includes(
+                                            (
+                                              group.logoFilter || ''
+                                            ).toLowerCase()
+                                          )
+                                    );
+
+                                    if (filteredLogos.length === 0) {
+                                      return (
+                                        <Center style={{ height: 200 }}>
+                                          <Text size="sm" c="dimmed">
+                                            {group.logoFilter
+                                              ? 'No logos match your filter'
+                                              : 'No logos available'}
+                                          </Text>
+                                        </Center>
+                                      );
+                                    }
+
+                                    return (
+                                      <List
+                                        height={200}
+                                        itemCount={filteredLogos.length}
+                                        itemSize={55}
+                                        style={{ width: '100%' }}
+                                      >
+                                        {({ index, style }) => {
+                                          const logoItem = filteredLogos[index];
+                                          return (
+                                            <div
+                                              style={{
+                                                ...style,
+                                                cursor: 'pointer',
+                                                padding: '5px',
+                                                borderRadius: '4px',
+                                              }}
+                                              onClick={() => {
+                                                setGroupStates(
+                                                  groupStates.map((state) => {
+                                                    if (
+                                                      state.channel_group ===
+                                                      group.channel_group
+                                                    ) {
+                                                      return {
+                                                        ...state,
+                                                        custom_properties: {
+                                                          ...state.custom_properties,
+                                                          custom_logo_id:
+                                                            logoItem.id,
+                                                        },
+                                                        logoPopoverOpened: false,
+                                                      };
+                                                    }
+                                                    return state;
+                                                  })
+                                                );
+                                              }}
+                                              onMouseEnter={(e) => {
+                                                e.currentTarget.style.backgroundColor =
+                                                  'rgb(68, 68, 68)';
+                                              }}
+                                              onMouseLeave={(e) => {
+                                                e.currentTarget.style.backgroundColor =
+                                                  'transparent';
+                                              }}
+                                            >
+                                              <Center
+                                                style={{
+                                                  flexDirection: 'column',
+                                                  gap: '2px',
+                                                }}
+                                              >
+                                                <img
+                                                  src={
+                                                    logoItem.cache_url || logo
+                                                  }
+                                                  height="30"
+                                                  style={{
+                                                    maxWidth: 80,
+                                                    objectFit: 'contain',
+                                                  }}
+                                                  alt={logoItem.name || 'Logo'}
+                                                  onError={(e) => {
+                                                    if (e.target.src !== logo) {
+                                                      e.target.src = logo;
+                                                    }
+                                                  }}
+                                                />
+                                                <Text
+                                                  size="xs"
+                                                  c="dimmed"
+                                                  ta="center"
+                                                  style={{
+                                                    maxWidth: 80,
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                  }}
+                                                >
+                                                  {logoItem.name || 'Default'}
+                                                </Text>
+                                              </Center>
+                                            </div>
+                                          );
+                                        }}
+                                      </List>
+                                    );
+                                  })()}
+                                </ScrollArea>
+                              </Popover.Dropdown>
+                            </Popover>
+
+                            <Stack gap="xs" align="center">
+                              <LazyLogo
+                                logoId={group.custom_properties?.custom_logo_id}
+                                alt="custom logo"
+                                style={{ height: 40 }}
+                              />
+                            </Stack>
+                          </Group>
+
+                          <Button
+                            onClick={() => {
+                              setCurrentEditingGroupId(group.channel_group);
+                              setLogoModalOpen(true);
+                            }}
+                            fullWidth
+                            variant="default"
+                            size="xs"
+                            mt="xs"
+                          >
+                            Upload or Create Logo
+                          </Button>
+                        </Box>
+                      )}
+
+                      {/* Show EPG selector when force_epg is selected */}
+                      {(group.custom_properties?.custom_epg_id !== undefined ||
+                        group.custom_properties?.force_dummy_epg) && (
+                        <Tooltip
+                          label="Force a specific EPG source for all auto-synced channels in this group. For dummy EPGs, all channels will share the same EPG data. For regular EPG sources (XMLTV, Schedules Direct), channels will be matched by their tvg_id within that source. Select 'No EPG' to disable EPG assignment."
+                          withArrow
+                        >
+                          <Select
+                            label="EPG Source"
+                            placeholder="No EPG (Disabled)"
+                            value={(() => {
+                              // Handle migration from force_dummy_epg
+                              if (
+                                group.custom_properties?.custom_epg_id !==
+                                undefined
+                              ) {
+                                // Convert to string, use '0' for null/no EPG
+                                return group.custom_properties.custom_epg_id ===
+                                  null
+                                  ? '0'
+                                  : group.custom_properties.custom_epg_id.toString();
+                              } else if (
+                                group.custom_properties?.force_dummy_epg
+                              ) {
+                                // Show "No EPG" for old force_dummy_epg configs
+                                return '0';
+                              }
+                              return '0';
+                            })()}
+                            onChange={(value) => {
+                              // Convert back: '0' means no EPG (null)
+                              const newValue =
+                                value === '0' ? null : parseInt(value);
+                              setGroupStates(
+                                groupStates.map((state) => {
+                                  if (
+                                    state.channel_group === group.channel_group
+                                  ) {
+                                    return {
+                                      ...state,
+                                      custom_properties: {
+                                        ...state.custom_properties,
+                                        custom_epg_id: newValue,
+                                      },
+                                    };
+                                  }
+                                  return state;
+                                })
+                              );
+                            }}
+                            data={[
+                              { value: '0', label: 'No EPG (Disabled)' },
+                              ...[...epgSources]
+                                .sort((a, b) => a.name.localeCompare(b.name))
+                                .map((source) => ({
+                                  value: source.id.toString(),
+                                  label: `${source.name} (${
+                                    source.source_type === 'dummy'
+                                      ? 'Dummy'
+                                      : source.source_type === 'xmltv'
+                                        ? 'XMLTV'
+                                        : source.source_type ===
+                                            'schedules_direct'
+                                          ? 'Schedules Direct'
+                                          : source.source_type
+                                  })`,
+                                })),
+                            ]}
+                            clearable
+                            searchable
+                            size="xs"
+                          />
+                        </Tooltip>
+                      )}
                     </>
                   )}
                 </Stack>
@@ -808,6 +1201,16 @@ const LiveGroupFilter = ({
             ))}
         </SimpleGrid>
       </Box>
+
+      {/* Logo Upload Modal */}
+      <LogoForm
+        isOpen={logoModalOpen}
+        onClose={() => {
+          setLogoModalOpen(false);
+          setCurrentEditingGroupId(null);
+        }}
+        onSuccess={handleLogoSuccess}
+      />
     </Stack>
   );
 };

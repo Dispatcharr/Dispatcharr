@@ -4,7 +4,7 @@ import time
 import random
 import re
 import pathlib
-from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect
+from django.http import StreamingHttpResponse, JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import get_object_or_404
 from apps.proxy.config import TSConfig as Config
@@ -84,11 +84,18 @@ def stream_ts(request, channel_id):
                 if state_field in metadata:
                     channel_state = metadata[state_field].decode("utf-8")
 
-                    if channel_state:
-                        # Channel is being initialized or already active - no need for reinitialization
+                    # Active/running states - channel is operational, don't reinitialize
+                    if channel_state in [
+                        ChannelState.ACTIVE,
+                        ChannelState.WAITING_FOR_CLIENTS,
+                        ChannelState.BUFFERING,
+                        ChannelState.INITIALIZING,
+                        ChannelState.CONNECTING,
+                        ChannelState.STOPPING,
+                    ]:
                         needs_initialization = False
                         logger.debug(
-                            f"[{client_id}] Channel {channel_id} already in state {channel_state}, skipping initialization"
+                            f"[{client_id}] Channel {channel_id} in state {channel_state}, skipping initialization"
                         )
 
                         # Special handling for initializing/connecting states
@@ -98,19 +105,34 @@ def stream_ts(request, channel_id):
                         ]:
                             channel_initializing = True
                             logger.debug(
-                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait for completion"
+                                f"[{client_id}] Channel {channel_id} is still initializing, client will wait"
                             )
+                    # Terminal states - channel needs cleanup before reinitialization
+                    elif channel_state in [
+                        ChannelState.ERROR,
+                        ChannelState.STOPPED,
+                    ]:
+                        needs_initialization = True
+                        logger.info(
+                            f"[{client_id}] Channel {channel_id} in terminal state {channel_state}, will reinitialize"
+                        )
+                    # Unknown/empty state - check if owner is alive
                     else:
-                        # Only check for owner if channel is in a valid state
                         owner_field = ChannelMetadataField.OWNER.encode("utf-8")
                         if owner_field in metadata:
                             owner = metadata[owner_field].decode("utf-8")
                             owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
                             if proxy_server.redis_client.exists(owner_heartbeat_key):
-                                # Owner is still active, so we don't need to reinitialize
+                                # Owner is still active with unknown state - don't reinitialize
                                 needs_initialization = False
                                 logger.debug(
-                                    f"[{client_id}] Channel {channel_id} has active owner {owner}"
+                                    f"[{client_id}] Channel {channel_id} has active owner {owner}, skipping init"
+                                )
+                            else:
+                                # Owner dead - needs reinitialization
+                                needs_initialization = True
+                                logger.warning(
+                                    f"[{client_id}] Channel {channel_id} owner {owner} is dead, will reinitialize"
                                 )
 
         # Start initialization if needed
@@ -128,7 +150,7 @@ def stream_ts(request, channel_id):
                 ChannelService.stop_channel(channel_id)
 
             # Use fixed retry interval and timeout
-            retry_timeout = 1.5  # 1.5 seconds total timeout
+            retry_timeout = 3  # 3 seconds total timeout
             retry_interval = 0.1  # 100ms between attempts
             wait_start_time = time.time()
 
@@ -138,9 +160,10 @@ def stream_ts(request, channel_id):
             profile_value = None
             error_reason = None
             attempt = 0
+            should_retry = True
 
             # Try to get a stream with fixed interval retries
-            while time.time() - wait_start_time < retry_timeout:
+            while should_retry and time.time() - wait_start_time < retry_timeout:
                 attempt += 1
                 stream_url, stream_user_agent, transcode, profile_value = (
                     generate_stream_url(channel_id)
@@ -152,35 +175,53 @@ def stream_ts(request, channel_id):
                     )
                     break
 
-                # If we failed because there are no streams assigned, don't retry
-                _, _, error_reason = channel.get_stream()
-                if error_reason and "maximum connection limits" not in error_reason:
-                    logger.warning(
-                        f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
+                # On first failure, check if the error is retryable
+                if attempt == 1:
+                    _, _, error_reason = channel.get_stream()
+                    if error_reason and "maximum connection limits" not in error_reason:
+                        logger.warning(
+                            f"[{client_id}] Can't retry - error not related to connection limits: {error_reason}"
+                        )
+                        should_retry = False
+                        break
+
+                # Check if we have time remaining for another sleep cycle
+                elapsed_time = time.time() - wait_start_time
+                remaining_time = retry_timeout - elapsed_time
+
+                # If we don't have enough time for the next sleep interval, break
+                # but only after we've already made an attempt (the while condition will try one more time)
+                if remaining_time <= retry_interval:
+                    logger.info(
+                        f"[{client_id}] Insufficient time ({remaining_time:.1f}s) for another sleep cycle, will make one final attempt"
                     )
                     break
 
-                # Wait 100ms before retrying
-                elapsed_time = time.time() - wait_start_time
-                remaining_time = retry_timeout - elapsed_time
-                if remaining_time > retry_interval:
+                # Wait before retrying
+                logger.info(
+                    f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
+                )
+                gevent.sleep(retry_interval)
+                retry_interval += 0.025  # Increase wait time by 25ms for next attempt
+
+            # Make one final attempt if we still don't have a stream, should retry, and haven't exceeded timeout
+            if stream_url is None and should_retry and time.time() - wait_start_time < retry_timeout:
+                attempt += 1
+                logger.info(
+                    f"[{client_id}] Making final attempt {attempt} at timeout boundary"
+                )
+                stream_url, stream_user_agent, transcode, profile_value = (
+                    generate_stream_url(channel_id)
+                )
+                if stream_url is not None:
                     logger.info(
-                        f"[{client_id}] Waiting {retry_interval*1000:.0f}ms for a connection to become available (attempt {attempt}, {remaining_time:.1f}s remaining)"
+                        f"[{client_id}] Successfully obtained stream on final attempt for channel {channel_id}"
                     )
-                    gevent.sleep(retry_interval)
-                    retry_interval += 0.025  # Increase wait time by 25ms for next attempt
 
             if stream_url is None:
-                # Make sure to release any stream locks that might have been acquired
-                if hasattr(channel, "streams") and channel.streams.exists():
-                    for stream in channel.streams.all():
-                        try:
-                            stream.release_stream()
-                            logger.info(
-                                f"[{client_id}] Released stream {stream.id} for channel {channel_id}"
-                            )
-                        except Exception as e:
-                            logger.error(f"[{client_id}] Error releasing stream: {e}")
+                # Release the channel's stream lock if one was acquired
+                # Note: Only call this if get_stream() actually assigned a stream
+                # In our case, if stream_url is None, no stream was ever assigned, so don't release
 
                 # Get the specific error message if available
                 wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -188,6 +229,9 @@ def stream_ts(request, channel_id):
                     error_reason
                     if error_reason
                     else "No available streams for this channel"
+                )
+                logger.info(
+                    f"[{client_id}] Failed to obtain stream after {attempt} attempts over {wait_duration}: {error_msg}"
                 )
                 return JsonResponse(
                     {"error": error_msg, "waited": wait_duration}, status=503
@@ -270,6 +314,15 @@ def stream_ts(request, channel_id):
                     logger.info(
                         f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
                     )
+
+                    # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
+                    # because Django's HttpResponseRedirect blocks them for security
+                    if final_url.startswith(('rtsp://', 'rtp://', 'udp://')):
+                        logger.info(f"[{client_id}] Using manual redirect for non-HTTP protocol")
+                        response = HttpResponse(status=301)
+                        response['Location'] = final_url
+                        return response
+
                     return HttpResponseRedirect(final_url)
                 else:
                     logger.error(
@@ -474,17 +527,26 @@ def stream_xc(request, username, password, channel_id):
 
     print(f"Fetchin channel with ID: {channel_id}")
     if user.user_level < 10:
-        filters = {
-            "id": int(channel_id),
-            "channelprofilemembership__enabled": True,
-            "user_level__lte": user.user_level,
-        }
+        user_profile_count = user.channel_profiles.count()
 
-        if user.channel_profiles.count() > 0:
-            channel_profiles = user.channel_profiles.all()
-            filters["channelprofilemembership__channel_profile__in"] = channel_profiles
+        # If user has ALL profiles or NO profiles, give unrestricted access
+        if user_profile_count == 0:
+            # No profile filtering - user sees all channels based on user_level
+            filters = {
+                "id": int(channel_id),
+                "user_level__lte": user.user_level
+            }
+            channel = Channel.objects.filter(**filters).first()
+        else:
+            # User has specific limited profiles assigned
+            filters = {
+                "id": int(channel_id),
+                "channelprofilemembership__enabled": True,
+                "user_level__lte": user.user_level,
+                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            channel = Channel.objects.filter(**filters).distinct().first()
 
-        channel = Channel.objects.filter(**filters).distinct().first()
         if not channel:
             return JsonResponse({"error": "Not found"}, status=404)
     else:

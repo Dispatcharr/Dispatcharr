@@ -20,30 +20,88 @@ class TokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
+            # Log blocked login attempt due to network restrictions
+            from core.utils import log_system_event
+            username = request.data.get("username", 'unknown')
+            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            log_system_event(
+                event_type='login_failed',
+                user=username,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason='Network access denied',
+            )
             return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         # Get the response from the parent class first
-        response = super().post(request, *args, **kwargs)
+        username = request.data.get("username")
 
-        # If login was successful, update last_login
-        if response.status_code == 200:
-            username = request.data.get("username")
-            if username:
-                from django.utils import timezone
-                try:
-                    user = User.objects.get(username=username)
-                    user.last_login = timezone.now()
-                    user.save(update_fields=['last_login'])
-                except User.DoesNotExist:
-                    pass  # User doesn't exist, but login somehow succeeded
+        # Log login attempt
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
-        return response
+        try:
+            response = super().post(request, *args, **kwargs)
+
+            # If login was successful, update last_login and log success
+            if response.status_code == 200:
+                if username:
+                    from django.utils import timezone
+                    try:
+                        user = User.objects.get(username=username)
+                        user.last_login = timezone.now()
+                        user.save(update_fields=['last_login'])
+
+                        # Log successful login
+                        log_system_event(
+                            event_type='login_success',
+                            user=username,
+                            client_ip=client_ip,
+                            user_agent=user_agent,
+                        )
+                    except User.DoesNotExist:
+                        pass  # User doesn't exist, but login somehow succeeded
+            else:
+                # Log failed login attempt
+                log_system_event(
+                    event_type='login_failed',
+                    user=username or 'unknown',
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    reason='Invalid credentials',
+                )
+
+            return response
+
+        except Exception as e:
+            # If parent class raises an exception (e.g., validation error), log failed attempt
+            log_system_event(
+                event_type='login_failed',
+                user=username or 'unknown',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason=f'Authentication error: {str(e)[:100]}',
+            )
+            raise  # Re-raise the exception to maintain normal error flow
 
 
 class TokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
+            # Log blocked token refresh attempt due to network restrictions
+            from core.utils import log_system_event
+            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            log_system_event(
+                event_type='login_failed',
+                user='token_refresh',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason='Network access denied (token refresh)',
+            )
             return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         return super().post(request, *args, **kwargs)
@@ -80,6 +138,15 @@ def initialize_superuser(request):
 class AuthViewSet(viewsets.ViewSet):
     """Handles user login and logout"""
 
+    def get_permissions(self):
+        """
+        Login doesn't require auth, but logout does
+        """
+        if self.action == 'logout':
+            from rest_framework.permissions import IsAuthenticated
+            return [IsAuthenticated()]
+        return []
+
     @swagger_auto_schema(
         operation_description="Authenticate and log in a user",
         request_body=openapi.Schema(
@@ -100,12 +167,25 @@ class AuthViewSet(viewsets.ViewSet):
         password = request.data.get("password")
         user = authenticate(request, username=username, password=password)
 
+        # Get client info for logging
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+
         if user:
             login(request, user)
             # Update last_login timestamp
             from django.utils import timezone
             user.last_login = timezone.now()
             user.save(update_fields=['last_login'])
+
+            # Log successful login
+            log_system_event(
+                event_type='login_success',
+                user=username,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
 
             return Response(
                 {
@@ -118,6 +198,15 @@ class AuthViewSet(viewsets.ViewSet):
                     },
                 }
             )
+
+        # Log failed login attempt
+        log_system_event(
+            event_type='login_failed',
+            user=username or 'unknown',
+            client_ip=client_ip,
+            user_agent=user_agent,
+            reason='Invalid credentials',
+        )
         return Response({"error": "Invalid credentials"}, status=400)
 
     @swagger_auto_schema(
@@ -126,6 +215,19 @@ class AuthViewSet(viewsets.ViewSet):
     )
     def logout(self, request):
         """Logs out the authenticated user"""
+        # Log logout event before actually logging out
+        from core.utils import log_system_event
+        username = request.user.username if request.user and request.user.is_authenticated else 'unknown'
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+
+        log_system_event(
+            event_type='logout',
+            user=username,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+
         logout(request)
         return Response({"message": "Logout successful"})
 

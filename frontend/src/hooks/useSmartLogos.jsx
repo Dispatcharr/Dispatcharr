@@ -38,8 +38,7 @@ export const useLogoSelection = () => {
 };
 
 /**
- * Hook for channel forms that need only channel-assignable logos
- * (unused + channel-used, excluding VOD-only logos)
+ * Hook for channel forms that need channel logos
  */
 export const useChannelLogoSelection = () => {
   const [isInitialized, setIsInitialized] = useState(false);
@@ -65,7 +64,7 @@ export const useChannelLogoSelection = () => {
       await fetchChannelAssignableLogos();
       setIsInitialized(true);
     } catch (error) {
-      console.error('Failed to load channel-assignable logos:', error);
+      console.error('Failed to load channel logos:', error);
     }
   }, [
     backgroundLoading,

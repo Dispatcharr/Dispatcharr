@@ -44,7 +44,7 @@ def network_access_allowed(request, settings_key):
     cidrs = (
         network_access[settings_key].split(",")
         if settings_key in network_access
-        else ["0.0.0.0/0"]
+        else ["0.0.0.0/0", "::/0"]
     )
 
     network_allowed = False

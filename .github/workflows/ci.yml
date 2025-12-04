@@ -3,6 +3,8 @@ name: CI Pipeline
 on:
   push:
     branches: [dev]
+    paths-ignore:
+      - '**.md'
   pull_request:
     branches: [dev]
   workflow_dispatch:

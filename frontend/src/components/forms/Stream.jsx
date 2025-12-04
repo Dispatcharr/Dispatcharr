@@ -25,10 +25,22 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
     }),
     onSubmit: async (values, { setSubmitting, resetForm }) => {
       console.log(values);
+
+      // Convert string IDs back to integers for the API
+      const payload = {
+        ...values,
+        channel_group: values.channel_group
+          ? parseInt(values.channel_group, 10)
+          : null,
+        stream_profile_id: values.stream_profile_id
+          ? parseInt(values.stream_profile_id, 10)
+          : null,
+      };
+
       if (stream?.id) {
-        await API.updateStream({ id: stream.id, ...values });
+        await API.updateStream({ id: stream.id, ...payload });
       } else {
-        await API.addStream(values);
+        await API.addStream(payload);
       }
 
       resetForm();
@@ -42,12 +54,18 @@ const Stream = ({ stream = null, isOpen, onClose }) => {
       formik.setValues({
         name: stream.name,
         url: stream.url,
-        channel_group: stream.channel_group,
-        stream_profile_id: stream.stream_profile_id,
+        // Convert IDs to strings to match Select component values
+        channel_group: stream.channel_group
+          ? String(stream.channel_group)
+          : null,
+        stream_profile_id: stream.stream_profile_id
+          ? String(stream.stream_profile_id)
+          : '',
       });
     } else {
       formik.resetForm();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream]);
 
   if (!isOpen) {

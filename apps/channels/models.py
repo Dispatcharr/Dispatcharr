@@ -55,7 +55,7 @@ class Stream(models.Model):
     """
 
     name = models.CharField(max_length=255, default="Default Stream")
-    url = models.URLField(max_length=2000, blank=True, null=True)
+    url = models.URLField(max_length=4096, blank=True, null=True)
     m3u_account = models.ForeignKey(
         M3UAccount,
         on_delete=models.CASCADE,
@@ -152,8 +152,14 @@ class Stream(models.Model):
             stream = cls.objects.create(**fields_to_update)
             return stream, True  # True means it was created
 
-    # @TODO: honor stream's stream profile
     def get_stream_profile(self):
+        """
+        Get the stream profile for this stream.
+        Uses the stream's own profile if set, otherwise returns the default.
+        """
+        if self.stream_profile:
+            return self.stream_profile
+
         stream_profile = StreamProfile.objects.get(
             id=CoreSettings.get_default_stream_profile_id()
         )

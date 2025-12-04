@@ -303,6 +303,14 @@ class StreamBuffer:
         # Retrieve chunks
         chunks = self.get_chunks_exact(client_index, chunk_count)
 
+        # Check if we got significantly fewer chunks than expected (likely due to expiration)
+        # Only check if we expected multiple chunks and got none or very few
+        if chunk_count > 3 and len(chunks) == 0 and chunks_behind > 10:
+            # Chunks are missing - likely expired from Redis
+            # Return empty list to signal client should skip forward
+            logger.debug(f"Chunks missing for client at index {client_index}, buffer at {self.index} ({chunks_behind} behind)")
+            return [], client_index
+
         # Check total size
         total_size = sum(len(c) for c in chunks)
 
@@ -316,7 +324,7 @@ class StreamBuffer:
             additional_size = sum(len(c) for c in more_chunks)
             if total_size + additional_size <= MAX_SIZE:
                 chunks.extend(more_chunks)
-                chunk_count += additional
+                chunk_count += len(more_chunks)  # Fixed: count actual additional chunks retrieved
 
         return chunks, client_index + chunk_count
 

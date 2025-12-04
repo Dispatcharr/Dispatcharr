@@ -210,17 +210,6 @@ const useVODStore = create((set, get) => ({
         bitrate: response.bitrate || 0,
         video: response.video || {},
         audio: response.audio || {},
-        library_sources:
-          response.library_sources ||
-          (response.library_item_id
-            ? [
-                {
-                  library_id: response.m3u_account?.id || null,
-                  library_name: response.m3u_account?.name || 'Library',
-                  media_item_id: response.library_item_id,
-                },
-              ]
-            : []),
       };
 
       set({ loading: false }); // Only update loading state
@@ -343,8 +332,6 @@ const useVODStore = create((set, get) => ({
         tmdb_id: response.tmdb_id || '',
         imdb_id: response.imdb_id || '',
         episode_count: response.episode_count || 0,
-        library_sources: response.library_sources || [],
-        library_item_id: response.library_item_id || null,
         // Additional provider fields
         backdrop_path: response.custom_properties?.backdrop_path || [],
         release_date: response.release_date || '',
@@ -364,9 +351,9 @@ const useVODStore = create((set, get) => ({
             seasonEpisodes.forEach((episode) => {
               const episodeData = {
                 id: episode.id,
-                stream_id: episode.stream_id || episode.id,
-                name: episode.title || episode.name || '',
-                description: episode.plot || episode.description || '',
+                stream_id: episode.id,
+                name: episode.title || '',
+                description: episode.plot || '',
                 season_number: parseInt(seasonNumber) || 0,
                 episode_number: episode.episode_number || 0,
                 duration_secs: episode.duration_secs || null,
@@ -377,15 +364,12 @@ const useVODStore = create((set, get) => ({
                   name: seriesInfo.name,
                 },
                 type: 'episode',
-                uuid: episode.uuid || episode.id,
+                uuid: episode.uuid,
                 logo: episode.movie_image ? { url: episode.movie_image } : null,
                 air_date: episode.air_date || null,
                 movie_image: episode.movie_image || null,
                 tmdb_id: episode.tmdb_id || '',
                 imdb_id: episode.imdb_id || '',
-                library_media_item_ids:
-                  episode.library_media_item_ids || [],
-                providers: episode.providers || [],
               };
               episodesData[episode.id] = episodeData;
             });

@@ -8,6 +8,7 @@ class EPGSource(models.Model):
     SOURCE_TYPE_CHOICES = [
         ('xmltv', 'XMLTV URL'),
         ('schedules_direct', 'Schedules Direct API'),
+        ('dummy', 'Custom Dummy EPG'),
     ]
 
     STATUS_IDLE = 'idle'
@@ -37,6 +38,12 @@ class EPGSource(models.Model):
     refresh_interval = models.IntegerField(default=0)
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    custom_properties = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+        help_text="Custom properties for dummy EPG configuration (regex patterns, timezone, duration, etc.)"
     )
     status = models.CharField(
         max_length=20,
@@ -148,7 +155,7 @@ class ProgramData(models.Model):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     title = models.CharField(max_length=255)
-    sub_title = models.CharField(max_length=255, blank=True, null=True)
+    sub_title = models.TextField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)

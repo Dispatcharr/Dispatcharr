@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import API from '../../api';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
+import DummyEPGForm from '../forms/DummyEPG';
 import { TableHelper } from '../../helpers';
 import {
   ActionIcon,
@@ -17,6 +18,7 @@ import {
   Progress,
   Stack,
   Group,
+  Menu,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -27,6 +29,7 @@ import {
   SquareMinus,
   SquarePen,
   SquarePlus,
+  ChevronDown,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 import useSettingsStore from '../../store/settings';
@@ -62,6 +65,7 @@ const getStatusColor = (status) => {
 const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
+  const isDummyEPG = row.original.source_type === 'dummy';
 
   return (
     <>
@@ -88,7 +92,7 @@ const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
         size={iconSize} // Use standardized icon size
         color="blue.5" // Red color for delete actions
         onClick={() => refreshEPG(row.original.id)}
-        disabled={!row.original.is_active}
+        disabled={!row.original.is_active || isDummyEPG}
       >
         <RefreshCcw size={tableSize === 'compact' ? 16 : 18} />{' '}
         {/* Small icon size */}
@@ -100,6 +104,7 @@ const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
 const EPGsTable = () => {
   const [epg, setEPG] = useState(null);
   const [epgModalOpen, setEPGModalOpen] = useState(false);
+  const [dummyEpgModalOpen, setDummyEpgModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -126,6 +131,12 @@ const EPGsTable = () => {
 
   const toggleActive = async (epg) => {
     try {
+      // Validate that epg is a valid object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('toggleActive called with invalid epg:', epg);
+        return;
+      }
+
       // Send only the is_active field to trigger our special handling
       await API.updateEPG(
         {
@@ -176,8 +187,6 @@ const EPGsTable = () => {
     );
   };
 
-  console.log(epgs);
-
   const columns = useMemo(
     //column definitions...
     () => [
@@ -224,11 +233,14 @@ const EPGsTable = () => {
         size: 100,
         cell: ({ row }) => {
           const data = row.original;
+          const isDummyEPG = data.source_type === 'dummy';
 
-          // Always show status text, even when there's progress happening
+          // Dummy EPGs always show idle status
+          const displayStatus = isDummyEPG ? 'idle' : data.status;
+
           return (
-            <Text size="sm" fw={500} c={getStatusColor(data.status)}>
-              {formatStatusText(data.status)}
+            <Text size="sm" fw={500} c={getStatusColor(displayStatus)}>
+              {formatStatusText(displayStatus)}
             </Text>
           );
         },
@@ -241,6 +253,12 @@ const EPGsTable = () => {
         grow: true,
         cell: ({ row }) => {
           const data = row.original;
+          const isDummyEPG = data.source_type === 'dummy';
+
+          // Dummy EPGs don't have status messages
+          if (isDummyEPG) {
+            return null;
+          }
 
           // Check if there's an active progress for this EPG - show progress first if active
           if (
@@ -305,15 +323,19 @@ const EPGsTable = () => {
         mantineTableBodyCellProps: {
           align: 'left',
         },
-        cell: ({ row, cell }) => (
-          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-            <Switch
-              size="xs"
-              checked={cell.getValue()}
-              onChange={() => toggleActive(row.original)}
-            />
-          </Box>
-        ),
+        cell: ({ row, cell }) => {
+          const isDummyEPG = row.original.source_type === 'dummy';
+          return (
+            <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+              <Switch
+                size="xs"
+                checked={cell.getValue()}
+                onChange={() => toggleActive(row.original)}
+                disabled={isDummyEPG}
+              />
+            </Box>
+          );
+        },
       },
       {
         id: 'actions',
@@ -329,7 +351,22 @@ const EPGsTable = () => {
 
   const editEPG = async (epg = null) => {
     setEPG(epg);
+    // Open the appropriate modal based on source type
+    if (epg?.source_type === 'dummy') {
+      setDummyEpgModalOpen(true);
+    } else {
+      setEPGModalOpen(true);
+    }
+  };
+
+  const createStandardEPG = () => {
+    setEPG(null);
     setEPGModalOpen(true);
+  };
+
+  const createDummyEPG = () => {
+    setEPG(null);
+    setDummyEpgModalOpen(true);
   };
 
   const deleteEPG = async (id) => {
@@ -363,6 +400,11 @@ const EPGsTable = () => {
   const closeEPGForm = () => {
     setEPG(null);
     setEPGModalOpen(false);
+  };
+
+  const closeDummyEPGForm = () => {
+    setEPG(null);
+    setDummyEpgModalOpen(false);
   };
 
   useEffect(() => {
@@ -522,21 +564,31 @@ const EPGsTable = () => {
         >
           EPGs
         </Text>
-        <Button
-          leftSection={<SquarePlus size={18} />}
-          variant="light"
-          size="xs"
-          onClick={() => editEPG()}
-          p={5}
-          color="green"
-          style={{
-            borderWidth: '1px',
-            borderColor: 'green',
-            color: 'white',
-          }}
-        >
-          Add EPG
-        </Button>
+        <Menu shadow="md" width={200}>
+          <Menu.Target>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              rightSection={<ChevronDown size={16} />}
+              variant="light"
+              size="xs"
+              p={5}
+              color="green"
+              style={{
+                borderWidth: '1px',
+                borderColor: 'green',
+                color: 'white',
+              }}
+            >
+              Add EPG
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item onClick={createStandardEPG}>
+              Standard EPG Source
+            </Menu.Item>
+            <Menu.Item onClick={createDummyEPG}>Dummy EPG Source</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
       </Flex>
 
       <Paper
@@ -579,6 +631,11 @@ const EPGsTable = () => {
       </Box>
 
       <EPGForm epg={epg} isOpen={epgModalOpen} onClose={closeEPGForm} />
+      <DummyEPGForm
+        epg={epg}
+        isOpen={dummyEpgModalOpen}
+        onClose={closeDummyEPGForm}
+      />
 
       <ConfirmationDialog
         opened={confirmDeleteOpen}

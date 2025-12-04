@@ -3,7 +3,6 @@ import API from '../../api';
 import StreamForm from '../forms/Stream';
 import usePlaylistsStore from '../../store/playlists';
 import useChannelsStore from '../../store/channels';
-import useLogosStore from '../../store/logos';
 import { copyToClipboard, useDebounce } from '../../utils';
 import {
   SquarePlus,
@@ -14,6 +13,7 @@ import {
   ArrowUpDown,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  Search,
 } from 'lucide-react';
 import {
   TextInput,
@@ -51,6 +51,7 @@ import useChannelsTableStore from '../../store/channelsTable';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import ConfirmationDialog from '../ConfirmationDialog';
 
 const StreamRowActions = ({
   theme,
@@ -66,7 +67,6 @@ const StreamRowActions = ({
     (state) =>
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
   );
-  const fetchLogos = useLogosStore((s) => s.fetchLogos);
 
   const addStreamToChannel = async () => {
     await API.updateChannel({
@@ -183,7 +183,7 @@ const StreamsTable = () => {
   const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
   const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel numbering modal state
@@ -199,6 +199,12 @@ const StreamsTable = () => {
   const [specificChannelNumber, setSpecificChannelNumber] = useState(1);
   const [rememberSingleChoice, setRememberSingleChoice] = useState(false);
   const [currentStreamForChannel, setCurrentStreamForChannel] = useState(null);
+
+  // Confirmation dialog state
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [streamToDelete, setStreamToDelete] = useState(null);
+  const [isBulkDelete, setIsBulkDelete] = useState(false);
 
   // const [allRowsSelected, setAllRowsSelected] = useState(false);
 
@@ -243,7 +249,6 @@ const StreamsTable = () => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
 
   const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
-  const fetchLogos = useChannelsStore((s) => s.fetchLogos);
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
@@ -280,18 +285,21 @@ const StreamsTable = () => {
         grow: true,
         size: columnSizing.name || 200,
         cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'pre',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
+          <Tooltip label={getValue()} openDelay={500}>
+            <Box
+              style={{
+                whiteSpace: 'pre',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {getValue()}
+            </Box>
+          </Tooltip>
         ),
       },
       {
+        header: 'Group',
         id: 'group',
         accessorFn: (row) =>
           channelGroups[row.channel_group]
@@ -299,34 +307,37 @@ const StreamsTable = () => {
             : '',
         size: columnSizing.group || 150,
         cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'pre',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
+          <Tooltip label={getValue()} openDelay={500}>
+            <Box
+              style={{
+                whiteSpace: 'pre',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {getValue()}
+            </Box>
+          </Tooltip>
         ),
       },
       {
+        header: 'M3U',
         id: 'm3u',
         size: columnSizing.m3u || 150,
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            <Tooltip label={getValue()} openDelay={500}>
-              <Box>{getValue()}</Box>
-            </Tooltip>
-          </Box>
+          <Tooltip label={getValue()} openDelay={500}>
+            <Box
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {getValue()}
+            </Box>
+          </Tooltip>
         ),
       },
     ],
@@ -377,7 +388,14 @@ const StreamsTable = () => {
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      const columnId = sorting[0].id;
+      // Map frontend column IDs to backend field names
+      const fieldMapping = {
+        name: 'name',
+        group: 'channel_group__name',
+        m3u: 'm3u_account__name',
+      };
+      const sortField = fieldMapping[columnId] || columnId;
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -510,13 +528,49 @@ const StreamsTable = () => {
   };
 
   const deleteStream = async (id) => {
+    // Get stream details for the confirmation dialog
+    const streamObj = data.find((s) => s.id === id);
+    setStreamToDelete(streamObj);
+    setDeleteTarget(id);
+    setIsBulkDelete(false);
+
+    // Skip warning if it's been suppressed
+    if (isWarningSuppressed('delete-stream')) {
+      return executeDeleteStream(id);
+    }
+
+    setConfirmDeleteOpen(true);
+  };
+
+  const executeDeleteStream = async (id) => {
     await API.deleteStream(id);
+    fetchData();
+    // Clear the selection for the deleted stream
+    setSelectedStreamIds([]);
+    table.setSelectedTableIds([]);
+    setConfirmDeleteOpen(false);
   };
 
   const deleteStreams = async () => {
+    setIsBulkDelete(true);
+    setStreamToDelete(null);
+
+    // Skip warning if it's been suppressed
+    if (isWarningSuppressed('delete-streams')) {
+      return executeDeleteStreams();
+    }
+
+    setConfirmDeleteOpen(true);
+  };
+
+  const executeDeleteStreams = async () => {
     setIsLoading(true);
     await API.deleteStreams(selectedStreamIds);
     setIsLoading(false);
+    fetchData();
+    setSelectedStreamIds([]);
+    table.setSelectedTableIds([]);
+    setConfirmDeleteOpen(false);
   };
 
   const closeStreamForm = () => {
@@ -647,8 +701,8 @@ const StreamsTable = () => {
     const sortField = sorting[0]?.id;
     const sortDirection = sorting[0]?.desc;
 
-    if (sortField == column) {
-      if (sortDirection == false) {
+    if (sortField === column) {
+      if (sortDirection === false) {
         setSorting([
           {
             id: column,
@@ -656,7 +710,8 @@ const StreamsTable = () => {
           },
         ]);
       } else {
-        setSorting([]);
+        // Reset to default sort (name ascending) instead of clearing
+        setSorting([{ id: 'name', desc: false }]);
       }
     } else {
       setSorting([
@@ -681,7 +736,7 @@ const StreamsTable = () => {
     switch (header.id) {
       case 'name':
         return (
-          <Flex gap="sm">
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <TextInput
               name="name"
               placeholder="Name"
@@ -691,19 +746,24 @@ const StreamsTable = () => {
               size="xs"
               variant="unstyled"
               className="table-input-header"
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
+              leftSection={<Search size={14} opacity={0.5} />}
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('name');
+                },
                 size: 14,
+                style: { cursor: 'pointer' },
               })}
-            </Center>
+            />
           </Flex>
         );
 
       case 'group':
         return (
-          <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <MultiSelect
               placeholder="Group"
               searchable
@@ -715,13 +775,23 @@ const StreamsTable = () => {
               variant="unstyled"
               className="table-input-header custom-multiselect"
               clearable
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('group');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
             />
-          </Box>
+          </Flex>
         );
 
       case 'm3u':
         return (
-          <Box onClick={handleSelectClick}>
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <Select
               placeholder="M3U"
               searchable
@@ -736,8 +806,18 @@ const StreamsTable = () => {
               }))}
               variant="unstyled"
               className="table-input-header"
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('m3u');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
             />
-          </Box>
+          </Flex>
         );
     }
   };
@@ -831,8 +911,14 @@ const StreamsTable = () => {
         }}
       >
         {/* Top toolbar with Remove, Assign, Auto-match, and Add buttons */}
-        <Group justify="space-between" style={{ paddingLeft: 10 }}>
-          <Box>
+        <Flex
+          justify="space-between"
+          align="center"
+          wrap="nowrap"
+          style={{ padding: 10 }}
+          gap={6}
+        >
+          <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
             <Button
               leftSection={<SquarePlus size={18} />}
               variant={
@@ -866,55 +952,47 @@ const StreamsTable = () => {
             >
               Add Streams to Channel
             </Button>
-          </Box>
 
-          <Box
-            style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              padding: 10,
-            }}
-          >
-            <Flex gap={6}>
-              <Button
-                leftSection={<SquareMinus size={18} />}
-                variant="default"
-                size="xs"
-                onClick={deleteStreams}
-                disabled={selectedStreamIds.length == 0}
-              >
-                Remove
-              </Button>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant="default"
+              size="xs"
+              onClick={createChannelsFromStreams}
+              p={5}
+              disabled={selectedStreamIds.length == 0}
+            >
+              {`Create Channels (${selectedStreamIds.length})`}
+            </Button>
+          </Flex>
 
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="default"
-                size="xs"
-                onClick={createChannelsFromStreams}
-                p={5}
-                disabled={selectedStreamIds.length == 0}
-              >
-                {`Create Channels (${selectedStreamIds.length})`}
-              </Button>
+          <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
+            <Button
+              leftSection={<SquarePlus size={18} />}
+              variant="light"
+              size="xs"
+              onClick={() => editStream()}
+              p={5}
+              color={theme.tailwind.green[5]}
+              style={{
+                borderWidth: '1px',
+                borderColor: theme.tailwind.green[5],
+                color: 'white',
+              }}
+            >
+              Create Stream
+            </Button>
 
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editStream()}
-                p={5}
-                color={theme.tailwind.green[5]}
-                style={{
-                  borderWidth: '1px',
-                  borderColor: theme.tailwind.green[5],
-                  color: 'white',
-                }}
-              >
-                Create Stream
-              </Button>
-            </Flex>
-          </Box>
-        </Group>
+            <Button
+              leftSection={<SquareMinus size={18} />}
+              variant="default"
+              size="xs"
+              onClick={deleteStreams}
+              disabled={selectedStreamIds.length == 0}
+            >
+              Remove
+            </Button>
+          </Flex>
+        </Flex>
 
         {initialDataCount === 0 && (
           <Center style={{ paddingTop: 20 }}>
@@ -1175,6 +1253,39 @@ const StreamsTable = () => {
           </Group>
         </Stack>
       </Modal>
+
+      <ConfirmationDialog
+        opened={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={() =>
+          isBulkDelete
+            ? executeDeleteStreams()
+            : executeDeleteStream(deleteTarget)
+        }
+        title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Stream Deletion`}
+        message={
+          isBulkDelete ? (
+            `Are you sure you want to delete ${selectedStreamIds.length} stream${selectedStreamIds.length !== 1 ? 's' : ''}? This action cannot be undone.`
+          ) : streamToDelete ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Are you sure you want to delete the following stream?
+
+Name: ${streamToDelete.name}
+${streamToDelete.channel_group ? `Group: ${channelGroups[streamToDelete.channel_group]?.name || 'Unknown'}` : ''}
+${streamToDelete.m3u_account ? `M3U Account: ${playlists.find((p) => p.id === streamToDelete.m3u_account)?.name || 'Unknown'}` : ''}
+
+This action cannot be undone.`}
+            </div>
+          ) : (
+            'Are you sure you want to delete this stream? This action cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        actionKey={isBulkDelete ? 'delete-streams' : 'delete-stream'}
+        onSuppressChange={suppressWarning}
+        size="md"
+      />
     </>
   );
 };

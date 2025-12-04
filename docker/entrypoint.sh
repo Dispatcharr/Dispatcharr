@@ -40,6 +40,18 @@ export REDIS_DB=${REDIS_DB:-0}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
+
+# Process priority configuration
+# UWSGI_NICE_LEVEL: Absolute nice value for uWSGI/streaming (default: 0 = normal priority)
+# CELERY_NICE_LEVEL: Absolute nice value for Celery/background tasks (default: 5 = low priority)
+# Note: The script will automatically calculate the relative offset for Celery since it's spawned by uWSGI
+export UWSGI_NICE_LEVEL=${UWSGI_NICE_LEVEL:-0}
+CELERY_NICE_ABSOLUTE=${CELERY_NICE_LEVEL:-5}
+
+# Calculate relative nice value for Celery (since nice is relative to parent process)
+# Celery is spawned by uWSGI, so we need to add the offset to reach the desired absolute value
+export CELERY_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL))
+
 # Set LIBVA_DRIVER_NAME if user has specified it
 if [ -v LIBVA_DRIVER_NAME ]; then
     export LIBVA_DRIVER_NAME
@@ -78,6 +90,7 @@ if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
         REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
+        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL
     )
 
     # Process each variable for both profile.d and environment
@@ -96,7 +109,16 @@ fi
 
 chmod +x /etc/profile.d/dispatcharr.sh
 
-pip install django-filter
+# Ensure root's .bashrc sources the profile.d scripts for interactive non-login shells
+if ! grep -q "profile.d/dispatcharr.sh" /root/.bashrc 2>/dev/null; then
+    cat >> /root/.bashrc << 'EOF'
+
+# Source Dispatcharr environment variables
+if [ -f /etc/profile.d/dispatcharr.sh ]; then
+    . /etc/profile.d/dispatcharr.sh
+fi
+EOF
+fi
 
 # Run init scripts
 echo "Starting user setup..."
@@ -161,10 +183,12 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi -p passes environment variables to the process
-su -p - $POSTGRES_USER -c "cd /app && uwsgi $uwsgi_args &"
-uwsgi_pid=$(pgrep uwsgi | sort | head -n1)
-echo "✅ uwsgi started with PID $uwsgi_pid"
+# Launch uwsgi with configurable nice level (default: 0 for normal priority)
+# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
+# Start with nice as root, then use setpriv to drop privileges to dispatch user
+# This preserves both the nice value and environment variables
+nice -n $UWSGI_NICE_LEVEL su -p - "$POSTGRES_USER" -c "cd /app && exec uwsgi $uwsgi_args" & uwsgi_pid=$!
+echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 
 # sed -i 's/protected-mode yes/protected-mode no/g' /etc/redis/redis.conf
@@ -209,7 +233,7 @@ echo "🔍 Running hardware acceleration check..."
 
 # Wait for at least one process to exit and log the process that exited first
 if [ ${#pids[@]} -gt 0 ]; then
-    echo "⏳ Waiting for processes to exit..."
+    echo "⏳ Dispatcharr is running. Monitoring processes..."
     while kill -0 "${pids[@]}" 2>/dev/null; do
         sleep 1  # Wait for a second before checking again
     done

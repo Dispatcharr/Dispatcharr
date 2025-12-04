@@ -1,31 +1,23 @@
 // Modal.js
 import React, { useState, useEffect } from 'react';
 import API from '../../api';
-import useEPGsStore from '../../store/epgs';
 import {
-  LoadingOverlay,
   TextInput,
   Button,
   Checkbox,
   Modal,
-  Flex,
   NativeSelect,
   NumberInput,
-  Space,
-  Grid,
-  Group,
-  FileInput,
-  Title,
-  Text,
-  Divider,
   Stack,
+  Group,
+  Divider,
   Box,
+  Text,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
 
 const EPG = ({ epg = null, isOpen, onClose }) => {
-  const epgs = useEPGsStore((state) => state.epgs);
-  // Remove the file state and handler since we're not supporting file uploads
   const [sourceType, setSourceType] = useState('xmltv');
 
   const form = useForm({
@@ -49,13 +41,19 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
     const values = form.getValues();
 
     if (epg?.id) {
-      // Remove file from API call
+      // Validate that we have a valid EPG object before updating
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        notifications.show({
+          title: 'Error',
+          message: 'Invalid EPG data. Please close and reopen this form.',
+          color: 'red',
+        });
+        return;
+      }
+
       await API.updateEPG({ id: epg.id, ...values });
     } else {
-      // Remove file from API call
-      await API.addEPG({
-        ...values,
-      });
+      await API.addEPG(values);
     }
 
     form.reset();
@@ -73,11 +71,12 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         refresh_interval: epg.refresh_interval,
       };
       form.setValues(values);
-      setSourceType(epg.source_type); // Update source type state
+      setSourceType(epg.source_type);
     } else {
       form.reset();
-      setSourceType('xmltv'); // Reset to xmltv
+      setSourceType('xmltv');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epg]);
 
   // Function to handle source type changes
@@ -156,7 +155,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               description="API key for services that require authentication"
               {...form.getInputProps('api_key')}
               key={form.key('api_key')}
-              disabled={sourceType !== 'schedules_direct'} // Use the state variable
+              disabled={sourceType !== 'schedules_direct'}
             />
 
             {/* Put checkbox at the same level as Refresh Interval */}
@@ -171,8 +170,8 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  height: '30px', // Reduced height
-                  marginTop: '-4px', // Slight negative margin to move it up
+                  height: '30px',
+                  marginTop: '-4px',
                 }}
               >
                 <Checkbox

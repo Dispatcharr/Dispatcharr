@@ -615,14 +615,22 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'epg_refresh':
-              // Update the store with progress information
-              updateEPGProgress(parsedEvent.data);
-
-              // If we have source_id/account info, update the EPG source status
-              if (parsedEvent.data.source_id || parsedEvent.data.account) {
+              // If we have source/account info, check if EPG exists before processing
+              if (parsedEvent.data.source || parsedEvent.data.account) {
                 const sourceId =
-                  parsedEvent.data.source_id || parsedEvent.data.account;
+                  parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
+                
+                // Only update progress if the EPG still exists in the store
+                // This prevents crashes when receiving updates for deleted EPGs
+                if (epg) {
+                  // Update the store with progress information
+                  updateEPGProgress(parsedEvent.data);
+                } else {
+                  // EPG was deleted, ignore this update
+                  console.debug(`Ignoring EPG refresh update for deleted EPG ${sourceId}`);
+                  break;
+                }
 
                 if (epg) {
                   // Check for any indication of an error (either via status or error field)
@@ -685,6 +693,16 @@ export const WebsocketProvider = ({ children }) => {
                   'Failed to refresh EPG sources after change notification:',
                   e
                 );
+              }
+              break;
+
+            case 'epg_data_created':
+              // A new EPG data entry was created (e.g., for a dummy EPG)
+              // Fetch EPG data so the channel form can immediately assign it
+              try {
+                await fetchEPGData();
+              } catch (e) {
+                console.warn('Failed to refresh EPG data after creation:', e);
               }
               break;
 

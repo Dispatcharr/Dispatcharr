@@ -23,6 +23,7 @@ import {
   ArrowUpNarrowWide,
   ArrowUpDown,
   ArrowDownWideNarrow,
+  Search,
 } from 'lucide-react';
 import {
   Box,
@@ -307,6 +308,7 @@ const ChannelsTable = ({}) => {
   const [channelToDelete, setChannelToDelete] = useState(null);
 
   // Column sizing state for resizable columns
+  // Store in localStorage but with empty object as default
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'channels-table-column-sizing',
     {}
@@ -882,7 +884,12 @@ const ChannelsTable = ({}) => {
         ),
       },
     ],
-    [selectedProfileId, channelGroups, logos, theme, columnSizing]
+    // Note: columnSizing is intentionally excluded from dependencies to prevent
+    // columns from being recreated during drag operations (which causes infinite loops).
+    // The column.size values are only used for INITIAL sizing - TanStack Table manages
+    // the actual sizes through its own state after initialization.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedProfileId, channelGroups, logos, theme]
   );
 
   const renderHeaderCell = (header) => {
@@ -943,6 +950,7 @@ const ChannelsTable = ({}) => {
               size="xs"
               variant="unstyled"
               className="table-input-header"
+              leftSection={<Search size={14} opacity={0.5} />}
             />
             <Center>
               {React.createElement(sortingIcon, {
@@ -979,17 +987,18 @@ const ChannelsTable = ({}) => {
     filters,
     pagination,
     sorting,
+    columnSizing,
+    setColumnSizing,
     manualPagination: true,
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
     onRowSelectionChange: onRowSelectionChange,
     state: {
-      columnSizing,
       pagination,
       sorting,
     },
-    onColumnSizingChange: setColumnSizing,
+    columnResizeMode: 'onChange',
     getExpandedRowHeight: (row) => {
       return 20 + 28 * row.original.streams.length;
     },

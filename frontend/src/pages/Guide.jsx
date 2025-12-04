@@ -250,6 +250,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const logos = useLogosStore((s) => s.logos);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
+  const epgs = useEPGsStore((s) => s.epgs);
 
   const [programs, setPrograms] = useState([]);
   const [guideChannels, setGuideChannels] = useState([]);
@@ -274,6 +275,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const guideRef = useRef(null);
   const timelineRef = useRef(null); // New ref for timeline scrolling
   const listRef = useRef(null);
+  const tvGuideRef = useRef(null); // Ref for the main tv-guide wrapper
   const isSyncingScroll = useRef(false);
   const guideScrollLeftRef = useRef(0);
   const {
@@ -400,8 +402,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     : defaultEnd;
 
   const channelIdByTvgId = useMemo(
-    () => buildChannelIdMap(guideChannels, tvgsById),
-    [guideChannels, tvgsById]
+    () => buildChannelIdMap(guideChannels, tvgsById, epgs),
+    [guideChannels, tvgsById, epgs]
   );
 
   const channelById = useMemo(() => {
@@ -505,37 +507,39 @@ export default function TVChannelGuide({ startDate, endDate }) {
     if (!node) return undefined;
 
     const handleScroll = () => {
-      const { scrollLeft } = node;
-      if (scrollLeft === guideScrollLeftRef.current) {
-        return;
-      }
-
-      guideScrollLeftRef.current = scrollLeft;
-      setGuideScrollLeft(scrollLeft);
-
       if (isSyncingScroll.current) {
         return;
       }
 
+      const { scrollLeft } = node;
+
+      // Always sync if timeline is out of sync, even if ref matches
       if (
         timelineRef.current &&
         timelineRef.current.scrollLeft !== scrollLeft
       ) {
         isSyncingScroll.current = true;
         timelineRef.current.scrollLeft = scrollLeft;
+        guideScrollLeftRef.current = scrollLeft;
+        setGuideScrollLeft(scrollLeft);
         requestAnimationFrame(() => {
           isSyncingScroll.current = false;
         });
+      } else if (scrollLeft !== guideScrollLeftRef.current) {
+        // Update ref even if timeline was already synced
+        guideScrollLeftRef.current = scrollLeft;
+        setGuideScrollLeft(scrollLeft);
       }
     };
 
     node.addEventListener('scroll', handleScroll, { passive: true });
+
     return () => {
       node.removeEventListener('scroll', handleScroll);
     };
   }, []);
 
-  // Update “now” every second
+  // Update "now" every second
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(dayjs());
@@ -543,12 +547,190 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return () => clearInterval(interval);
   }, []);
 
-  // Pixel offset for the “now” vertical line
+  // Pixel offset for the "now" vertical line
   const nowPosition = useMemo(() => {
     if (now.isBefore(start) || now.isAfter(end)) return -1;
     const minutesSinceStart = now.diff(start, 'minute');
     return (minutesSinceStart / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
   }, [now, start, end]);
+
+  useEffect(() => {
+    const tvGuide = tvGuideRef.current;
+
+    if (!tvGuide) return undefined;
+
+    const handleContainerWheel = (event) => {
+      const guide = guideRef.current;
+      const timeline = timelineRef.current;
+
+      if (!guide) {
+        return;
+      }
+
+      if (event.deltaX !== 0 || (event.shiftKey && event.deltaY !== 0)) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const delta = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+        const newScrollLeft = guide.scrollLeft + delta;
+
+        // Set both guide and timeline scroll positions
+        if (typeof guide.scrollTo === 'function') {
+          guide.scrollTo({ left: newScrollLeft, behavior: 'auto' });
+        } else {
+          guide.scrollLeft = newScrollLeft;
+        }
+
+        // Also sync timeline immediately
+        if (timeline) {
+          if (typeof timeline.scrollTo === 'function') {
+            timeline.scrollTo({ left: newScrollLeft, behavior: 'auto' });
+          } else {
+            timeline.scrollLeft = newScrollLeft;
+          }
+        }
+
+        // Update the ref to keep state in sync
+        guideScrollLeftRef.current = newScrollLeft;
+        setGuideScrollLeft(newScrollLeft);
+      }
+    };
+
+    tvGuide.addEventListener('wheel', handleContainerWheel, {
+      passive: false,
+      capture: true,
+    });
+
+    return () => {
+      tvGuide.removeEventListener('wheel', handleContainerWheel, {
+        capture: true,
+      });
+    };
+  }, []);
+
+  // Fallback: continuously monitor for any scroll changes
+  useEffect(() => {
+    let rafId = null;
+    let lastCheck = 0;
+
+    const checkSync = (timestamp) => {
+      // Throttle to check every 100ms instead of every frame
+      if (timestamp - lastCheck > 100) {
+        const guide = guideRef.current;
+        const timeline = timelineRef.current;
+
+        if (guide && timeline && guide.scrollLeft !== timeline.scrollLeft) {
+          timeline.scrollLeft = guide.scrollLeft;
+          guideScrollLeftRef.current = guide.scrollLeft;
+          setGuideScrollLeft(guide.scrollLeft);
+        }
+        lastCheck = timestamp;
+      }
+
+      rafId = requestAnimationFrame(checkSync);
+    };
+
+    rafId = requestAnimationFrame(checkSync);
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, []);
+
+  useEffect(() => {
+    const tvGuide = tvGuideRef.current;
+    if (!tvGuide) return;
+
+    let lastTouchX = null;
+    let isTouching = false;
+    let rafId = null;
+    let lastScrollLeft = 0;
+    let stableFrames = 0;
+
+    const syncScrollPositions = () => {
+      const guide = guideRef.current;
+      const timeline = timelineRef.current;
+
+      if (!guide || !timeline) return false;
+
+      const currentScroll = guide.scrollLeft;
+
+      // Check if scroll position has changed
+      if (currentScroll !== lastScrollLeft) {
+        timeline.scrollLeft = currentScroll;
+        guideScrollLeftRef.current = currentScroll;
+        setGuideScrollLeft(currentScroll);
+        lastScrollLeft = currentScroll;
+        stableFrames = 0;
+        return true; // Still scrolling
+      } else {
+        stableFrames++;
+        return stableFrames < 10; // Continue for 10 stable frames to catch late updates
+      }
+    };
+
+    const startPolling = () => {
+      if (rafId) return; // Already polling
+
+      const poll = () => {
+        const shouldContinue = isTouching || syncScrollPositions();
+
+        if (shouldContinue) {
+          rafId = requestAnimationFrame(poll);
+        } else {
+          rafId = null;
+        }
+      };
+
+      rafId = requestAnimationFrame(poll);
+    };
+
+    const handleTouchStart = (e) => {
+      if (e.touches.length === 1) {
+        const guide = guideRef.current;
+        if (guide) {
+          lastTouchX = e.touches[0].clientX;
+          lastScrollLeft = guide.scrollLeft;
+          isTouching = true;
+          stableFrames = 0;
+          startPolling();
+        }
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (!isTouching || e.touches.length !== 1) return;
+      const guide = guideRef.current;
+      if (!guide) return;
+
+      const touchX = e.touches[0].clientX;
+      const deltaX = lastTouchX - touchX;
+      lastTouchX = touchX;
+
+      if (Math.abs(deltaX) > 0) {
+        guide.scrollLeft += deltaX;
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isTouching = false;
+      lastTouchX = null;
+      // Polling continues until scroll stabilizes
+    };
+
+    tvGuide.addEventListener('touchstart', handleTouchStart, { passive: true });
+    tvGuide.addEventListener('touchmove', handleTouchMove, { passive: false });
+    tvGuide.addEventListener('touchend', handleTouchEnd, { passive: true });
+    tvGuide.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      tvGuide.removeEventListener('touchstart', handleTouchStart);
+      tvGuide.removeEventListener('touchmove', handleTouchMove);
+      tvGuide.removeEventListener('touchend', handleTouchEnd);
+      tvGuide.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, []);
 
   const syncScrollLeft = useCallback((nextLeft, behavior = 'auto') => {
     const guideNode = guideRef.current;
@@ -779,17 +961,17 @@ export default function TVChannelGuide({ startDate, endDate }) {
   }, [now, nowPosition, start, syncScrollLeft]);
 
   const handleTimelineScroll = useCallback(() => {
-    if (!timelineRef.current) {
+    if (!timelineRef.current || isSyncingScroll.current) {
       return;
     }
 
     const nextLeft = timelineRef.current.scrollLeft;
-    guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
-
-    if (isSyncingScroll.current) {
+    if (nextLeft === guideScrollLeftRef.current) {
       return;
     }
+
+    guideScrollLeftRef.current = nextLeft;
+    setGuideScrollLeft(nextLeft);
 
     isSyncingScroll.current = true;
     if (guideRef.current) {
@@ -1177,6 +1359,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   return (
     <Box
+      ref={tvGuideRef}
       className="tv-guide"
       style={{
         overflow: 'hidden',
@@ -1476,6 +1659,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
           {filteredChannels.length > 0 ? (
             <VariableSizeList
+              className="guide-list-outer"
               height={virtualizedHeight}
               width={virtualizedWidth}
               itemCount={filteredChannels.length}

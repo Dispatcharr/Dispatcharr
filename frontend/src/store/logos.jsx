@@ -3,11 +3,11 @@ import api from '../api';
 
 const useLogosStore = create((set, get) => ({
   logos: {},
-  channelLogos: {}, // Keep this for simplicity, but we'll be more careful about when we populate it
+  channelLogos: {}, // Separate cache for channel forms to avoid reloading
   isLoading: false,
   backgroundLoading: false,
   hasLoadedAll: false, // Track if we've loaded all logos
-  hasLoadedChannelLogos: false, // Track if we've loaded channel-assignable logos
+  hasLoadedChannelLogos: false, // Track if we've loaded channel logos
   error: null,
 
   // Basic CRUD operations
@@ -27,10 +27,9 @@ const useLogosStore = create((set, get) => ({
         ...state.logos,
         [newLogo.id]: { ...newLogo },
       };
-      
-      // Add to channelLogos if the user has loaded channel-assignable logos
+
+      // Add to channelLogos if the user has loaded channel logos
       // This means they're using channel forms and the new logo should be available there
-      // Newly created logos are channel-assignable (they start unused)
       let newChannelLogos = state.channelLogos;
       if (state.hasLoadedChannelLogos) {
         newChannelLogos = {
@@ -96,11 +95,14 @@ const useLogosStore = create((set, get) => ({
     }
   },
 
-  fetchAllLogos: async () => {
+  fetchAllLogos: async (force = false) => {
     const { isLoading, hasLoadedAll, logos } = get();
 
     // Prevent unnecessary reloading if we already have all logos
-    if (isLoading || (hasLoadedAll && Object.keys(logos).length > 0)) {
+    if (
+      !force &&
+      (isLoading || (hasLoadedAll && Object.keys(logos).length > 0))
+    ) {
       return Object.values(logos);
     }
 
@@ -173,16 +175,15 @@ const useLogosStore = create((set, get) => ({
 
     set({ backgroundLoading: true, error: null });
     try {
-      // Load logos suitable for channel assignment (unused + channel-used, exclude VOD-only)
+      // Load all channel logos (no special filtering needed - all Logo entries are for channels)
       const response = await api.getLogos({
-        channel_assignable: 'true',
-        no_pagination: 'true', // Get all channel-assignable logos
+        no_pagination: 'true', // Get all channel logos
       });
 
       // Handle both paginated and non-paginated responses
       const logos = Array.isArray(response) ? response : response.results || [];
 
-      console.log(`Fetched ${logos.length} channel-assignable logos`);
+      console.log(`Fetched ${logos.length} channel logos`);
 
       // Store in both places, but this is intentional and only when specifically requested
       set({
@@ -203,9 +204,9 @@ const useLogosStore = create((set, get) => ({
 
       return logos;
     } catch (error) {
-      console.error('Failed to fetch channel-assignable logos:', error);
+      console.error('Failed to fetch channel logos:', error);
       set({
-        error: 'Failed to load channel-assignable logos.',
+        error: 'Failed to load channel logos.',
         backgroundLoading: false,
       });
       throw error;
@@ -327,7 +328,7 @@ const useLogosStore = create((set, get) => ({
     }, 0); // Execute immediately but asynchronously
   },
 
-  // Background loading specifically for channel-assignable logos after login
+  // Background loading for channel logos after login
   backgroundLoadChannelLogos: async () => {
     const { backgroundLoading, channelLogos, hasLoadedChannelLogos } = get();
 
@@ -342,10 +343,10 @@ const useLogosStore = create((set, get) => ({
 
     set({ backgroundLoading: true });
     try {
-      console.log('Background loading channel-assignable logos...');
+      console.log('Background loading channel logos...');
       await get().fetchChannelAssignableLogos();
       console.log(
-        `Background loaded ${Object.keys(get().channelLogos).length} channel-assignable logos`
+        `Background loaded ${Object.keys(get().channelLogos).length} channel logos`
       );
     } catch (error) {
       console.error('Background channel logo loading failed:', error);

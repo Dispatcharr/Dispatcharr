@@ -100,3 +100,12 @@ class ConfigHelper:
     def channel_init_grace_period():
         """Get channel initialization grace period in seconds"""
         return Config.get_channel_init_grace_period()
+
+    @staticmethod
+    def chunk_timeout():
+        """
+        Get chunk timeout in seconds (used for both socket and HTTP read timeouts).
+        This controls how long we wait for each chunk before timing out.
+        Set this higher (e.g., 30s) for slow providers that may have intermittent delays.
+        """
+        return ConfigHelper.get('CHUNK_TIMEOUT', 5)  # Default 5 seconds

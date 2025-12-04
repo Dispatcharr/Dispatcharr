@@ -6,6 +6,7 @@ from .api_views import (
     SeriesViewSet,
     VODCategoryViewSet,
     UnifiedContentViewSet,
+    VODLogoViewSet,
 )
 
 app_name = 'vod'
@@ -16,5 +17,6 @@ router.register(r'episodes', EpisodeViewSet, basename='episode')
 router.register(r'series', SeriesViewSet, basename='series')
 router.register(r'categories', VODCategoryViewSet, basename='vodcategory')
 router.register(r'all', UnifiedContentViewSet, basename='unified-content')
+router.register(r'vodlogos', VODLogoViewSet, basename='vodlogo')
 
 urlpatterns = router.urls

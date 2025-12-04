@@ -64,75 +64,21 @@ class LogoSerializer(serializers.ModelSerializer):
         return reverse("api:channels:logo-cache", args=[obj.id])
 
     def get_channel_count(self, obj):
-        """Get the number of channels, movies, and series using this logo"""
-        channel_count = obj.channels.count()
-
-        # Safely get movie count
-        try:
-            movie_count = obj.movie.count() if hasattr(obj, 'movie') else 0
-        except AttributeError:
-            movie_count = 0
-
-        # Safely get series count
-        try:
-            series_count = obj.series.count() if hasattr(obj, 'series') else 0
-        except AttributeError:
-            series_count = 0
-
-        return channel_count + movie_count + series_count
+        """Get the number of channels using this logo"""
+        return obj.channels.count()
 
     def get_is_used(self, obj):
-        """Check if this logo is used by any channels, movies, or series"""
-        # Check if used by channels
-        if obj.channels.exists():
-            return True
-
-        # Check if used by movies (handle case where VOD app might not be available)
-        try:
-            if hasattr(obj, 'movie') and obj.movie.exists():
-                return True
-        except AttributeError:
-            pass
-
-        # Check if used by series (handle case where VOD app might not be available)
-        try:
-            if hasattr(obj, 'series') and obj.series.exists():
-                return True
-        except AttributeError:
-            pass
-
-        return False
+        """Check if this logo is used by any channels"""
+        return obj.channels.exists()
 
     def get_channel_names(self, obj):
-        """Get the names of channels, movies, and series using this logo (limited to first 5)"""
+        """Get the names of channels using this logo (limited to first 5)"""
         names = []
 
         # Get channel names
         channels = obj.channels.all()[:5]
         for channel in channels:
             names.append(f"Channel: {channel.name}")
-
-        # Get movie names (only if we haven't reached limit)
-        if len(names) < 5:
-            try:
-                if hasattr(obj, 'movie'):
-                    remaining_slots = 5 - len(names)
-                    movies = obj.movie.all()[:remaining_slots]
-                    for movie in movies:
-                        names.append(f"Movie: {movie.name}")
-            except AttributeError:
-                pass
-
-        # Get series names (only if we haven't reached limit)
-        if len(names) < 5:
-            try:
-                if hasattr(obj, 'series'):
-                    remaining_slots = 5 - len(names)
-                    series = obj.series.all()[:remaining_slots]
-                    for series_item in series:
-                        names.append(f"Series: {series_item.name}")
-            except AttributeError:
-                pass
 
         # Calculate total count for "more" message
         total_count = self.get_channel_count(obj)
@@ -348,8 +294,17 @@ class ChannelSerializer(serializers.ModelSerializer):
 
         if include_streams:
             self.fields["streams"] = serializers.SerializerMethodField()
-
-        return super().to_representation(instance)
+            return super().to_representation(instance)
+        else:
+            # Fix: For PATCH/PUT responses, ensure streams are ordered
+            representation = super().to_representation(instance)
+            if "streams" in representation:
+                representation["streams"] = list(
+                    instance.streams.all()
+                    .order_by("channelstream__order")
+                    .values_list("id", flat=True)
+                )
+            return representation
 
     def get_logo(self, obj):
         return LogoSerializer(obj.logo).data

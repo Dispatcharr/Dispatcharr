@@ -24,11 +24,13 @@ from core.utils import (
     acquire_task_lock,
     release_task_lock,
     natural_sort_key,
+    log_system_event,
 )
 from core.models import CoreSettings, UserAgent
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
+from .utils import normalize_stream_url
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +221,10 @@ def fetch_m3u_lines(account, use_cache=False):
                         # Has HTTP URLs, might be a simple M3U without headers
                         is_valid_m3u = True
                         logger.info("Content validated as M3U: contains HTTP URLs")
+                    elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in content_lines):
+                        # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
+                        is_valid_m3u = True
+                        logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
 
                     if not is_valid_m3u:
                         # Log what we actually received for debugging
@@ -434,25 +440,51 @@ def get_case_insensitive_attr(attributes, key, default=""):
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
-    This function removes the "#EXTINF:" prefix, then splits the remaining
-    string on the first comma that is not enclosed in quotes.
+    This function removes the "#EXTINF:" prefix, then extracts all key="value" attributes,
+    and treats everything after the last attribute as the display name.
 
     Returns a dictionary with:
       - 'attributes': a dict of attribute key/value pairs (e.g. tvg-id, tvg-logo, group-title)
-      - 'display_name': the text after the comma (the fallback display name)
+      - 'display_name': the text after the attributes (the fallback display name)
       - 'name': the value from tvg-name (if present) or the display name otherwise.
     """
     if not line.startswith("#EXTINF:"):
         return None
     content = line[len("#EXTINF:") :].strip()
-    # Split on the first comma that is not inside quotes.
-    parts = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', content, maxsplit=1)
-    if len(parts) != 2:
-        return None
-    attributes_part, display_name = parts[0], parts[1].strip()
-    attrs = dict(re.findall(r'([^\s]+)=["\']([^"\']+)["\']', attributes_part))
-    # Use tvg-name attribute if available; otherwise, use the display name.
-    name = get_case_insensitive_attr(attrs, "tvg-name", display_name)
+
+    # Single pass: extract all attributes AND track the last attribute position
+    # This regex matches both key="value" and key='value' patterns
+    attrs = {}
+    last_attr_end = 0
+
+    # Use a single regex that handles both quote types
+    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+        key = match.group(1)
+        value = match.group(3)
+        attrs[key] = value
+        last_attr_end = match.end()
+
+    # Everything after the last attribute (skipping leading comma and whitespace) is the display name
+    if last_attr_end > 0:
+        remaining = content[last_attr_end:].strip()
+        # Remove leading comma if present
+        if remaining.startswith(','):
+            remaining = remaining[1:].strip()
+        display_name = remaining
+    else:
+        # No attributes found, try the old comma-split method as fallback
+        parts = content.split(',', 1)
+        if len(parts) == 2:
+            display_name = parts[1].strip()
+        else:
+            display_name = content.strip()
+
+    # Use tvg-name attribute if available; otherwise try tvc-guide-title, then fall back to display name.
+    name = get_case_insensitive_attr(attrs, "tvg-name", None)
+    if not name:
+        name = get_case_insensitive_attr(attrs, "tvc-guide-title", None)
+    if not name:
+        name = display_name
     return {"attributes": attrs, "display_name": display_name, "name": name}
 
 
@@ -894,6 +926,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
+
+            # Validate URL length - maximum of 4096 characters
+            if url and len(url) > 4096:
+                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+                continue
+
             tvg_id, tvg_logo = get_case_insensitive_attr(
                 stream_info["attributes"], "tvg-id", ""
             ), get_case_insensitive_attr(stream_info["attributes"], "tvg-logo", "")
@@ -1180,52 +1218,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
 
-                        # Save account information to all active profiles
+                        # Queue async profile refresh task to run in background
+                        # This prevents any delay in the main refresh process
                         try:
-                            from apps.m3u.models import M3UAccountProfile
-
-                            profiles = M3UAccountProfile.objects.filter(
-                                m3u_account=account,
-                                is_active=True
-                            )
-
-                            # Update each profile with account information using its own transformed credentials
-                            for profile in profiles:
-                                try:
-                                    # Get transformed credentials for this specific profile
-                                    profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
-
-                                    # Create a separate XC client for this profile's credentials
-                                    with XCClient(
-                                        profile_url,
-                                        profile_username,
-                                        profile_password,
-                                        user_agent_string
-                                    ) as profile_client:
-                                        # Authenticate with this profile's credentials
-                                        if profile_client.authenticate():
-                                            # Get account information specific to this profile's credentials
-                                            profile_account_info = profile_client.get_account_info()
-
-                                            # Merge with existing custom_properties if they exist
-                                            existing_props = profile.custom_properties or {}
-                                            existing_props.update(profile_account_info)
-                                            profile.custom_properties = existing_props
-                                            profile.save(update_fields=['custom_properties'])
-
-                                            logger.info(f"Updated account information for profile '{profile.name}' with transformed credentials")
-                                        else:
-                                            logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
-
-                                except Exception as profile_error:
-                                    logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
-                                    # Continue with other profiles even if one fails
-
-                            logger.info(f"Processed account information for {profiles.count()} profiles for account {account.name}")
-
-                        except Exception as save_error:
-                            logger.warning(f"Failed to process profile account information: {str(save_error)}")
-                            # Don't fail the whole process if saving account info fails
+                            logger.info(f"Queueing background profile refresh for account {account.name}")
+                            refresh_account_profiles.delay(account.id)
+                        except Exception as e:
+                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
+                            # Don't fail the main refresh if profile refresh can't be queued
 
                     except Exception as e:
                         error_msg = f"Failed to authenticate with XC server: {str(e)}"
@@ -1367,10 +1367,12 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                     )
                     problematic_lines.append((line_index + 1, line[:200]))
 
-            elif extinf_data and line.startswith("http"):
+            elif extinf_data and (line.startswith("http") or line.startswith("rtsp") or line.startswith("rtp") or line.startswith("udp")):
                 url_count += 1
+                # Normalize UDP URLs only (e.g., remove VLC-specific @ prefix)
+                normalized_url = normalize_stream_url(line) if line.startswith("udp") else line
                 # Associate URL with the last EXTINF line
-                extinf_data[-1]["url"] = line
+                extinf_data[-1]["url"] = normalized_url
                 valid_stream_count += 1
 
                 # Periodically log progress for large files
@@ -1548,7 +1550,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             # Get force_dummy_epg, group_override, and regex patterns from group custom_properties
             group_custom_props = {}
-            force_dummy_epg = False
+            force_dummy_epg = False  # Backward compatibility: legacy option to disable EPG
             override_group_id = None
             name_regex_pattern = None
             name_replace_pattern = None
@@ -1557,6 +1559,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
             channel_sort_order = None
             channel_sort_reverse = False
             stream_profile_id = None
+            custom_logo_id = None
+            custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
             if group_relation.custom_properties:
                 group_custom_props = group_relation.custom_properties
                 force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
@@ -1567,11 +1571,13 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
                 name_match_regex = group_custom_props.get("name_match_regex")
                 channel_profile_ids = group_custom_props.get("channel_profile_ids")
+                custom_epg_id = group_custom_props.get("custom_epg_id")
                 channel_sort_order = group_custom_props.get("channel_sort_order")
                 channel_sort_reverse = group_custom_props.get(
                     "channel_sort_reverse", False
                 )
                 stream_profile_id = group_custom_props.get("stream_profile_id")
+                custom_logo_id = group_custom_props.get("custom_logo_id")
 
             # Determine which group to use for created channels
             target_group = channel_group
@@ -1826,7 +1832,25 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                         # Handle logo updates
                         current_logo = None
-                        if stream.logo_url:
+                        if custom_logo_id:
+                            # Use the custom logo specified in group settings
+                            from apps.channels.models import Logo
+                            try:
+                                current_logo = Logo.objects.get(id=custom_logo_id)
+                            except Logo.DoesNotExist:
+                                logger.warning(
+                                    f"Custom logo with ID {custom_logo_id} not found for existing channel, falling back to stream logo"
+                                )
+                                # Fall back to stream logo if custom logo not found
+                                if stream.logo_url:
+                                    current_logo, _ = Logo.objects.get_or_create(
+                                        url=stream.logo_url,
+                                        defaults={
+                                            "name": stream.name or stream.tvg_id or "Unknown"
+                                        },
+                                    )
+                        elif stream.logo_url:
+                            # No custom logo configured, use stream logo
                             from apps.channels.models import Logo
 
                             current_logo, _ = Logo.objects.get_or_create(
@@ -1842,10 +1866,42 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                         # Handle EPG data updates
                         current_epg_data = None
-                        if stream.tvg_id and not force_dummy_epg:
+                        if custom_epg_id:
+                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
+                            from apps.epg.models import EPGSource
+                            try:
+                                epg_source = EPGSource.objects.get(id=custom_epg_id)
+                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
+                                if epg_source.source_type == 'dummy':
+                                    current_epg_data = EPGData.objects.filter(
+                                        epg_source=epg_source
+                                    ).first()
+                                    if not current_epg_data:
+                                        logger.warning(
+                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
+                                        )
+                                else:
+                                    # For non-dummy sources, try to find existing EPGData by tvg_id
+                                    if stream.tvg_id:
+                                        current_epg_data = EPGData.objects.filter(
+                                            tvg_id=stream.tvg_id,
+                                            epg_source=epg_source
+                                        ).first()
+                            except EPGSource.DoesNotExist:
+                                logger.warning(
+                                    f"Custom EPG source with ID {custom_epg_id} not found for existing channel, falling back to auto-match"
+                                )
+                                # Fall back to auto-match by tvg_id
+                                if stream.tvg_id and not force_dummy_epg:
+                                    current_epg_data = EPGData.objects.filter(
+                                        tvg_id=stream.tvg_id
+                                    ).first()
+                        elif stream.tvg_id and not force_dummy_epg:
+                            # Auto-match EPG by tvg_id (original behavior)
                             current_epg_data = EPGData.objects.filter(
                                 tvg_id=stream.tvg_id
                             ).first()
+                        # If force_dummy_epg is True and no custom_epg_id, current_epg_data stays None
 
                         if existing_channel.epg_data != current_epg_data:
                             existing_channel.epg_data = current_epg_data
@@ -1935,19 +1991,81 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             ChannelProfileMembership.objects.bulk_create(memberships)
 
                         # Try to match EPG data
-                        if stream.tvg_id and not force_dummy_epg:
+                        if custom_epg_id:
+                            # Use the custom EPG specified in group settings (e.g., a dummy EPG)
+                            from apps.epg.models import EPGSource
+                            try:
+                                epg_source = EPGSource.objects.get(id=custom_epg_id)
+                                # For dummy EPGs, select the first (and typically only) EPGData entry from this source
+                                if epg_source.source_type == 'dummy':
+                                    epg_data = EPGData.objects.filter(
+                                        epg_source=epg_source
+                                    ).first()
+                                    if epg_data:
+                                        channel.epg_data = epg_data
+                                        channel.save(update_fields=["epg_data"])
+                                    else:
+                                        logger.warning(
+                                            f"No EPGData found for dummy EPG source {epg_source.name} (ID: {custom_epg_id})"
+                                        )
+                                else:
+                                    # For non-dummy sources, try to find existing EPGData by tvg_id
+                                    if stream.tvg_id:
+                                        epg_data = EPGData.objects.filter(
+                                            tvg_id=stream.tvg_id,
+                                            epg_source=epg_source
+                                        ).first()
+                                        if epg_data:
+                                            channel.epg_data = epg_data
+                                            channel.save(update_fields=["epg_data"])
+                            except EPGSource.DoesNotExist:
+                                logger.warning(
+                                    f"Custom EPG source with ID {custom_epg_id} not found, falling back to auto-match"
+                                )
+                                # Fall back to auto-match by tvg_id
+                                if stream.tvg_id and not force_dummy_epg:
+                                    epg_data = EPGData.objects.filter(
+                                        tvg_id=stream.tvg_id
+                                    ).first()
+                                    if epg_data:
+                                        channel.epg_data = epg_data
+                                        channel.save(update_fields=["epg_data"])
+                        elif stream.tvg_id and not force_dummy_epg:
+                            # Auto-match EPG by tvg_id (original behavior)
                             epg_data = EPGData.objects.filter(
                                 tvg_id=stream.tvg_id
                             ).first()
                             if epg_data:
                                 channel.epg_data = epg_data
                                 channel.save(update_fields=["epg_data"])
-                        elif stream.tvg_id and force_dummy_epg:
+                        elif force_dummy_epg:
+                            # Force dummy EPG with no custom EPG selected (set to None)
                             channel.epg_data = None
                             channel.save(update_fields=["epg_data"])
 
                         # Handle logo
-                        if stream.logo_url:
+                        if custom_logo_id:
+                            # Use the custom logo specified in group settings
+                            from apps.channels.models import Logo
+                            try:
+                                custom_logo = Logo.objects.get(id=custom_logo_id)
+                                channel.logo = custom_logo
+                                channel.save(update_fields=["logo"])
+                            except Logo.DoesNotExist:
+                                logger.warning(
+                                    f"Custom logo with ID {custom_logo_id} not found, falling back to stream logo"
+                                )
+                                # Fall back to stream logo if custom logo not found
+                                if stream.logo_url:
+                                    logo, _ = Logo.objects.get_or_create(
+                                        url=stream.logo_url,
+                                        defaults={
+                                            "name": stream.name or stream.tvg_id or "Unknown"
+                                        },
+                                    )
+                                    channel.logo = logo
+                                    channel.save(update_fields=["logo"])
+                        elif stream.logo_url:
                             from apps.channels.models import Logo
 
                             logo, _ = Logo.objects.get_or_create(
@@ -2112,6 +2230,106 @@ def get_transformed_credentials(account, profile=None):
     else:
         logger.warning(f"Missing credentials for account {account.name}")
         return base_url, base_username, base_password
+
+
+@shared_task
+def refresh_account_profiles(account_id):
+    """Refresh account information for all active profiles of an XC account.
+
+    This task runs asynchronously in the background after account refresh completes.
+    It includes rate limiting delays between profile authentications to prevent provider bans.
+    """
+    from django.conf import settings
+    import time
+
+    try:
+        account = M3UAccount.objects.get(id=account_id, is_active=True)
+
+        if account.account_type != M3UAccount.Types.XC:
+            logger.debug(f"Account {account_id} is not XC type, skipping profile refresh")
+            return f"Account {account_id} is not an XtreamCodes account"
+
+        from apps.m3u.models import M3UAccountProfile
+
+        profiles = M3UAccountProfile.objects.filter(
+            m3u_account=account,
+            is_active=True
+        )
+
+        if not profiles.exists():
+            logger.info(f"No active profiles found for account {account.name}")
+            return f"No active profiles for account {account_id}"
+
+        # Get user agent for this account
+        try:
+            user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            if account.user_agent_id:
+                from core.models import UserAgent
+                ua_obj = UserAgent.objects.get(id=account.user_agent_id)
+                if ua_obj and hasattr(ua_obj, "user_agent") and ua_obj.user_agent:
+                    user_agent_string = ua_obj.user_agent
+        except Exception as e:
+            logger.warning(f"Error getting user agent, using fallback: {str(e)}")
+        logger.debug(f"Using user agent for profile refresh: {user_agent_string}")
+        # Get rate limiting delay from settings
+        profile_delay = getattr(settings, 'XC_PROFILE_REFRESH_DELAY', 2.5)
+
+        profiles_updated = 0
+        profiles_failed = 0
+
+        logger.info(f"Starting background refresh for {profiles.count()} profiles of account {account.name}")
+
+        for idx, profile in enumerate(profiles):
+            try:
+                # Add delay between profiles to prevent rate limiting (except for first profile)
+                if idx > 0:
+                    logger.info(f"Waiting {profile_delay}s before refreshing next profile to avoid rate limiting")
+                    time.sleep(profile_delay)
+
+                # Get transformed credentials for this specific profile
+                profile_url, profile_username, profile_password = get_transformed_credentials(account, profile)
+
+                # Create a separate XC client for this profile's credentials
+                with XCClient(
+                    profile_url,
+                    profile_username,
+                    profile_password,
+                    user_agent_string
+                ) as profile_client:
+                    # Authenticate with this profile's credentials
+                    if profile_client.authenticate():
+                        # Get account information specific to this profile's credentials
+                        profile_account_info = profile_client.get_account_info()
+
+                        # Merge with existing custom_properties if they exist
+                        existing_props = profile.custom_properties or {}
+                        existing_props.update(profile_account_info)
+                        profile.custom_properties = existing_props
+                        profile.save(update_fields=['custom_properties'])
+
+                        profiles_updated += 1
+                        logger.info(f"Updated account information for profile '{profile.name}' ({profiles_updated}/{profiles.count()})")
+                    else:
+                        profiles_failed += 1
+                        logger.warning(f"Failed to authenticate profile '{profile.name}' with transformed credentials")
+
+            except Exception as profile_error:
+                profiles_failed += 1
+                logger.error(f"Failed to update account information for profile '{profile.name}': {str(profile_error)}")
+                # Continue with other profiles even if one fails
+
+        result_msg = f"Profile refresh complete for account {account.name}: {profiles_updated} updated, {profiles_failed} failed"
+        logger.info(result_msg)
+        return result_msg
+
+    except M3UAccount.DoesNotExist:
+        error_msg = f"Account {account_id} not found"
+        logger.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error refreshing profiles for account {account_id}: {str(e)}"
+        logger.error(error_msg)
+        return error_msg
 
 
 @shared_task
@@ -2622,6 +2840,17 @@ def refresh_single_m3u_account(account_id):
         )
         account.updated_at = timezone.now()
         account.save(update_fields=["status", "last_message", "updated_at"])
+
+        # Log system event for M3U refresh
+        log_system_event(
+            event_type='m3u_refresh',
+            account_name=account.name,
+            elapsed_time=round(elapsed_time, 2),
+            streams_created=streams_created,
+            streams_updated=streams_updated,
+            streams_deleted=streams_deleted,
+            total_processed=streams_processed,
+        )
 
         # Send final update with complete metrics and explicitly include success status
         send_m3u_update(
