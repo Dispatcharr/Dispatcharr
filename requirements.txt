@@ -18,6 +18,9 @@ m3u8
 rapidfuzz==3.13.0
 regex # Required by transformers but also used for advanced regex features
 tzlocal
+tmdbsimple
+guessit
+pymediainfo
 
 # PyTorch dependencies (CPU only)
 --extra-index-url https://download.pytorch.org/whl/cpu/
