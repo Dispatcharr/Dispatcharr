@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from guessit import guessit
@@ -37,6 +39,7 @@ from apps.media_library.models import (
     MEDIA_EXTENSIONS,
     normalize_title,
 )
+from apps.media_library.transcode import purge_transcoded_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,18 @@ class LibraryScanner:
         self.stats: Dict[str, int] = defaultdict(int)
         self._seen_paths: set[str] = set()
         self.target_item = None
+        options = library.metadata_options or {}
+        ignore_patterns_default = getattr(settings, "MEDIA_LIBRARY_IGNORE_PATTERNS", [])
+        library_ignore = options.get("ignore_patterns") if isinstance(options, dict) else None
+        combined_patterns = []
+        if isinstance(ignore_patterns_default, (list, tuple, set)):
+            combined_patterns.extend(
+                [pat for pat in ignore_patterns_default if isinstance(pat, str) and pat]
+            )
+        if isinstance(library_ignore, (list, tuple, set)):
+            combined_patterns.extend([pat for pat in library_ignore if isinstance(pat, str) and pat])
+        self.ignore_patterns = [pattern.strip() for pattern in combined_patterns if pattern.strip()]
+        self.skip_hidden = bool(options.get("skip_hidden", True))
         if rescan_item_id:
             self.target_item = (
                 MediaItem.objects.filter(pk=rescan_item_id, library=library).first()
@@ -140,6 +155,8 @@ class LibraryScanner:
                     if not file_path.is_file():
                         continue
                     if file_path.suffix.lower() not in MEDIA_EXTENSIONS:
+                        continue
+                    if self._should_ignore_path(file_path):
                         continue
 
                     absolute_path = str(file_path)
@@ -184,12 +201,20 @@ class LibraryScanner:
             .exclude(absolute_path__in=self._seen_paths)
             .exclude(absolute_path="")
         )
+        missing_files = list(
+            missing_qs.only("id", "transcoded_path", "requires_transcode", "transcode_status")
+        )
         count = missing_qs.update(missing_since=self.now)
         if count:
             self.stats["removed"] += count
             self._log(f"Marked {count} files as missing.")
             self.scan.removed_files = self.stats["removed"]
             self.scan.save(update_fields=["removed_files", "updated_at"])
+            for file_record in missing_files:
+                try:
+                    purge_transcoded_artifact(file_record)
+                except Exception:  # noqa: BLE001
+                    logger.debug("Unable to purge transcode for missing file %s", file_record.id)
         return count
 
     def finalize(self, matched: int, unmatched: int, summary: str | None = None) -> None:
@@ -280,6 +305,24 @@ class LibraryScanner:
     def _log(self, message: str) -> None:
         logger.debug("[Library %s] %s", self.library.id, message)
         self.log_messages.append(message)
+
+    def _should_ignore_path(self, file_path: Path) -> bool:
+        """
+        Skip files that match ignore patterns or hidden folders when configured.
+        """
+        if self.skip_hidden:
+            parts = file_path.parts
+            if any(segment.startswith(".") for segment in parts):
+                return True
+
+        if not self.ignore_patterns:
+            return False
+
+        candidate = str(file_path)
+        for pattern in self.ignore_patterns:
+            if fnmatch.fnmatch(candidate, pattern):
+                return True
+        return False
 
 
 def resolve_media_item(

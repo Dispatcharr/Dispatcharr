@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.urls import reverse
 from django.db.models import Prefetch
 from rest_framework import serializers
 
@@ -202,6 +203,40 @@ class ArtworkAssetSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class SubtitleAssetSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        if not obj.file_path and obj.external_url:
+            return obj.external_url
+        if not obj.file_path:
+            return None
+        try:
+            relative = reverse("media-library-subtitle-file", args=[obj.id])
+        except Exception:
+            relative = None
+        if request and relative:
+            return request.build_absolute_uri(relative)
+        return relative
+
+    class Meta:
+        model = models.SubtitleAsset
+        fields = [
+            "id",
+            "language",
+            "is_forced",
+            "source",
+            "format",
+            "file_path",
+            "external_url",
+            "url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "file_path", "external_url"]
 
 
 class MediaFileSerializer(serializers.ModelSerializer):
@@ -415,6 +450,7 @@ class MediaItemListSerializer(MediaItemBaseSerializer):
 class MediaItemSerializer(MediaItemBaseSerializer):
     files = MediaFileSerializer(many=True, read_only=True)
     artwork = ArtworkAssetSerializer(many=True, read_only=True)
+    subtitles = SubtitleAssetSerializer(many=True, read_only=True)
 
     class Meta:
         model = models.MediaItem
@@ -457,6 +493,7 @@ class MediaItemSerializer(MediaItemBaseSerializer):
             "artwork",
             "watch_progress",
             "watch_summary",
+            "subtitles",
         ]
         read_only_fields = [
             "id",
@@ -473,6 +510,7 @@ class MediaItemSerializer(MediaItemBaseSerializer):
             "vod_series",
             "vod_episode",
             "watch_progress",
+            "subtitles",
             "is_missing",
         ]
         extra_kwargs = {

@@ -578,6 +578,41 @@ class ArtworkAsset(models.Model):
         return f"{self.media_item.title} - {self.asset_type}"
 
 
+class SubtitleAsset(models.Model):
+    """Represents a subtitle file linked to a media item."""
+
+    FORMAT_SRT = "srt"
+    FORMAT_VTT = "vtt"
+
+    FORMAT_CHOICES = [
+        (FORMAT_SRT, "SRT"),
+        (FORMAT_VTT, "WebVTT"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    media_item = models.ForeignKey(
+        MediaItem,
+        on_delete=models.CASCADE,
+        related_name="subtitles",
+    )
+    language = models.CharField(max_length=16, blank=True)
+    is_forced = models.BooleanField(default=False)
+    source = models.CharField(max_length=64, blank=True)
+    file_path = models.CharField(max_length=4096, blank=True)
+    external_url = models.URLField(blank=True)
+    format = models.CharField(max_length=8, choices=FORMAT_CHOICES, default=FORMAT_SRT)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("media_item", "language", "source", "format")]
+        ordering = ["media_item", "language", "created_at"]
+
+    def __str__(self):
+        return f"{self.media_item.title} - {self.language or 'unknown'} subtitles"
+
+
 class MediaFile(models.Model):
     """Physical file on disk that is associated with a media item."""
 

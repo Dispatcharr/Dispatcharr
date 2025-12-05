@@ -13,4 +13,5 @@ router.register(r"progress", api_views.WatchProgressViewSet, basename="watchprog
 urlpatterns = [
     path("", include(router.urls)),
     path("stream/<str:token>/", views.stream_media_file, name="stream-file"),
+    path("subtitles/<uuid:subtitle_id>/", views.subtitle_file, name="media-library-subtitle-file"),
 ]

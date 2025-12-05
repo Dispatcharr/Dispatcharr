@@ -14,6 +14,8 @@ import {
   Group,
   Slider,
   ActionIcon,
+  Menu,
+  Divider,
 } from '@mantine/core';
 import { Play, Pause, Volume2, VolumeX, Maximize, Minimize } from 'lucide-react';
 import API from '../api';
@@ -76,6 +78,11 @@ export default function FloatingVideo() {
   const previousVolumeRef = useRef(1);
   const [showVolumeControl, setShowVolumeControl] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const transcodeRetryAttemptedRef = useRef(false);
+  const [availableSubtitles, setAvailableSubtitles] = useState([]);
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState(null);
+  const [subtitlesLoading, setSubtitlesLoading] = useState(false);
+  const [subtitleError, setSubtitleError] = useState(null);
 
   const updateVideoMetadata = useCallback((updates) => {
     if (!updates || typeof updates !== 'object') {
@@ -116,6 +123,128 @@ export default function FloatingVideo() {
       }
     }, CONTROL_HIDE_DELAY);
   };
+
+  const retryWithTranscode = useCallback(async () => {
+    if (transcodeRetryAttemptedRef.current) {
+      return;
+    }
+    if (contentType !== 'library' || !metadata?.mediaItemId) {
+      return;
+    }
+    transcodeRetryAttemptedRef.current = true;
+    const startOffsetMs = metadata?.startOffsetMs ?? 0;
+    const relativePosition = Number.isFinite(videoRef.current?.currentTime)
+      ? videoRef.current.currentTime
+      : 0;
+    const startMs = Math.max(0, Math.round(startOffsetMs + relativePosition * 1000));
+    setIsLoading(true);
+    setLoadError('Trying a browser-compatible version...');
+    try {
+      const streamInfo = await API.streamMediaItem(metadata.mediaItemId, {
+        fileId: metadata.fileId,
+        startMs,
+        forceTranscode: true,
+      });
+      const playbackUrl = streamInfo?.url || streamInfo?.stream_url;
+      if (!playbackUrl) {
+        throw new Error('No transcoded stream URL was returned.');
+      }
+      const nextStartOffsetMs = streamInfo?.start_offset_ms ?? startOffsetMs;
+      const resumeHandledByServer = (streamInfo?.start_offset_ms ?? 0) > 0;
+      useVideoStore.getState().showVideo(playbackUrl, 'library', {
+        ...metadata,
+        startOffsetMs: nextStartOffsetMs,
+        resumePositionMs: resumeHandledByServer ? nextStartOffsetMs : startMs,
+        resumeHandledByServer,
+        requiresTranscode: true,
+        transcodeStatus: streamInfo?.transcode_status ?? 'processing',
+        durationMs: streamInfo?.duration_ms ?? metadata?.durationMs ?? null,
+      });
+      setIsLoading(false);
+      setLoadError(null);
+    } catch (err) {
+      console.error('Failed to retry playback with transcoding', err);
+      setIsLoading(false);
+      setLoadError('Unable to start transcoded playback.');
+    }
+  }, [contentType, metadata]);
+
+  useEffect(() => {
+    transcodeRetryAttemptedRef.current = false;
+  }, [metadata?.mediaItemId]);
+
+  const subtitleLabel = useCallback((sub) => {
+    if (!sub) return 'None';
+    const lang = (sub.language || 'und').toUpperCase();
+    return `${lang}${sub.is_forced ? ' (forced)' : ''}`;
+  }, []);
+
+  const applySubtitleSelection = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const targetId = selectedSubtitleId;
+    const tracks = video.textTracks || [];
+    for (let i = 0; i < tracks.length; i += 1) {
+      const track = tracks[i];
+      const match = availableSubtitles.find((sub) => subtitleLabel(sub) === track.label);
+      const shouldShow = targetId && match && match.id === targetId;
+      track.mode = shouldShow ? 'showing' : 'disabled';
+    }
+  }, [availableSubtitles, selectedSubtitleId, subtitleLabel]);
+
+  const loadSubtitles = useCallback(async () => {
+    if (contentType !== 'library' || !metadata?.mediaItemId) {
+      setAvailableSubtitles([]);
+      setSelectedSubtitleId(null);
+      return;
+    }
+    setSubtitlesLoading(true);
+    setSubtitleError(null);
+    try {
+      const subs = await API.listMediaSubtitles(metadata.mediaItemId);
+      setAvailableSubtitles(subs || []);
+      if (subs && subs.length > 0) {
+        const preferred =
+          subs.find((s) => (s.language || '').toLowerCase() === 'en') || subs[0];
+        setSelectedSubtitleId((prev) => {
+          if (prev && subs.find((s) => s.id === prev)) {
+            return prev;
+          }
+          return preferred?.id || null;
+        });
+      } else {
+        setSelectedSubtitleId(null);
+      }
+    } catch (err) {
+      console.error('Failed to load subtitles', err);
+      setSubtitleError('Unable to load subtitles');
+    } finally {
+      setSubtitlesLoading(false);
+    }
+  }, [contentType, metadata?.mediaItemId]);
+
+  const fetchSubtitles = useCallback(async () => {
+    if (contentType !== 'library' || !metadata?.mediaItemId) return;
+    setSubtitlesLoading(true);
+    setSubtitleError(null);
+    try {
+      await API.fetchMediaSubtitles(metadata.mediaItemId);
+      await loadSubtitles();
+    } catch (err) {
+      console.error('Failed to fetch subtitles', err);
+      setSubtitleError('Subtitle fetch failed');
+    } finally {
+      setSubtitlesLoading(false);
+    }
+  }, [contentType, metadata?.mediaItemId, loadSubtitles]);
+
+  useEffect(() => {
+    loadSubtitles();
+  }, [loadSubtitles]);
+
+  useEffect(() => {
+    applySubtitleSelection();
+  }, [applySubtitleSelection, streamUrl]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -603,6 +732,7 @@ export default function FloatingVideo() {
         fileId,
         playbackSequence,
       });
+      loadSubtitles();
     } catch (error) {
       console.error('Failed to auto-play next episode', error);
       setLoadError('Unable to start the next episode automatically.');
@@ -749,6 +879,13 @@ export default function FloatingVideo() {
       }
 
       setLoadError(errorMessage);
+      if (
+        contentType === 'library' &&
+        metadata?.mediaItemId &&
+        !transcodeRetryAttemptedRef.current
+      ) {
+        retryWithTranscode();
+      }
     };
 
     // Enhanced progress tracking for VOD
@@ -1147,7 +1284,18 @@ export default function FloatingVideo() {
             {...(contentType !== 'live' && {
               poster: metadata?.logo?.url, // Use poster if available
             })}
-          />
+          >
+            {availableSubtitles.map((sub) => (
+              <track
+                key={`${sub.id}-${selectedSubtitleId === sub.id ? 'on' : 'off'}`}
+                kind="subtitles"
+                label={subtitleLabel(sub)}
+                srcLang={sub.language || 'und'}
+                src={sub.url || sub.external_url || ''}
+                default={selectedSubtitleId === sub.id}
+              />
+            ))}
+          </video>
 
           {/* VOD title overlay when not loading - auto-hides after 4 seconds */}
           {!isLoading && metadata && contentType !== 'live' && showOverlay && (
@@ -1294,6 +1442,60 @@ export default function FloatingVideo() {
                       />
                     )}
                   </Group>
+                  <Menu withinPortal={false}>
+                    <Menu.Target>
+                      <ActionIcon
+                        variant="subtle"
+                        color={selectedSubtitleId ? 'cyan' : 'gray'}
+                        radius="xl"
+                        size="lg"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        aria-label="Subtitles"
+                        disabled={subtitlesLoading || contentType !== 'library'}
+                      >
+                        <Text size="xs" c={selectedSubtitleId ? 'cyan' : 'gray.2'} fw={600}>
+                          CC
+                        </Text>
+                      </ActionIcon>
+                    </Menu.Target>
+                    <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                      <Menu.Label>Subtitles</Menu.Label>
+                      <Menu.Item
+                        onClick={() => setSelectedSubtitleId(null)}
+                        disabled={availableSubtitles.length === 0}
+                      >
+                        Off
+                      </Menu.Item>
+                      {availableSubtitles.map((sub) => (
+                        <Menu.Item
+                          key={sub.id}
+                          onClick={() => setSelectedSubtitleId(sub.id)}
+                          rightSection={
+                            selectedSubtitleId === sub.id ? (
+                              <Text size="xs" c="cyan">
+                                On
+                              </Text>
+                            ) : null
+                          }
+                        >
+                          {subtitleLabel(sub)}
+                        </Menu.Item>
+                      ))}
+                      <Divider />
+                      <Menu.Item
+                        onClick={() => fetchSubtitles()}
+                        disabled={subtitlesLoading || contentType !== 'library'}
+                      >
+                        {subtitlesLoading ? 'Fetching…' : 'Fetch from OpenSubtitles'}
+                      </Menu.Item>
+                      {subtitleError && (
+                        <Menu.Item disabled c="red">
+                          {subtitleError}
+                        </Menu.Item>
+                      )}
+                    </Menu.Dropdown>
+                  </Menu>
                   <ActionIcon
                     variant="subtle"
                     color="gray"

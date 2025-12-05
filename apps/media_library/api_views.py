@@ -30,6 +30,7 @@ from apps.media_library.tasks import (
     unsync_library_from_vod_task,
 )
 from apps.media_library.vod_sync import unsync_library_from_vod
+from apps.media_library.subtitles import download_subtitles_for_media_item
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +298,7 @@ class MediaItemViewSet(viewsets.ModelViewSet):
             "vod_movie",
             "vod_series",
             "vod_episode",
-        )
+        ).prefetch_related("subtitles")
 
         if self.action == "list":
             children_qs = (
@@ -414,6 +415,25 @@ class MediaItemViewSet(viewsets.ModelViewSet):
         sync_metadata_task.delay(item.id)
         return Response({"status": "queued"}, status=status.HTTP_202_ACCEPTED)
 
+    @action(detail=True, methods=["get"], url_path="subtitles")
+    def list_subtitles(self, request, pk=None):
+        item = self.get_object()
+        subtitles = item.subtitles.all()
+        serializer = serializers.SubtitleAssetSerializer(subtitles, many=True, context=self.get_serializer_context())
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="fetch-subtitles")
+    def fetch_subtitles(self, request, pk=None):
+        item = self.get_object()
+        language = request.data.get("language")
+        from apps.media_library.subtitles import ensure_subtitles_for_media_item
+
+        subtitles = ensure_subtitles_for_media_item(item, language=language)
+        if not subtitles:
+            raise ValidationError({"detail": "No subtitles could be fetched for this item."})
+        serializer = serializers.SubtitleAssetSerializer(subtitles, many=True, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["post"], url_path="set-tmdb")
     def set_tmdb(self, request, pk=None):
         item = self.get_object()
@@ -462,10 +482,12 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 start_ms = max(0, int(start_ms_param))
             except (TypeError, ValueError):
                 raise ValidationError({"start_ms": "Start offset must be an integer number of milliseconds."})
+        force_transcode_raw = request.query_params.get("force_transcode") or request.query_params.get("transcode")
+        force_transcode = str(force_transcode_raw).lower() in {"1", "true", "yes", "force", "on"}
 
         applied_start_ms = 0
         should_embed_start = False
-        if start_ms > 0 and file.requires_transcode:
+        if start_ms > 0 and (file.requires_transcode or force_transcode):
             cached_ready = (
                 file.transcode_status == models.MediaFile.TRANSCODE_STATUS_READY
                 and file.transcoded_path
@@ -480,10 +502,15 @@ class MediaItemViewSet(viewsets.ModelViewSet):
         payload = {"file_id": file.id, "user_id": request.user.id}
         if should_embed_start:
             payload["start_ms"] = applied_start_ms
+        if force_transcode:
+            payload["force_transcode"] = True
 
         token = self._stream_signer.sign_object(payload)
         stream_url = request.build_absolute_uri(reverse("proxy:library-stream", args=[token]))
         ttl = getattr(settings, "MEDIA_LIBRARY_STREAM_TOKEN_TTL", 3600)
+        transcode_status = file.transcode_status
+        if force_transcode and transcode_status == models.MediaFile.TRANSCODE_STATUS_NOT_REQUIRED:
+            transcode_status = models.MediaFile.TRANSCODE_STATUS_PENDING
         return Response(
             {
                 "url": stream_url,
@@ -493,8 +520,8 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 "duration_ms": duration_ms,
                 "bit_rate": file.bit_rate,
                 "container": file.container,
-                "requires_transcode": file.requires_transcode,
-                "transcode_status": file.transcode_status,
+                "requires_transcode": file.requires_transcode or force_transcode,
+                "transcode_status": transcode_status,
                 "start_offset_ms": applied_start_ms,
             }
         )

@@ -14,7 +14,7 @@ from django.http import (
 )
 from django.views.decorators.http import require_GET
 
-from apps.media_library.models import MediaFile
+from apps.media_library.models import MediaFile, SubtitleAsset
 from apps.media_library.transcode import start_streaming_transcode
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ def stream_media_file(request, token: str):
 
     file_id = payload.get("file_id")
     user_id = payload.get("user_id")
+    force_transcode = bool(payload.get("force_transcode"))
 
     if request.user.is_authenticated and request.user.id != user_id:
         return HttpResponseForbidden("Stream token not issued for this user")
@@ -96,7 +97,7 @@ def stream_media_file(request, token: str):
         download_name = f"{base_name or media_file.id}.mp4"
     else:
         if cached_path and media_file.transcode_status == MediaFile.TRANSCODE_STATUS_READY:
-            # Cached entry missing on disk – reset so we regenerate.
+            # Cached entry missing on disk -- reset so we regenerate.
             media_file.transcode_status = MediaFile.TRANSCODE_STATUS_PENDING
             media_file.transcoded_path = ""
             media_file.transcoded_mime_type = ""
@@ -111,7 +112,12 @@ def stream_media_file(request, token: str):
                 ]
             )
 
-        if original_path and os.path.exists(original_path) and media_file.is_browser_playable():
+        if (
+            original_path
+            and os.path.exists(original_path)
+            and media_file.is_browser_playable()
+            and not force_transcode
+        ):
             playback_path = original_path
             mime_type = _guess_mime(original_path)
             download_name = media_file.file_name or os.path.basename(original_path)
@@ -208,3 +214,30 @@ def stream_media_file(request, token: str):
         response["X-Content-Duration"] = formatted_duration
         response["Content-Duration"] = formatted_duration
     return response
+
+
+@require_GET
+def subtitle_file(request, subtitle_id: str):
+    if not request.user.is_authenticated:
+        return HttpResponseForbidden("Authentication required")
+
+    try:
+        subtitle = SubtitleAsset.objects.get(pk=subtitle_id)
+    except SubtitleAsset.DoesNotExist:
+        raise Http404("Subtitle not found")
+
+    file_path = subtitle.file_path or ""
+    if not file_path:
+        raise Http404("Subtitle not found")
+
+    if not os.path.isabs(file_path):
+        media_root = getattr(settings, "MEDIA_ROOT", "")
+        file_path = os.path.join(media_root, file_path)
+
+    if not os.path.exists(file_path):
+        raise Http404("Subtitle file missing")
+
+    mime = "text/vtt" if subtitle.format == SubtitleAsset.FORMAT_VTT else "application/x-subrip"
+    filename = os.path.basename(file_path) or "subtitle.srt"
+
+    return FileResponse(open(file_path, "rb"), content_type=mime, filename=filename)

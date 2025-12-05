@@ -26,6 +26,8 @@ export const WebsocketProvider = ({ children }) => {
   const [val, setVal] = useState(null);
   const ws = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const mediaItemQueueRef = useRef([]);
+  const mediaItemFlushTimerRef = useRef(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [connectionError, setConnectionError] = useState(null);
   const maxReconnectAttempts = 5;
@@ -40,6 +42,19 @@ export const WebsocketProvider = ({ children }) => {
 
   const updatePlaylist = usePlaylistsStore((s) => s.updatePlaylist);
   const applyMediaScanUpdate = useLibraryStore((s) => s.applyScanUpdate);
+  const enqueueMediaItemUpdate = useCallback((mediaItem) => {
+    if (!mediaItem) return;
+    mediaItemQueueRef.current.push(mediaItem);
+    if (mediaItemFlushTimerRef.current) return;
+    mediaItemFlushTimerRef.current = setTimeout(() => {
+      const queuedItems = mediaItemQueueRef.current;
+      mediaItemQueueRef.current = [];
+      mediaItemFlushTimerRef.current = null;
+      if (queuedItems.length > 0) {
+        useMediaLibraryStore.getState().upsertItems(queuedItems);
+      }
+    }, 200);
+  }, []);
 
   // Calculate reconnection delay with exponential backoff
   const getReconnectDelay = useCallback(() => {
@@ -191,7 +206,7 @@ export const WebsocketProvider = ({ children }) => {
                 notifications.update({
                   id,
                   title: 'Commercials removed',
-                  message: `${title} — kept ${parsedEvent.data.segments_kept} segments`,
+                  message: `${title} -- kept ${parsedEvent.data.segments_kept} segments`,
                   color: 'green.5',
                   loading: false,
                   autoClose: 4000,
@@ -229,9 +244,7 @@ export const WebsocketProvider = ({ children }) => {
             case 'media_scan': {
               applyMediaScanUpdate(parsedEvent.data);
               if (parsedEvent.data.media_item) {
-                useMediaLibraryStore.getState().upsertItems([
-                  parsedEvent.data.media_item,
-                ]);
+                enqueueMediaItemUpdate(parsedEvent.data.media_item);
               }
 
               if (parsedEvent.data.status === 'completed') {
@@ -263,9 +276,7 @@ export const WebsocketProvider = ({ children }) => {
             }
             case 'media_item_update': {
               if (parsedEvent.data.media_item) {
-                useMediaLibraryStore.getState().upsertItems([
-                  parsedEvent.data.media_item,
-                ]);
+                enqueueMediaItemUpdate(parsedEvent.data.media_item);
               }
               break;
             }
@@ -917,6 +928,11 @@ export const WebsocketProvider = ({ children }) => {
     } else if (ws.current) {
       // Close the connection if the user logs out
       clearReconnectTimer();
+      if (mediaItemFlushTimerRef.current) {
+        clearTimeout(mediaItemFlushTimerRef.current);
+        mediaItemFlushTimerRef.current = null;
+        mediaItemQueueRef.current = [];
+      }
       console.log('Closing WebSocket connection due to logout');
       ws.current.onclose = null;
       ws.current.close();
@@ -926,6 +942,11 @@ export const WebsocketProvider = ({ children }) => {
 
     return () => {
       clearReconnectTimer(); // Clear any pending reconnect timers
+      if (mediaItemFlushTimerRef.current) {
+        clearTimeout(mediaItemFlushTimerRef.current);
+        mediaItemFlushTimerRef.current = null;
+        mediaItemQueueRef.current = [];
+      }
 
       if (ws.current) {
         console.log('Closing WebSocket connection due to component unmount');

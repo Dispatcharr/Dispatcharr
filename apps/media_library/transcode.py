@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -47,6 +48,10 @@ PRESET = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_PRESET", "veryfast")
 TARGET_VIDEO_CODEC = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_VIDEO_CODEC", "libx264")
 TARGET_AUDIO_CODEC = getattr(settings, "MEDIA_LIBRARY_TRANSCODE_AUDIO_CODEC", "aac")
 AUDIO_CHANNELS = _int_setting("MEDIA_LIBRARY_TRANSCODE_AUDIO_CHANNELS", 2)
+HWACCEL = getattr(settings, "MEDIA_LIBRARY_FFMPEG_HWACCEL", "")
+HWACCEL_DEVICE = getattr(settings, "MEDIA_LIBRARY_FFMPEG_HWACCEL_DEVICE", "")
+EXTRA_INPUT_ARGS = getattr(settings, "MEDIA_LIBRARY_FFMPEG_EXTRA_INPUT_ARGS", [])
+EXTRA_OUTPUT_ARGS = getattr(settings, "MEDIA_LIBRARY_FFMPEG_EXTRA_OUTPUT_ARGS", [])
 
 
 def _build_target_path(media_file: MediaFile) -> Path:
@@ -65,8 +70,16 @@ def _build_ffmpeg_command(
     source_path: Path, *, output: str, fragmented: bool, start_seconds: float = 0.0
 ) -> list[str]:
     command = [FFMPEG_PATH, "-y"]
+    if HWACCEL:
+        command.extend(["-hwaccel", str(HWACCEL)])
+        if HWACCEL_DEVICE:
+            command.extend(["-hwaccel_device", str(HWACCEL_DEVICE)])
+
     if start_seconds and start_seconds > 0:
         command.extend(["-ss", f"{start_seconds:.3f}"])
+
+    if isinstance(EXTRA_INPUT_ARGS, (list, tuple)):
+        command.extend([str(arg) for arg in EXTRA_INPUT_ARGS])
 
     command.extend(
         [
@@ -106,6 +119,9 @@ def _build_ffmpeg_command(
     if VIDEO_BITRATE > 0:
         command.extend(["-b:v", f"{VIDEO_BITRATE}k"])
 
+    if isinstance(EXTRA_OUTPUT_ARGS, (list, tuple)):
+        command.extend([str(arg) for arg in EXTRA_OUTPUT_ARGS])
+
     if fragmented:
         command.extend(["-movflags", "frag_keyframe+empty_moov+faststart", "-f", "mp4", output])
     else:
@@ -129,6 +145,38 @@ def ensure_browser_ready_source(
 
     target_path = _ensure_transcode_to_file(media_file, force=force)
     return str(target_path), "video/mp4"
+
+
+def purge_transcoded_artifact(media_file: MediaFile) -> None:
+    """
+    Remove a cached transcode from disk and reset state on the MediaFile.
+    Useful when the source file disappears or is relocated.
+    """
+    cached_path = media_file.transcoded_path or ""
+    if cached_path and os.path.exists(cached_path):
+        try:
+            os.remove(cached_path)
+        except OSError:
+            logger.debug("Unable to remove cached transcode %s", cached_path)
+
+    media_file.transcoded_path = ""
+    media_file.transcoded_mime_type = ""
+    media_file.transcode_error = ""
+    if media_file.requires_transcode:
+        media_file.transcode_status = MediaFile.TRANSCODE_STATUS_PENDING
+    else:
+        media_file.transcode_status = MediaFile.TRANSCODE_STATUS_NOT_REQUIRED
+    media_file.transcoded_at = None
+    media_file.save(
+        update_fields=[
+            "transcoded_path",
+            "transcoded_mime_type",
+            "transcode_status",
+            "transcode_error",
+            "transcoded_at",
+            "updated_at",
+        ]
+    )
 
 
 def _ensure_transcode_to_file(media_file: MediaFile, *, force: bool = False) -> Path:
@@ -472,3 +520,45 @@ def start_streaming_transcode(
     """Start a live transcoding session for the given media file."""
     session = LiveTranscodeSession(media_file, start_seconds=start_seconds)
     return session.start()
+
+
+def prune_transcode_directory(retention_hours: int = 72) -> dict[str, int]:
+    """
+    Remove orphaned or stale transcode artifacts from the transcode root.
+    """
+    now = timezone.now()
+    removed = 0
+    skipped = 0
+    kept = 0
+
+    try:
+        valid_paths = {
+            Path(path)
+            for path in MediaFile.objects.exclude(transcoded_path="").values_list("transcoded_path", flat=True)
+            if path
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Unable to fetch transcode path list: %s", exc)
+        valid_paths = set()
+
+    retention_delta = timedelta(hours=max(retention_hours, 0))
+    for child in TRANSCODE_ROOT.glob("*.mp4"):
+        try:
+            stat = child.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            expired = bool(retention_hours) and (now - modified > retention_delta)
+        except OSError:
+            expired = True
+
+        is_valid = child in valid_paths
+        if is_valid and not expired:
+            kept += 1
+            continue
+
+        try:
+            child.unlink()
+            removed += 1
+        except OSError:
+            skipped += 1
+
+    return {"removed": removed, "skipped": skipped, "kept": kept}

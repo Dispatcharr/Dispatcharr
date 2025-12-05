@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 import tmdbsimple as tmdb
@@ -32,6 +32,50 @@ tmdb.REQUESTS_SESSION = _REQUESTS_SESSION
 
 
 _MOVIEDB_SEARCH_CACHE: dict[tuple[str, str], tuple[dict | None, str | None]] = {}
+
+
+def _get_library_metadata_prefs(media_item: MediaItem) -> dict[str, Any]:
+    """
+    Derive metadata lookup preferences from the item's library and its metadata_options.
+    """
+    prefs: dict[str, Any] = {
+        "language": None,
+        "region": None,
+        "image_languages": None,
+        "include_adult": False,
+        "provider_priority": None,
+    }
+    library = getattr(media_item, "library", None)
+    if not library:
+        return prefs
+
+    prefs["language"] = (library.metadata_language or "").strip() or None
+    prefs["region"] = (library.metadata_country or "").strip() or None
+
+    options = library.metadata_options or {}
+    if isinstance(options, dict):
+        if options.get("language"):
+            prefs["language"] = str(options["language"]).strip() or prefs["language"]
+        if options.get("region"):
+            prefs["region"] = str(options["region"]).strip() or prefs["region"]
+        if options.get("image_languages"):
+            languages = options.get("image_languages")
+            if isinstance(languages, Iterable) and not isinstance(languages, (str, bytes)):
+                prefs["image_languages"] = [
+                    str(lang).strip() for lang in languages if str(lang).strip()
+                ] or None
+        include_adult = options.get("include_adult")
+        if include_adult is not None:
+            prefs["include_adult"] = bool(include_adult)
+        provider_priority = options.get("provider_priority")
+        if isinstance(provider_priority, Iterable) and not isinstance(provider_priority, (str, bytes)):
+            prefs["provider_priority"] = [
+                str(provider).strip().lower()
+                for provider in provider_priority
+                if str(provider).strip()
+            ] or None
+
+    return prefs
 
 
 def validate_tmdb_api_key(api_key: str, *, use_cache: bool = True) -> tuple[bool, str | None]:
@@ -174,11 +218,26 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
     if not _configure_tmdb(api_key):
         return None
 
+    prefs = _get_library_metadata_prefs(media_item)
+    language = prefs.get("language")
+    region = prefs.get("region")
+    image_languages = prefs.get("image_languages")
+    include_adult = bool(prefs.get("include_adult"))
+    tmdb_common_kwargs: dict[str, Any] = {}
+    if language:
+        tmdb_common_kwargs["language"] = language
+    if region:
+        tmdb_common_kwargs["region"] = region
+    if image_languages:
+        tmdb_common_kwargs["include_image_language"] = ",".join(image_languages)
+
     normalized = (media_item.normalized_title or "").replace(" ", "_")
     cache_key_parts = [
         str(media_item.item_type),
         normalized,
         str(media_item.release_year or ""),
+        language or "",
+        region or "",
     ]
     if media_item.tmdb_id:
         cache_key_parts.append(f"id:{media_item.tmdb_id}")
@@ -190,6 +249,16 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
     info = None
     credits = None
     tmdb_id = media_item.tmdb_id
+    series_tmdb_id = None
+    if media_item.item_type == MediaItem.TYPE_EPISODE:
+        try:
+            series_tmdb_id = media_item.parent.tmdb_id  # type: ignore[attr-defined]
+        except Exception:
+            series_tmdb_id = None
+        if not series_tmdb_id and isinstance(media_item.metadata, dict):
+            series_tmdb_id = media_item.metadata.get("series_tmdb_id")
+        if not tmdb_id:
+            tmdb_id = series_tmdb_id
 
     if tmdb_id:
         try:
@@ -200,12 +269,22 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         try:
             if media_item.is_movie:
                 movie = tmdb.Movies(lookup_id)
-                info = movie.info(append_to_response="credits,images")
+                info = movie.info(append_to_response="credits,images", **tmdb_common_kwargs)
                 credits = info.get("credits", {})
             elif media_item.item_type == MediaItem.TYPE_SHOW:
                 tv = tmdb.TV(lookup_id)
-                info = tv.info(append_to_response="credits,images")
+                info = tv.info(append_to_response="credits,images", **tmdb_common_kwargs)
                 credits = info.get("credits", {})
+            elif media_item.item_type == MediaItem.TYPE_EPISODE and media_item.parent_id:
+                parent_id = series_tmdb_id or lookup_id
+                try:
+                    parent_lookup = int(parent_id) if parent_id else None
+                except (TypeError, ValueError):
+                    parent_lookup = parent_id
+                if parent_lookup:
+                    episode = tmdb.TV_Episodes(parent_lookup, media_item.season_number, media_item.episode_number)
+                    info = episode.info(append_to_response="credits,images", **tmdb_common_kwargs)
+                    credits = info.get("credits", {})
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Failed to retrieve TMDB info for %s using id %s", media_item, tmdb_id
@@ -217,11 +296,28 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         search = tmdb.Search()
         try:
             if media_item.is_movie:
-                response = search.movie(query=media_item.title, year=media_item.release_year)
+                response = search.movie(
+                    query=media_item.title,
+                    year=media_item.release_year,
+                    include_adult=include_adult,
+                    **tmdb_common_kwargs,
+                )
                 results = response.get("results", [])
             elif media_item.item_type == MediaItem.TYPE_SHOW:
                 response = search.tv(
-                    query=media_item.title, first_air_date_year=media_item.release_year
+                    query=media_item.title,
+                    first_air_date_year=media_item.release_year,
+                    include_adult=include_adult,
+                    **tmdb_common_kwargs,
+                )
+                results = response.get("results", [])
+            elif media_item.item_type == MediaItem.TYPE_EPISODE:
+                # Find parent series first; we'll use this to fetch the episode details.
+                response = search.tv(
+                    query=media_item.parent.title if media_item.parent else media_item.title,
+                    first_air_date_year=media_item.release_year,
+                    include_adult=include_adult,
+                    **tmdb_common_kwargs,
                 )
                 results = response.get("results", [])
             else:
@@ -236,18 +332,29 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
 
         best_match = results[0]
         tmdb_id = best_match.get("id")
+        if media_item.item_type == MediaItem.TYPE_EPISODE:
+            series_tmdb_id = tmdb_id
         if not tmdb_id:
             return None
 
         try:
             if media_item.is_movie:
                 movie = tmdb.Movies(tmdb_id)
-                info = movie.info(append_to_response="credits,images")
+                info = movie.info(append_to_response="credits,images", **tmdb_common_kwargs)
                 credits = info.get("credits", {})
             elif media_item.item_type == MediaItem.TYPE_SHOW:
                 tv = tmdb.TV(tmdb_id)
-                info = tv.info(append_to_response="credits,images")
+                info = tv.info(append_to_response="credits,images", **tmdb_common_kwargs)
                 credits = info.get("credits", {})
+            elif media_item.item_type == MediaItem.TYPE_EPISODE:
+                if media_item.parent_id:
+                    episode = tmdb.TV_Episodes(
+                        series_tmdb_id or tmdb_id, media_item.season_number, media_item.episode_number
+                    )
+                    info = episode.info(append_to_response="credits,images", **tmdb_common_kwargs)
+                    credits = info.get("credits", {})
+                else:
+                    return None
             else:
                 return None
         except Exception:  # noqa: BLE001
@@ -256,6 +363,8 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
 
     if not tmdb_id and info:
         tmdb_id = info.get("id")
+    if media_item.item_type == MediaItem.TYPE_EPISODE and not series_tmdb_id and info:
+        series_tmdb_id = info.get("show_id") or info.get("show") or info.get("tv_id") or None
 
     genres = [g.get("name") for g in info.get("genres", []) if g.get("name")]
     runtime = None
@@ -264,6 +373,8 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
     elif media_item.item_type == MediaItem.TYPE_SHOW:
         episode_run_time = info.get("episode_run_time") or []
         runtime = episode_run_time[0] if episode_run_time else None
+    elif media_item.item_type == MediaItem.TYPE_EPISODE:
+        runtime = info.get("runtime") or info.get("episode_run_time")
 
     cast = []
     for cast_member in credits.get("cast", [])[:12]:
@@ -294,7 +405,7 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         )
 
     release_year = media_item.release_year
-    release_date = info.get("release_date") or info.get("first_air_date")
+    release_date = info.get("release_date") or info.get("first_air_date") or info.get("air_date")
     if release_date:
         try:
             release_year = date_parser.parse(release_date).year
@@ -305,14 +416,15 @@ def fetch_tmdb_metadata(media_item: MediaItem) -> Optional[Dict[str, Any]]:
         {
             "tmdb_id": str(tmdb_id) if tmdb_id is not None else media_item.tmdb_id,
             "imdb_id": info.get("imdb_id") or media_item.imdb_id,
+            "series_tmdb_id": str(series_tmdb_id) if series_tmdb_id else None,
             "title": info.get("title") or info.get("name") or media_item.title,
             "synopsis": info.get("overview") or media_item.synopsis,
             "tagline": info.get("tagline") or media_item.tagline,
             "release_year": release_year,
             "genres": genres,
             "runtime_minutes": runtime,
-            "poster": build_image_url(info.get("poster_path")),
-            "backdrop": build_image_url(info.get("backdrop_path")),
+            "poster": build_image_url(info.get("poster_path") or info.get("still_path")),
+            "backdrop": build_image_url(info.get("backdrop_path") or info.get("still_path")),
             "cast": cast,
             "crew": crew,
             "source": "tmdb",
@@ -668,34 +780,49 @@ def resolve_available_metadata_source() -> Tuple[Optional[str], Optional[str]]:
 
 
 def fetch_metadata_with_fallback(media_item: MediaItem) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    metadata = None
+    prefs = _get_library_metadata_prefs(media_item)
+    provider_priority = prefs.get("provider_priority") or ["tmdb", "movie-db"]
     tmdb_key = get_tmdb_api_key()
-    tmdb_error: Optional[str] = None
+    tmdb_status: tuple[Optional[bool], Optional[str]] = (None, None)
 
-    if tmdb_key:
-        tmdb_valid, tmdb_message = validate_tmdb_api_key(tmdb_key)
-        if tmdb_valid:
-            metadata = fetch_tmdb_metadata(media_item)
-            if metadata:
-                return metadata, None
-            tmdb_error = "TMDB returned no metadata for this item."
+    results: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+
+    for provider in provider_priority:
+        provider = provider.lower()
+        if provider == "tmdb":
+            if not tmdb_key:
+                errors["tmdb"] = "TMDB API key not configured."
+                continue
+            if tmdb_status[0] is None:
+                tmdb_status = validate_tmdb_api_key(tmdb_key)
+            tmdb_valid, tmdb_message = tmdb_status
+            if not tmdb_valid:
+                errors["tmdb"] = tmdb_message or "TMDB API key is invalid."
+                continue
+            tmdb_metadata = fetch_tmdb_metadata(media_item)
+            if tmdb_metadata:
+                results["tmdb"] = tmdb_metadata
+                break
+            errors["tmdb"] = "TMDB returned no metadata for this item."
+        elif provider in {"movie-db", "moviedb", "movie_db"}:
+            fallback_metadata, fallback_error = fetch_movie_db_metadata(media_item)
+            if fallback_metadata:
+                results["movie-db"] = fallback_metadata
+                break
+            if fallback_error:
+                errors["movie-db"] = fallback_error
         else:
-            tmdb_error = tmdb_message or "TMDB API key is invalid."
-    else:
-        tmdb_error = "TMDB API key not configured."
+            errors[provider] = "Unknown metadata provider."
 
-    fallback_metadata, fallback_error = fetch_movie_db_metadata(media_item)
-    if fallback_metadata:
-        return fallback_metadata, None
+    if results:
+        provider_name, payload = next(iter(results.items()))
+        return payload, None
 
-    details = []
-    if tmdb_error:
-        details.append(tmdb_error)
-    if fallback_error:
-        details.append(fallback_error)
     message = "All metadata sources are unavailable."
+    details = " ".join(errors.values())
     if details:
-        message = f"{message} {' '.join(details)}"
+        message = f"{message} {details}"
     return None, message
 
 
@@ -788,6 +915,20 @@ def apply_metadata(media_item: MediaItem, metadata: Dict[str, Any]) -> MediaItem
         media_item.metadata_source = new_source
         update_fields.append("metadata_source")
         changed = True
+
+    series_tmdb_id = metadata.get("series_tmdb_id")
+    if (
+        series_tmdb_id
+        and media_item.item_type == MediaItem.TYPE_EPISODE
+        and media_item.parent_id
+    ):
+        try:
+            parent = media_item.parent  # type: ignore[attr-defined]
+        except Exception:
+            parent = None
+        if parent and not parent.tmdb_id:
+            parent.tmdb_id = str(series_tmdb_id)
+            parent.save(update_fields=["tmdb_id", "updated_at"])
 
     if changed or not media_item.metadata_last_synced_at:
         media_item.metadata_last_synced_at = timezone.now()

@@ -11,13 +11,18 @@ import useUserAgentsStore from '../store/userAgents';
 import useStreamProfilesStore from '../store/streamProfiles';
 import {
   Accordion,
+  ActionIcon,
   Alert,
+  Anchor,
   Box,
   Button,
   Center,
   Flex,
   Group,
   FileInput,
+  Loader,
+  List,
+  Modal,
   MultiSelect,
   Select,
   Stack,
@@ -25,6 +30,8 @@ import {
   Text,
   TextInput,
   NumberInput,
+  Badge,
+  Tooltip,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -40,6 +47,11 @@ import {
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
+import useLibraryStore from '../store/library';
+import LibraryFormModal from '../components/library/LibraryFormModal';
+import { Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import tmdbLogoUrl from '../assets/tmdb-logo-blue.svg?url';
+import { IconKey } from '@tabler/icons-react';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -182,6 +194,13 @@ const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const mediaLibraries = useLibraryStore((state) => state.libraries);
+  const librariesLoading = useLibraryStore((state) => state.loading);
+  const fetchMediaLibraries = useLibraryStore((state) => state.fetchLibraries);
+  const createMediaLibrary = useLibraryStore((state) => state.createLibrary);
+  const updateMediaLibrary = useLibraryStore((state) => state.updateLibrary);
+  const deleteMediaLibrary = useLibraryStore((state) => state.deleteLibrary);
+  const triggerLibraryScan = useLibraryStore((state) => state.triggerScan);
 
   const [accordianValue, setAccordianValue] = useState(null);
   const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
@@ -199,6 +218,37 @@ const SettingsPage = () => {
 
   // Add a new state to track the dialog type
   const [rehashDialogType, setRehashDialogType] = useState(null); // 'save' or 'rehash'
+  const [libraryModalOpen, setLibraryModalOpen] = useState(false);
+  const [editingLibrarySettings, setEditingLibrarySettings] = useState(null);
+  const [librarySubmitting, setLibrarySubmitting] = useState(false);
+  const tmdbSetting = settings['tmdb-api-key'];
+  const osUserSetting = settings['opensubtitles-username'];
+  const osPassSetting = settings['opensubtitles-password'];
+  const osApiKeySetting = settings['opensubtitles-api-key'];
+  const TMDB_REQUIREMENT_MESSAGE =
+    'Metadata uses TMDB when available and falls back to Movie-DB when necessary.';
+  const [tmdbKey, setTmdbKey] = useState('');
+  const [metadataSourcesAvailable, setMetadataSourcesAvailable] =
+    useState(false);
+  const [tmdbValidating, setTmdbValidating] = useState(false);
+  const [tmdbValidationState, setTmdbValidationState] = useState('info');
+  const [tmdbValidationMessage, setTmdbValidationMessage] = useState(
+    TMDB_REQUIREMENT_MESSAGE
+  );
+  const [osUsername, setOsUsername] = useState(
+    osUserSetting && osUserSetting.value !== undefined ? osUserSetting.value : ''
+  );
+  const [osPassword, setOsPassword] = useState(
+    osPassSetting && osPassSetting.value !== undefined ? osPassSetting.value : ''
+  );
+  const [osApiKey, setOsApiKey] = useState(
+    osApiKeySetting && osApiKeySetting.value !== undefined ? osApiKeySetting.value : ''
+  );
+  const [savingOsSettings, setSavingOsSettings] = useState(false);
+  const [activeMetadataSource, setActiveMetadataSource] =
+    useState('unavailable');
+  const [savingTmdbKey, setSavingTmdbKey] = useState(false);
+  const [tmdbHintOpen, setTmdbHintOpen] = useState(false);
 
   // Store pending changed settings when showing the dialog
   const [pendingChangedSettings, setPendingChangedSettings] = useState(null);
@@ -404,6 +454,70 @@ const SettingsPage = () => {
     };
     loadComskipConfig();
   }, []);
+
+  useEffect(() => {
+    if (authUser?.user_level === USER_LEVELS.ADMIN) {
+      fetchMediaLibraries();
+    }
+  }, [authUser?.user_level, fetchMediaLibraries]);
+
+  const validateTmdbKeyValue = useCallback(
+    async (value) => {
+      const trimmed = (value || '').trim();
+      setTmdbValidating(true);
+      setTmdbValidationState('info');
+      setTmdbValidationMessage('Checking metadata providers...');
+      try {
+        const result = await API.validateTmdbApiKey(trimmed);
+        const overallValid = Boolean(result?.overall_valid);
+        const provider = result?.provider || 'unavailable';
+        const message =
+          result?.message ||
+          (overallValid
+            ? provider === 'tmdb'
+              ? 'TMDB key verified successfully. Metadata and artwork will load for your libraries.'
+              : 'Using Movie-DB fallback for metadata.'
+            : 'All metadata sources are unavailable.');
+
+        setMetadataSourcesAvailable(overallValid);
+        setActiveMetadataSource(provider);
+
+        if (provider === 'tmdb') {
+          setTmdbValidationState('valid');
+        } else if (provider === 'movie-db' && overallValid) {
+          setTmdbValidationState('fallback');
+        } else {
+          setTmdbValidationState('invalid');
+        }
+
+        setTmdbValidationMessage(message);
+        return result ?? { overall_valid: overallValid, provider, message };
+      } catch (error) {
+        setMetadataSourcesAvailable(false);
+        setActiveMetadataSource('unavailable');
+        setTmdbValidationState('error');
+        setTmdbValidationMessage(
+          'Unable to reach metadata services right now.'
+        );
+        throw error;
+      } finally {
+        setTmdbValidating(false);
+      }
+    },
+    [TMDB_REQUIREMENT_MESSAGE]
+  );
+
+  useEffect(() => {
+    const currentValue =
+      tmdbSetting && tmdbSetting.value !== undefined ? tmdbSetting.value : '';
+    setTmdbKey(currentValue);
+    validateTmdbKeyValue(currentValue).catch((error) => {
+      console.error('Failed to validate TMDB API key', error);
+    });
+    setOsUsername(osUserSetting?.value ?? '');
+    setOsPassword(osPassSetting?.value ?? '');
+    setOsApiKey(osApiKeySetting?.value ?? '');
+  }, [tmdbSetting?.value, osUserSetting?.value, osPassSetting?.value, osApiKeySetting?.value, validateTmdbKeyValue]);
 
   // Clear success states when switching accordion panels
   useEffect(() => {
@@ -618,6 +732,267 @@ const SettingsPage = () => {
     }
   };
 
+  const persistTmdbKey = async (rawValue) => {
+    const trimmedKey = (rawValue || '').trim();
+    setTmdbKey(trimmedKey);
+    setSavingTmdbKey(true);
+    try {
+      const validationResult = await validateTmdbKeyValue(trimmedKey);
+
+      if (trimmedKey && !validationResult?.overall_valid) {
+        notifications.show({
+          title: 'Invalid TMDB key',
+          message:
+            validationResult?.message ||
+            'Metadata providers are unavailable. TMDB rejected the API key and Movie-DB is unreachable.',
+          color: 'red',
+        });
+        return;
+      }
+
+      if (trimmedKey) {
+        if (tmdbSetting && tmdbSetting.id) {
+          await API.updateSetting({
+            ...tmdbSetting,
+            value: trimmedKey,
+          });
+        } else {
+          await API.createSetting({
+            key: 'tmdb-api-key',
+            name: 'TMDB API Key',
+            value: trimmedKey,
+          });
+        }
+      } else if (tmdbSetting && tmdbSetting.id) {
+        await API.deleteSetting(tmdbSetting);
+      }
+
+      const provider = validationResult?.provider || activeMetadataSource;
+      const usingFallback = provider === 'movie-db';
+      const title = trimmedKey
+        ? provider === 'tmdb'
+          ? 'TMDB key saved'
+          : 'Saved with fallback'
+        : usingFallback
+          ? 'TMDB key removed'
+          : 'Metadata unavailable';
+      const message = trimmedKey
+        ? provider === 'tmdb'
+          ? 'TMDB API key saved and verified.'
+          : usingFallback
+            ? 'Movie-DB fallback will be used for metadata until TMDB becomes available.'
+            : 'Metadata providers are currently unavailable. Libraries may fail to scan.'
+        : usingFallback
+          ? 'TMDB API key removed. Movie-DB fallback will be used for metadata.'
+          : 'TMDB API key removed, but no metadata providers are currently available.';
+      const color = trimmedKey
+        ? provider === 'tmdb'
+          ? 'green'
+          : usingFallback
+            ? 'blue'
+            : 'red'
+        : usingFallback
+          ? 'blue'
+          : 'red';
+
+      notifications.show({
+        title,
+        message,
+        color,
+      });
+    } catch (error) {
+      console.error('Failed to save TMDB key', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Unable to update TMDB API key.',
+        color: 'red',
+      });
+    } finally {
+      setSavingTmdbKey(false);
+    }
+  };
+
+  const handleSaveTmdbKey = () => persistTmdbKey(tmdbKey);
+
+  const handleSaveOsSettings = async () => {
+    setSavingOsSettings(true);
+    try {
+        const tasks = [];
+        const normalizedUser = osUsername?.trim() || '';
+        const normalizedPass = osPassword?.trim() || '';
+        const normalizedKey = osApiKey?.trim() || '';
+
+        // Username
+        if (normalizedUser) {
+          if (osUserSetting && osUserSetting.id) {
+            tasks.push(API.updateSetting({ ...osUserSetting, value: normalizedUser }));
+          } else {
+            tasks.push(
+              API.createSetting({
+                key: 'opensubtitles-username',
+                name: 'OpenSubtitles Username',
+                value: normalizedUser,
+              })
+            );
+          }
+        } else if (osUserSetting && osUserSetting.id) {
+          tasks.push(API.deleteSetting(osUserSetting));
+        }
+
+        // Password
+        if (normalizedPass) {
+          if (osPassSetting && osPassSetting.id) {
+            tasks.push(API.updateSetting({ ...osPassSetting, value: normalizedPass }));
+          } else {
+            tasks.push(
+              API.createSetting({
+                key: 'opensubtitles-password',
+                name: 'OpenSubtitles Password',
+                value: normalizedPass,
+              })
+            );
+          }
+        } else if (osPassSetting && osPassSetting.id) {
+          tasks.push(API.deleteSetting(osPassSetting));
+        }
+
+        // API Key (optional but recommended)
+        if (normalizedKey) {
+          if (osApiKeySetting && osApiKeySetting.id) {
+            tasks.push(API.updateSetting({ ...osApiKeySetting, value: normalizedKey }));
+          } else {
+            tasks.push(
+              API.createSetting({
+                key: 'opensubtitles-api-key',
+                name: 'OpenSubtitles API Key',
+                value: normalizedKey,
+              })
+            );
+          }
+        } else if (osApiKeySetting && osApiKeySetting.id) {
+          tasks.push(API.deleteSetting(osApiKeySetting));
+        }
+
+        await Promise.all(tasks);
+        notifications.show({
+          title: 'Subtitle settings saved',
+          message: 'OpenSubtitles credentials were updated.',
+          color: 'green',
+        });
+    } catch (error) {
+      console.error('Failed to save OpenSubtitles settings', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Unable to update OpenSubtitles settings.',
+        color: 'red',
+      });
+    } finally {
+      setSavingOsSettings(false);
+    }
+  };
+
+  const handleDeleteTmdbKey = async () => {
+    if (!tmdbKey) return;
+    const confirmed =
+      typeof window === 'undefined'
+        ? true
+        : window.confirm(
+            'Remove the TMDB API key? Metadata will fall back to Movie-DB when possible.'
+          );
+    if (!confirmed) return;
+    try {
+      await persistTmdbKey('');
+    } catch (error) {
+      console.error('Failed to remove TMDB key', error);
+    }
+  };
+
+  const handleLibrarySettingsSubmit = async (values) => {
+    setLibrarySubmitting(true);
+    try {
+      if (editingLibrarySettings) {
+        await updateMediaLibrary(editingLibrarySettings.id, values);
+        notifications.show({
+          title: 'Library updated',
+          message: 'Changes saved.',
+          color: 'green',
+        });
+      } else {
+        await createMediaLibrary(values);
+        notifications.show({
+          title: 'Library created',
+          message: 'New library added.',
+          color: 'green',
+        });
+      }
+      setLibraryModalOpen(false);
+      setEditingLibrarySettings(null);
+      fetchMediaLibraries();
+    } catch (error) {
+      console.error('Failed to save library', error);
+      notifications.show({
+        title: 'Library error',
+        message: error?.body?.detail || 'Unable to save library changes.',
+        color: 'red',
+      });
+    } finally {
+      setLibrarySubmitting(false);
+    }
+  };
+
+  const handleLibrarySettingsDelete = async (library) => {
+    if (!window.confirm(`Delete library "${library.name}"?`)) return;
+    try {
+      await deleteMediaLibrary(library.id);
+      notifications.show({
+        title: 'Library deleted',
+        message: 'Library removed successfully.',
+        color: 'green',
+      });
+      fetchMediaLibraries();
+    } catch (error) {
+      console.error('Failed to delete library', error);
+      notifications.show({
+        title: 'Library error',
+        message: 'Unable to delete library.',
+        color: 'red',
+      });
+    }
+  };
+
+  const handleLibrarySettingsScan = async (library) => {
+    try {
+      await triggerLibraryScan(library.id, { full: false });
+      notifications.show({
+        title: 'Scan started',
+        message: `Library ${library.name} queued for scanning.`,
+        color: 'blue',
+      });
+    } catch (error) {
+      console.error('Failed to trigger scan', error);
+      notifications.show({
+        title: 'Scan error',
+        message: 'Unable to start scan.',
+        color: 'red',
+      });
+    }
+  };
+
+  const libraryActionsDisabled = tmdbValidating || !metadataSourcesAvailable;
+  const tmdbMessageColor =
+    tmdbValidationState === 'valid'
+      ? 'teal.6'
+      : tmdbValidationState === 'fallback'
+      ? 'blue.4'
+      : tmdbValidationState === 'error' || tmdbValidationState === 'invalid'
+      ? 'red.6'
+      : 'orange.6';
+  const addLibraryTooltipLabel = metadataSourcesAvailable
+    ? activeMetadataSource === 'tmdb'
+      ? 'TMDB metadata is available.'
+      : 'Using Movie-DB fallback for metadata.'
+    : 'Metadata sources are unavailable. Configure TMDB or try again later.';
+
   const executeSettingsSaveAndRehash = async () => {
     setRehashConfirmOpen(false);
     setGeneralSettingsSaved(false);
@@ -775,6 +1150,234 @@ const SettingsPage = () => {
 
           {authUser.user_level == USER_LEVELS.ADMIN && (
             <>
+              <Accordion.Item value="media-libraries">
+                <Accordion.Control>Media Libraries</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack spacing="md">
+                    <Group justify="space-between" align="center">
+                      <Text c="dimmed" size="sm">
+                        Configure local media libraries used for scanning and playback.
+                      </Text>
+                      <Tooltip
+                        label={addLibraryTooltipLabel}
+                        disabled={!libraryActionsDisabled}
+                        withArrow
+                      >
+                        <span>
+                          <Button
+                            size="xs"
+                            leftSection={<Plus size={14} />}
+                            disabled={libraryActionsDisabled}
+                            onClick={() => {
+                              setEditingLibrarySettings(null);
+                              setLibraryModalOpen(true);
+                            }}
+                          >
+                            Add Library
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </Group>
+
+                    <Stack spacing="xs">
+                      <TextInput
+                        label="TMDB API Key"
+                        placeholder="Enter TMDB API key"
+                        value={tmdbKey}
+                        onChange={(event) => setTmdbKey(event.currentTarget.value)}
+                        rightSection={
+                          tmdbKey && tmdbKey.trim().length > 0 ? (
+                            <Tooltip label="Remove TMDB API key" withArrow>
+                              <ActionIcon
+                                variant="subtle"
+                                color="red"
+                                size="sm"
+                                onClick={handleDeleteTmdbKey}
+                                disabled={savingTmdbKey || tmdbValidating}
+                                aria-label="Remove TMDB API key"
+                              >
+                                <Trash2 size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                          ) : null
+                        }
+                        rightSectionPointerEvents="auto"
+                        description="Used for metadata and artwork lookups."
+                      />
+                      <Group justify="space-between" align="center">
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          color="gray"
+                          onClick={() => setTmdbHintOpen(true)}
+                        >
+                          Where do I get this?
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={handleSaveTmdbKey}
+                          loading={savingTmdbKey || tmdbValidating}
+                        >
+                          Save Metadata Settings
+                        </Button>
+                      </Group>
+                      {tmdbValidationMessage && (
+                        <Group gap="xs" align="center">
+                          {tmdbValidating && <Loader size="xs" />}
+                          <Text size="xs" c={tmdbMessageColor}>
+                            {tmdbValidationMessage}
+                          </Text>
+                        </Group>
+                      )}
+
+                      <Divider my="sm" />
+                      <Group gap="xs" align="center">
+                        <IconKey size={16} />
+                        <Text fw={600} size="sm">
+                          OpenSubtitles (optional)
+                        </Text>
+                      </Group>
+                      <Text c="dimmed" size="xs">
+                        Provide your OpenSubtitles credentials to improve subtitle fetching. API key is preferred; username/password can increase limits.
+                      </Text>
+                      <TextInput
+                        label="OpenSubtitles API Key"
+                        placeholder="Enter OpenSubtitles API key"
+                        value={osApiKey}
+                        onChange={(event) => setOsApiKey(event.currentTarget.value)}
+                        description="Used for subtitle searches and downloads."
+                      />
+                      <Group grow>
+                        <TextInput
+                          label="OpenSubtitles Username"
+                          placeholder="Optional username"
+                          value={osUsername}
+                          onChange={(event) => setOsUsername(event.currentTarget.value)}
+                        />
+                        <TextInput
+                          label="OpenSubtitles Password"
+                          placeholder="Optional password"
+                          type="password"
+                          value={osPassword}
+                          onChange={(event) => setOsPassword(event.currentTarget.value)}
+                        />
+                      </Group>
+                      <Group justify="flex-end">
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={handleSaveOsSettings}
+                          loading={savingOsSettings}
+                        >
+                          Save Subtitle Settings
+                        </Button>
+                      </Group>
+                    </Stack>
+
+                    {!metadataSourcesAvailable && !tmdbValidating && (
+                      <Alert color="yellow" variant="light" radius="md">
+                        All metadata sources are currently unavailable. Configure a working TMDB
+                        key or try again once Movie-DB fallback is reachable.
+                      </Alert>
+                    )}
+
+                    {librariesLoading ? (
+                      <Group justify="center" py="md">
+                        <Loader size="sm" />
+                      </Group>
+                    ) : mediaLibraries.length === 0 ? (
+                      <Text c="dimmed" size="sm">
+                        No libraries configured yet.
+                      </Text>
+                    ) : (
+                      <Stack spacing="sm">
+                        {mediaLibraries.map((library) => (
+                          <Group
+                            key={library.id}
+                            justify="space-between"
+                            align="center"
+                            p="sm"
+                            style={{
+                              border: '1px solid rgba(148, 163, 184, 0.2)',
+                              borderRadius: 8,
+                            }}
+                          >
+                            <Stack spacing={4} style={{ flex: 1 }}>
+                              <Group gap="sm">
+                                <Text fw={600}>{library.name}</Text>
+                                <Badge color="violet" variant="light">
+                                  {library.library_type}
+                                </Badge>
+                                <Badge
+                                  color={library.auto_scan_enabled ? 'green' : 'gray'}
+                                  variant="outline"
+                                >
+                                  {library.auto_scan_enabled ? 'Auto-scan' : 'Manual'}
+                                </Badge>
+                              </Group>
+                              <Text size="xs" c="dimmed">
+                                Last scan:{' '}
+                                {library.last_scan_at
+                                  ? new Date(library.last_scan_at).toLocaleString()
+                                  : 'Never'}
+                              </Text>
+                            </Stack>
+                            <Group gap="xs">
+                              <Tooltip label="Trigger scan">
+                                <ActionIcon
+                                  variant="light"
+                                  onClick={() => handleLibrarySettingsScan(library)}
+                                >
+                                  <RefreshCcw size={16} />
+                                </ActionIcon>
+                              </Tooltip>
+                              <Tooltip label="Edit">
+                                <ActionIcon
+                                  variant="light"
+                                  onClick={() => {
+                                    setEditingLibrarySettings(library);
+                                    setLibraryModalOpen(true);
+                                  }}
+                                >
+                                  <Pencil size={16} />
+                                </ActionIcon>
+                              </Tooltip>
+                              <Tooltip label="Delete">
+                                <ActionIcon
+                                  variant="light"
+                                  color="red"
+                                  onClick={() => handleLibrarySettingsDelete(library)}
+                                >
+                                  <Trash2 size={16} />
+                                </ActionIcon>
+                              </Tooltip>
+                            </Group>
+                          </Group>
+                        ))}
+                      </Stack>
+                    )}
+                    <Center py="md">
+                      <Anchor
+                        href="https://www.themoviedb.org/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <img
+                          src={tmdbLogoUrl}
+                          alt="Powered by TMDB"
+                          style={{
+                            width: 180,
+                            height: 'auto',
+                            display: 'block',
+                          }}
+                        />
+                      </Anchor>
+                    </Center>
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>
+
               <Accordion.Item value="dvr-settings">
                 <Accordion.Control>DVR</Accordion.Control>
                 <Accordion.Panel>
@@ -1310,6 +1913,63 @@ const SettingsPage = () => {
           )}
         </Accordion>
       </Box>
+
+      <Modal
+        opened={tmdbHintOpen}
+        onClose={() => setTmdbHintOpen(false)}
+        title="How to get a TMDB API key"
+        size="lg"
+        overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
+      >
+        <Stack spacing="sm">
+          <Text size="sm">
+            Dispatcharr uses TMDB (The Movie Database) for artwork and metadata. You can create
+            a key in just a couple of minutes:
+          </Text>
+          <List size="sm" spacing="xs">
+            <List.Item>
+              Visit{' '}
+              <Anchor
+                href="https://www.themoviedb.org/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                themoviedb.org
+              </Anchor>{' '}
+              and sign in or create a free account.
+            </List.Item>
+            <List.Item>
+              Open your{' '}
+              <Anchor
+                href="https://www.themoviedb.org/settings/api"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                TMDB account settings
+              </Anchor>{' '}
+              and choose <Text component="span" fw={500}>API</Text> from the sidebar.
+            </List.Item>
+            <List.Item>
+              Complete the short API application and copy the generated v3 API key into the field
+              above.
+            </List.Item>
+          </List>
+          <Text size="sm" c="dimmed">
+            TMDB issues separate v3 and v4 keys--Dispatcharr only needs the v3 key for metadata lookups.
+          </Text>
+        </Stack>
+      </Modal>
+
+      <LibraryFormModal
+        opened={libraryModalOpen}
+        onClose={() => {
+          setLibraryModalOpen(false);
+          setEditingLibrarySettings(null);
+        }}
+        library={editingLibrarySettings}
+        onSubmit={handleLibrarySettingsSubmit}
+        submitting={librarySubmitting}
+      />
 
       <ConfirmationDialog
         opened={rehashConfirmOpen}

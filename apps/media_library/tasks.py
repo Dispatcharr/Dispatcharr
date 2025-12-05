@@ -14,7 +14,7 @@ from django.db.models import Q, Count
 from django.utils import timezone
 
 from apps.media_library.metadata import sync_metadata
-from apps.media_library.models import Library, LibraryScan, MediaFile, MediaItem
+from apps.media_library.models import Library, LibraryScan, MediaFile, MediaItem, normalize_title
 from apps.media_library import serializers
 from apps.media_library.utils import LibraryScanner, apply_probe_metadata, probe_media_file, resolve_media_item
 from apps.media_library.naming import classify_media_entry
@@ -805,7 +805,9 @@ def scan_library_task(
             )
 
             missing_ids = list(
-                episode_qs.filter(file_count=0, is_missing=False).values_list("id", flat=True)
+                episode_qs.filter(file_count=0, is_missing=False)
+                .exclude(metadata__shared_from_file__isnull=False)
+                .values_list("id", flat=True)
             )
             if missing_ids:
                 MediaItem.objects.filter(pk__in=missing_ids).update(
@@ -815,7 +817,9 @@ def scan_library_task(
                 )
 
             restored_ids = list(
-                episode_qs.filter(file_count__gt=0, is_missing=True).values_list("id", flat=True)
+                episode_qs.filter(file_count__gt=0, is_missing=True)
+                .exclude(metadata__shared_from_file__isnull=False)
+                .values_list("id", flat=True)
             )
             if restored_ids:
                 MediaItem.objects.filter(pk__in=restored_ids).update(
@@ -1023,6 +1027,23 @@ def _identify_media_file(
             relative_path=relative_dir,
             file_name=file_record.file_name,
         )
+        extra_episode_numbers: list[int] = []
+        if (
+            classification.detected_type == MediaItem.TYPE_EPISODE
+            and isinstance(classification.data, dict)
+        ):
+            episode_list = classification.data.get("episode_list") or []
+            if isinstance(episode_list, (list, tuple, set)):
+                normalized_numbers: list[int] = []
+                for entry in episode_list:
+                    try:
+                        normalized_numbers.append(int(entry))
+                    except (TypeError, ValueError):
+                        continue
+                primary_number = classification.episode
+                extra_episode_numbers = sorted(
+                    {num for num in normalized_numbers if num is not None and num != primary_number}
+                )
 
         target_item = None
         if target_item_id:
@@ -1075,8 +1096,55 @@ def _identify_media_file(
                             sync_metadata_task.delay(parent.id)
                 matched = 1
 
+            def _ensure_additional_episodes(shared_from: MediaItem) -> None:
+                if not extra_episode_numbers or shared_from.item_type != MediaItem.TYPE_EPISODE:
+                    return
+                parent_series = shared_from.parent
+                if not parent_series:
+                    return
+
+                for episode_number in extra_episode_numbers:
+                    season_number = shared_from.season_number or 0
+                    if season_number:
+                        title_to_use = f"S{season_number:02d}E{episode_number:02d}"
+                    else:
+                        title_to_use = f"E{episode_number:02d}"
+                    episode = (
+                        MediaItem.objects.filter(
+                            library=library,
+                            item_type=MediaItem.TYPE_EPISODE,
+                            parent=parent_series,
+                            season_number=shared_from.season_number,
+                            episode_number=episode_number,
+                        ).first()
+                    )
+                    if not episode:
+                        episode = MediaItem.objects.create(
+                            library=library,
+                            parent=parent_series,
+                            item_type=MediaItem.TYPE_EPISODE,
+                            status=MediaItem.STATUS_MATCHED,
+                            title=title_to_use,
+                            sort_title=title_to_use,
+                            normalized_title=normalize_title(title_to_use),
+                            release_year=shared_from.release_year,
+                            season_number=shared_from.season_number,
+                            episode_number=episode_number,
+                            metadata={},
+                        )
+                    metadata_payload = dict(episode.metadata or {})
+                    metadata_payload["shared_from_file"] = file_record.id
+                    metadata_payload["shared_from_media_item_id"] = shared_from.id
+                    metadata_payload["shared_from_path"] = file_record.absolute_path
+                    episode.metadata = metadata_payload
+                    episode.is_missing = False
+                    if episode.status != MediaItem.STATUS_MATCHED:
+                        episode.status = MediaItem.STATUS_MATCHED
+                    episode.save(update_fields=["metadata", "is_missing", "status", "updated_at"])
+
             # Synchronize to VOD catalog when configured.
             sync_media_item_to_vod(media_item)
+            _ensure_additional_episodes(media_item)
         else:
             unmatched = 1
 
@@ -1225,6 +1293,13 @@ def prune_stale_scans(max_age_hours: int = 72):
     ).delete()
     if deleted:
         logger.info("Pruned %s stale library scan records", deleted)
+
+
+@shared_task(name="media_library.prune_transcodes")
+def prune_transcodes_task(retention_hours: int = 72):
+    from apps.media_library.transcode import prune_transcode_directory
+
+    return prune_transcode_directory(retention_hours=retention_hours)
 
 
 @shared_task(name="media_library.transcode_media_file")

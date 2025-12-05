@@ -2900,6 +2900,9 @@ export default class API {
           params.append('start_ms', String(normalized));
         }
       }
+      if (options.forceTranscode || options.force_transcode) {
+        params.append('force_transcode', '1');
+      }
       const query = params.toString();
       const response = await request(
         `${host}/api/media/items/${id}/stream/${query ? `?${query}` : ''}`
@@ -2907,6 +2910,36 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to load media stream info', e);
+      throw e;
+    }
+  }
+
+  static async listMediaSubtitles(id) {
+    try {
+      const response = await request(`${host}/api/media/items/${id}/subtitles/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to load subtitles', e);
+      throw e;
+    }
+  }
+
+  static async fetchMediaSubtitles(id, language = null) {
+    try {
+      const body = {};
+      if (language) {
+        body.language = language;
+      }
+      const response = await request(
+        `${host}/api/media/items/${id}/fetch-subtitles/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch subtitles', e);
       throw e;
     }
   }
