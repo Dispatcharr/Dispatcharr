@@ -14,6 +14,7 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField
 from ..url_utils import get_stream_info_for_switch
+from core.utils import log_system_event
 
 logger = logging.getLogger("ts_proxy")
 
@@ -700,6 +701,7 @@ class ChannelService:
             RedisKeys.events_channel(channel_id),
             json.dumps(switch_request)
         )
+
         return True
 
     @staticmethod

@@ -13,7 +13,9 @@ import {
   Stack,
   Modal,
 } from '@mantine/core';
-import { Play } from 'lucide-react';
+import { Play, Copy } from 'lucide-react';
+import { notifications } from '@mantine/notifications';
+import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
@@ -232,9 +234,9 @@ const VODModal = ({ vod, opened, onClose }) => {
     }
   }, [opened]);
 
-  const handlePlayVOD = () => {
+  const getStreamUrl = () => {
     const vodToPlay = detailedVOD || vod;
-    if (!vodToPlay) return;
+    if (!vodToPlay) return null;
 
     let streamUrl = `/proxy/vod/movie/${vod.uuid}`;
 
@@ -253,7 +255,27 @@ const VODModal = ({ vod, opened, onClose }) => {
     } else {
       streamUrl = `${window.location.origin}${streamUrl}`;
     }
+    return streamUrl;
+  };
+
+  const handlePlayVOD = () => {
+    const streamUrl = getStreamUrl();
+    if (!streamUrl) return;
+    const vodToPlay = detailedVOD || vod;
     showVideo(streamUrl, 'vod', vodToPlay);
+  };
+
+  const handleCopyLink = async () => {
+    const streamUrl = getStreamUrl();
+    if (!streamUrl) return;
+    const success = await copyToClipboard(streamUrl);
+    notifications.show({
+      title: success ? 'Link Copied!' : 'Copy Failed',
+      message: success
+        ? 'Stream link copied to clipboard'
+        : 'Failed to copy link to clipboard',
+      color: success ? 'green' : 'red',
+    });
   };
 
   // Helper to get embeddable YouTube URL
@@ -486,6 +508,16 @@ const VODModal = ({ vod, opened, onClose }) => {
                         Watch Trailer
                       </Button>
                     )}
+                    <Button
+                      leftSection={<Copy size={16} />}
+                      variant="outline"
+                      color="gray"
+                      size="sm"
+                      onClick={handleCopyLink}
+                      style={{ alignSelf: 'flex-start' }}
+                    >
+                      Copy Link
+                    </Button>
                   </Group>
                 </Stack>
               </Flex>
@@ -662,7 +694,8 @@ const VODModal = ({ vod, opened, onClose }) => {
               src={trailerUrl}
               title="YouTube Trailer"
               frameBorder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              referrerPolicy="strict-origin-when-cross-origin"
               allowFullScreen
               style={{
                 position: 'absolute',

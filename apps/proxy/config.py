@@ -26,7 +26,7 @@ class BaseConfig:
         now = time.time()
         if cls._proxy_settings_cache is not None and (now - cls._proxy_settings_cache_time) < cls._proxy_settings_cache_ttl:
             return cls._proxy_settings_cache
-        
+
         # Cache miss or expired - fetch from database
         try:
             from core.models import CoreSettings
@@ -34,7 +34,7 @@ class BaseConfig:
             cls._proxy_settings_cache = settings
             cls._proxy_settings_cache_time = now
             return settings
-            
+
         except Exception:
             # Return defaults if database query fails
             return {
@@ -44,7 +44,7 @@ class BaseConfig:
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
             }
-            
+
         finally:
             # Always close the connection after reading settings
             try:
@@ -94,10 +94,10 @@ class TSConfig(BaseConfig):
     CLEANUP_INTERVAL = 60  # Check for inactive channels every 60 seconds
 
     # Client tracking settings
-    CLIENT_RECORD_TTL = 5  # How long client records persist in Redis (seconds). Client will be considered MIA after this time.
+    CLIENT_RECORD_TTL = 60  # How long client records persist in Redis (seconds). Client will be considered MIA after this time.
     CLEANUP_CHECK_INTERVAL = 1  # How often to check for disconnected clients (seconds)
-    CLIENT_HEARTBEAT_INTERVAL = 1  # How often to send client heartbeats (seconds)
-    GHOST_CLIENT_MULTIPLIER = 5.0  # How many heartbeat intervals before client considered ghost (5 would mean 5 secondsif heartbeat interval is 1)
+    CLIENT_HEARTBEAT_INTERVAL = 5  # How often to send client heartbeats (seconds)
+    GHOST_CLIENT_MULTIPLIER = 6.0  # How many heartbeat intervals before client considered ghost (6 would mean 36 seconds if heartbeat interval is 6)
     CLIENT_WAIT_TIMEOUT = 30  # Seconds to wait for client to connect
 
     # Stream health and recovery settings

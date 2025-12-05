@@ -134,13 +134,21 @@ const useAuthStore = create((set, get) => ({
       return false; // Add explicit return for when data.access is not available
     } catch (error) {
       console.error('Token refresh failed:', error);
-      get().logout();
+      await get().logout();
       return false; // Add explicit return after error
     }
   },
 
   // Action to logout
-  logout: () => {
+  logout: async () => {
+    // Call backend logout endpoint to log the event
+    try {
+      await API.logout();
+    } catch (error) {
+      // Continue with logout even if API call fails
+      console.error('Logout API call failed:', error);
+    }
+
     set({
       accessToken: null,
       refreshToken: null,

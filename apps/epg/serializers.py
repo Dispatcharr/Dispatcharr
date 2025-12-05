@@ -4,7 +4,7 @@ from .models import EPGSource, EPGData, ProgramData
 from apps.channels.models import Channel
 
 class EPGSourceSerializer(serializers.ModelSerializer):
-    epg_data_ids = serializers.SerializerMethodField()
+    epg_data_count = serializers.SerializerMethodField()
     read_only_fields = ['created_at', 'updated_at']
     url = serializers.CharField(
         required=False,
@@ -29,11 +29,12 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'custom_properties',
-            'epg_data_ids'
+            'epg_data_count'
         ]
 
-    def get_epg_data_ids(self, obj):
-        return list(obj.epgs.values_list('id', flat=True))
+    def get_epg_data_count(self, obj):
+        """Return the count of EPG data entries instead of all IDs to prevent large payloads"""
+        return obj.epgs.count()
 
 class ProgramDataSerializer(serializers.ModelSerializer):
     class Meta:

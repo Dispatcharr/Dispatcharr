@@ -105,6 +105,7 @@ const CustomTableHeader = ({
                     ...(header.column.columnDef.style &&
                       header.column.columnDef.style),
                     height: '100%',
+                    width: '100%',
                     paddingRight: header.column.getCanResize() ? '8px' : '0px', // Add padding for resize handle
                   }}
                 >

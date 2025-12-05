@@ -50,9 +50,17 @@ const useEPGsStore = create((set) => ({
     })),
 
   updateEPG: (epg) =>
-    set((state) => ({
-      epgs: { ...state.epgs, [epg.id]: epg },
-    })),
+    set((state) => {
+      // Validate that epg is an object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('updateEPG called with invalid epg:', epg);
+        return state;
+      }
+
+      return {
+        epgs: { ...state.epgs, [epg.id]: epg },
+      };
+    }),
 
   removeEPGs: (epgIds) =>
     set((state) => {
@@ -66,6 +74,12 @@ const useEPGsStore = create((set) => ({
 
   updateEPGProgress: (data) =>
     set((state) => {
+      // Validate that data is an object with a source
+      if (!data || typeof data !== 'object' || !data.source) {
+        console.error('updateEPGProgress called with invalid data:', data);
+        return state;
+      }
+
       // Early exit if source doesn't exist in our EPGs store
       if (!state.epgs[data.source] && !data.status) {
         return state;
@@ -97,18 +111,29 @@ const useEPGsStore = create((set) => ({
               ? 'success' // Mark as success when progress is 100%
               : state.epgs[data.source]?.status || 'idle';
 
-      // Create a new epgs object with the updated source status
-      const newEpgs = {
-        ...state.epgs,
-        [data.source]: {
-          ...state.epgs[data.source],
-          status: sourceStatus,
-          last_message:
-            data.status === 'error'
-              ? data.error || 'Unknown error'
-              : state.epgs[data.source]?.last_message,
-        },
-      };
+      // Only update epgs object if status or last_message actually changed
+      // This prevents unnecessary re-renders on every progress update
+      const currentEpg = state.epgs[data.source];
+      const newLastMessage =
+        data.status === 'error'
+          ? data.error || 'Unknown error'
+          : currentEpg?.last_message;
+
+      let newEpgs = state.epgs;
+      if (
+        currentEpg &&
+        (currentEpg.status !== sourceStatus ||
+          currentEpg.last_message !== newLastMessage)
+      ) {
+        newEpgs = {
+          ...state.epgs,
+          [data.source]: {
+            ...currentEpg,
+            status: sourceStatus,
+            last_message: newLastMessage,
+          },
+        };
+      }
 
       return {
         refreshProgress: newRefreshProgress,

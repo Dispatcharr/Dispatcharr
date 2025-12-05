@@ -102,6 +102,16 @@ const RECURRING_DAY_OPTIONS = [
   { value: 5, label: 'Sat' },
 ];
 
+const useDateTimeFormat = () => {
+  const [timeFormatSetting] = useLocalStorage('time-format', '12h');
+  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  // Use user preference for time format
+  const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
+  const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
+
+  return [timeFormat, dateFormat]
+};
+
 // Short preview that triggers the details modal when clicked
 const RecordingSynopsis = ({ description, onOpen }) => {
   const truncated = description?.length > 140;
@@ -139,6 +149,7 @@ const RecordingDetailsModal = ({
   const { toUserTime, userNow } = useTimeHelpers();
   const [childOpen, setChildOpen] = React.useState(false);
   const [childRec, setChildRec] = React.useState(null);
+  const [timeformat, dateformat] = useDateTimeFormat();
 
   const safeRecording = recording || {};
   const customProps = safeRecording.custom_properties || {};
@@ -320,7 +331,7 @@ const RecordingDetailsModal = ({
               )}
             </Group>
             <Text size="xs">
-              {start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
             </Text>
           </Stack>
           <Group gap={6}>
@@ -498,7 +509,7 @@ const RecordingDetailsModal = ({
               </Group>
             </Group>
             <Text size="sm">
-              {start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
             </Text>
             {rating && (
               <Group gap={8}>
@@ -558,6 +569,7 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
+  const [timeformat, dateformat] = useDateTimeFormat();
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -892,10 +904,10 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
                     <Group justify="space-between" align="center">
                       <Stack gap={2} style={{ flex: 1 }}>
                         <Text fw={600} size="sm">
-                          {occStart.format('MMM D, YYYY')}
+                          {occStart.format(`${dateformat}, YYYY`)}
                         </Text>
                         <Text size="xs" c="dimmed">
-                          {occStart.format('h:mma')} – {occEnd.format('h:mma')}
+                          {occStart.format(timeformat)} – {occEnd.format(timeformat)}
                         </Text>
                       </Stack>
                       <Group gap={6}>
@@ -937,6 +949,7 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const showVideo = useVideoStore((s) => s.showVideo);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const { toUserTime, userNow } = useTimeHelpers();
+  const [timeformat, dateformat] = useDateTimeFormat();
 
   const channel = channels?.[recording.channel];
 
@@ -1221,7 +1234,7 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
               {isSeriesGroup ? 'Next recording' : 'Time'}
             </Text>
             <Text size="sm">
-              {start.format('MMM D, YYYY h:mma')} – {end.format('h:mma')}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
             </Text>
           </Group>
 

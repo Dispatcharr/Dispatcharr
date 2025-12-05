@@ -9,6 +9,7 @@ DATA_DIRS=(
     "/data/m3us"
     "/data/epgs"
     "/data/plugins"
+    "/data/models"
 )
 
 APP_DIRS=(
@@ -54,6 +55,12 @@ if [ "$(id -u)" = "0" ]; then
     if [ -d /data/db ] && [ "$(stat -c '%u' /data/db)" != "$(id -u postgres)" ]; then
         echo "Fixing ownership for /data/db"
         chown -R postgres:postgres /data/db
+    fi
+
+    # Fix /data directory ownership (non-recursive)
+    if [ -d "/data" ] && [ "$(stat -c '%u:%g' /data)" != "$PUID:$PGID" ]; then
+        echo "Fixing ownership for /data (non-recursive)"
+        chown $PUID:$PGID /data
     fi
 
     chmod +x /data

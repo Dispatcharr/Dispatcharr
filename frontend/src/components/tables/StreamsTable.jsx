@@ -13,6 +13,7 @@ import {
   ArrowUpDown,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  Search,
 } from 'lucide-react';
 import {
   TextInput,
@@ -182,7 +183,7 @@ const StreamsTable = () => {
   const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
   const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel numbering modal state
@@ -298,6 +299,7 @@ const StreamsTable = () => {
         ),
       },
       {
+        header: 'Group',
         id: 'group',
         accessorFn: (row) =>
           channelGroups[row.channel_group]
@@ -319,6 +321,7 @@ const StreamsTable = () => {
         ),
       },
       {
+        header: 'M3U',
         id: 'm3u',
         size: columnSizing.m3u || 150,
         accessorFn: (row) =>
@@ -385,7 +388,14 @@ const StreamsTable = () => {
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      const columnId = sorting[0].id;
+      // Map frontend column IDs to backend field names
+      const fieldMapping = {
+        name: 'name',
+        group: 'channel_group__name',
+        m3u: 'm3u_account__name',
+      };
+      const sortField = fieldMapping[columnId] || columnId;
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -691,8 +701,8 @@ const StreamsTable = () => {
     const sortField = sorting[0]?.id;
     const sortDirection = sorting[0]?.desc;
 
-    if (sortField == column) {
-      if (sortDirection == false) {
+    if (sortField === column) {
+      if (sortDirection === false) {
         setSorting([
           {
             id: column,
@@ -700,7 +710,8 @@ const StreamsTable = () => {
           },
         ]);
       } else {
-        setSorting([]);
+        // Reset to default sort (name ascending) instead of clearing
+        setSorting([{ id: 'name', desc: false }]);
       }
     } else {
       setSorting([
@@ -725,7 +736,7 @@ const StreamsTable = () => {
     switch (header.id) {
       case 'name':
         return (
-          <Flex gap="sm">
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <TextInput
               name="name"
               placeholder="Name"
@@ -735,19 +746,24 @@ const StreamsTable = () => {
               size="xs"
               variant="unstyled"
               className="table-input-header"
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
+              leftSection={<Search size={14} opacity={0.5} />}
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('name');
+                },
                 size: 14,
+                style: { cursor: 'pointer' },
               })}
-            </Center>
+            />
           </Flex>
         );
 
       case 'group':
         return (
-          <Box onClick={handleSelectClick} style={{ width: '100%' }}>
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <MultiSelect
               placeholder="Group"
               searchable
@@ -759,13 +775,23 @@ const StreamsTable = () => {
               variant="unstyled"
               className="table-input-header custom-multiselect"
               clearable
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('group');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
             />
-          </Box>
+          </Flex>
         );
 
       case 'm3u':
         return (
-          <Box onClick={handleSelectClick}>
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <Select
               placeholder="M3U"
               searchable
@@ -780,8 +806,18 @@ const StreamsTable = () => {
               }))}
               variant="unstyled"
               className="table-input-header"
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('m3u');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
             />
-          </Box>
+          </Flex>
         );
     }
   };

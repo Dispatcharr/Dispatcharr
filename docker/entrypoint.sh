@@ -183,12 +183,11 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi with configurable nice level (default: -10 for high priority)
+# Launch uwsgi with configurable nice level (default: 0 for normal priority)
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-cd /app && nice -n $UWSGI_NICE_LEVEL setpriv --reuid=$POSTGRES_USER --regid=$POSTGRES_USER --clear-groups -- uwsgi $uwsgi_args &
-uwsgi_pid=$!
+nice -n $UWSGI_NICE_LEVEL su -p - "$POSTGRES_USER" -c "cd /app && exec uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 

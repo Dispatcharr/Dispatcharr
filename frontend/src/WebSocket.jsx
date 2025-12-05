@@ -569,14 +569,24 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'epg_refresh':
-              // Update the store with progress information
-              updateEPGProgress(parsedEvent.data);
-
-              // If we have source_id/account info, update the EPG source status
-              if (parsedEvent.data.source_id || parsedEvent.data.account) {
+              // If we have source/account info, check if EPG exists before processing
+              if (parsedEvent.data.source || parsedEvent.data.account) {
                 const sourceId =
-                  parsedEvent.data.source_id || parsedEvent.data.account;
+                  parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
+
+                // Only update progress if the EPG still exists in the store
+                // This prevents crashes when receiving updates for deleted EPGs
+                if (epg) {
+                  // Update the store with progress information
+                  updateEPGProgress(parsedEvent.data);
+                } else {
+                  // EPG was deleted, ignore this update
+                  console.debug(
+                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
+                  );
+                  break;
+                }
 
                 if (epg) {
                   // Check for any indication of an error (either via status or error field)
@@ -613,6 +623,10 @@ export const WebsocketProvider = ({ children }) => {
                       status: parsedEvent.data.status || 'success',
                       last_message:
                         parsedEvent.data.message || epg.last_message,
+                      // Use the timestamp from the backend if provided
+                      ...(parsedEvent.data.updated_at && {
+                        updated_at: parsedEvent.data.updated_at,
+                      }),
                     });
 
                     // Only show success notification if we've finished parsing programs and had no errors

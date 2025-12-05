@@ -131,6 +131,12 @@ const EPGsTable = () => {
 
   const toggleActive = async (epg) => {
     try {
+      // Validate that epg is a valid object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('toggleActive called with invalid epg:', epg);
+        return;
+      }
+
       // Send only the is_active field to trigger our special handling
       await API.updateEPG(
         {
@@ -154,6 +160,9 @@ const EPGsTable = () => {
       case 'downloading':
         label = 'Downloading';
         break;
+      case 'extracting':
+        label = 'Extracting';
+        break;
       case 'parsing_channels':
         label = 'Parsing Channels';
         break;
@@ -162,6 +171,22 @@ const EPGsTable = () => {
         break;
       default:
         return null;
+    }
+
+    // Build additional info string from progress data
+    let additionalInfo = '';
+    if (progress.message) {
+      additionalInfo = progress.message;
+    } else if (
+      progress.processed !== undefined &&
+      progress.channels !== undefined
+    ) {
+      additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
+    } else if (
+      progress.processed !== undefined &&
+      progress.total !== undefined
+    ) {
+      additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
     }
 
     return (
@@ -175,13 +200,18 @@ const EPGsTable = () => {
           style={{ margin: '2px 0' }}
         />
         {progress.speed && (
-          <Text size="xs">Speed: {parseInt(progress.speed)} KB/s</Text>
+          <Text size="xs" c="dimmed">
+            Speed: {parseInt(progress.speed)} KB/s
+          </Text>
+        )}
+        {additionalInfo && (
+          <Text size="xs" c="dimmed" lineClamp={1}>
+            {additionalInfo}
+          </Text>
         )}
       </Stack>
     );
   };
-
-  console.log(epgs);
 
   const columns = useMemo(
     //column definitions...
@@ -282,14 +312,35 @@ const EPGsTable = () => {
 
           // Show success message for successful sources
           if (data.status === 'success') {
+            const successMessage =
+              data.last_message || 'EPG data refreshed successfully';
             return (
-              <Text
-                c="dimmed"
-                size="xs"
-                style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
-              >
-                EPG data refreshed successfully
-              </Text>
+              <Tooltip label={successMessage} multiline width={300}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
+                >
+                  {successMessage}
+                </Text>
+              </Tooltip>
+            );
+          }
+
+          // Show last_message for idle sources (from previous refresh)
+          if (data.status === 'idle' && data.last_message) {
+            return (
+              <Tooltip label={data.last_message} multiline width={300}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ lineHeight: 1.3 }}
+                >
+                  {data.last_message}
+                </Text>
+              </Tooltip>
             );
           }
 

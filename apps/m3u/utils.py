@@ -8,6 +8,34 @@ lock = threading.Lock()
 active_streams_map = {}
 logger = logging.getLogger(__name__)
 
+
+def normalize_stream_url(url):
+    """
+    Normalize stream URLs for compatibility with FFmpeg.
+
+    Handles VLC-specific syntax like udp://@239.0.0.1:1234 by removing the @ symbol.
+    FFmpeg doesn't recognize the @ prefix for multicast addresses.
+
+    Args:
+        url (str): The stream URL to normalize
+
+    Returns:
+        str: The normalized URL
+    """
+    if not url:
+        return url
+
+    # Handle VLC-style UDP multicast URLs: udp://@239.0.0.1:1234 -> udp://239.0.0.1:1234
+    # The @ symbol in VLC means "listen on all interfaces" but FFmpeg doesn't use this syntax
+    if url.startswith('udp://@'):
+        normalized = url.replace('udp://@', 'udp://', 1)
+        logger.debug(f"Normalized VLC-style UDP URL: {url} -> {normalized}")
+        return normalized
+
+    # Could add other normalizations here in the future (rtp://@, etc.)
+    return url
+
+
 def increment_stream_count(account):
     with lock:
         current_usage = active_streams_map.get(account.id, 0)

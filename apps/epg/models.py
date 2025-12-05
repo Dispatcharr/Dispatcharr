@@ -155,7 +155,7 @@ class ProgramData(models.Model):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     title = models.CharField(max_length=255)
-    sub_title = models.CharField(max_length=255, blank=True, null=True)
+    sub_title = models.TextField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)

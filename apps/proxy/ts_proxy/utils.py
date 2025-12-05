@@ -7,18 +7,26 @@ logger = logging.getLogger("ts_proxy")
 
 def detect_stream_type(url):
     """
-    Detect if stream URL is HLS or TS format.
+    Detect if stream URL is HLS, RTSP/RTP, UDP, or TS format.
 
     Args:
         url (str): The stream URL to analyze
 
     Returns:
-        str: 'hls' or 'ts' depending on detected format
+        str: 'hls', 'rtsp', 'udp', or 'ts' depending on detected format
     """
     if not url:
         return 'unknown'
 
     url_lower = url.lower()
+
+    # Check for UDP streams (requires FFmpeg)
+    if url_lower.startswith('udp://'):
+        return 'udp'
+
+    # Check for RTSP/RTP streams (requires FFmpeg)
+    if url_lower.startswith('rtsp://') or url_lower.startswith('rtp://'):
+        return 'rtsp'
 
     # Look for common HLS indicators
     if (url_lower.endswith('.m3u8') or

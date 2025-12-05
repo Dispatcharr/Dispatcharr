@@ -4,8 +4,20 @@ from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from apps.m3u.models import M3UAccount
-from apps.channels.models import Logo
 import uuid
+
+
+class VODLogo(models.Model):
+    """Logo model specifically for VOD content (movies and series)"""
+    name = models.CharField(max_length=255)
+    url = models.TextField(unique=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = 'VOD Logo'
+        verbose_name_plural = 'VOD Logos'
 
 
 class VODCategory(models.Model):
@@ -69,7 +81,7 @@ class Series(models.Model):
     year = models.IntegerField(blank=True, null=True)
     rating = models.CharField(max_length=10, blank=True, null=True)
     genre = models.CharField(max_length=255, blank=True, null=True)
-    logo = models.ForeignKey(Logo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
+    logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='series')
 
     # Metadata IDs for deduplication - these should be globally unique when present
     tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")
@@ -108,7 +120,7 @@ class Movie(models.Model):
     rating = models.CharField(max_length=10, blank=True, null=True)
     genre = models.CharField(max_length=255, blank=True, null=True)
     duration_secs = models.IntegerField(blank=True, null=True, help_text="Duration in seconds")
-    logo = models.ForeignKey(Logo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
+    logo = models.ForeignKey(VODLogo, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie')
 
     # Metadata IDs for deduplication - these should be globally unique when present
     tmdb_id = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="TMDB ID for metadata")

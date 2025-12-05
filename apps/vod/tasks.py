@@ -5,10 +5,9 @@ from django.db.models import Q
 from apps.m3u.models import M3UAccount
 from core.xtream_codes import Client as XtreamCodesClient
 from .models import (
-    VODCategory, Series, Movie, Episode,
+    VODCategory, Series, Movie, Episode, VODLogo,
     M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
-from apps.channels.models import Logo
 from datetime import datetime
 import logging
 import json
@@ -128,6 +127,37 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
     """Refresh movie content using single API call for all movies"""
     logger.info(f"Refreshing movies for account {account.name}")
 
+    # Ensure "Uncategorized" category exists for movies without a category
+    uncategorized_category, created = VODCategory.objects.get_or_create(
+        name="Uncategorized",
+        category_type="movie",
+        defaults={}
+    )
+
+    # Ensure there's a relation for the Uncategorized category
+    account_custom_props = account.custom_properties or {}
+    auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+
+    uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
+        category=uncategorized_category,
+        m3u_account=account,
+        defaults={
+            'enabled': auto_enable_new,
+            'custom_properties': {}
+        }
+    )
+
+    if created:
+        logger.info(f"Created 'Uncategorized' category for movies")
+    if rel_created:
+        logger.info(f"Created relation for 'Uncategorized' category (enabled={auto_enable_new})")
+
+    # Add uncategorized category to relations dict for easy access
+    relations[uncategorized_category.id] = uncategorized_relation
+
+    # Add to categories_by_provider with a special key for items without category
+    categories_by_provider['__uncategorized__'] = uncategorized_category
+
     # Get all movies in a single API call
     logger.info("Fetching all movies from provider...")
     all_movies_data = client.get_vod_streams()  # No category_id = get all movies
@@ -150,6 +180,37 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
     """Refresh series content using single API call for all series"""
     logger.info(f"Refreshing series for account {account.name}")
+
+    # Ensure "Uncategorized" category exists for series without a category
+    uncategorized_category, created = VODCategory.objects.get_or_create(
+        name="Uncategorized",
+        category_type="series",
+        defaults={}
+    )
+
+    # Ensure there's a relation for the Uncategorized category
+    account_custom_props = account.custom_properties or {}
+    auto_enable_new = account_custom_props.get("auto_enable_new_groups_series", True)
+
+    uncategorized_relation, rel_created = M3UVODCategoryRelation.objects.get_or_create(
+        category=uncategorized_category,
+        m3u_account=account,
+        defaults={
+            'enabled': auto_enable_new,
+            'custom_properties': {}
+        }
+    )
+
+    if created:
+        logger.info(f"Created 'Uncategorized' category for series")
+    if rel_created:
+        logger.info(f"Created relation for 'Uncategorized' category (enabled={auto_enable_new})")
+
+    # Add uncategorized category to relations dict for easy access
+    relations[uncategorized_category.id] = uncategorized_relation
+
+    # Add to categories_by_provider with a special key for items without category
+    categories_by_provider['__uncategorized__'] = uncategorized_category
 
     # Get all series in a single API call
     logger.info("Fetching all series from provider...")
@@ -241,6 +302,7 @@ def batch_create_categories(categories_data, category_type, account):
     M3UVODCategoryRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
     # Delete orphaned category relationships (categories no longer in the M3U source)
+    # Exclude "Uncategorized" from cleanup as it's a special category we manage
     current_category_ids = set(existing_categories[name].id for name in category_names)
     existing_relations = M3UVODCategoryRelation.objects.filter(
         m3u_account=account,
@@ -249,7 +311,7 @@ def batch_create_categories(categories_data, category_type, account):
 
     relations_to_delete = [
         rel for rel in existing_relations
-        if rel.category_id not in current_category_ids
+        if rel.category_id not in current_category_ids and rel.category.name != "Uncategorized"
     ]
 
     if relations_to_delete:
@@ -332,7 +394,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                     logger.debug("Skipping disabled category")
                     continue
             else:
-                logger.warning(f"No category ID provided for movie {name}")
+                # Assign to Uncategorized category if no category_id provided
+                logger.debug(f"No category ID provided for movie {name}, assigning to 'Uncategorized'")
+                category = categories.get('__uncategorized__')
+                if category:
+                    movie_data['_category_id'] = category.id
+                    # Check if uncategorized is disabled
+                    relation = relations.get(category.id, None)
+                    if relation and not relation.enabled:
+                        logger.debug("Skipping disabled 'Uncategorized' category")
+                        continue
 
             # Extract metadata
             year = extract_year_from_data(movie_data, 'name')
@@ -403,7 +474,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
     # Get existing logos
     existing_logos = {
-        logo.url: logo for logo in Logo.objects.filter(url__in=logo_urls)
+        logo.url: logo for logo in VODLogo.objects.filter(url__in=logo_urls)
     } if logo_urls else {}
 
     # Create missing logos
@@ -411,20 +482,20 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     for logo_url in logo_urls:
         if logo_url not in existing_logos:
             movie_name = logo_url_to_name.get(logo_url, 'Unknown Movie')
-            logos_to_create.append(Logo(url=logo_url, name=movie_name))
+            logos_to_create.append(VODLogo(url=logo_url, name=movie_name))
 
     if logos_to_create:
         try:
-            Logo.objects.bulk_create(logos_to_create, ignore_conflicts=True)
+            VODLogo.objects.bulk_create(logos_to_create, ignore_conflicts=True)
             # Refresh existing_logos with newly created ones
             new_logo_urls = [logo.url for logo in logos_to_create]
             newly_created = {
-                logo.url: logo for logo in Logo.objects.filter(url__in=new_logo_urls)
+                logo.url: logo for logo in VODLogo.objects.filter(url__in=new_logo_urls)
             }
             existing_logos.update(newly_created)
-            logger.info(f"Created {len(newly_created)} new logos for movies")
+            logger.info(f"Created {len(newly_created)} new VOD logos for movies")
         except Exception as e:
-            logger.warning(f"Failed to create logos: {e}")
+            logger.warning(f"Failed to create VOD logos: {e}")
 
     # Get existing movies based on our keys
     existing_movies = {}
@@ -634,7 +705,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     logger.debug("Skipping disabled category")
                     continue
             else:
-                logger.warning(f"No category ID provided for series {name}")
+                # Assign to Uncategorized category if no category_id provided
+                logger.debug(f"No category ID provided for series {name}, assigning to 'Uncategorized'")
+                category = categories.get('__uncategorized__')
+                if category:
+                    series_data['_category_id'] = category.id
+                    # Check if uncategorized is disabled
+                    relation = relations.get(category.id, None)
+                    if relation and not relation.enabled:
+                        logger.debug("Skipping disabled 'Uncategorized' category")
+                        continue
 
             # Extract metadata
             year = extract_year(series_data.get('releaseDate', ''))
@@ -725,7 +805,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
     # Get existing logos
     existing_logos = {
-        logo.url: logo for logo in Logo.objects.filter(url__in=logo_urls)
+        logo.url: logo for logo in VODLogo.objects.filter(url__in=logo_urls)
     } if logo_urls else {}
 
     # Create missing logos
@@ -733,20 +813,20 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     for logo_url in logo_urls:
         if logo_url not in existing_logos:
             series_name = logo_url_to_name.get(logo_url, 'Unknown Series')
-            logos_to_create.append(Logo(url=logo_url, name=series_name))
+            logos_to_create.append(VODLogo(url=logo_url, name=series_name))
 
     if logos_to_create:
         try:
-            Logo.objects.bulk_create(logos_to_create, ignore_conflicts=True)
+            VODLogo.objects.bulk_create(logos_to_create, ignore_conflicts=True)
             # Refresh existing_logos with newly created ones
             new_logo_urls = [logo.url for logo in logos_to_create]
             newly_created = {
-                logo.url: logo for logo in Logo.objects.filter(url__in=new_logo_urls)
+                logo.url: logo for logo in VODLogo.objects.filter(url__in=new_logo_urls)
             }
             existing_logos.update(newly_created)
-            logger.info(f"Created {len(newly_created)} new logos for series")
+            logger.info(f"Created {len(newly_created)} new VOD logos for series")
         except Exception as e:
-            logger.warning(f"Failed to create logos: {e}")
+            logger.warning(f"Failed to create VOD logos: {e}")
 
     # Get existing series based on our keys - same pattern as movies
     existing_series = {}
@@ -1424,21 +1504,21 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     stale_episode_count = stale_episode_relations.count()
     stale_episode_relations.delete()
 
-    # Clean up movies with no relations (orphaned) - only if no account_id specified (global cleanup)
-    if not account_id:
-        orphaned_movies = Movie.objects.filter(m3u_relations__isnull=True)
-        orphaned_movie_count = orphaned_movies.count()
+    # Clean up movies with no relations (orphaned)
+    # Safe to delete even during account-specific cleanup because if ANY account
+    # has a relation, m3u_relations will not be null
+    orphaned_movies = Movie.objects.filter(m3u_relations__isnull=True)
+    orphaned_movie_count = orphaned_movies.count()
+    if orphaned_movie_count > 0:
+        logger.info(f"Deleting {orphaned_movie_count} orphaned movies with no M3U relations")
         orphaned_movies.delete()
 
-        # Clean up series with no relations (orphaned) - only if no account_id specified (global cleanup)
-        orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
-        orphaned_series_count = orphaned_series.count()
+    # Clean up series with no relations (orphaned)
+    orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
+    orphaned_series_count = orphaned_series.count()
+    if orphaned_series_count > 0:
+        logger.info(f"Deleting {orphaned_series_count} orphaned series with no M3U relations")
         orphaned_series.delete()
-    else:
-        # When cleaning up for specific account, we don't remove orphaned content
-        # as other accounts might still reference it
-        orphaned_movie_count = 0
-        orphaned_series_count = 0
 
     # Episodes will be cleaned up via CASCADE when series are deleted
 
@@ -1999,7 +2079,7 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
 
 def validate_logo_reference(obj, obj_type="object"):
     """
-    Validate that a logo reference exists in the database.
+    Validate that a VOD logo reference exists in the database.
     If not, set it to None to prevent foreign key constraint violations.
 
     Args:
@@ -2019,9 +2099,9 @@ def validate_logo_reference(obj, obj_type="object"):
 
     try:
         # Verify the logo exists in the database
-        Logo.objects.get(pk=obj.logo.pk)
+        VODLogo.objects.get(pk=obj.logo.pk)
         return True
-    except Logo.DoesNotExist:
-        logger.warning(f"Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
+    except VODLogo.DoesNotExist:
+        logger.warning(f"VOD Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
         obj.logo = None
         return False

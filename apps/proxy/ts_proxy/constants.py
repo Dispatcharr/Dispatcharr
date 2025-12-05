@@ -33,6 +33,8 @@ class EventType:
 # Stream types
 class StreamType:
     HLS = "hls"
+    RTSP = "rtsp"
+    UDP = "udp"
     TS = "ts"
     UNKNOWN = "unknown"
 

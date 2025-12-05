@@ -192,7 +192,15 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
 
   return (
     <>
-      <Modal opened={isOpen} onClose={onClose} title="Profiles">
+      <Modal
+        opened={isOpen}
+        onClose={onClose}
+        title="Profiles"
+        scrollAreaComponent={Modal.NativeScrollArea}
+        lockScroll={false}
+        withinPortal={true}
+        yOffset="2vh"
+      >
         {profilesArray
           .sort((a, b) => {
             // Always put default profile first

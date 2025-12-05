@@ -364,7 +364,7 @@ const useVODStore = create((set, get) => ({
                   name: seriesInfo.name,
                 },
                 type: 'episode',
-                uuid: episode.id, // Use the stream ID as UUID for playback
+                uuid: episode.uuid,
                 logo: episode.movie_image ? { url: episode.movie_image } : null,
                 air_date: episode.air_date || null,
                 movie_image: episode.movie_image || null,

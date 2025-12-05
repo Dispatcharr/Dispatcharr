@@ -226,7 +226,17 @@ const M3U = ({
 
   return (
     <>
-      <Modal size={700} opened={isOpen} onClose={close} title="M3U Account">
+      <Modal
+        size={700}
+        opened={isOpen}
+        onClose={close}
+        title="M3U Account"
+        scrollAreaComponent={Modal.NativeScrollArea}
+        lockScroll={false}
+        withinPortal={true}
+        trapFocus={false}
+        yOffset="2vh"
+      >
         <LoadingOverlay
           visible={form.submitting}
           overlayBlur={2}

@@ -115,6 +115,7 @@ const LogosTable = () => {
     pageSize: pageSize,
   });
   const [paginationString, setPaginationString] = useState('');
+  const tableRef = React.useRef(null);
 
   // Debounce the name filter
   useEffect(() => {
@@ -162,6 +163,14 @@ const LogosTable = () => {
   /**
    * Functions
    */
+  const clearSelections = useCallback(() => {
+    setSelectedRows(new Set());
+    // Clear table's internal selection state if table is initialized
+    if (tableRef.current?.setSelectedTableIds) {
+      tableRef.current.setSelectedTableIds([]);
+    }
+  }, []);
+
   const executeDeleteLogo = useCallback(
     async (id, deleteFile = false) => {
       setIsLoading(true);
@@ -185,10 +194,10 @@ const LogosTable = () => {
         setDeleteTarget(null);
         setLogoToDelete(null);
         setIsBulkDelete(false);
-        setSelectedRows(new Set()); // Clear selections
+        clearSelections(); // Clear selections
       }
     },
-    [fetchAllLogos]
+    [fetchAllLogos, clearSelections]
   );
 
   const executeBulkDelete = useCallback(
@@ -215,10 +224,10 @@ const LogosTable = () => {
         setIsLoading(false);
         setConfirmDeleteOpen(false);
         setIsBulkDelete(false);
-        setSelectedRows(new Set()); // Clear selections
+        clearSelections(); // Clear selections
       }
     },
-    [selectedRows, fetchAllLogos]
+    [selectedRows, fetchAllLogos, clearSelections]
   );
 
   const executeCleanupUnused = useCallback(
@@ -226,7 +235,6 @@ const LogosTable = () => {
       setIsCleaningUp(true);
       try {
         const result = await API.cleanupUnusedLogos(deleteFiles);
-        await fetchAllLogos(); // Refresh all logos to maintain full view
 
         let message = `Successfully deleted ${result.deleted_count} unused logos`;
         if (result.local_files_deleted > 0) {
@@ -238,6 +246,9 @@ const LogosTable = () => {
           message: message,
           color: 'green',
         });
+
+        // Force refresh all logos after cleanup to maintain full view
+        await fetchAllLogos(true);
       } catch (error) {
         notifications.show({
           title: 'Cleanup Failed',
@@ -247,10 +258,10 @@ const LogosTable = () => {
       } finally {
         setIsCleaningUp(false);
         setConfirmCleanupOpen(false);
-        setSelectedRows(new Set()); // Clear selections after cleanup
+        clearSelections(); // Clear selections after cleanup
       }
     },
-    [fetchAllLogos]
+    [fetchAllLogos, clearSelections]
   );
 
   const editLogo = useCallback(async (logo = null) => {
@@ -287,10 +298,10 @@ const LogosTable = () => {
       if (checked) {
         setSelectedRows(new Set(data.map((logo) => logo.id)));
       } else {
-        setSelectedRows(new Set());
+        clearSelections();
       }
     },
-    [data]
+    [data, clearSelections]
   );
 
   const deleteBulkLogos = useCallback(() => {
@@ -308,8 +319,8 @@ const LogosTable = () => {
 
   // Clear selections when logos data changes (e.g., after filtering)
   useEffect(() => {
-    setSelectedRows(new Set());
-  }, [data.length]);
+    clearSelections();
+  }, [data.length, clearSelections]);
 
   // Update pagination when pageSize changes
   useEffect(() => {
@@ -614,6 +625,11 @@ const LogosTable = () => {
     },
   });
 
+  // Store table reference for clearing selections
+  React.useEffect(() => {
+    tableRef.current = table;
+  }, [table]);
+
   return (
     <>
       <Box
@@ -626,25 +642,6 @@ const LogosTable = () => {
         }}
       >
         <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
-          <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
-            <Text
-              style={{
-                fontFamily: 'Inter, sans-serif',
-                fontWeight: 500,
-                fontSize: '20px',
-                lineHeight: 1,
-                letterSpacing: '-0.3px',
-                color: 'gray.6',
-                marginBottom: 0,
-              }}
-            >
-              Logos
-            </Text>
-            <Text size="sm" c="dimmed">
-              ({data.length} logo{data.length !== 1 ? 's' : ''})
-            </Text>
-          </Flex>
-
           <Paper
             style={{
               backgroundColor: '#27272A',

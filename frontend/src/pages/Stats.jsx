@@ -8,6 +8,7 @@ import {
   Container,
   Flex,
   Group,
+  Pagination,
   Progress,
   SimpleGrid,
   Stack,
@@ -25,9 +26,11 @@ import useLogosStore from '../store/logos';
 import logo from '../images/logo.png';
 import {
   ChevronDown,
+  CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  RefreshCw,
   SquareX,
   Timer,
   Users,
@@ -44,6 +47,7 @@ import { useLocation } from 'react-router-dom';
 import { notifications } from '@mantine/notifications';
 import { CustomTable, useTable } from '../components/tables/CustomTable';
 import useLocalStorage from '../hooks/useLocalStorage';
+import SystemEvents from '../components/SystemEvents';
 
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
@@ -1482,108 +1486,132 @@ const ChannelsPage = () => {
   }, [channelHistory, vodConnections]);
 
   return (
-    <Box style={{ overflowX: 'auto' }}>
-      <Box style={{ padding: '10px', borderBottom: '1px solid #444' }}>
-        <Group justify="space-between" align="center">
-          <Title order={3}>Active Connections</Title>
-          <Group align="center">
-            <Text size="sm" c="dimmed">
-              {Object.keys(channelHistory).length} stream
-              {Object.keys(channelHistory).length !== 1 ? 's' : ''} •{' '}
-              {vodConnections.reduce(
-                (total, vodContent) =>
-                  total + (vodContent.connections?.length || 0),
-                0
-              )}{' '}
-              VOD connection
-              {vodConnections.reduce(
-                (total, vodContent) =>
-                  total + (vodContent.connections?.length || 0),
-                0
-              ) !== 1
-                ? 's'
-                : ''}
-            </Text>
-            <Group align="center" gap="xs">
-              <Text size="sm">Refresh Interval (seconds):</Text>
-              <NumberInput
-                value={refreshIntervalSeconds}
-                onChange={(value) => setRefreshIntervalSeconds(value || 0)}
-                min={0}
-                max={300}
-                step={1}
-                size="xs"
-                style={{ width: 120 }}
-              />
-              {refreshIntervalSeconds === 0 && (
+    <>
+      <Box style={{ overflowX: 'auto' }}>
+        <Box style={{ minWidth: '520px' }}>
+          <Box style={{ padding: '10px', borderBottom: '1px solid #444' }}>
+            <Group justify="space-between" align="center">
+              <Title order={3}>Active Connections</Title>
+              <Group align="center">
                 <Text size="sm" c="dimmed">
-                  Refreshing disabled
+                  {Object.keys(channelHistory).length} stream
+                  {Object.keys(channelHistory).length !== 1 ? 's' : ''} •{' '}
+                  {vodConnections.reduce(
+                    (total, vodContent) =>
+                      total + (vodContent.connections?.length || 0),
+                    0
+                  )}{' '}
+                  VOD connection
+                  {vodConnections.reduce(
+                    (total, vodContent) =>
+                      total + (vodContent.connections?.length || 0),
+                    0
+                  ) !== 1
+                    ? 's'
+                    : ''}
                 </Text>
-              )}
+                <Group align="center" gap="xs">
+                  <Text size="sm">Refresh Interval (seconds):</Text>
+                  <NumberInput
+                    value={refreshIntervalSeconds}
+                    onChange={(value) => setRefreshIntervalSeconds(value || 0)}
+                    min={0}
+                    max={300}
+                    step={1}
+                    size="xs"
+                    style={{ width: 120 }}
+                  />
+                  {refreshIntervalSeconds === 0 && (
+                    <Text size="sm" c="dimmed">
+                      Refreshing disabled
+                    </Text>
+                  )}
+                </Group>
+                {isPollingActive && refreshInterval > 0 && (
+                  <Text size="sm" c="dimmed">
+                    Refreshing every {refreshIntervalSeconds}s
+                  </Text>
+                )}
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    fetchChannelStats();
+                    fetchVODStats();
+                  }}
+                  loading={false}
+                >
+                  Refresh Now
+                </Button>
+              </Group>
             </Group>
-            {isPollingActive && refreshInterval > 0 && (
-              <Text size="sm" c="dimmed">
-                Refreshing every {refreshIntervalSeconds}s
-              </Text>
-            )}
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => {
-                fetchChannelStats();
-                fetchVODStats();
-              }}
-              loading={false}
-            >
-              Refresh Now
-            </Button>
-          </Group>
-        </Group>
-      </Box>
-      <div
-        style={{
-          display: 'grid',
-          gap: '1rem',
-          padding: '10px',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(500px, 1fr))',
-        }}
-      >
-        {combinedConnections.length === 0 ? (
+          </Box>
           <Box
             style={{
-              gridColumn: '1 / -1',
-              textAlign: 'center',
-              padding: '40px',
+              display: 'grid',
+              gap: '1rem',
+              padding: '10px',
+              paddingBottom: '120px',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(500px, 1fr))',
+              minHeight: 'calc(100vh - 250px)',
+              alignContent: 'start',
             }}
           >
-            <Text size="xl" color="dimmed">
-              No active connections
-            </Text>
+            {combinedConnections.length === 0 ? (
+              <Box
+                style={{
+                  gridColumn: '1 / -1',
+                  textAlign: 'center',
+                  padding: '40px',
+                }}
+              >
+                <Text size="xl" color="dimmed">
+                  No active connections
+                </Text>
+              </Box>
+            ) : (
+              combinedConnections.map((connection) => {
+                if (connection.type === 'stream') {
+                  return (
+                    <ChannelCard
+                      key={connection.id}
+                      channel={connection.data}
+                      clients={clients}
+                      stopClient={stopClient}
+                      stopChannel={stopChannel}
+                      logos={logos}
+                      channelsByUUID={channelsByUUID}
+                    />
+                  );
+                } else if (connection.type === 'vod') {
+                  return (
+                    <VODCard key={connection.id} vodContent={connection.data} />
+                  );
+                }
+                return null;
+              })
+            )}
           </Box>
-        ) : (
-          combinedConnections.map((connection) => {
-            if (connection.type === 'stream') {
-              return (
-                <ChannelCard
-                  key={connection.id}
-                  channel={connection.data}
-                  clients={clients}
-                  stopClient={stopClient}
-                  stopChannel={stopChannel}
-                  logos={logos}
-                  channelsByUUID={channelsByUUID}
-                />
-              );
-            } else if (connection.type === 'vod') {
-              return (
-                <VODCard key={connection.id} vodContent={connection.data} />
-              );
-            }
-            return null;
-          })
-        )}
-      </div>
-    </Box>
+        </Box>
+      </Box>
+
+      {/* System Events Section - Fixed at bottom */}
+      <Box
+        style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 'var(--app-shell-navbar-width, 0)',
+          right: 0,
+          zIndex: 100,
+          padding: '0 1rem 1rem 1rem',
+          pointerEvents: 'none',
+        }}
+      >
+        <Box style={{ pointerEvents: 'auto' }}>
+          <SystemEvents />
+        </Box>
+      </Box>
+    </>
   );
 };
 

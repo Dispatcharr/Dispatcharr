@@ -375,3 +375,48 @@ class CoreSettings(models.Model):
             return rules
         except Exception:
             return rules
+
+
+class SystemEvent(models.Model):
+    """
+    Tracks system events like channel start/stop, buffering, failover, client connections.
+    Maintains a rolling history based on max_system_events setting.
+    """
+    EVENT_TYPES = [
+        ('channel_start', 'Channel Started'),
+        ('channel_stop', 'Channel Stopped'),
+        ('channel_buffering', 'Channel Buffering'),
+        ('channel_failover', 'Channel Failover'),
+        ('channel_reconnect', 'Channel Reconnected'),
+        ('channel_error', 'Channel Error'),
+        ('client_connect', 'Client Connected'),
+        ('client_disconnect', 'Client Disconnected'),
+        ('recording_start', 'Recording Started'),
+        ('recording_end', 'Recording Ended'),
+        ('stream_switch', 'Stream Switched'),
+        ('m3u_refresh', 'M3U Refreshed'),
+        ('m3u_download', 'M3U Downloaded'),
+        ('epg_refresh', 'EPG Refreshed'),
+        ('epg_download', 'EPG Downloaded'),
+        ('login_success', 'Login Successful'),
+        ('login_failed', 'Login Failed'),
+        ('logout', 'User Logged Out'),
+        ('m3u_blocked', 'M3U Download Blocked'),
+        ('epg_blocked', 'EPG Download Blocked'),
+    ]
+
+    event_type = models.CharField(max_length=50, choices=EVENT_TYPES, db_index=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    channel_id = models.UUIDField(null=True, blank=True, db_index=True)
+    channel_name = models.CharField(max_length=255, null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['-timestamp']),
+            models.Index(fields=['event_type', '-timestamp']),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} - {self.channel_name or 'N/A'} @ {self.timestamp}"

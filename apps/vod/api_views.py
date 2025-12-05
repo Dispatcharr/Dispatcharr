@@ -3,23 +3,29 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
+from django.http import StreamingHttpResponse, HttpResponse, FileResponse
+from django.db.models import Q
 import django_filters
 import logging
+import os
+import requests
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
 )
 from .models import (
-    Series, VODCategory, Movie, Episode,
-    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation
+    Series, VODCategory, Movie, Episode, VODLogo,
+    M3USeriesRelation, M3UMovieRelation, M3UEpisodeRelation, M3UVODCategoryRelation
 )
 from .serializers import (
     MovieSerializer,
     EpisodeSerializer,
     SeriesSerializer,
     VODCategorySerializer,
+    VODLogoSerializer,
     M3UMovieRelationSerializer,
     M3USeriesRelationSerializer,
     M3UEpisodeRelationSerializer
@@ -470,6 +476,59 @@ class VODCategoryViewSet(viewsets.ReadOnlyModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    def list(self, request, *args, **kwargs):
+        """Override list to ensure Uncategorized categories and relations exist for all XC accounts with VOD enabled"""
+        from apps.m3u.models import M3UAccount
+
+        # Ensure Uncategorized categories exist
+        movie_category, _ = VODCategory.objects.get_or_create(
+            name="Uncategorized",
+            category_type="movie",
+            defaults={}
+        )
+
+        series_category, _ = VODCategory.objects.get_or_create(
+            name="Uncategorized",
+            category_type="series",
+            defaults={}
+        )
+
+        # Get all active XC accounts with VOD enabled
+        xc_accounts = M3UAccount.objects.filter(
+            account_type=M3UAccount.Types.XC,
+            is_active=True
+        )
+
+        for account in xc_accounts:
+            if account.custom_properties:
+                custom_props = account.custom_properties or {}
+                vod_enabled = custom_props.get("enable_vod", False)
+
+                if vod_enabled:
+                    # Ensure relations exist for this account
+                    auto_enable_new = custom_props.get("auto_enable_new_groups_vod", True)
+
+                    M3UVODCategoryRelation.objects.get_or_create(
+                        category=movie_category,
+                        m3u_account=account,
+                        defaults={
+                            'enabled': auto_enable_new,
+                            'custom_properties': {}
+                        }
+                    )
+
+                    M3UVODCategoryRelation.objects.get_or_create(
+                        category=series_category,
+                        m3u_account=account,
+                        defaults={
+                            'enabled': auto_enable_new,
+                            'custom_properties': {}
+                        }
+                    )
+
+        # Now proceed with normal list operation
+        return super().list(request, *args, **kwargs)
+
 
 class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet that combines Movies and Series for unified 'All' view"""
@@ -564,7 +623,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     logo.url as logo_url,
                     'movie' as content_type
                 FROM vod_movie movies
-                LEFT JOIN dispatcharr_channels_logo logo ON movies.logo_id = logo.id
+                LEFT JOIN vod_vodlogo logo ON movies.logo_id = logo.id
                 WHERE {where_conditions[0]}
 
                 UNION ALL
@@ -586,7 +645,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     logo.url as logo_url,
                     'series' as content_type
                 FROM vod_series series
-                LEFT JOIN dispatcharr_channels_logo logo ON series.logo_id = logo.id
+                LEFT JOIN vod_vodlogo logo ON series.logo_id = logo.id
                 WHERE {where_conditions[1]}
             )
             SELECT * FROM unified_content
@@ -613,10 +672,10 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                             'id': item_dict['logo_id'],
                             'name': item_dict['logo_name'],
                             'url': item_dict['logo_url'],
-                            'cache_url': f"/media/logo_cache/{item_dict['logo_id']}.png" if item_dict['logo_id'] else None,
-                            'channel_count': 0,  # We don't need this for VOD
-                            'is_used': True,
-                            'channel_names': []  # We don't need this for VOD
+                            'cache_url': f"/api/vod/vodlogos/{item_dict['logo_id']}/cache/",
+                            'movie_count': 0,  # We don't calculate this in raw SQL
+                            'series_count': 0,  # We don't calculate this in raw SQL
+                            'is_used': True
                         }
 
                     # Convert to the format expected by frontend
@@ -669,3 +728,172 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
             import traceback
             logger.error(traceback.format_exc())
             return Response({'error': str(e)}, status=500)
+
+
+class VODLogoPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+
+
+class VODLogoViewSet(viewsets.ModelViewSet):
+    """ViewSet for VOD Logo management"""
+    queryset = VODLogo.objects.all()
+    serializer_class = VODLogoSerializer
+    pagination_class = VODLogoPagination
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['name', 'url']
+    ordering_fields = ['name', 'id']
+    ordering = ['name']
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            if self.action == 'cache':
+                return [AllowAny()]
+            return [Authenticated()]
+
+    def get_queryset(self):
+        """Optimize queryset with prefetch and add filtering"""
+        queryset = VODLogo.objects.prefetch_related('movie', 'series').order_by('name')
+
+        # Filter by specific IDs
+        ids = self.request.query_params.getlist('ids')
+        if ids:
+            try:
+                id_list = [int(id_str) for id_str in ids if id_str.isdigit()]
+                if id_list:
+                    queryset = queryset.filter(id__in=id_list)
+            except (ValueError, TypeError):
+                queryset = VODLogo.objects.none()
+
+        # Filter by usage
+        used_filter = self.request.query_params.get('used', None)
+        if used_filter == 'true':
+            # Return logos that are used by movies OR series
+            queryset = queryset.filter(
+                Q(movie__isnull=False) | Q(series__isnull=False)
+            ).distinct()
+        elif used_filter == 'false':
+            # Return logos that are NOT used by either
+            queryset = queryset.filter(
+                movie__isnull=True,
+                series__isnull=True
+            )
+        elif used_filter == 'movies':
+            # Return logos that are used by movies (may also be used by series)
+            queryset = queryset.filter(movie__isnull=False).distinct()
+        elif used_filter == 'series':
+            # Return logos that are used by series (may also be used by movies)
+            queryset = queryset.filter(series__isnull=False).distinct()
+
+
+        # Filter by name
+        name_query = self.request.query_params.get('name', None)
+        if name_query:
+            queryset = queryset.filter(name__icontains=name_query)
+
+        # No pagination mode
+        if self.request.query_params.get('no_pagination', 'false').lower() == 'true':
+            self.pagination_class = None
+
+        return queryset
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny])
+    def cache(self, request, pk=None):
+        """Streams the VOD logo file, whether it's local or remote."""
+        logo = self.get_object()
+
+        if not logo.url:
+            return HttpResponse(status=404)
+
+        # Check if this is a local file path
+        if logo.url.startswith('/data/'):
+            # It's a local file
+            file_path = logo.url
+            if not os.path.exists(file_path):
+                logger.error(f"VOD logo file not found: {file_path}")
+                return HttpResponse(status=404)
+
+            try:
+                return FileResponse(open(file_path, 'rb'), content_type='image/png')
+            except Exception as e:
+                logger.error(f"Error serving VOD logo file {file_path}: {str(e)}")
+                return HttpResponse(status=500)
+        else:
+            # It's a remote URL - proxy it
+            try:
+                response = requests.get(logo.url, stream=True, timeout=10)
+                response.raise_for_status()
+
+                content_type = response.headers.get('Content-Type', 'image/png')
+
+                return StreamingHttpResponse(
+                    response.iter_content(chunk_size=8192),
+                    content_type=content_type
+                )
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error fetching remote VOD logo {logo.url}: {str(e)}")
+                return HttpResponse(status=404)
+
+    @action(detail=False, methods=["delete"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        """Delete multiple VOD logos at once"""
+        logo_ids = request.data.get('logo_ids', [])
+
+        if not logo_ids:
+            return Response(
+                {"error": "No logo IDs provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Get logos to delete
+            logos = VODLogo.objects.filter(id__in=logo_ids)
+            deleted_count = logos.count()
+
+            # Delete them
+            logos.delete()
+
+            return Response({
+                "deleted_count": deleted_count,
+                "message": f"Successfully deleted {deleted_count} VOD logo(s)"
+            })
+        except Exception as e:
+            logger.error(f"Error during bulk VOD logo deletion: {str(e)}")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=["post"])
+    def cleanup(self, request):
+        """Delete all VOD logos that are not used by any movies or series"""
+        try:
+            # Find unused logos
+            unused_logos = VODLogo.objects.filter(
+                movie__isnull=True,
+                series__isnull=True
+            )
+
+            deleted_count = unused_logos.count()
+            logo_names = list(unused_logos.values_list('name', flat=True))
+
+            # Delete them
+            unused_logos.delete()
+
+            logger.info(f"Cleaned up {deleted_count} unused VOD logos: {logo_names}")
+
+            return Response({
+                "deleted_count": deleted_count,
+                "deleted_logos": logo_names,
+                "message": f"Successfully deleted {deleted_count} unused VOD logo(s)"
+            })
+        except Exception as e:
+            logger.error(f"Error during VOD logo cleanup: {str(e)}")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+

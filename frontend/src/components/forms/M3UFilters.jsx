@@ -253,7 +253,16 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
 
   return (
     <>
-      <Modal opened={isOpen} onClose={onClose} title="Filters" size="lg">
+      <Modal
+        opened={isOpen}
+        onClose={onClose}
+        title="Filters"
+        size="lg"
+        scrollAreaComponent={Modal.NativeScrollArea}
+        lockScroll={false}
+        withinPortal={true}
+        yOffset="2vh"
+      >
         <Alert
           icon={<Info size={16} />}
           color="blue"
