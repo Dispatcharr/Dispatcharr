@@ -24,6 +24,7 @@ import {
   List,
   Modal,
   MultiSelect,
+  Divider,
   Select,
   Stack,
   Switch,

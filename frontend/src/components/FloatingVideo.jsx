@@ -17,7 +17,7 @@ import {
   Menu,
   Divider,
 } from '@mantine/core';
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, MoreHorizontal } from 'lucide-react';
 import API from '../api';
 import useAuthStore from '../store/auth';
 
@@ -76,13 +76,17 @@ export default function FloatingVideo() {
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const previousVolumeRef = useRef(1);
-  const [showVolumeControl, setShowVolumeControl] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const transcodeRetryAttemptedRef = useRef(false);
   const [availableSubtitles, setAvailableSubtitles] = useState([]);
   const [selectedSubtitleId, setSelectedSubtitleId] = useState(null);
   const [subtitlesLoading, setSubtitlesLoading] = useState(false);
   const [subtitleError, setSubtitleError] = useState(null);
+  const controlsContainerRef = useRef(null);
+  const [controlsWidth, setControlsWidth] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(360);
+  const resizeStateRef = useRef(null);
+  const [isResizing, setIsResizing] = useState(false);
 
   const updateVideoMetadata = useCallback((updates) => {
     if (!updates || typeof updates !== 'object') {
@@ -107,12 +111,6 @@ export default function FloatingVideo() {
       controlsTimeoutRef.current = null;
     }
   };
-
-  useEffect(() => {
-    if (!showControls) {
-      setShowVolumeControl(false);
-    }
-  }, [showControls]);
 
   const handlePointerActivity = () => {
     setShowControls(true);
@@ -247,6 +245,66 @@ export default function FloatingVideo() {
   }, [applySubtitleSelection, streamUrl]);
 
   useEffect(() => {
+    if (!controlsContainerRef.current) return undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect?.width) {
+          setControlsWidth(entry.contentRect.width);
+        }
+      }
+    });
+    observer.observe(controlsContainerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleResizeMove = useCallback(
+    (event) => {
+      if (!resizeStateRef.current) return;
+      event.preventDefault();
+      const { startX, startWidth, aspect } = resizeStateRef.current;
+      const deltaX = event.clientX - startX;
+      const nextWidth = Math.max(260, Math.min(startWidth + deltaX, 960));
+      setContainerWidth(nextWidth);
+      if (aspect && controlsContainerRef.current) {
+        setControlsWidth(controlsContainerRef.current.offsetWidth || nextWidth);
+      }
+    },
+    []
+  );
+
+  const stopResizing = useCallback(() => {
+    setIsResizing(false);
+    resizeStateRef.current = null;
+    window.removeEventListener('mousemove', handleResizeMove);
+    window.removeEventListener('mouseup', stopResizing);
+  }, [handleResizeMove]);
+
+  const startResize = useCallback(
+    (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      const aspect = 16 / 9;
+      resizeStateRef.current = {
+        startX: event.clientX,
+        startWidth: containerWidth,
+        aspect,
+      };
+      setIsResizing(true);
+      window.addEventListener('mousemove', handleResizeMove);
+      window.addEventListener('mouseup', stopResizing);
+    },
+    [containerWidth, handleResizeMove, stopResizing]
+  );
+
+  useEffect(
+    () => () => {
+      window.removeEventListener('mousemove', handleResizeMove);
+      window.removeEventListener('mouseup', stopResizing);
+    },
+    [handleResizeMove, stopResizing]
+  );
+
+  useEffect(() => {
     const video = videoRef.current;
     if (video) {
       video.volume = volume;
@@ -336,15 +394,6 @@ export default function FloatingVideo() {
       setVolume(0);
       setIsMuted(true);
     }
-  };
-
-  const handleVolumeButtonClick = () => {
-    handlePointerActivity();
-    if (!showVolumeControl) {
-      setShowVolumeControl(true);
-      return;
-    }
-    toggleMute();
   };
 
   const togglePlayback = () => {
@@ -1160,7 +1209,6 @@ export default function FloatingVideo() {
         document.msExitFullscreen;
       exit?.call(document).catch(() => {});
     }
-    setShowVolumeControl(false);
     safeDestroyPlayer();
     setTimeout(() => {
       hideVideo();
@@ -1193,6 +1241,9 @@ export default function FloatingVideo() {
   const showPlaybackControls = contentType !== 'live';
   const volumeIcon = isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />;
   const fullscreenIcon = isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />;
+  const isCompactControls = !isFullscreen && controlsWidth > 0 && controlsWidth < 420;
+  const aspectRatio = 16 / 9;
+  const derivedHeight = Math.round(containerWidth / aspectRatio);
 
   const containerStyle = isFullscreen
     ? {
@@ -1211,7 +1262,8 @@ export default function FloatingVideo() {
         position: 'fixed',
         bottom: '20px',
         right: '20px',
-        width: '320px',
+        width: `${containerWidth}px`,
+        height: `${derivedHeight + 56}px`,
         zIndex: 9999,
         backgroundColor: '#333',
         borderRadius: '8px',
@@ -1221,13 +1273,13 @@ export default function FloatingVideo() {
 
   const videoStyles = {
     width: '100%',
-    height: isFullscreen ? '100%' : '180px',
-    backgroundColor: '#000',
+    height: isFullscreen ? '100%' : `${derivedHeight}px`,
+        backgroundColor: '#000',
     objectFit: 'contain',
   };
 
   return (
-    <Draggable nodeRef={videoContainerRef} disabled={isFullscreen}>
+    <Draggable nodeRef={videoContainerRef} disabled={isFullscreen || isResizing}>
       <div
         ref={videoContainerRef}
         style={containerStyle}
@@ -1237,6 +1289,7 @@ export default function FloatingVideo() {
           justify="flex-end"
           style={{
             padding: 3,
+            cursor: isFullscreen ? 'default' : 'move',
           }}
         >
           <CloseButton
@@ -1296,6 +1349,23 @@ export default function FloatingVideo() {
               />
             ))}
           </video>
+          {!isFullscreen && (
+            <Box
+              onMouseDown={startResize}
+              style={{
+                position: 'absolute',
+                right: 6,
+                bottom: 6,
+                width: 14,
+                height: 14,
+                cursor: 'se-resize',
+                borderRight: '2px solid rgba(255,255,255,0.5)',
+                borderBottom: '2px solid rgba(255,255,255,0.5)',
+                borderRadius: 2,
+                zIndex: 7,
+              }}
+            />
+          )}
 
           {/* VOD title overlay when not loading - auto-hides after 4 seconds */}
           {!isLoading && metadata && contentType !== 'live' && showOverlay && (
@@ -1357,8 +1427,8 @@ export default function FloatingVideo() {
           )}
 
           {showPlaybackControls && (
-            <Box
-              style={{
+        <Box
+          style={{
                 position: 'absolute',
                 bottom: 0,
                 left: 0,
@@ -1372,9 +1442,19 @@ export default function FloatingVideo() {
                     ? 'auto'
                     : 'none',
                 zIndex: 4,
-              }}
-            >
-              <Group gap="sm" align="center" justify="space-between">
+          }}
+          ref={controlsContainerRef}
+        >
+          <Box
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'nowrap',
+                  width: '100%',
+                  minWidth: 0,
+                }}
+              >
                 <ActionIcon
                   variant="filled"
                   color="gray"
@@ -1386,80 +1466,68 @@ export default function FloatingVideo() {
                 >
                   {isPlaying ? <Pause size={16} /> : <Play size={16} />}
                 </ActionIcon>
-                <Text size="xs" c="gray.1" style={{ width: 44 }}>{formattedCurrentTime}</Text>
-                <Slider
-                  style={{ flexGrow: 1 }}
-                  min={0}
-                  max={Math.max(sliderMaxValue, 1)}
-                  step={0.1}
-                  value={Math.min(Math.max(sliderValue, 0), Math.max(sliderMaxValue, 1))}
-                  onChange={handleScrubChange}
-                  onChangeEnd={handleScrubEnd}
-                  size="sm"
-                  label={null}
-                  aria-label="Seek"
-                  disabled={sliderMaxValue <= 0 || serverSeekInProgressRef.current || isLoading}
-                  styles={{
-                    track: { backgroundColor: 'rgba(255,255,255,0.2)' },
-                    bar: { backgroundColor: '#1abc9c' },
-                    thumb: { borderColor: '#1abc9c', backgroundColor: '#1abc9c' },
-                  }}
-                />
-                <Text size="xs" c="gray.1" style={{ width: 44, textAlign: 'right' }}>{formattedDurationLabel}</Text>
-                <Group gap="xs" align="center">
-                  <Group gap={6} align="center">
-                    <ActionIcon
-                      variant="subtle"
-                      color="gray"
-                      radius="xl"
-                      size="lg"
-                      onClick={handleVolumeButtonClick}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onTouchStart={(e) => e.stopPropagation()}
-                      aria-label="Adjust volume"
-                    >
-                      {volumeIcon}
-                    </ActionIcon>
-                    {showVolumeControl && (
-                      <Slider
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={Math.round(volume * 100)}
-                        onChange={(value) => handleVolumeSliderChange(value / 100)}
-                        onChangeEnd={(value) => handleVolumeSliderChange(value / 100)}
-                        style={{ width: 100 }}
-                        size="sm"
-                        label={null}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onTouchStart={(e) => e.stopPropagation()}
-                        aria-label="Volume"
-                        styles={{
-                          track: { backgroundColor: 'rgba(255,255,255,0.2)' },
-                          bar: { backgroundColor: '#1abc9c' },
-                          thumb: { borderColor: '#1abc9c', backgroundColor: '#1abc9c' },
-                        }}
-                      />
-                    )}
-                  </Group>
+                <Text size="xs" c="gray.1" style={{ width: 44, flexShrink: 0 }}>
+                  {formattedCurrentTime}
+                </Text>
+                <Box style={{ flex: 1, minWidth: 120 }}>
+                  <Slider
+                    min={0}
+                    max={Math.max(sliderMaxValue, 1)}
+                    step={0.1}
+                    value={Math.min(Math.max(sliderValue, 0), Math.max(sliderMaxValue, 1))}
+                    onChange={handleScrubChange}
+                    onChangeEnd={handleScrubEnd}
+                    size="sm"
+                    label={null}
+                    aria-label="Seek"
+                    disabled={sliderMaxValue <= 0 || serverSeekInProgressRef.current || isLoading}
+                    styles={{
+                      track: { backgroundColor: 'rgba(255,255,255,0.2)' },
+                      bar: { backgroundColor: '#1abc9c' },
+                      thumb: { borderColor: '#1abc9c', backgroundColor: '#1abc9c' },
+                    }}
+                  />
+                </Box>
+                <Text
+                  size="xs"
+                  c="gray.1"
+                  style={{ width: 44, textAlign: 'right', flexShrink: 0 }}
+                >
+                  {formattedDurationLabel}
+                </Text>
+                {isCompactControls ? (
                   <Menu withinPortal={false}>
                     <Menu.Target>
                       <ActionIcon
                         variant="subtle"
-                        color={selectedSubtitleId ? 'cyan' : 'gray'}
+                        color="gray"
                         radius="xl"
                         size="lg"
                         onMouseDown={(e) => e.stopPropagation()}
                         onTouchStart={(e) => e.stopPropagation()}
-                        aria-label="Subtitles"
-                        disabled={subtitlesLoading || contentType !== 'library'}
+                        aria-label="More options"
                       >
-                        <Text size="xs" c={selectedSubtitleId ? 'cyan' : 'gray.2'} fw={600}>
-                          CC
-                        </Text>
+                        <MoreHorizontal size={16} />
                       </ActionIcon>
                     </Menu.Target>
                     <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                      <Menu.Label>Playback</Menu.Label>
+                      <Menu.Item onClick={toggleMute} leftSection={volumeIcon}>
+                        {isMuted || volume === 0 ? 'Unmute' : 'Mute'}
+                      </Menu.Item>
+                      <Menu.Item>
+                        <Slider
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={Math.round(volume * 100)}
+                          onChange={(value) => handleVolumeSliderChange(value / 100)}
+                          onChangeEnd={(value) => handleVolumeSliderChange(value / 100)}
+                          size="sm"
+                          label={null}
+                        />
+                      </Menu.Item>
+                      <Divider />
                       <Menu.Label>Subtitles</Menu.Label>
                       <Menu.Item
                         onClick={() => setSelectedSubtitleId(null)}
@@ -1482,7 +1550,6 @@ export default function FloatingVideo() {
                           {subtitleLabel(sub)}
                         </Menu.Item>
                       ))}
-                      <Divider />
                       <Menu.Item
                         onClick={() => fetchSubtitles()}
                         disabled={subtitlesLoading || contentType !== 'library'}
@@ -1494,22 +1561,114 @@ export default function FloatingVideo() {
                           {subtitleError}
                         </Menu.Item>
                       )}
+                      <Divider />
+                      <Menu.Item onClick={toggleFullscreen}>{isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}</Menu.Item>
                     </Menu.Dropdown>
                   </Menu>
-                  <ActionIcon
-                    variant="subtle"
-                    color="gray"
-                    radius="xl"
-                    size="lg"
-                    onClick={toggleFullscreen}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                    aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-                  >
-                    {fullscreenIcon}
-                  </ActionIcon>
-                </Group>
-              </Group>
+                ) : (
+                  <Group gap="xs" align="center" wrap="nowrap">
+                    <Menu withinPortal={false}>
+                      <Menu.Target>
+                        <ActionIcon
+                          variant="subtle"
+                          color={isMuted || volume === 0 ? 'red' : 'gray'}
+                          radius="xl"
+                          size="lg"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onTouchStart={(e) => e.stopPropagation()}
+                          aria-label="Volume"
+                        >
+                          {volumeIcon}
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                        <Menu.Label>Volume</Menu.Label>
+                        <Menu.Item onClick={toggleMute}>
+                          {isMuted || volume === 0 ? 'Unmute' : 'Mute'}
+                        </Menu.Item>
+                        <Menu.Item>
+                          <Slider
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={Math.round(volume * 100)}
+                            onChange={(value) => handleVolumeSliderChange(value / 100)}
+                            onChangeEnd={(value) => handleVolumeSliderChange(value / 100)}
+                            size="sm"
+                            label={null}
+                          />
+                        </Menu.Item>
+                      </Menu.Dropdown>
+                    </Menu>
+                    <Menu withinPortal={false}>
+                      <Menu.Target>
+                        <ActionIcon
+                          variant="subtle"
+                          color={selectedSubtitleId ? 'cyan' : 'gray'}
+                          radius="xl"
+                          size="lg"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onTouchStart={(e) => e.stopPropagation()}
+                          aria-label="Subtitles"
+                          disabled={subtitlesLoading || contentType !== 'library'}
+                        >
+                          <Text size="xs" c={selectedSubtitleId ? 'cyan' : 'gray.2'} fw={600}>
+                            CC
+                          </Text>
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                        <Menu.Label>Subtitles</Menu.Label>
+                        <Menu.Item
+                          onClick={() => setSelectedSubtitleId(null)}
+                          disabled={availableSubtitles.length === 0}
+                        >
+                          Off
+                        </Menu.Item>
+                        {availableSubtitles.map((sub) => (
+                          <Menu.Item
+                            key={sub.id}
+                            onClick={() => setSelectedSubtitleId(sub.id)}
+                            rightSection={
+                              selectedSubtitleId === sub.id ? (
+                                <Text size="xs" c="cyan">
+                                  On
+                                </Text>
+                              ) : null
+                            }
+                          >
+                            {subtitleLabel(sub)}
+                          </Menu.Item>
+                        ))}
+                        <Divider />
+                        <Menu.Item
+                          onClick={() => fetchSubtitles()}
+                          disabled={subtitlesLoading || contentType !== 'library'}
+                        >
+                          {subtitlesLoading ? 'Fetching…' : 'Fetch from OpenSubtitles'}
+                        </Menu.Item>
+                        {subtitleError && (
+                          <Menu.Item disabled c="red">
+                            {subtitleError}
+                          </Menu.Item>
+                        )}
+                      </Menu.Dropdown>
+                    </Menu>
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      radius="xl"
+                      size="lg"
+                      onClick={toggleFullscreen}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                    >
+                      {fullscreenIcon}
+                    </ActionIcon>
+                  </Group>
+                )}
+              </Box>
             </Box>
           )}
 
