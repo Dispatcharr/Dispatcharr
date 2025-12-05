@@ -30,6 +30,7 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
+import BackupManager from '../components/backups/BackupManager';
 import useLocalStorage from '../hooks/useLocalStorage';
 import useAuthStore from '../store/auth';
 import {
@@ -1304,6 +1305,13 @@ const SettingsPage = () => {
                       </Flex>
                     </Stack>
                   </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="backups">
+                <Accordion.Control>Backup & Restore</Accordion.Control>
+                <Accordion.Panel>
+                  <BackupManager />
                 </Accordion.Panel>
               </Accordion.Item>
             </>
