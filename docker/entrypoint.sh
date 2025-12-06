@@ -82,6 +82,16 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
+# Run init scripts
+echo "Starting user setup..."
+. /app/docker/init/01-user-setup.sh
+echo "Setting up PostgreSQL..."
+. /app/docker/init/02-postgres.sh
+echo "Starting init process..."
+. /app/docker/init/03-init-dispatcharr.sh
+
+export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
+
 # Global variables, stored so other users inherit them
 if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
     # Define all variables to process
@@ -91,7 +101,7 @@ if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
         REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL
+        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     )
 
     # Process each variable for both profile.d and environment
@@ -120,16 +130,6 @@ if [ -f /etc/profile.d/dispatcharr.sh ]; then
 fi
 EOF
 fi
-
-# Run init scripts
-echo "Starting user setup..."
-. /app/docker/init/01-user-setup.sh
-echo "Setting up PostgreSQL..."
-. /app/docker/init/02-postgres.sh
-echo "Starting init process..."
-. /app/docker/init/03-init-dispatcharr.sh
-
-export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
 
 # Start PostgreSQL
 echo "Starting Postgres..."
