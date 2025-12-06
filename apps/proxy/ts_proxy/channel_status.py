@@ -434,13 +434,33 @@ class ChannelStatus:
                     logger.warning(f"Invalid m3u_profile_id format in Redis: {m3u_profile_id}")
 
             # Add stream info to basic info as well
-            info['video_codec'] = metadata.get(ChannelMetadataField.VIDEO_CODEC)
-            info['resolution'] = metadata.get(ChannelMetadataField.RESOLUTION)
-            info['source_fps'] = metadata.get(ChannelMetadataField.SOURCE_FPS)
-            info['ffmpeg_speed'] = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
-            info['audio_codec'] = metadata.get(ChannelMetadataField.AUDIO_CODEC)
-            info['audio_channels'] = metadata.get(ChannelMetadataField.AUDIO_CHANNELS)
-            info['stream_type'] = metadata.get(ChannelMetadataField.STREAM_TYPE)
+            video_codec = metadata.get(ChannelMetadataField.VIDEO_CODEC)
+            if video_codec:
+                info['video_codec'] = video_codec
+
+            resolution = metadata.get(ChannelMetadataField.RESOLUTION)
+            if resolution:
+                info['resolution'] = resolution
+
+            source_fps = metadata.get(ChannelMetadataField.SOURCE_FPS)
+            if source_fps:
+                info['source_fps'] = float(source_fps)
+
+            ffmpeg_speed = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
+            if ffmpeg_speed:
+                info['ffmpeg_speed'] = float(ffmpeg_speed)
+
+            audio_codec = metadata.get(ChannelMetadataField.AUDIO_CODEC)
+            if audio_codec:
+                info['audio_codec'] = audio_codec
+
+            audio_channels = metadata.get(ChannelMetadataField.AUDIO_CHANNELS)
+            if audio_channels:
+                info['audio_channels'] = audio_channels
+
+            stream_type = metadata.get(ChannelMetadataField.STREAM_TYPE)
+            if stream_type:
+                info['stream_type'] = stream_type
 
             return info
         except Exception as e:
