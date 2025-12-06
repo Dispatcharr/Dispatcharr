@@ -30,6 +30,21 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
     fi
 fi
 
+if [ ! -f "$SECRET_FILE" ]; then
+  umask 077
+  tmpfile="$(mktemp "${SECRET_FILE}.XXXXXX")" || { echo "mktemp failed"; exit 1; }
+  python3 - <<'PY' >"$tmpfile" || { echo "secret generation failed"; rm -f "$tmpfile"; exit 1; }
+import secrets
+print(secrets.token_urlsafe(64))
+PY
+  mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
+fi
+
+chmod 600 "$SECRET_FILE" || true
+
+# Export for app start (read the file)
+export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
+
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
 # NOTE: mac doesn't run as root, so only manage permissions

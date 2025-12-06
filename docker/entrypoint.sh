@@ -40,6 +40,7 @@ export REDIS_DB=${REDIS_DB:-0}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
+export SECRET_FILE="/data/jwt"
 
 # Process priority configuration
 # UWSGI_NICE_LEVEL: Absolute nice value for uWSGI/streaming (default: 0 = normal priority)
@@ -127,6 +128,8 @@ echo "Setting up PostgreSQL..."
 . /app/docker/init/02-postgres.sh
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
+
+export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
 
 # Start PostgreSQL
 echo "Starting Postgres..."
