@@ -218,15 +218,31 @@ class MacPortalClient:
         self.play_token = js.get("play_token")
 
     def _get_account_info(self):
+        """Versucht, Kontoinformationen und das Ablaufdatum abzurufen. Optionaler Schritt."""
+        self.expiry_date = None
         try:
-            data = self._request(self.portal_url, "POST", {
+            # 💡 KORREKTUR: Verwende GET, wie in V4, da dies oft bei Account Info funktioniert.
+            data = self._request(self.portal_url, "GET", {
                 "type": "account_info",
                 "action": "get_main_info"
             })
             js = data.get("js", {})
-            self.expiry_date = js.get("end_date") or js.get("expire")
+            
+            # 💡 KORREKTUR: Prüfe zuerst auf 'phone' (wie in V4) und dann auf Standardfelder.
+            self.expiry_date = js.get("phone") or js.get("end_date") or js.get("expire")
+            
+            if self.expiry_date:
+                logger.info("Account Info: Ablaufdatum=%s", self.expiry_date)
+            else:
+                logger.warning("Account-Informationen abgerufen, aber Ablaufdatum fehlt (MAC:%s).", self.mac)
+
+        except MacPortalError as e:
+            logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen (MAC:%s): %s", self.mac, e)
+            self.expiry_date = None
         except Exception:
-            pass
+            logger.exception("Unerwarteter Fehler beim Abrufen des Ablaufdatums (MAC:%s).", self.mac)
+            self.expiry_date = None
+
 
     def get_expires(self) -> Optional[str]:
         """
