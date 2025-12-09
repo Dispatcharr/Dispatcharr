@@ -11,16 +11,17 @@ from typing import Optional, Dict, List, Any, Tuple
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+# Setup eines temporären Loggers für die Ausgabe in diesem Block
 logger = logging.getLogger(__name__)
 
 class MacPortalError(Exception):
-    """Custom error for MAC Portal issues."""
+    """Benutzerdefinierter Fehler für MAC Portal Probleme."""
     pass
 
 class MacPortalClient:
     """
-    Advanced Client for Stalker-/STB portals with MAC login.
-    Implements full MAG250/254 emulation based on Enigma2 plugin logic.
+    Erweiterter Client für Stalker-/STB-Portale mit MAC-Login.
+    Implementiert die vollständige MAG250/254 Emulation basierend auf der Logik des Enigma2-Plugins.
     """
 
     def __init__(
@@ -31,7 +32,7 @@ class MacPortalClient:
         timezone: str = "Europe/Berlin",
     ) -> None:
         if not base_url:
-            raise ValueError("base_url is required")
+            raise ValueError("base_url ist erforderlich")
         
         self.original_base_url = base_url.rstrip("/")
         self.mac = mac.upper().strip()
@@ -65,7 +66,7 @@ class MacPortalClient:
         self._generate_device_hashes()
 
     def _generate_device_hashes(self):
-        """Generates STB-like serials and IDs based on MAC."""
+        """Generiert STB-ähnliche Seriennummern und IDs basierend auf der MAC."""
         self.sn = hashlib.md5(self.mac.encode()).hexdigest().upper()[:13]
         self.device_id = hashlib.sha256(self.mac.encode()).hexdigest().upper()
         self.device_id2 = self.device_id
@@ -79,20 +80,18 @@ class MacPortalClient:
         return {"http": self.proxy, "https": self.proxy}
 
     def _get_headers(self, auth: bool = True) -> dict:
-        """mimics MAG250/254 headers."""
+        """Emuliert MAG250/254 Header."""
         headers = {
             "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250 stbapp ver: 2 rev: 369 Safari/533.3",
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate",
             "X-User-Agent": "Model: MAG250; Link: WiFi",
-            "Connection": "Keep-Alive", # Stalker likes Keep-Alive
+            "Connection": "Keep-Alive", 
             "Pragma": "no-cache",
         }
         
-        # Cookie construction
         cookies = [f"mac={self.mac}", "stb_lang=en", f"timezone={self.timezone}"]
         
-        # Some portals require adid in cookie if it's a specific path
         if self.portal_url and "/stalker_portal/" in self.portal_url:
              cookies.append(f"adid={self.adid}")
         
@@ -104,11 +103,10 @@ class MacPortalClient:
         return headers
 
     def _make_request(self, url: str, method: str = "GET", params: dict = None, auth: bool = True) -> dict:
-        """Central request handler."""
+        """Zentraler Request-Handler."""
         proxies = self._get_proxies()
         headers = self._get_headers(auth=auth)
         
-        # Ensure JsHttpRequest is always present
         if params is None:
             params = {}
         if "JsHttpRequest" not in params:
@@ -116,39 +114,31 @@ class MacPortalClient:
 
         try:
             if method.upper() == "POST":
-                # Stalker often sends params in query string even for POST, 
-                # but let's stick to requests param handling which puts them in URL for get
-                # For POST in utils.py they often put params in url or body. 
-                # Requests 'params' puts them in URL, 'data' in body. 
-                # Stalker usually expects them in the URL/QueryString even for POST.
                 r = self.session.post(url, headers=headers, params=params, proxies=proxies, timeout=15, verify=False)
             else:
                 r = self.session.get(url, headers=headers, params=params, proxies=proxies, timeout=15, verify=False)
             
             r.raise_for_status()
             
-            # Handle potential JSON decode errors
             try:
                 data = r.json()
             except json.JSONDecodeError:
-                # Fallback: sometimes they return text/html with errors
-                raise MacPortalError(f"Invalid JSON response from {url}: {r.text[:100]}")
+                raise MacPortalError(f"Ungültige JSON-Antwort von {url}: {r.text[:100]}")
             
             return data
 
         except requests.RequestException as e:
-            raise MacPortalError(f"Request failed: {e}")
+            raise MacPortalError(f"Request fehlgeschlagen: {e}")
 
     # =========================================================================
-    # 1. URL Resolution (Logic from utils.py/playlists.py)
+    # 1. URL Resolution 
     # =========================================================================
 
     def resolve_portal_url(self) -> str:
-        """Finds the correct API endpoint (load.php or portal.php)."""
+        """Findet den korrekten API-Endpunkt (load.php oder portal.php)."""
         if self.portal_url:
             return self.portal_url
 
-        # Check if user provided the full API URL already
         if self.original_base_url.endswith(("load.php", "portal.php")):
             self.portal_url = self.original_base_url
             return self.portal_url
@@ -156,7 +146,6 @@ class MacPortalClient:
         parsed = urlparse(self.original_base_url)
         base = f"{parsed.scheme}://{parsed.netloc}"
         
-        # Priority list from utils.py
         candidates = [
             "/stalker_portal/server/load.php",
             "/stalker_portal/load.php",
@@ -166,7 +155,7 @@ class MacPortalClient:
             "/c/"
         ]
 
-        logger.info(f"Probing portal URL for {base}...")
+        logger.info(f"Probiere Portal-URL für {base}...")
 
         proxies = self._get_proxies()
         headers = self._get_headers(auth=False)
@@ -174,64 +163,59 @@ class MacPortalClient:
         for path in candidates:
             url = base + path
             try:
-                # Use HEAD or GET. GET is safer for detection.
                 r = self.session.get(url, headers=headers, proxies=proxies, timeout=5, verify=False)
                 
-                # FIX: Accept redirects (3xx) as success too
+                # FIX: Akzeptiere Statuscodes < 400 (2xx Erfolg oder 3xx Redirect)
                 if r.status_code < 400:
                     self.portal_url = url
-                    logger.info(f"Resolved Portal URL: {self.portal_url}")
+                    logger.info(f"Aufgelöste Portal-URL: {self.portal_url}")
                     return self.portal_url
             except Exception:
                 pass
         
-        # Fallback
-        logger.warning("Could not automatically resolve URL. Using fallback.")
+        logger.warning("Konnte URL nicht automatisch auflösen. Verwende Fallback.")
         self.portal_url = self.original_base_url
         return self.portal_url
 
     # =========================================================================
-    # 2. Authentification (Handshake + Get Profile)
+    # 2. Authentifizierung (Handshake + Get Profile)
     # =========================================================================
 
     def connect(self) -> bool:
-        """Main method to establish connection."""
+        """Hauptmethode zur Verbindungsherstellung."""
         try:
             self.resolve_portal_url()
             self._handshake()
             self._get_profile()
-            self._get_account_info() # For expiry
+            self._get_account_info() # Holt Ablaufdatum
             return True
         except MacPortalError as e:
-            logger.error(f"Connection failed: {e}")
+            logger.error(f"Verbindung fehlgeschlagen: {e}")
             return False
 
     def _handshake(self):
-        """Step 1: Get initial token."""
+        """Schritt 1: Erhält den anfänglichen Token."""
         if not self.portal_url:
-            raise MacPortalError("Portal URL not set")
+            raise MacPortalError("Portal URL nicht gesetzt")
 
         params = {
             "type": "stb",
             "action": "handshake",
-            "mac": self.mac, # Fallback param
+            "mac": self.mac, 
         }
         
-        # First attempt: Standard POST
         data = self._make_request(self.portal_url, method="POST", params=params, auth=False)
         js = data.get("js", {})
 
-        # Logic from utils.py: Handle "missing" msg by generating random token
         if "msg" in js and "missing" in str(js.get("msg")).lower():
-            logger.info("Handshake requested specific token generation...")
+            logger.info("Handshake fordert spezifische Token-Generierung an...")
             random_token = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(32))
-            prehash = hashlib.sha1(random_token.encode()).hexdigest()
+            prehash_val = hashlib.sha1(random_token.encode()).hexdigest()
             
-            # Update headers manually for this request
-            self.token = random_token # Temp set for header generation
+            self.token = random_token 
             
             params["mac"] = self.mac
-            params["prehash"] = prehash
+            params["prehash"] = prehash_val
             
             data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
             js = data.get("js", {})
@@ -240,18 +224,18 @@ class MacPortalClient:
         self.token_random = js.get("random")
 
         if not self.token:
-            raise MacPortalError("Handshake failed: No token received.")
+            raise MacPortalError("Handshake fehlgeschlagen: Kein Token erhalten.")
         
-        logger.debug(f"Handshake successful. Token: {self.token}")
+        logger.debug(f"Handshake erfolgreich. Token: {self.token}")
 
     def _get_profile(self):
-        """Step 2: Send metrics and get play_token (The 'Super Logic')."""
+        """Schritt 2: Sendet Metriken und erhält play_token (Die 'Super Logik')."""
         if not self.token:
-            raise MacPortalError("Cannot get profile without token.")
+            raise MacPortalError("Profil kann nicht ohne Token abgerufen werden.")
 
         timestamp = str(round(time.time()))
         
-        # Prepare Metrics JSON
+        # Vorbereitung der Metriken und Hashes
         if "/stalker_portal/" in self.portal_url:
             host_metrics = {
                 "type": "stb",
@@ -261,9 +245,7 @@ class MacPortalClient:
                 "uid": "",
                 "random": self.token_random
             }
-            # Specifics for stalker_portal
             stb_type = "MAG254"
-            image_version = "218"
             ver_str = "ImageDescription: 0.2.18-r14-pub-250; ImageDate: Fri Jan 15 15:20:44 EET 2016; PORTAL version: 5.3.0; API Version: JS API version: 328; STB API version: 134; Player Engine version: 0x566"
         else:
             host_metrics = {
@@ -275,55 +257,40 @@ class MacPortalClient:
                 "random": ""
             }
             stb_type = "MAG250"
-            image_version = "218"
             ver_str = ""
 
-        # JSON Dump -> Quote (URL Encode)
+        # JSON Dump -> URL Encode (Quote)
         metrics_json = json.dumps(host_metrics)
         encoded_metrics = quote(metrics_json)
 
         params = {
             "type": "stb",
             "action": "get_profile",
-            "mac": self.mac,
             "hd": "1",
-            "ver": ver_str,
-            "num_banks": "2",
             "sn": self.sn,
             "stb_type": stb_type,
             "client_type": "STB",
-            "image_version": image_version,
-            "video_out": "hdmi",
-            "device_id": self.device_id,
-            "device_id2": self.device_id2,
-            "signature": "",
-            "auth_second_step": "1",
+            "image_version": "218",
             "hw_version": "1.7-BD-00",
-            "hw_version_2": self.hw_version_2,
-            "not_valid_token": "0",
-            "metrics": encoded_metrics, # The encoded JSON
+            "metrics": encoded_metrics, 
             "timestamp": timestamp,
-            "api_signature": "261",
-            "prehash": self.prehash
         }
+        
+        # Hinzufügen spezifischer Stalker-Parameter, falls zutreffend
+        if "/stalker_portal/" in self.portal_url:
+            params.update({
+                "mac": self.mac,
+                "ver": ver_str,
+                "num_banks": "2",
+                "video_out": "hdmi",
+                "device_id": self.device_id,
+                "device_id2": self.device_id2,
+                "auth_second_step": "1",
+                "hw_version_2": self.hw_version_2,
+                "api_signature": "261",
+                "prehash": self.prehash
+            })
 
-        # Clean empty keys if standard portal
-        if "/stalker_portal/" not in self.portal_url:
-             # Basic params for standard
-             params = {
-                "type": "stb",
-                "action": "get_profile",
-                 "hd": "1",
-                 "sn": self.sn,
-                 "stb_type": stb_type,
-                 "client_type": "STB",
-                 "image_version": image_version,
-                 "device_id": "",
-                 "device_id2": "",
-                 "hw_version": "1.7-BD-00",
-                 "metrics": encoded_metrics,
-                 "timestamp": timestamp
-             }
 
         data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
         js = data.get("js", {})
@@ -332,32 +299,46 @@ class MacPortalClient:
         self.profile_status = js.get("status", 0)
         
         if not self.play_token:
-            # Fallback for some servers that return it differently or implicitly
-            logger.warning("No play_token in profile response. Streaming might fail.")
+            logger.warning("Kein play_token in der Profilantwort erhalten.")
         else:
-             logger.info("Profile acquired. Play Token received.")
+             logger.info("Profil erfolgreich abgerufen. Play Token erhalten.")
 
     def _get_account_info(self):
-        """Fetch expiry date."""
+        """Ruft das Ablaufdatum ab."""
         params = {
             "type": "account_info",
             "action": "get_main_info"
         }
         try:
-            data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
+            data = self._make_request(self.portal_url, method="POST", params=params)
             js = data.get("js", {})
-            # 'phone' often misused for expiry in stalker
-            self.expiry_date = js.get("phone") or js.get("end_date")
-            logger.info(f"Account Info: Expiry={self.expiry_date}")
+            
+            # 'phone', 'end_date' oder 'expire' werden oft für das Ablaufdatum verwendet
+            self.expiry_date = js.get("phone") or js.get("end_date") or js.get("expire")
+            logger.info(f"Account Info: Ablaufdatum={self.expiry_date}")
         except Exception:
-            logger.warning("Could not fetch account info/expiry.")
+            logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen.")
+    
+    # NEU: Öffentliche Methode zur Behebung des AttributeError
+    def get_expires(self) -> Optional[str]:
+        """
+        Gibt das während der Verbindung abgerufene Ablaufdatum zurück.
+        Behebt den Fehler: 'MacPortalClient' object has no attribute 'get_expires'.
+        """
+        if not self.expiry_date:
+            # Fallback: Versuche, Kontoinformationen abzurufen, falls dies während connect() fehlgeschlagen ist
+            try:
+                self._get_account_info()
+            except MacPortalError:
+                pass
+        return self.expiry_date
 
     # =========================================================================
     # 3. Content (Categories & Channels)
     # =========================================================================
 
     def get_categories(self) -> Dict[str, str]:
-        """Fetches categories (Genres) and caches them."""
+        """Ruft Kategorien (Genres) ab und cached sie."""
         params = {
             "type": "itv",
             "action": "get_genres"
@@ -376,15 +357,16 @@ class MacPortalClient:
                         self.genres_map[gid] = title
             return self.genres_map
         except Exception as e:
-            logger.error(f"Failed to fetch genres: {e}")
+            logger.error(f"Fehler beim Abrufen der Genres: {e}")
             return {}
 
     def get_channels(self) -> List[Dict]:
-        """Fetches all channels and normalizes them."""
+        """Ruft alle Kanäle ab und normalisiert sie."""
         if not self.play_token:
+            # Versuche, die Verbindung herzustellen, falls der Token fehlt
             self.connect()
 
-        # Ensure categories are loaded for mapping
+        # Stelle sicher, dass Kategorien für die Zuordnung geladen sind
         if not self.genres_map:
             self.get_categories()
 
@@ -413,7 +395,7 @@ class MacPortalClient:
                 "name": name,
                 "group": group_name,
                 "logo": ch.get("logo"),
-                "cmd": cmd, # Important: keep raw cmd for create_link
+                "cmd": cmd, # Behalte den raw cmd für create_link
             })
             
         self.channels_cache = normalized
@@ -425,21 +407,13 @@ class MacPortalClient:
 
     def get_stream_url(self, cmd: str) -> Optional[str]:
         """
-        Converts a channel 'cmd' (e.g. 'ffmpeg http://...') into a real URL.
-        Logic from live.py createLink.
+        Konvertiert einen Kanal-'cmd' (z.B. 'ffmpeg http://...') in eine echte URL.
+        Logik von live.py createLink.
         """
         if not cmd:
             return None
 
-        # Check if cmd is already a URL
-        if "http" in cmd and "localhost" not in cmd and "///" not in cmd:
-             # Basic extraction if it looks like a direct link
-             parts = cmd.split()
-             for p in parts:
-                 if p.startswith("http"):
-                     return p
-
-        # API Call to create_link
+        # API-Aufruf zu create_link
         params = {
             "type": "itv",
             "action": "create_link",
@@ -457,20 +431,19 @@ class MacPortalClient:
             
             link = js.get("cmd")
             
-            # If retry logic is needed (token expired), connect() again and retry once
-            if not link:
-                 logger.info("create_link returned empty, re-authenticating...")
-                 self.connect()
+            # Re-Authentifizierungslogik für abgelaufene Token
+            if not link and self.connect(): 
+                 logger.info("create_link gab leere Rückgabe. Erneute Authentifizierung war erfolgreich. Versuche es erneut.")
                  data = self._make_request(self.portal_url, method="POST", params=params)
                  link = data.get("js", {}).get("cmd")
 
             if link:
-                 # Clean up the link (sometimes has extra spaces or params)
+                 # Bereinige den Link (manchmal ist es "ffmpeg http://url" -> nehme nur die URL)
                  if " " in link:
-                     link = link.split()[1] # usually "ffmpeg http://url" -> take http://url
+                     link = link.split()[-1] 
                  return link
             
         except Exception as e:
-            logger.error(f"Error creating link for cmd {cmd}: {e}")
+            logger.error(f"Fehler beim Erstellen des Links für cmd {cmd}: {e}")
             
         return None
