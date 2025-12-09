@@ -1,27 +1,29 @@
 import logging
-from urllib.parse import urlparse
-from typing import Optional, Dict, Any
+import json
+import hashlib
+import time
+import random
+import string
+from urllib.parse import urlparse, quote, unquote
+from typing import Optional, Dict, List, Any
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+
+# Importiere JSONDecodeError explizit für die verbesserte Fehlerbehandlung
+from json.decoder import JSONDecodeError
 
 logger = logging.getLogger(__name__)
 
 
 class MacPortalError(Exception):
-    """Error while accessing MAC/STB portal."""
-
     pass
 
 
 class MacPortalClient:
     """
-    Client for Stalker-/STB portals with MAC login.
-    Handles:
-      - resolving portal URL
-      - handshake (token)
-      - expiry info
-      - channel list (get_all_channels)
+    Vollständiger MAG250 / MAG254 Stalker Portal Client
+    (Dispatcharr-tauglich, EStalker-Logik)
     """
 
     def __init__(
@@ -30,403 +32,352 @@ class MacPortalClient:
         mac: str,
         proxy: Optional[str] = None,
         timezone: str = "Europe/Berlin",
-    ) -> None:
+    ):
         if not base_url:
-            raise ValueError("base_url is required")
+            raise ValueError("base_url required")
+
         self.original_base_url = base_url.rstrip("/")
-        self.mac = mac
-        self.timezone = timezone
+        self.mac = mac.upper().strip()
         self.proxy = proxy
+        self.timezone = timezone
+
+        self.portal_url: Optional[str] = None
+        self.token: Optional[str] = None
+        self.token_random: Optional[str] = None
+        self.play_token: Optional[str] = None
+        self.expiry_date: Optional[str] = None
+
+        self.genres_map: Dict[str, str] = {}
+        self.channels_cache: List[Dict] = []
 
         self.session = requests.Session()
+        # Stellen Sie sicher, dass SSL-Prüfung deaktiviert ist, wie im Original
+        self.session.verify = False 
+
         retries = Retry(
             total=3,
-            backoff_factor=0.1,
+            backoff_factor=0.4,
             status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "POST"],
+            allowed_methods=["GET", "POST"]
         )
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
 
-        self.portal_url: Optional[str] = None
-        self.token: Optional[str] = None
-        # cache for genre/category mapping
-        self.genres_by_id: Dict[str, str] = {}
+        # ✅ Cookies wirklich setzen
+        self.session.cookies.set("mac", self.mac)
+        self.session.cookies.set("stb_lang", "en")
+        self.session.cookies.set("timezone", self.timezone)
 
-    # ------------- helpers -------------
+        self._generate_device_hashes()
 
-    def _get_proxies(self) -> Optional[dict]:
+    # ---------------------------------------------------------------------
+
+    def _generate_device_hashes(self):
+        self.sn = hashlib.md5(self.mac.encode()).hexdigest().upper()[:13]
+        self.device_id = hashlib.sha256(self.mac.encode()).hexdigest().upper()
+        self.device_id2 = self.device_id
+        self.adid = hashlib.md5((self.sn + self.mac).encode()).hexdigest()
+        self.hw_version_2 = hashlib.sha1(self.mac.encode()).hexdigest()
+        self.prehash = hashlib.sha1((self.sn + self.mac).encode()).hexdigest()
+
+    def _headers(self, auth=True) -> dict:
+        h = {
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; Linux) MAG250 stbapp ver:2",
+            "Accept": "*/*",
+            "Connection": "Keep-Alive",
+            "X-User-Agent": "Model: MAG250; Link: WiFi",
+        }
+        if auth and self.token:
+            h["Authorization"] = f"Bearer {self.token}"
+        return h
+
+    def _proxies(self):
         if not self.proxy:
             return None
         return {"http": self.proxy, "https": self.proxy}
 
-    def _default_headers(self, with_auth: bool = False) -> dict:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
-        }
-        if with_auth and self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        return headers
-
-    def _cookies(self) -> dict:
-        return {
-            "mac": self.mac,
-            "stb_lang": "en",
-            "timezone": self.timezone,
-        }
-
-    # ------------- step 1: resolve portal url -------------
-
-    def resolve_portal_url(self) -> str:
+    def _request(self, url, method="GET", data=None, auth=True):
         """
-        Try to detect the portal load.php URL.
-        If original_base_url already ends with load.php, use it as-is.
-        Otherwise probe common paths.
+        Sendet eine Anfrage und implementiert eine verbesserte Fehlerbehandlung,
+        insbesondere für JSONDecodeError und HTTP-Fehler.
         """
+        if not url:
+            raise MacPortalError("Portal URL is None")
+
+        if data is None:
+            data = {}
+        data.setdefault("JsHttpRequest", "1-xml")
+
+        try:
+            if method == "POST":
+                r = self.session.post(
+                    url,
+                    headers=self._headers(auth),
+                    data=data,
+                    proxies=self._proxies(),
+                    timeout=15
+                )
+            else:
+                r = self.session.get(
+                    url,
+                    headers=self._headers(auth),
+                    params=data,
+                    proxies=self._proxies(),
+                    timeout=15
+                )
+
+            r.raise_for_status() # Löst HTTPError für 4xx/5xx Statuscodes aus
+
+            # 🛠️ NEUE LOGIK: Verbessertes JSON-Dekodieren
+            try:
+                return r.json()
+            except JSONDecodeError as e:
+                # Wenn das Dekodieren fehlschlägt, ist die Antwort kein JSON.
+                # Wir geben den rohen Text weiter, um zu sehen, was stattdessen gesendet wurde.
+                raw_text = r.text[:250].strip()
+                error_message = f"JSONDecodeError: {e}. Raw response snippet: '{raw_text}'"
+                raise MacPortalError(error_message)
+
+        except MacPortalError:
+             # Werfe MacPortalError, wenn er von der JSONDecodeError-Behandlung stammt
+             raise
+        except Exception as e:
+            # Fängt alle anderen Fehler (ConnectionError, HTTPError von raise_for_status, Timeouts)
+            error_msg = str(e)
+            
+            # Bei HTTP-Fehlern den Rohtext hinzufügen, falls vorhanden
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    raw_text = e.response.text[:250].strip()
+                    if raw_text:
+                        error_msg += f". Raw response snippet: '{raw_text}'"
+                except:
+                    pass # falls .text fehlschlägt
+
+            raise MacPortalError(error_msg)
+
+    # ---------------------------------------------------------------------
+    # Portal URL
+    # ---------------------------------------------------------------------
+
+    def resolve_portal_url(self):
         if self.portal_url:
             return self.portal_url
 
-        if self.original_base_url.endswith("load.php"):
+        if self.original_base_url.endswith(("portal.php", "load.php")):
             self.portal_url = self.original_base_url
             return self.portal_url
 
         parsed = urlparse(self.original_base_url)
-        if not parsed.scheme:
-            self.original_base_url = "http://" + self.original_base_url
-            parsed = urlparse(self.original_base_url)
-
         base = f"{parsed.scheme}://{parsed.netloc}"
-        candidate_paths = [
+
+        candidates = [
+            "/portal.php",
             "/stalker_portal/server/load.php",
             "/stalker_portal/load.php",
             "/c/load.php",
-            "/portal.php",
         ]
 
-        proxies = self._get_proxies()
-        headers = self._default_headers()
-
-        for path in candidate_paths:
-            url = base + path
+        for p in candidates:
             try:
-                r = self.session.get(
-                    url,
-                    headers=headers,
-                    cookies=self._cookies(),
-                    proxies=proxies,
-                    timeout=5,
-                )
+                url = base + p
+                # Verwende einen einfachen GET, um die URL zu überprüfen, ohne _request
+                r = self.session.get(url, timeout=5) 
                 if r.status_code == 200:
                     self.portal_url = url
-                    logger.info("MAC portal load.php detected: %s", url)
-                    return self.portal_url
-            except Exception as e:
-                logger.debug("Portal candidate %s failed: %s", url, e)
+                    return url
+            except Exception:
+                pass
 
         self.portal_url = self.original_base_url
-        logger.warning(
-            "Could not positively identify load.php, using base URL: %s",
-            self.portal_url,
-        )
         return self.portal_url
 
-    # ------------- step 2: handshake / token -------------
+    # ---------------------------------------------------------------------
+    # AUTH
+    # ---------------------------------------------------------------------
 
-    def handshake(self) -> str:
-        portal = self.resolve_portal_url()
+    def connect(self):
+        self.resolve_portal_url()
+        self._handshake()
+        self._get_profile()
+        self._get_account_info()
+        return True
+
+    def _handshake(self):
         params = {
             "type": "stb",
             "action": "handshake",
-            "JsHttpRequest": "1-xml",
+            "mac": self.mac,
         }
-        proxies = self._get_proxies()
-        headers = self._default_headers(with_auth=False)
 
-        r = self.session.get(
-            portal,
-            params=params,
-            headers=headers,
-            cookies=self._cookies(),
-            proxies=proxies,
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = self._request(self.portal_url, "POST", params, auth=False)
+        js = data.get("js", {})
+
+        if "msg" in js and "missing" in str(js["msg"]).lower():
+            rnd = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(32))
+            params["prehash"] = hashlib.sha1(rnd.encode()).hexdigest()
+            self.token = rnd
+            data = self._request(self.portal_url, "POST", params, auth=True)
+            js = data.get("js", {})
+
+        self.token = js.get("token")
+        self.token_random = js.get("random")
+
+        if not self.token:
+            raise MacPortalError("Handshake failed")
+
+    def _get_profile(self):
+        metrics = quote(json.dumps({
+            "mac": self.mac,
+            "sn": self.sn,
+            "model": "MAG254",
+            "random": self.token_random
+        }))
+
+        params = {
+            "type": "stb",
+            "action": "get_profile",
+            "hd": "1",
+            "metrics": metrics,
+            "stb_type": "MAG254",
+            "device_id": self.device_id,
+            "device_id2": self.device_id2,
+            "hw_version_2": self.hw_version_2,
+            "prehash": self.prehash,
+        }
+
+        data = self._request(self.portal_url, "POST", params, auth=True)
+        js = data.get("js", {})
+        self.play_token = js.get("play_token")
+        
+        # Prüfen auf generische Fehler
+        if js.get("status") == "ERROR" or js.get("error"):
+            msg = js.get("message", "Authorization failed during profile retrieval.")
+            raise MacPortalError(f"Authorization failed: {msg}")
+
+
+    def _get_account_info(self):
+        """
+        Get account info, including expiry date, using the simple and standard Stalker POST method.
+        Wirft MacPortalError, wenn das Konto blockiert/abgelaufen ist, und bettet das Datum in die Fehlermeldung ein.
+        """
+        self.expiry_date = None
         try:
-            token = data["js"]["token"]
-        except Exception as exc:
-            raise MacPortalError(f"Handshake without token: {exc}")
-        self.token = token
-        logger.debug("MAC portal token acquired")
-        return token
+            # 1. Standard POST request for account info (wie in Version 4)
+            data = self._request(self.portal_url, "POST", {
+                "type": "stb",
+                "action": "get_account_info",  # Standard Stalker action
+                "mac": self.mac,
+            }, auth=True)
+            
+            js_data = data.get("js", {})
 
-    # ------------- step 3: expiry / account info -------------
+            # 2. Fehlerprüfung: Wenn der Portal-Status 'ERROR' ist, werfen wir einen Fehler
+            if js_data.get("status") == "ERROR" or js_data.get("error"):
+                msg = js_data.get("message", "Authorization failed during account info retrieval.")
+                raise MacPortalError(f"Authorization/Account Info Error: {msg}")
+
+            # 3. Ablaufdatum aus dem Standardfeld 'expire' abrufen
+            expiry = js_data.get("expire")
+            self.expiry_date = expiry 
+
+            # 4. Prüfen auf explizite Statuscodes (0 ist oft "blocked" oder "expired")
+            status = js_data.get("status")
+            if status in ["0", 0] or js_data.get("access_status") in ["0", 0]:
+                 error_msg = f"Authorization failed: Account expired or blocked (Status: {status})."
+                 if expiry:
+                     # Wichtig: Datum im Fehlertext platzieren, damit die Task-Datei es speichert.
+                     error_msg += f" [Expiry Date: {expiry}]"
+                 raise MacPortalError(error_msg)
+            
+            # 5. Protokollierung bei Erfolg
+            if self.expiry_date:
+                logger.info("Account Info: Ablaufdatum=%s", self.expiry_date)
+            else:
+                logger.warning("Account-Informationen abgerufen, aber Ablaufdatum fehlt (MAC:%s).", self.mac)
+                
+        except MacPortalError:
+             # Werfe den spezifischen Fehler, der oben erstellt wurde
+             raise
+        except Exception:
+            logger.exception("Unerwarteter Fehler beim Abrufen des Ablaufdatums (MAC:%s).", self.mac)
+            self.expiry_date = None
+
 
     def get_expires(self) -> Optional[str]:
         """
-        Fetch expiry-like info from account_info/get_main_info.
-        STB-Proxy uses 'phone' field for that.
+        Gibt das während der Profilabfrage gespeicherte Ablaufdatum zurück.
+        Wird von der Anwendung (tasks.py) erwartet.
         """
-        if not self.token:
-            self.handshake()
-        portal = self.resolve_portal_url()
-        proxies = self._get_proxies()
-        headers = self._default_headers(with_auth=True)
+        # connect() ruft bereits _get_account_info() auf. Wir geben nur das Ergebnis zurück.
+        return self.expiry_date
 
-        r = self.session.get(
-            portal,
-            params={
-                "type": "account_info",
-                "action": "get_main_info",
-                "JsHttpRequest": "1-xml",
-            },
-            headers=headers,
-            cookies=self._cookies(),
-            proxies=proxies,
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json().get("js") or {}
-        return data.get("phone")  # may contain expiry-like info
+    # ---------------------------------------------------------------------
+    # CONTENT
+    # ---------------------------------------------------------------------
 
-    # ------------- step 4: genres / categories -------------
+    def get_categories(self):
+        data = self._request(self.portal_url, "POST", {
+            "type": "itv",
+            "action": "get_genres"
+        })
+        self.genres_map = {
+            str(i["id"]): i["title"]
+            for i in data.get("js", [])
+            if "id" in i
+        }
+        return self.genres_map
 
-    def get_genres_map(self) -> Dict[str, str]:
-        """Load mapping of genre/category id -> title from portal, if available."""
-        if self.genres_by_id:
-            return self.genres_by_id
+    def get_channels(self):
+        if not self.play_token:
+            self.connect()
 
-        if not self.token:
-            self.handshake()
-        portal = self.resolve_portal_url()
-        proxies = self._get_proxies()
-        headers = self._default_headers(with_auth=True)
+        if not self.genres_map:
+            self.get_categories()
 
-        for action in ("get_genres", "get_genres_short"):
-            try:
-                r = self.session.get(
-                    portal,
-                    params={
-                        "type": "itv",
-                        "action": action,
-                        "JsHttpRequest": "1-xml",
-                    },
-                    headers=headers,
-                    cookies=self._cookies(),
-                    proxies=proxies,
-                    timeout=10,
-                )
-                r.raise_for_status()
-                js = r.json().get("js")
-                if not isinstance(js, list):
-                    continue
+        data = self._request(self.portal_url, "POST", {
+            "type": "itv",
+            "action": "get_all_channels"
+        })
 
-                mapping: Dict[str, str] = {}
-                for item in js:
-                    try:
-                        gid = item.get("id")
-                        title = item.get("title") or item.get("name")
-                        if gid is None or not title:
-                            continue
-                        mapping[str(gid)] = str(title)
-                    except Exception:
-                        continue
+        out = []
+        for ch in data.get("js", {}).get("data", []):
+            out.append({
+                "id": str(ch.get("id")),
+                "name": ch.get("name"),
+                "group": self.genres_map.get(str(ch.get("tv_genre_id")), "Other"),
+                "logo": ch.get("logo"),
+                "cmd": ch.get("cmd"),
+            })
+        self.channels_cache = out
+        return out
 
-                if mapping:
-                    self.genres_by_id = mapping
-                    logger.info(
-                        "Loaded %s MAC genres via %s", len(mapping), action
-                    )
-                    return self.genres_by_id
-            except Exception as e:
-                logger.debug("Failed to load MAC genres via %s: %s", action, e)
+    # ---------------------------------------------------------------------
+    # STREAM
+    # ---------------------------------------------------------------------
 
-        logger.warning(
-            "Could not load MAC genres mapping; will fall back to numeric Group IDs"
-        )
-        self.genres_by_id = {}
-        return self.genres_by_id
-
-    # ------------- step 5: channels -------------
-
-    def get_all_channels_raw(self):
-        if not self.token:
-            self.handshake()
-        portal = self.resolve_portal_url()
-        proxies = self._get_proxies()
-        headers = self._default_headers(with_auth=True)
-
-        r = self.session.get(
-            portal,
-            params={
-                "type": "itv",
-                "action": "get_all_channels",
-                "JsHttpRequest": "1-xml",
-            },
-            headers=headers,
-            cookies=self._cookies(),
-            proxies=proxies,
-            timeout=20,
-        )
-        r.raise_for_status()
-        js = r.json().get("js") or {}
-        data = js.get("data") or []
-
-        # Log a few sample entries to inspect keys
-        for idx, ch in enumerate(data[:10]):
-            try:
-                keys = list(ch.keys())
-            except Exception:
-                keys = []
-            logger.debug("MAC raw channel %s keys: %s", idx, keys)
-
-        return data
-
-
-    def create_link(self, cmd: str) -> str:
-        """
-        Resolve a portal channel command into a final stream URL using itv/create_link.
-        """
+    def create_link(self, cmd: str) -> Optional[str]:
         if not cmd:
-            raise MacPortalError("Missing cmd for create_link")
+            return None
 
-        if not self.token:
-            self.handshake()
-
-        portal = self.resolve_portal_url()
-        proxies = self._get_proxies()
-        headers = self._default_headers(with_auth=True)
-
-        params = {
+        data = self._request(self.portal_url, "POST", {
             "type": "itv",
             "action": "create_link",
             "cmd": cmd,
-            "series": "0",
-            "forced_storage": "false",
-            "disable_ad": "false",
-            "download": "false",
-            "force_ch_link_check": "false",
-            "JsHttpRequest": "1-xml",
-        }
+        })
 
-        try:
-            r = self.session.get(
-                portal,
-                params=params,
-                headers=headers,
-                cookies=self._cookies(),
-                proxies=proxies,
-                timeout=10,
-            )
-            r.raise_for_status()
-        except requests.RequestException as exc:
-            raise MacPortalError(f"create_link request failed: {exc}")
+        link = data.get("js", {}).get("cmd")
+        if not link:
+            # Re-Authentifizierungslogik
+            self.connect()
+            data = self._request(self.portal_url, "POST", {
+                "type": "itv",
+                "action": "create_link",
+                "cmd": cmd,
+            })
+            link = data.get("js", {}).get("cmd")
 
-        try:
-            js = r.json().get("js") or {}
-        except Exception as exc:
-            raise MacPortalError(f"create_link invalid JSON: {exc}")
+        if link and " " in link:
+            link = link.split()[-1]
 
-        cmd_value = js.get("cmd")
-        if not cmd_value or not isinstance(cmd_value, str):
-            raise MacPortalError("create_link response without cmd field")
-
-        url = None
-        parts = cmd_value.split()
-        for part in reversed(parts):
-            if part.startswith("http://") or part.startswith("https://"):
-                url = part
-                break
-
-        if not url:
-            raise MacPortalError("Could not extract stream URL from create_link response")
-
-        return url
-
-
-    def _extract_stream_url(self, cmd: str) -> Optional[str]:
-        if not cmd:
-            return None
-        parts = cmd.split()
-        for p in parts:
-            if p.startswith("http://") or p.startswith("https://"):
-                return p
-        return None
-
-    def _detect_group_title(self, ch: Dict[str, Any]) -> str:
-        """Best-effort detection of group/category name for a channel."""
-        # Common keys used by many portals
-        candidates = [
-            "tv_genre_title",
-            "genre_title",
-            "category_name",
-            "cat_name",
-            "group_name",
-            "group_title",
-            "genre_name",
-        ]
-        for key in candidates:
-            val = ch.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-
-        # Some portals use nested 'genres' / 'categories' arrays
-        genres = ch.get("genres") or ch.get("categories")
-        if isinstance(genres, list) and genres:
-            first = genres[0]
-            if isinstance(first, dict):
-                for key in ("title", "name", "genre_title", "category_name"):
-                    val = first.get(key)
-                    if isinstance(val, str) and val.strip():
-                        return val.strip()
-
-        # Fallback: numeric ids with optional mapping
-        genre_id = (
-            ch.get("tv_genre_id")
-            or ch.get("genre_id")
-            or ch.get("cat_id")
-        )
-        if genre_id is not None:
-            try:
-                genres = self.get_genres_map()
-            except MacPortalError:
-                genres = self.genres_by_id or {}
-            label = genres.get(str(genre_id))
-            if label:
-                return label
-            return f"Group {genre_id}"
-
-        return "MAC"
-
-    def get_channels(self):
-        """Return normalized channels list.
-
-        We try to map provider categories/groups onto our 'group' field.
-
-        Different portals use different keys for the group/category, so we
-        check several common ones in order.
-        """
-        raw_list = self.get_all_channels_raw()
-        normalized = []
-        for ch in raw_list:
-            ch_id = ch.get("id")
-            name = ch.get("name") or f"Channel {ch_id}"
-
-            group_title = self._detect_group_title(ch)
-
-            cmd = ch.get("cmd") or ""
-            url = self._extract_stream_url(cmd)
-            if not url:
-                continue
-
-            normalized.append(
-                {
-                    "id": ch_id,
-                    "name": name,
-                    "group": group_title,
-                    "url": url,
-                    "raw": ch,
-                }
-            )
-        logger.info("Normalized %s MAC channels into groups", len(normalized))
-        return normalized
+        return unquote(link) if link else None
