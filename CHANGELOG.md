@@ -7,15 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup
+- XtreamCodes EPG API now returns correct date/time format for start/end fields and proper string types for timestamps and channel_id
+
+## [0.14.0] - 2025-12-09
+
 ### Added
 
 - Sort buttons for 'Group' and 'M3U' columns in Streams table for improved stream organization and filtering - Thanks [@bobey6](https://github.com/bobey6)
+- EPG source priority field for controlling which EPG source is preferred when multiple sources have matching entries for a channel (higher numbers = higher priority) (Closes #603)
 
 ### Changed
 
-- **Performance**: EPG program parsing optimized for sources with many channels but only a fraction mapped. Now parses XML file once per source instead of once per channel, dramatically reducing I/O and CPU overhead. For sources with 10,000 channels and 100 mapped, this results in ~99x fewer file opens and ~100x fewer full file scans. Orphaned programs for unmapped channels are also cleaned up during refresh to prevent database bloat. Database updates are now atomic to prevent clients from seeing empty/partial EPG data during refresh.
+- EPG program parsing optimized for sources with many channels but only a fraction mapped. Now parses XML file once per source instead of once per channel, dramatically reducing I/O and CPU overhead. For sources with 10,000 channels and 100 mapped, this results in ~99x fewer file opens and ~100x fewer full file scans. Orphaned programs for unmapped channels are also cleaned up during refresh to prevent database bloat. Database updates are now atomic to prevent clients from seeing empty/partial EPG data during refresh.
+- EPG table now displays detailed status messages including refresh progress, success messages, and last message for idle sources (matching M3U table behavior) (Closes #214)
 - IPv6 access now allowed by default with all IPv6 CIDRs accepted - Thanks [@adrianmace](https://github.com/adrianmace)
 - nginx.conf updated to bind to both IPv4 and IPv6 ports - Thanks [@jordandalley](https://github.com/jordandalley)
+- EPG matching now respects source priority and only uses active (enabled) EPG sources (Closes #672)
+- EPG form API Key field now only visible when Schedules Direct source type is selected
+
+### Fixed
+
+- EPG table "Updated" column now updates in real-time via WebSocket using the actual backend timestamp instead of requiring a page refresh
+- Bulk channel editor confirmation dialog now displays the correct stream profile name that will be applied to the selected channels.
+- uWSGI not found and 502 bad gateway on first startup
+
+## [0.13.1] - 2025-12-06
+
+### Fixed
+
+- JWT token generated so is unique for each deployment
 
 ## [0.13.0] - 2025-12-02
 

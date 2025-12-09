@@ -295,7 +295,11 @@ def match_channels_to_epg(channels_data, epg_data, region_code=None, use_ml=True
             if score > 50:  # Only show decent matches
                 logger.debug(f"  EPG '{row['name']}' (norm: '{row['norm_name']}') => score: {score} (base: {base_score}, bonus: {bonus})")
 
-            if score > best_score:
+            # When scores are equal, prefer higher priority EPG source
+            row_priority = row.get('epg_source_priority', 0)
+            best_priority = best_epg.get('epg_source_priority', 0) if best_epg else -1
+
+            if score > best_score or (score == best_score and row_priority > best_priority):
                 best_score = score
                 best_epg = row
 
@@ -471,9 +475,9 @@ def match_epg_channels():
                 "norm_chan": normalize_name(channel.name)  # Always use channel name for fuzzy matching!
             })
 
-        # Get all EPG data
+        # Get all EPG data from active sources, ordered by source priority (highest first) so we prefer higher priority matches
         epg_data = []
-        for epg in EPGData.objects.all():
+        for epg in EPGData.objects.select_related('epg_source').filter(epg_source__is_active=True):
             normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
             epg_data.append({
                 'id': epg.id,
@@ -482,9 +486,13 @@ def match_epg_channels():
                 'name': epg.name,
                 'norm_name': normalize_name(epg.name),
                 'epg_source_id': epg.epg_source.id if epg.epg_source else None,
+                'epg_source_priority': epg.epg_source.priority if epg.epg_source else 0,
             })
 
-        logger.info(f"Processing {len(channels_data)} channels against {len(epg_data)} EPG entries")
+        # Sort EPG data by source priority (highest first) so we prefer higher priority matches
+        epg_data.sort(key=lambda x: x['epg_source_priority'], reverse=True)
+
+        logger.info(f"Processing {len(channels_data)} channels against {len(epg_data)} EPG entries (from active sources only)")
 
         # Run EPG matching with progress updates - automatically uses conservative thresholds for bulk operations
         result = match_channels_to_epg(channels_data, epg_data, region_code, use_ml=True, send_progress=True)
@@ -618,9 +626,9 @@ def match_selected_channels_epg(channel_ids):
                 "norm_chan": normalize_name(channel.name)
             })
 
-        # Get all EPG data
+        # Get all EPG data from active sources, ordered by source priority (highest first) so we prefer higher priority matches
         epg_data = []
-        for epg in EPGData.objects.all():
+        for epg in EPGData.objects.select_related('epg_source').filter(epg_source__is_active=True):
             normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
             epg_data.append({
                 'id': epg.id,
@@ -629,9 +637,13 @@ def match_selected_channels_epg(channel_ids):
                 'name': epg.name,
                 'norm_name': normalize_name(epg.name),
                 'epg_source_id': epg.epg_source.id if epg.epg_source else None,
+                'epg_source_priority': epg.epg_source.priority if epg.epg_source else 0,
             })
 
-        logger.info(f"Processing {len(channels_data)} selected channels against {len(epg_data)} EPG entries")
+        # Sort EPG data by source priority (highest first) so we prefer higher priority matches
+        epg_data.sort(key=lambda x: x['epg_source_priority'], reverse=True)
+
+        logger.info(f"Processing {len(channels_data)} selected channels against {len(epg_data)} EPG entries (from active sources only)")
 
         # Run EPG matching with progress updates - automatically uses appropriate thresholds
         result = match_channels_to_epg(channels_data, epg_data, region_code, use_ml=True, send_progress=True)
@@ -749,9 +761,10 @@ def match_single_channel_epg(channel_id):
         test_normalized = normalize_name(test_name)
         logger.debug(f"DEBUG normalization example: '{test_name}' → '{test_normalized}' (call sign preserved)")
 
-        # Get all EPG data for matching - must include norm_name field
+        # Get all EPG data for matching from active sources - must include norm_name field
+        # Ordered by source priority (highest first) so we prefer higher priority matches
         epg_data_list = []
-        for epg in EPGData.objects.filter(name__isnull=False).exclude(name=''):
+        for epg in EPGData.objects.select_related('epg_source').filter(epg_source__is_active=True, name__isnull=False).exclude(name=''):
             normalized_epg_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
             epg_data_list.append({
                 'id': epg.id,
@@ -760,10 +773,14 @@ def match_single_channel_epg(channel_id):
                 'name': epg.name,
                 'norm_name': normalize_name(epg.name),
                 'epg_source_id': epg.epg_source.id if epg.epg_source else None,
+                'epg_source_priority': epg.epg_source.priority if epg.epg_source else 0,
             })
 
+        # Sort EPG data by source priority (highest first) so we prefer higher priority matches
+        epg_data_list.sort(key=lambda x: x['epg_source_priority'], reverse=True)
+
         if not epg_data_list:
-            return {"matched": False, "message": "No EPG data available for matching"}
+            return {"matched": False, "message": "No EPG data available for matching (from active sources)"}
 
         logger.info(f"Matching single channel '{channel.name}' against {len(epg_data_list)} EPG entries")
 

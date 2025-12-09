@@ -24,6 +24,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'is_active',
             'file_path',
             'refresh_interval',
+            'priority',
             'status',
             'last_message',
             'created_at',

@@ -2316,18 +2316,18 @@ def xc_get_epg(request, user, short=False):
             "epg_id": f"{epg_id}",
             "title": base64.b64encode(title.encode()).decode(),
             "lang": "",
-            "start": start.strftime("%Y%m%d%H%M%S"),
-            "end": end.strftime("%Y%m%d%H%M%S"),
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
             "description": base64.b64encode(description.encode()).decode(),
-            "channel_id": channel_num_int,
-            "start_timestamp": int(start.timestamp()),
-            "stop_timestamp": int(end.timestamp()),
+            "channel_id": str(channel_num_int),
+            "start_timestamp": str(int(start.timestamp())),
+            "stop_timestamp": str(int(end.timestamp())),
             "stream_id": f"{channel_id}",
         }
 
         if short == False:
             program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
-            program_output["has_archive"] = "0"
+            program_output["has_archive"] = 0
 
         output['epg_listings'].append(program_output)
 

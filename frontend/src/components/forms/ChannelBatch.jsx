@@ -135,8 +135,10 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       if (values.stream_profile_id === '0') {
         changes.push(`• Stream Profile: Use Default`);
       } else {
-        const profileName =
-          streamProfiles[values.stream_profile_id]?.name || 'Selected Profile';
+        const profile = streamProfiles.find(
+          (p) => `${p.id}` === `${values.stream_profile_id}`
+        );
+        const profileName = profile?.name || 'Selected Profile';
         changes.push(`• Stream Profile: ${profileName}`);
       }
     }

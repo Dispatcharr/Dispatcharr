@@ -4,7 +4,7 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "REPLACE_ME_WITH_A_REAL_SECRET"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_DB = os.environ.get("REDIS_DB", "0")
 

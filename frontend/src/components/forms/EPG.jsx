@@ -29,6 +29,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
       api_key: '',
       is_active: true,
       refresh_interval: 24,
+      priority: 0,
     },
 
     validate: {
@@ -69,6 +70,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         api_key: epg.api_key,
         is_active: epg.is_active,
         refresh_interval: epg.refresh_interval,
+        priority: epg.priority ?? 0,
       };
       form.setValues(values);
       setSourceType(epg.source_type);
@@ -148,14 +150,24 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               key={form.key('url')}
             />
 
-            <TextInput
-              id="api_key"
-              name="api_key"
-              label="API Key"
-              description="API key for services that require authentication"
-              {...form.getInputProps('api_key')}
-              key={form.key('api_key')}
-              disabled={sourceType !== 'schedules_direct'}
+            {sourceType === 'schedules_direct' && (
+              <TextInput
+                id="api_key"
+                name="api_key"
+                label="API Key"
+                description="API key for services that require authentication"
+                {...form.getInputProps('api_key')}
+                key={form.key('api_key')}
+              />
+            )}
+
+            <NumberInput
+              min={0}
+              max={999}
+              label="Priority"
+              description="Priority for EPG matching (higher numbers = higher priority). Used when multiple EPG sources have matching entries for a channel."
+              {...form.getInputProps('priority')}
+              key={form.key('priority')}
             />
 
             {/* Put checkbox at the same level as Refresh Interval */}

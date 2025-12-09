@@ -631,7 +631,7 @@ export const WebsocketProvider = ({ children }) => {
                 const sourceId =
                   parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
-                
+
                 // Only update progress if the EPG still exists in the store
                 // This prevents crashes when receiving updates for deleted EPGs
                 if (epg) {
@@ -639,7 +639,9 @@ export const WebsocketProvider = ({ children }) => {
                   updateEPGProgress(parsedEvent.data);
                 } else {
                   // EPG was deleted, ignore this update
-                  console.debug(`Ignoring EPG refresh update for deleted EPG ${sourceId}`);
+                  console.debug(
+                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
+                  );
                   break;
                 }
 
@@ -678,6 +680,10 @@ export const WebsocketProvider = ({ children }) => {
                       status: parsedEvent.data.status || 'success',
                       last_message:
                         parsedEvent.data.message || epg.last_message,
+                      // Use the timestamp from the backend if provided
+                      ...(parsedEvent.data.updated_at && {
+                        updated_at: parsedEvent.data.updated_at,
+                      }),
                     });
 
                     // Only show success notification if we've finished parsing programs and had no errors

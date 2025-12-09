@@ -1650,7 +1650,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         epg_source.status = EPGSource.STATUS_SUCCESS
         epg_source.last_message = (
             f"Parsed {total_programs:,} programs for {channels_with_programs} channels "
-            f"(skipped {skipped_programs:,} programmes for {total_epg_count - mapped_count} unmapped channels)"
+            f"(skipped {skipped_programs:,} programs for {total_epg_count - mapped_count} unmapped channels)"
         )
         epg_source.updated_at = timezone.now()
         epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
@@ -1668,11 +1668,12 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         # Send completion notification with status
         send_epg_update(epg_source.id, "parsing_programs", 100,
                       status="success",
-                      message=epg_source.last_message)
+                      message=epg_source.last_message,
+                      updated_at=epg_source.updated_at.isoformat())
 
         logger.info(f"Completed parsing programs for source: {epg_source.name} - "
-                   f"{total_programs:,} programs for {channels_with_programs} channels, "
-                   f"skipped {skipped_programs:,} programmes for unmapped channels")
+               f"{total_programs:,} programs for {channels_with_programs} channels, "
+               f"skipped {skipped_programs:,} programs for unmapped channels")
         return True
 
     except Exception as e:
