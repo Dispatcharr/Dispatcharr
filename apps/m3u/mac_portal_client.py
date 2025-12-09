@@ -221,22 +221,24 @@ class MacPortalClient:
         """Versucht, Kontoinformationen und das Ablaufdatum abzurufen. Optionaler Schritt."""
         self.expiry_date = None
         try:
-            # 💡 KORREKTUR: Verwende GET, wie in V4, da dies oft bei Account Info funktioniert.
+            # ✅ KORREKTUR: Nutzt GET und die korrekten Felder ('phone' zuerst)
             data = self._request(self.portal_url, "GET", {
                 "type": "account_info",
                 "action": "get_main_info"
             })
             js = data.get("js", {})
             
-            # 💡 KORREKTUR: Prüfe zuerst auf 'phone' (wie in V4) und dann auf Standardfelder.
+            # Prüfe zuerst auf 'phone' (häufiger Workaround) und dann auf Standardfelder
             self.expiry_date = js.get("phone") or js.get("end_date") or js.get("expire")
             
             if self.expiry_date:
+                # 💡 Protokolliert den Erfolg, damit Sie ihn in den Logs sehen.
                 logger.info("Account Info: Ablaufdatum=%s", self.expiry_date)
             else:
                 logger.warning("Account-Informationen abgerufen, aber Ablaufdatum fehlt (MAC:%s).", self.mac)
 
         except MacPortalError as e:
+            # 💡 Protokolliert den Fehler, falls der Abruf fehlschlägt.
             logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen (MAC:%s): %s", self.mac, e)
             self.expiry_date = None
         except Exception:
@@ -249,8 +251,8 @@ class MacPortalClient:
         Gibt das während der Profilabfrage gespeicherte Ablaufdatum zurück.
         Wird von der Anwendung (tasks.py) erwartet.
         """
+        # Führt _get_account_info nur dann aus, wenn das Datum noch nicht gesetzt wurde
         if not self.expiry_date and self.portal_url:
-            # Versuche es erneut, falls der erste Aufruf in connect() fehlschlug
             self._get_account_info()
             
         return self.expiry_date
