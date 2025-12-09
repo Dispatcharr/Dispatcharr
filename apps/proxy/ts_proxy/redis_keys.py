@@ -102,3 +102,8 @@ class RedisKeys:
     def mac_busy(mac_id):
         """Key indicating that a MAC address is currently in use by an active stream."""
         return f"ts_proxy:mac:{mac_id}:busy"
+
+    @staticmethod
+    def mac_cooldown(mac_id):
+        """Key for cooldown marker of a specific M3UAccountMac (to avoid retrying bad MACs temporarily)."""
+        return f"ts_proxy:m3u_mac:{mac_id}:cooldown"
