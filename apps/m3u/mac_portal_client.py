@@ -104,6 +104,12 @@ class MacPortalClient:
 
     def _make_request(self, url: str, method: str = "GET", params: dict = None, auth: bool = True) -> dict:
         """Zentraler Request-Handler."""
+        
+        # NEUE PRÜFUNG: Stellt sicher, dass die URL nicht None ist.
+        if not url:
+            # Dies sollte verhindern, dass der 'Invalid URL: None' Fehler auftritt.
+            raise MacPortalError("Request fehlgeschlagen: Portal-URL ist nicht gesetzt.")
+
         proxies = self._get_proxies()
         headers = self._get_headers(auth=auth)
         
@@ -392,6 +398,7 @@ class MacPortalClient:
     def get_channels(self) -> List[Dict]:
         """Ruft alle Kanäle ab und normalisiert sie."""
         if not self.play_token:
+            # Stellt sicher, dass self.portal_url gesetzt und der Client verbunden ist
             self.connect()
 
         if not self.genres_map:
@@ -433,14 +440,18 @@ class MacPortalClient:
     # 4. Stream Generation
     # =========================================================================
 
-    # ❗ WICHTIGE KORREKTUR: Umbenennung zu 'create_link', um den Fehler zu beheben.
     def create_link(self, cmd: str) -> Optional[str]:
         """
         Konvertiert einen Kanal-'cmd' in eine echte URL. 
-        Diese Methode wird von der Anwendung unter dem Namen 'create_link' erwartet.
         """
         if not cmd:
             return None
+        
+        # Stellt sicher, dass die Verbindung besteht und self.portal_url gesetzt ist.
+        if not self.portal_url:
+            if not self.connect():
+                 logger.error("Portal-URL konnte nicht aufgelöst werden, kann keinen Link erstellen.")
+                 return None
 
         params = {
             "type": "itv",
@@ -471,11 +482,12 @@ class MacPortalClient:
                      link = link.split()[-1] 
                  
                  # 2. URL-Dekodierung, um korrupte URLs zu beheben (z.B. doppelte Hostnamen)
+                 from urllib.parse import unquote 
                  link = unquote(link) 
                  
                  return link
             
         except Exception as e:
-            logger.error(f"Fehler beim Erstellen des Links für cmd {cmd}: {e}")
+            logger.error(f"Fehler beim Erstellen des Links für cmd {cmd}: Request fehlgeschlagen: {e}")
             
         return None
