@@ -1541,93 +1541,86 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                 attempt_status = None
 
                 try:
-                # Client erstellen und verbinden
-                client = MacPortalClient(
-                    account.server_url, 
-                    mac_entry.mac, 
-                    proxy=proxy, 
-                    timezone=account.timezone
-                )
-                client.connect()
-                
-                # Kanalliste abrufen (Bestätigt den erfolgreichen Login)
-                channels = client.get_channels() 
+                    client = MacPortalClient(
+                        base_url=account.server_url,
+                        mac=mac_value,
+                        proxy=proxy,
+                        timezone=tz_name,
+                    )
 
-                # ===================================================================
-                # 🛠️ FIX: DATUM EXPLIZIT VOM CLIENT ABRUFEN UND SPEICHERN
-                # ===================================================================
-                
-                new_expiry_text = client.get_expires()
-                
-                if new_expiry_text:
+                    # Ablaufinfo (fürs UI + Status)
+                    expiry_info = None
                     try:
-                        # 1. Datum parsen mit der existierenden Helper-Funktion
-                        expires_at_dt, expires_text = _parse_mac_portal_expiry(new_expiry_text) 
-
-                        # 2. Datenbankobjekt aktualisieren
-                        mac_entry.expiry_info = expires_text or new_expiry_text
-                        mac_entry.expires_at = expires_at_dt 
-                        
-                        # 3. Status setzen (falls abgelaufen)
-                        if expires_at_dt and expires_at_dt < timezone.now():
-                            mac_entry.status = M3UAccountMac.Status.EXPIRED
-                        else:
-                            mac_entry.status = M3UAccountMac.Status.OK
-                            
-                        # 4. Speichern in die Datenbank
-                        with transaction.atomic():
-                            # Sicherstellen, dass nur relevante Felder aktualisiert werden
-                            mac_entry.save(update_fields=["expiry_info", "expires_at", "status", "last_updated"])
-                            
+                        expiry_info = client.get_expires()
                         logger.info(
-                            "Expiry date successfully saved to DB for MAC %s: %s", 
-                            mac_entry.mac, 
-                            mac_entry.expiry_info
+                            "MAC account %s (%s) expiry info: %s",
+                            account_id,
+                            mac_value,
+                            expiry_info,
                         )
+                    except MacPortalError as exp_err:
+                        # Treat explicit portal errors as potential expiry info
+                        logger.warning(
+                            "Could not fetch MAC expiry info for %s: %s",
+                            mac_value,
+                            exp_err,
+                        )
+                        mac_entry.last_error = str(exp_err)
+                        low = str(exp_err).lower()
+                        if "expir" in low or "no active" in low or "ended" in low or "expired" in low:
+                            attempt_status = M3UAccountMac.Status.EXPIRED
+                        else:
+                            attempt_status = M3UAccountMac.Status.ERROR
 
-                    except Exception as e:
-                        logger.error("Failed to save expiry date for MAC %s: %s", mac_entry.mac, e)
+                    if expiry_info is not None:
+                        expires_at, expires_text = _parse_mac_portal_expiry(expiry_info)
 
-                # ===================================================================
+                    # Channels nur laden, wenn noch keine Primary gewählt
+                    channels = None
+                    if primary_channels is None:
+                        channels = client.get_channels()
+                        logger.info(
+                            "MAC account %s (MAC %s): received %s channels from portal",
+                            account_id,
+                            mac_value,
+                            len(channels),
+                        )
+                        primary_channels = channels
+                    else:
+                        channels = primary_channels
 
-                logger.info(
-                    "MAC account %s (MAC %s): received %s channels from portal", 
-                    account.id, mac_entry.mac, len(channels)
-                )
+                    # Wenn wir noch keinen Status aus dem Expiry-Block haben, aus expires_at/text bestimmen
+                    if attempt_status is None:
+                        now_ts = timezone.now()
+                        if expires_at is not None:
+                            if expires_at <= now_ts:
+                                attempt_status = M3UAccountMac.Status.EXPIRED
+                            else:
+                                attempt_status = M3UAccountMac.Status.VALID
+                        elif expires_text:
+                            low = (expires_text or "").lower()
+                            if "expir" in low or "no active" in low or "ended" in low or "expired" in low:
+                                attempt_status = M3UAccountMac.Status.EXPIRED
+                            else:
+                                attempt_status = M3UAccountMac.Status.VALID
+                        else:
+                            attempt_status = M3UAccountMac.Status.UNKNOWN
 
-                # Erfolgreiche Verbindung gefunden: Proxy-Schleife beenden
-                break 
+                    # Valid/Expired -> fertig mit dieser MAC, keinen weiteren Proxy testen
+                    if attempt_status in (
+                        M3UAccountMac.Status.VALID,
+                        M3UAccountMac.Status.EXPIRED,
+                    ):
+                        final_status = attempt_status
+                        final_expires_at = expires_at
+                        final_expires_text = expires_text
+                        break
 
-            except MacPortalError as e:
-                # MAC-Fehler (z.B. nicht autorisiert, abgelaufen)
-                logger.warning("MAC %s failed to connect with proxy %s: %s", mac_entry.mac, proxy, e)
-                
-                # Setze permanenten Status bei wahrscheinlichen Fehlern
-                if "unauthorized" in str(e).lower() or "expired" in str(e).lower():
-                    mac_entry.status = M3UAccountMac.Status.EXPIRED
-                    mac_entry.expiry_info = f"EXPIRED/UNAUTHORIZED: {e}"
-                else:
-                    mac_entry.status = M3UAccountMac.Status.ERROR
-                    mac_entry.expiry_info = f"CONNECTION ERROR: {e}"
-                    
-                with transaction.atomic():
-                    mac_entry.save(update_fields=["expiry_info", "status", "last_updated"])
-                    
-                # Versuche den nächsten Proxy, wenn es ein temporärer Fehler war
-                if mac_entry.status != M3UAccountMac.Status.EXPIRED:
-                    continue # Versuche den nächsten Proxy
-                else:
-                    # Wenn EXPIRED, dann keine weiteren Proxies versuchen
-                    break
-            except Exception as e:
-                logger.exception("Unexpected error processing MAC %s: %s", mac_entry.mac, e)
-                mac_entry.status = M3UAccountMac.Status.ERROR
-                mac_entry.expiry_info = f"UNEXPECTED ERROR: {e}"
-                with transaction.atomic():
-                    mac_entry.save(update_fields=["expiry_info", "status", "last_updated"])
-                    
-                # Versuche nächsten Proxy
-                continue
+                    # ERROR/UNKNOWN mit funktionierendem Proxy -> nächsten Proxy probieren
+                    last_error = MacPortalError(
+                        f"MAC {mac_value} returned status {attempt_status} with proxy {proxy}"
+                    )
+                    continue
 
                 except (MacPortalError, requests.RequestException) as e:
                     # Classify error as proxy-level or MAC-level.
