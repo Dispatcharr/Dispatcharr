@@ -516,7 +516,7 @@ class StreamManager:
         # ----------------------------------------------------------------------
         
         if mac_entry and redis_client:
-            COOLDOWN_DURATION = 6 * 3600  # 6 Stunden Cooldown
+            COOLDOWN_DURATION = 10 * 60  # 10x 60 Sekunden also 6 Minuten Cooldown
             
             # 1. MAC temporär in Cooldown setzen (in Redis)
             try:
@@ -527,7 +527,7 @@ class StreamManager:
                     "Put failed MAC %s (ID: %s) on %dh cooldown due to runtime failure on channel %s.",
                     current_mac_value,
                     mac_entry.id,
-                    COOLDOWN_DURATION // 3600,
+                    COOLDOWN_DURATION // 60,
                     self.channel_id,
                 )
             except Exception:
@@ -2139,9 +2139,9 @@ class StreamManager:
                 try:
                     profile_id_int = int(profile_id.decode("utf-8"))
                     cooldown_key = RedisKeys.m3u_profile_cooldown(profile_id_int)
-                    redis_client.setex(cooldown_key, 1 * 3600, "1")
+                    redis_client.setex(cooldown_key, 10 * 60, "1")
                     logger.warning(
-                        "Put M3U profile %s on 12h cooldown after failures for channel %s",
+                        "Put M3U profile %s on 10Min cooldown after failures for channel %s",
                         profile_id_int,
                         self.channel_id,
                     )
