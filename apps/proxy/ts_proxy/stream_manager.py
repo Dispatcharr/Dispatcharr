@@ -524,7 +524,7 @@ class StreamManager:
                 redis_client.setex(mac_cooldown_key, COOLDOWN_DURATION, "1")
 
                 logger.warning(
-                    "Put failed MAC %s (ID: %s) on %dh cooldown due to runtime failure on channel %s.",
+                    "Put failed MAC %s (ID: %s) on %dm cooldown due to runtime failure on channel %s.",
                     current_mac_value,
                     mac_entry.id,
                     COOLDOWN_DURATION // 60,
