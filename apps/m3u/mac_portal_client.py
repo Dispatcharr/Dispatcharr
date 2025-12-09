@@ -228,6 +228,17 @@ class MacPortalClient:
         except Exception:
             pass
 
+    def get_expires(self) -> Optional[str]:
+        """
+        Gibt das während der Profilabfrage gespeicherte Ablaufdatum zurück.
+        Wird von der Anwendung (tasks.py) erwartet.
+        """
+        if not self.expiry_date and self.portal_url:
+            # Versuche es erneut, falls der erste Aufruf in connect() fehlschlug
+            self._get_account_info()
+            
+        return self.expiry_date
+
     # ---------------------------------------------------------------------
     # CONTENT
     # ---------------------------------------------------------------------
@@ -284,6 +295,7 @@ class MacPortalClient:
 
         link = data.get("js", {}).get("cmd")
         if not link:
+            # Re-Authentifizierungslogik
             self.connect()
             data = self._request(self.portal_url, "POST", {
                 "type": "itv",
