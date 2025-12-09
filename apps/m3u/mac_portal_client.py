@@ -11,7 +11,6 @@ from typing import Optional, Dict, List, Any, Tuple
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-# Setup eines temporären Loggers für die Ausgabe in diesem Block
 logger = logging.getLogger(__name__)
 
 class MacPortalError(Exception):
@@ -128,6 +127,9 @@ class MacPortalClient:
             return data
 
         except requests.RequestException as e:
+            # Fehlercode hier hinzufügen, um den 405er zu erkennen
+            if hasattr(e.response, 'status_code') and e.response.status_code == 405:
+                raise MacPortalError(f"Request fehlgeschlagen: 405 Client Error: Method Not Allowed for url: {url}")
             raise MacPortalError(f"Request fehlgeschlagen: {e}")
 
     # =========================================================================
@@ -151,6 +153,7 @@ class MacPortalClient:
             "/stalker_portal/load.php",
             "/c/load.php",
             "/portal.php",
+            # Directory paths should be last, as they are less reliable
             "/stalker_portal/c/", 
             "/c/"
         ]
@@ -204,29 +207,55 @@ class MacPortalClient:
             "mac": self.mac, 
         }
         
-        data = self._make_request(self.portal_url, method="POST", params=params, auth=False)
-        js = data.get("js", {})
+        attempts = 0
+        while attempts < 2:
+            try:
+                # First attempt: Standard POST
+                data = self._make_request(self.portal_url, method="POST", params=params, auth=False)
+                js = data.get("js", {})
+                
+                # Logic from utils.py: Handle "missing" msg by generating random token
+                if "msg" in js and "missing" in str(js.get("msg")).lower():
+                    logger.info("Handshake fordert spezifische Token-Generierung an...")
+                    random_token = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(32))
+                    prehash_val = hashlib.sha1(random_token.encode()).hexdigest()
+                    
+                    self.token = random_token 
+                    
+                    params["mac"] = self.mac
+                    params["prehash"] = prehash_val
+                    
+                    data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
+                    js = data.get("js", {})
 
-        if "msg" in js and "missing" in str(js.get("msg")).lower():
-            logger.info("Handshake fordert spezifische Token-Generierung an...")
-            random_token = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(32))
-            prehash_val = hashlib.sha1(random_token.encode()).hexdigest()
-            
-            self.token = random_token 
-            
-            params["mac"] = self.mac
-            params["prehash"] = prehash_val
-            
-            data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
-            js = data.get("js", {})
+                self.token = js.get("token")
+                self.token_random = js.get("random")
 
-        self.token = js.get("token")
-        self.token_random = js.get("random")
+                if not self.token:
+                    raise MacPortalError("Handshake fehlgeschlagen: Kein Token erhalten.")
+                
+                logger.debug(f"Handshake erfolgreich. Token: {self.token}")
+                return # Erfolg, Schleife verlassen
 
-        if not self.token:
-            raise MacPortalError("Handshake fehlgeschlagen: Kein Token erhalten.")
+            except MacPortalError as e:
+                # Korrektur des 405-Fehlers auf Verzeichnis-Pfaden
+                if attempts == 0 and "405 Client Error: Method Not Allowed" in str(e) and self.portal_url.endswith("/"):
+                    # Fallback: Wenn 405 auf einem Verzeichnis, versuche den Standard-API-Dateipfad (load.php)
+                    self.portal_url = self.portal_url.rstrip("/") + "/load.php"
+                    logger.warning(f"Handshake schlug mit 405 auf Verzeichnis fehl. Versuche Fallback-URL: {self.portal_url}")
+                    attempts += 1
+                    continue # Wiederhole die Schleife mit neuer URL
+                
+                # Bei jedem anderen Fehler oder nach dem Fallback, Fehler auslösen
+                raise e
+            
+            finally:
+                if attempts == 0:
+                    attempts += 1
         
-        logger.debug(f"Handshake erfolgreich. Token: {self.token}")
+        # Sollte nicht erreicht werden, aber zur Sicherheit
+        raise MacPortalError(f"Handshake fehlgeschlagen nach Fallback-Versuch für: {self.portal_url}")
+
 
     def _get_profile(self):
         """Schritt 2: Sendet Metriken und erhält play_token (Die 'Super Logik')."""
@@ -323,10 +352,8 @@ class MacPortalClient:
     def get_expires(self) -> Optional[str]:
         """
         Gibt das während der Verbindung abgerufene Ablaufdatum zurück.
-        Behebt den Fehler: 'MacPortalClient' object has no attribute 'get_expires'.
         """
         if not self.expiry_date:
-            # Fallback: Versuche, Kontoinformationen abzurufen, falls dies während connect() fehlgeschlagen ist
             try:
                 self._get_account_info()
             except MacPortalError:
@@ -363,10 +390,8 @@ class MacPortalClient:
     def get_channels(self) -> List[Dict]:
         """Ruft alle Kanäle ab und normalisiert sie."""
         if not self.play_token:
-            # Versuche, die Verbindung herzustellen, falls der Token fehlt
             self.connect()
 
-        # Stelle sicher, dass Kategorien für die Zuordnung geladen sind
         if not self.genres_map:
             self.get_categories()
 
@@ -395,7 +420,7 @@ class MacPortalClient:
                 "name": name,
                 "group": group_name,
                 "logo": ch.get("logo"),
-                "cmd": cmd, # Behalte den raw cmd für create_link
+                "cmd": cmd, 
             })
             
         self.channels_cache = normalized
@@ -407,13 +432,11 @@ class MacPortalClient:
 
     def get_stream_url(self, cmd: str) -> Optional[str]:
         """
-        Konvertiert einen Kanal-'cmd' (z.B. 'ffmpeg http://...') in eine echte URL.
-        Logik von live.py createLink.
+        Konvertiert einen Kanal-'cmd' in eine echte URL.
         """
         if not cmd:
             return None
 
-        # API-Aufruf zu create_link
         params = {
             "type": "itv",
             "action": "create_link",
@@ -438,7 +461,7 @@ class MacPortalClient:
                  link = data.get("js", {}).get("cmd")
 
             if link:
-                 # Bereinige den Link (manchmal ist es "ffmpeg http://url" -> nehme nur die URL)
+                 # Bereinige den Link 
                  if " " in link:
                      link = link.split()[-1] 
                  return link
