@@ -2,26 +2,26 @@ import logging
 import json
 import hashlib
 import time
+import random
+import string
+import re
 from urllib.parse import urlparse, quote, unquote
 from typing import Optional, Dict, List, Any, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+# Setup eines temporären Loggers für die Ausgabe
 logger = logging.getLogger(__name__)
-
 
 class MacPortalError(Exception):
     """Benutzerdefinierter Fehler für MAC Portal Probleme."""
-
     pass
-
 
 class MacPortalClient:
     """
     Erweiterter Client für Stalker-/STB-Portale mit MAC-Login.
-    Implementiert die vollständige MAG250/254 Emulation und
-    die robustere Logik für API-Aufrufe und Stream-Links.
+    Implementiert die vollständige MAG250/254 Emulation.
     """
 
     def __init__(
@@ -50,322 +50,408 @@ class MacPortalClient:
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
 
+        # State Variables
         self.portal_url: Optional[str] = None
-        self.token: Optional[str] = None
-        self.expires_at: Optional[str] = None
-        # Cache
-        self.genres_by_id: Dict[str, str] = {}
-        self.raw_channels: List[Dict] = []
-
-    def _detect_portal_url(self) -> Optional[str]:
-        """Versucht, die finale Portal-URL aufzulösen."""
-        self.portal_url = self.original_base_url.rstrip('/') + "/stalker_portal/server/load.php"
-        return self.portal_url
-    
-    # ----------------------------------------------------
-    # API-HELFER (ZENTRALE ANFRAGEFUNKTION)
-    # ----------------------------------------------------
-
-    def _make_request(self, url: str, method: str = "GET", params: Dict[str, Any] = None, headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Generische Funktion zum Ausführen von HTTP-Anfragen mit Token-Handling."""
+        self.token: Optional[str] = None          # Auth token
+        self.token_random: Optional[str] = None   # Random seed from handshake
+        self.play_token: Optional[str] = None     # Token needed for streams
+        self.profile_status: int = 0
+        self.expiry_date: Optional[str] = None # Speichert das Ablaufdatum
         
-        final_headers = {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; RTV-R3; Linux; ) AppleWebKit/534.34 (KHTML, like Gecko) Qt/4.8.4 Safari/534.34",
+        # Cache
+        self.genres_map: Dict[str, str] = {}
+        self.channels_cache: List[Dict] = []
+
+        # Generate Device Hashes (once, on init)
+        self._generate_device_hashes()
+
+    def _generate_device_hashes(self):
+        """Generiert STB-ähnliche Seriennummern und IDs basierend auf der MAC."""
+        self.sn = hashlib.md5(self.mac.encode()).hexdigest().upper()[:13]
+        self.device_id = hashlib.sha256(self.mac.encode()).hexdigest().upper()
+        self.device_id2 = self.device_id
+        self.adid = hashlib.md5((self.sn + self.mac).encode()).hexdigest()
+        self.hw_version_2 = hashlib.sha1(self.mac.encode()).hexdigest()
+        self.prehash = hashlib.sha1((self.sn + self.mac).encode()).hexdigest()
+
+    def _get_proxies(self) -> Optional[dict]:
+        if not self.proxy:
+            return None
+        return {"http": self.proxy, "https": self.proxy}
+
+    def _get_headers(self, auth: bool = True) -> dict:
+        """Emuliert MAG250/254 Header."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250 stbapp ver: 2 rev: 369 Safari/533.3",
             "Accept": "*/*",
-            "X-User-Agent": "Mozilla/5.0 (QtEmbedded; RTV-R3; Linux; ) AppleWebKit/534.34 (KHTML, like Gecko) Qt/4.8.4 Safari/534.34",
+            "Accept-Encoding": "gzip, deflate",
+            "X-User-Agent": "Model: MAG250; Link: WiFi",
+            "Connection": "Keep-Alive", 
+            "Pragma": "no-cache",
         }
         
-        if self.token:
-             # Fügen Sie das Authorization Header nur hinzu, wenn ein Token vorhanden ist
-            final_headers["Authorization"] = f"Bearer {self.token}" 
-
-        if headers:
-            final_headers.update(headers)
+        cookies = [f"mac={self.mac}", "stb_lang=en", f"timezone={self.timezone}"]
         
-        # Basisdaten für die POST-Anfrage
-        data = {"mac": self.mac, "hd": "1"}
-        if params:
-            data.update(params)
+        if self.portal_url and "/stalker_portal/" in self.portal_url:
+             cookies.append(f"adid={self.adid}")
+        
+        headers["Cookie"] = "; ".join(cookies)
+
+        if auth and self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+            
+        return headers
+
+    def _make_request(self, url: str, method: str = "GET", params: dict = None, auth: bool = True) -> dict:
+        """Zentraler Request-Handler."""
+        
+        # NEUE PRÜFUNG: Stellt sicher, dass die URL nicht None ist.
+        if not url:
+            # Dies sollte verhindern, dass der 'Invalid URL: None' Fehler auftritt.
+            raise MacPortalError("Request fehlgeschlagen: Portal-URL ist nicht gesetzt.")
+
+        proxies = self._get_proxies()
+        headers = self._get_headers(auth=auth)
+        
+        if params is None:
+            params = {}
+        if "JsHttpRequest" not in params:
+            params["JsHttpRequest"] = "1-xml"
 
         try:
             if method.upper() == "POST":
-                response = self.session.post(
-                    url,
-                    data=data,
-                    headers=final_headers,
-                    verify=True,
-                    timeout=10,
-                    proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None
-                )
+                r = self.session.post(url, headers=headers, params=params, proxies=proxies, timeout=15, verify=False)
             else:
-                response = self.session.get(
-                    url,
-                    params=data,
-                    headers=final_headers,
-                    verify=True,
-                    timeout=10,
-                    proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None
-                )
+                r = self.session.get(url, headers=headers, params=params, proxies=proxies, timeout=15, verify=False)
             
-            response.raise_for_status()
-
-            if response.text.startswith('<html>'):
-                 raise MacPortalError("Antwort ist HTML, erwartet JSON. Mögliche Fehlkonfiguration oder Blockierung.")
-
-            return response.json()
+            r.raise_for_status()
             
-        except requests.exceptions.HTTPError as e:
-            # Spezifisches Handling für Token-Ablauf (401/403)
-            if e.response.status_code in (401, 403):
-                 # Token ist möglicherweise abgelaufen. Wir löschen es, um ein Re-Login zu erzwingen.
-                self.token = None 
-                logger.warning("401/403-Fehler bei API-Aufruf. Token wurde gelöscht.")
-                raise MacPortalError(f"Nicht autorisiert (Token abgelaufen?): {e.response.status_code}")
+            try:
+                data = r.json()
+            except json.JSONDecodeError:
+                raise MacPortalError(f"Ungültige JSON-Antwort von {url}: {r.text[:100]}")
+            
+            return data
+
+        except requests.RequestException as e:
+            # Fügt Fehlercode zur Fehlerbehandlung im Handshake hinzu
+            if hasattr(e.response, 'status_code') and e.response.status_code == 405:
+                raise MacPortalError(f"Request fehlgeschlagen: 405 Client Error: Method Not Allowed for url: {url}")
+            raise MacPortalError(f"Request fehlgeschlagen: {e}")
+
+    # =========================================================================
+    # 1. URL Resolution 
+    # =========================================================================
+
+    def resolve_portal_url(self) -> str:
+        """Findet den korrekten API-Endpunkt."""
+        if self.portal_url:
+            return self.portal_url
+
+        if self.original_base_url.endswith(("load.php", "portal.php")):
+            self.portal_url = self.original_base_url
+            return self.portal_url
+
+        parsed = urlparse(self.original_base_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        
+        candidates = [
+            "/stalker_portal/server/load.php",
+            "/stalker_portal/load.php",
+            "/c/load.php",
+            "/portal.php",
+            "/stalker_portal/c/", 
+            "/c/"
+        ]
+
+        logger.info(f"Probiere Portal-URL für {base}...")
+
+        proxies = self._get_proxies()
+        headers = self._get_headers(auth=False)
+
+        for path in candidates:
+            url = base + path
+            try:
+                r = self.session.get(url, headers=headers, proxies=proxies, timeout=5, verify=False)
                 
-            logger.error("HTTP-Fehler bei Anfrage an %s: %s", url, e)
-            raise MacPortalError(f"Portal-Antwortfehler: {e}")
-        except requests.RequestException as e:
-            logger.error("Netzwerkfehler: %s", e)
-            raise MacPortalError(f"Netzwerkfehler: {e}")
-        except json.JSONDecodeError:
-            logger.error("Ungültige JSON-Antwort erhalten: %s", response.text[:200])
-            raise MacPortalError("Ungültige JSON-Antwort vom Portal.")
-
-    # ----------------------------------------------------
-    # STB-EMULATION / LOGIN (HANDSHAKE)
-    # ----------------------------------------------------
-    
-    # (Der Code für _generate_stb_params bleibt hier unverändert)
-    def _generate_stb_params(self, timestamp: int) -> Dict[str, Any]:
-        """Generiert detaillierte STB-Parameter und den metrics-Payload."""
-        mac_clean = self.mac.replace(":", "").lower()
-        mac_bytes = mac_clean.encode('utf-8')
-
-        sn = hashlib.md5(mac_bytes).hexdigest().upper()[:13]
-        device_id = hashlib.sha256(mac_bytes).hexdigest().upper()
-        device_id2 = hashlib.sha256(mac_bytes).hexdigest().upper() 
-
-        metrics = {
-            "stb_type": "MAG250",
-            "image_version": "218",
-            "version": "0.2.18",
-            "language": "en",
-            "resolution": "1280x720",
-            "screensaver_delay": 1,
-            "parental_disabled": 0,
-            "profile": "hd",
-        }
-
-        metrics_json = json.dumps(metrics, separators=(',', ':'))
-        encoded_metrics = quote(metrics_json) 
-
-        host_params = {
-            'type': 'stb',
-            'action': 'handshake',
-            'hd': '1',
-            "sn": sn, 
-            'stb_type': "MAG250",
-            'client_type': 'STB',
-            'image_version': '218',
-            'hw_version': '1.7-BD-00',
-            "metrics": encoded_metrics, 
-            "device_id": device_id,
-            "device_id2": device_id2,
-            'timestamp': str(timestamp),
-        }
+                # Akzeptiere Statuscodes < 400 (2xx Erfolg oder 3xx Redirect)
+                if r.status_code < 400:
+                    self.portal_url = url
+                    logger.info(f"Aufgelöste Portal-URL: {self.portal_url}")
+                    return self.portal_url
+            except Exception:
+                pass
         
-        return host_params
+        logger.warning("Konnte URL nicht automatisch auflösen. Verwende Fallback.")
+        self.portal_url = self.original_base_url
+        return self.portal_url
 
+    # =========================================================================
+    # 2. Authentifizierung (Handshake + Get Profile)
+    # =========================================================================
 
-    def connect(self) -> Optional[str]:
-        """
-        Führt den STB-Login (Handshake) durch und speichert das Token.
-        """
-        if not self._detect_portal_url():
-            raise MacPortalError("Portal-URL konnte nicht aufgelöst werden.")
-
-        timestamp = int(time.time())
-        stb_params = self._generate_stb_params(timestamp)
-        
-        action_name = stb_params.pop('action')
-        type_name = stb_params.pop('type')
-        
-        url = f"{self.portal_url}?type={type_name}&action={action_name}"
-
+    def connect(self) -> bool:
+        """Hauptmethode zur Verbindungsherstellung."""
         try:
-            logger.info("Führe STB-Handshake durch mit MAC: %s", self.mac)
-            
-            # WICHTIG: Handshake verwendet KEIN Authorization Header, 
-            # daher verwenden wir hier direkt session.post statt _make_request.
-            response = self.session.post(
-                url,
-                data=stb_params,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (QtEmbedded; RTV-R3; Linux; ) AppleWebKit/534.34 (KHTML, like Gecko) Qt/4.8.4 Safari/534.34", 
-                    "Accept": "*/*",
-                },
-                verify=True,
-                timeout=10,
-                proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None
-            )
-            response.raise_for_status()
-
-            response_data = response.json()
-            js_data = response_data.get('js', {})
-            
-            play_token = js_data.get('token')
-            
-            if play_token:
-                self.token = play_token
-                self.expires_at = js_data.get('expiration_date')
-                logger.info("Handshake erfolgreich. Token erhalten.")
-                return self.token
-            else:
-                if response.status_code in (401, 403) or response_data.get('status') == 'ERROR':
-                    error_msg = response_data.get('error', f"Fehlercode: {response.status_code}")
-                    raise MacPortalError(f"Handshake fehlgeschlagen: MAC nicht autorisiert ({error_msg})")
-                    
-                raise MacPortalError("Handshake fehlgeschlagen: Kein Token in der Antwort erhalten.")
-
-        except requests.RequestException as e:
-            logger.error("Netzwerkfehler beim Handshake: %s", e)
-            raise MacPortalError(f"Netzwerkfehler beim Handshake: {e}")
-
-    # ----------------------------------------------------
-    # KANAL-OPERATIONEN (ITV-Actions)
-    # ----------------------------------------------------
-
-    def get_genres_map(self) -> Dict[str, str]:
-        """
-        Ruft eine Zuordnung von Genre-ID zu Genre-Titel ab (itv&action=get_genres).
-        """
-        if self.genres_by_id:
-            return self.genres_by_id
-        
-        logger.info("Rufe Kanalgruppen ab (get_genres)")
-        
-        # Sicherstellen, dass ein Token vorhanden ist, bevor die API aufgerufen wird
-        if not self.token:
-            self.connect()
-
-        try:
-            # action=get_genres
-            data = self._make_request(self.portal_url, method="POST", params={"type": "itv", "action": "get_genres"})
-            
-            genres_list = data.get('js', [])
-            
-            # Map the list to a dictionary {id: title}
-            self.genres_by_id = {str(g.get('id')): g.get('title') for g in genres_list if g.get('id') and g.get('title')}
-            
-            # Die Gruppe "Allgemein" (oft ID 1) ist wichtig für die Navigation
-            if "1" not in self.genres_by_id:
-                 self.genres_by_id["1"] = "Alle Kanäle"
-            
-            return self.genres_by_id
+            self.resolve_portal_url()
+            self._handshake()
+            self._get_profile()
+            self._get_account_info() # Holt Ablaufdatum
+            return True
         except MacPortalError as e:
-            logger.error("Fehler beim Abrufen der Genres: %s", e)
-            # Im Fehlerfall wird ein leeres Dictionary zurückgegeben, die Navigation muss das behandeln.
-            return {}
+            logger.error(f"Verbindung fehlgeschlagen: {e}")
+            return False
 
+    def _handshake(self):
+        """Schritt 1: Erhält den anfänglichen Token mit 405-Fallback-Logik."""
+        if not self.portal_url:
+            raise MacPortalError("Portal URL nicht gesetzt")
 
-    def get_all_channels_raw(self) -> List[Dict]:
-        """
-        Ruft die rohe Kanalliste vom Portal ab (itv&action=get_all_channels).
-        """
-        if self.raw_channels:
-            return self.raw_channels
-
-        logger.info("Rufe alle Kanäle ab (get_all_channels)")
-        
-        if not self.token:
-            self.connect()
-
-        # Parameter, um so viele Kanäle wie möglich auf einmal zu erhalten
         params = {
-            "type": "itv", 
-            "action": "get_all_channels", 
-            "hd": "1", 
-            "p": 1, # Seite 1
-            "num_items": 9999, # Hohe Zahl für vollständige Liste
+            "type": "stb",
+            "action": "handshake",
+            "mac": self.mac, 
         }
+        
+        # NEU: 405-Fallback-Logik
+        attempts = 0
+        while attempts < 2:
+            try:
+                url_to_use = self.portal_url
+                if attempts == 1:
+                     # Beim zweiten Versuch, wenn der erste 405 war, die URL korrigieren
+                     if self.portal_url.endswith("/"):
+                        url_to_use = self.portal_url.rstrip("/") + "/load.php"
+                        logger.warning(f"Handshake schlug mit 405 auf Verzeichnis fehl. Versuche Fallback-URL: {url_to_use}")
+                        self.portal_url = url_to_use
 
+                data = self._make_request(url_to_use, method="POST", params=params, auth=False)
+                js = data.get("js", {})
+                
+                # Token-Generierungslogik
+                if "msg" in js and "missing" in str(js.get("msg")).lower():
+                    logger.info("Handshake fordert spezifische Token-Generierung an...")
+                    random_token = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(32))
+                    prehash_val = hashlib.sha1(random_token.encode()).hexdigest()
+                    
+                    self.token = random_token 
+                    
+                    params["mac"] = self.mac
+                    params["prehash"] = prehash_val
+                    
+                    data = self._make_request(url_to_use, method="POST", params=params, auth=True)
+                    js = data.get("js", {})
+
+                self.token = js.get("token")
+                self.token_random = js.get("random")
+
+                if not self.token:
+                    raise MacPortalError("Handshake fehlgeschlagen: Kein Token erhalten.")
+                
+                logger.debug(f"Handshake erfolgreich. Token: {self.token}")
+                return # Erfolg, Schleife verlassen
+
+            except MacPortalError as e:
+                if "405 Client Error: Method Not Allowed" in str(e) and attempts == 0:
+                    attempts += 1
+                    continue # Versuche es erneut mit der korrigierten URL
+                
+                raise e # Bei jedem anderen Fehler oder nach dem Fallback, Fehler auslösen
+            
+            finally:
+                if attempts == 0:
+                    attempts += 1
+        
+        # Sollte nach 2 Versuchen fehlschlagen, falls der Fallback nicht geholfen hat.
+        raise MacPortalError(f"Handshake fehlgeschlagen nach Fallback-Versuch für: {self.portal_url}")
+
+
+    def _get_profile(self):
+        """Schritt 2: Sendet Metriken und erhält play_token."""
+        if not self.token:
+            raise MacPortalError("Profil kann nicht ohne Token abgerufen werden.")
+
+        timestamp = str(round(time.time()))
+        
+        # Vorbereitung der Metriken und Hashes
+        if "/stalker_portal/" in self.portal_url:
+            host_metrics = {
+                "type": "stb",
+                "model": "MAG254",
+                "mac": self.mac,
+                "sn": self.sn,
+                "uid": "",
+                "random": self.token_random
+            }
+            stb_type = "MAG254"
+            ver_str = "ImageDescription: 0.2.18-r14-pub-250; ImageDate: Fri Jan 15 15:20:44 EET 2016; PORTAL version: 5.3.0; API Version: JS API version: 328; STB API version: 134; Player Engine version: 0x566"
+        else:
+            host_metrics = {
+                "mac": self.mac,
+                "sn": self.sn,
+                "type": "STB",
+                "model": "MAG250",
+                "uid": "",
+                "random": ""
+            }
+            stb_type = "MAG250"
+            ver_str = ""
+
+        # JSON Dump -> URL Encode (Quote)
+        metrics_json = json.dumps(host_metrics)
+        encoded_metrics = quote(metrics_json)
+
+        params = {
+            "type": "stb",
+            "action": "get_profile",
+            "hd": "1",
+            "sn": self.sn,
+            "stb_type": stb_type,
+            "client_type": "STB",
+            "image_version": "218",
+            "hw_version": "1.7-BD-00",
+            "metrics": encoded_metrics, 
+            "timestamp": timestamp,
+        }
+        
+        # Hinzufügen spezifischer Stalker-Parameter, falls zutreffend
+        if "/stalker_portal/" in self.portal_url:
+            params.update({
+                "mac": self.mac,
+                "ver": ver_str,
+                "num_banks": "2",
+                "video_out": "hdmi",
+                "device_id": self.device_id,
+                "device_id2": self.device_id2,
+                "auth_second_step": "1",
+                "hw_version_2": self.hw_version_2,
+                "api_signature": "261",
+                "prehash": self.prehash
+            })
+
+
+        data = self._make_request(self.portal_url, method="POST", params=params, auth=True)
+        js = data.get("js", {})
+
+        self.play_token = js.get("play_token")
+        self.profile_status = js.get("status", 0)
+        
+        if not self.play_token:
+            logger.warning("Kein play_token in der Profilantwort erhalten.")
+        else:
+             logger.info("Profil erfolgreich abgerufen. Play Token erhalten.")
+
+    def _get_account_info(self):
+        """Ruft das Ablaufdatum ab."""
+        params = {
+            "type": "account_info",
+            "action": "get_main_info"
+        }
         try:
             data = self._make_request(self.portal_url, method="POST", params=params)
-            # Die Kanalliste ist oft in data['js']['data']
-            self.raw_channels = data.get('js', {}).get('data', [])
+            js = data.get("js", {})
             
-            if not self.raw_channels:
-                 logger.warning("get_all_channels hat keine Daten zurückgegeben.")
-            
-            return self.raw_channels
-        except MacPortalError as e:
-            logger.error("Fehler beim Abrufen der Kanalliste: %s", e)
-            return []
+            # 'phone', 'end_date' oder 'expire' werden oft für das Ablaufdatum verwendet
+            self.expiry_date = js.get("phone") or js.get("end_date") or js.get("expire")
+            logger.info(f"Account Info: Ablaufdatum={self.expiry_date}")
+        except Exception:
+            logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen.")
+    
+    def get_expires(self) -> Optional[str]:
+        """
+        Gibt das während der Verbindung abgerufene Ablaufdatum zurück.
+        """
+        if not self.expiry_date:
+            try:
+                self._get_account_info()
+            except MacPortalError:
+                pass
+        return self.expiry_date
 
+    # =========================================================================
+    # 3. Content (Categories & Channels)
+    # =========================================================================
+
+    def get_categories(self) -> Dict[str, str]:
+        """Ruft Kategorien (Genres) ab und cached sie."""
+        params = {
+            "type": "itv",
+            "action": "get_genres"
+        }
+        
+        try:
+            data = self._make_request(self.portal_url, params=params)
+            js = data.get("js", [])
+            
+            self.genres_map = {}
+            for item in js:
+                if isinstance(item, dict):
+                    gid = str(item.get("id"))
+                    title = item.get("title")
+                    if gid and title:
+                        self.genres_map[gid] = title
+            return self.genres_map
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der Genres: {e}")
+            return {}
 
     def get_channels(self) -> List[Dict]:
-        """
-        Gibt eine normalisierte Kanalliste zurück, indem die Rohdaten verarbeitet werden.
-        """
-        # Stelle sicher, dass Genres und Kanäle vorhanden sind, indem die get-Methoden aufgerufen werden
-        self.get_genres_map() 
-        raw_list = self.get_all_channels_raw()
+        """Ruft alle Kanäle ab und normalisiert sie."""
+        if not self.play_token:
+            # Stellt sicher, dass self.portal_url gesetzt und der Client verbunden ist
+            self.connect()
+
+        if not self.genres_map:
+            self.get_categories()
+
+        params = {
+            "type": "itv",
+            "action": "get_all_channels"
+        }
+        
+        data = self._make_request(self.portal_url, params=params)
+        raw_channels = data.get("js", {}).get("data", [])
         
         normalized = []
-        for ch in raw_list:
-            ch_id = ch.get("id")
-            name = ch.get("name") or f"Channel {ch_id}"
-
-            group_title = self._detect_group_title(ch)
-
-            cmd = ch.get("cmd") or ""
-            # Wir verwenden hier NICHT _extract_stream_url, da die URL nur der "cmd"-String ist.
-            # Die eigentliche abspielbare URL muss über create_link geholt werden.
+        for ch in raw_channels:
+            ch_id = str(ch.get("id"))
+            name = ch.get("name")
+            cmd = ch.get("cmd")
+            genre_id = str(ch.get("tv_genre_id"))
             
-            # Füge den Kanal zur Liste hinzu. Das Feld 'url' ist in dieser Liste
-            # nicht die finale Stream-URL, sondern der 'cmd'-String zur Identifikation.
-            normalized.append(
-                {
-                    "id": ch_id,
-                    "name": name,
-                    "group": group_title,
-                    "cmd": cmd, # Behalte den cmd-String für get_stream_url
-                    "raw": ch,
-                }
-            )
-        logger.info("Normalized %s MAC channels into groups", len(normalized))
+            group_name = self.genres_map.get(genre_id, "Other")
+            
+            if not ch_id or not cmd:
+                continue
+
+            normalized.append({
+                "id": ch_id,
+                "name": name,
+                "group": group_name,
+                "logo": ch.get("logo"),
+                "cmd": cmd, 
+                "url": cmd, # Fügt 'cmd' als 'url' für Anwendungskompatibilität hinzu
+            })
+            
+        self.channels_cache = normalized
         return normalized
 
-    
-    def _detect_group_title(self, ch: Dict[str, Any]) -> str:
-        """
-        Normalisierungslogik: Sucht nach tv_genre_id, genre_id oder cat_id.
-        """
-        genre_id = (
-            ch.get("tv_genre_id")
-            or ch.get("genre_id")
-            or ch.get("cat_id")
-        )
-        if genre_id is not None:
-            genres = self.genres_by_id # Verwende den zwischengespeicherten Cache
-            label = genres.get(str(genre_id))
-            if label:
-                return label
-            return f"Group {genre_id}"
+    # =========================================================================
+    # 4. Stream Generation
+    # =========================================================================
 
-        return "MAC"
-        
-        
-    def get_stream_url(self, cmd: str) -> Optional[str]:
+    def create_link(self, cmd: str) -> Optional[str]:
         """
-        Ruft die abspielbare Stream-URL für einen Kanal über action=create_link ab.
+        Konvertiert einen Kanal-'cmd' in eine echte URL. 
         """
         if not cmd:
             return None
-
-        # Sicherstellen, dass ein Token vorhanden ist, bevor die API aufgerufen wird
-        if not self.token:
-            self.connect()
+        
+        # Stellt sicher, dass die Verbindung besteht und self.portal_url gesetzt ist.
+        if not self.portal_url:
+            if not self.connect():
+                 logger.error("Portal-URL konnte nicht aufgelöst werden, kann keinen Link erstellen.")
+                 return None
 
         params = {
             "type": "itv",
@@ -385,7 +471,6 @@ class MacPortalClient:
             link = js.get("cmd")
             
             # Re-Authentifizierungslogik für abgelaufene Token
-            # Führt nur einen erneuten Versuch durch, wenn der erste Versuch fehlschlug
             if not link and self.connect(): 
                  logger.info("create_link gab leere Rückgabe. Erneute Authentifizierung war erfolgreich. Versuche es erneut.")
                  data = self._make_request(self.portal_url, method="POST", params=params)
@@ -396,12 +481,13 @@ class MacPortalClient:
                  if " " in link:
                      link = link.split()[-1] 
                  
-                 # 2. KRITISCHE KORREKTUR: URL-Dekodierung, um die Duplizierung des Hostnamens zu beheben.
+                 # 2. URL-Dekodierung, um korrupte URLs zu beheben (z.B. doppelte Hostnamen)
+                 from urllib.parse import unquote 
                  link = unquote(link) 
                  
                  return link
             
         except Exception as e:
-            logger.error(f"Fehler beim Erstellen des Stream-Links für cmd '{cmd[:30]}...': {e}")
+            logger.error(f"Fehler beim Erstellen des Links für cmd {cmd}: Request fehlgeschlagen: {e}")
             
         return None
