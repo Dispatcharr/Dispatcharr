@@ -734,129 +734,116 @@ class StreamManager:
             self._close_socket()
             return False
 
-def _read_stderr(self):
-        """Read and log ffmpeg stderr output with real-time stats parsing, safely handling closed pipes."""
+    def _start_stderr_reader(self):
+        """Start a thread to read stderr from the transcode process"""
+        if self.transcode_process and self.transcode_process.stderr:
+            self.stderr_reader_thread = threading.Thread(
+                target=self._read_stderr,
+                daemon=True  # Use daemon thread so it doesn't block program exit
+            )
+            self.stderr_reader_thread.start()
+            logger.debug(f"Started stderr reader thread for channel {self.channel_id}")
+
+    def _read_stderr(self):
+        """Read and log ffmpeg stderr output with real-time stats parsing"""
+        # [IHR VORHANDENER CODE FÜR _read_stderr, wie im letzten Schritt korrigiert]
         try:
             buffer = b""
             last_stats_line = b""
 
             # Read byte by byte for immediate detection
-            while self.transcode_process and self.transcode_process.stderr and self.running:
+            while self.transcode_process and self.transcode_process.stderr:
                 try:
-                    # ----------------------------------------------------
-                    # KORREKTUR: Fangen den ValueError ab (read of closed file)
-                    # ----------------------------------------------------
+                    # Read one byte at a time for immediate processing
                     byte = self.transcode_process.stderr.read(1)
-                except ValueError:
-                    # Fehlerbehandlung, wenn der Stream geschlossen wurde (FFmpeg wurde beendet)
-                    logger.debug("FFmpeg stderr stream closed unexpectedly during read for channel %s.", self.channel_id)
-                    break 
+                    if not byte:
+                        break
+
+                    buffer += byte
+
+                    # Check for frame= at the start of buffer (new stats line)
+                    if buffer.endswith(b"frame="):
+                        # We detected the start of a stats line, read until we get a complete line
+                        # or hit a carriage return (which overwrites the previous stats)
+                        
+                        # Remove the "frame=" we just found to start clean
+                        buffer = buffer[:-6]
+                        
+                        while True:
+                            next_byte = self.transcode_process.stderr.read(1)
+                            if not next_byte:
+                                break
+
+                            buffer += next_byte
+
+                            # Break on carriage return (stats overwrite) or newline
+                            if next_byte in (b'\r', b'\n'):
+                                break
+
+                            # Also break if we have enough data for a typical stats line
+                            if len(buffer) > 200:  # Typical stats line length
+                                break
+
+                        # Process the stats line immediately
+                        if buffer.strip():
+                            try:
+                                stats_text = buffer.decode('utf-8', errors='ignore').strip()
+                                # Prepend "frame=" back for proper parsing, if it was indeed stats
+                                if "frame=" not in stats_text:
+                                    stats_text = "frame=" + stats_text
+                                    
+                                if stats_text and "frame=" in stats_text:
+                                    self._parse_ffmpeg_stats(stats_text)
+                                    # Log stats content at debug level
+                                    self._log_stderr_content(stats_text) 
+                            except Exception as e:
+                                logger.debug(f"Error parsing immediate stats line: {e}")
+
+                        # Clear buffer after processing
+                        buffer = b""
+                        continue
+
+                    # Handle regular line breaks for non-stats content
+                    elif byte == b'\n':
+                        if buffer.strip():
+                            line_text = buffer.decode('utf-8', errors='ignore').strip()
+                            if line_text and not line_text.startswith("frame="):
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
+                        buffer = b""
+
+                    # Handle carriage returns (potential stats overwrite)
+                    elif byte == b'\r':
+                        # Check if this might be a stats line
+                        if b"frame=" in buffer:
+                            try:
+                                stats_text = buffer.decode('utf-8', errors='ignore').strip()
+                                if stats_text and "frame=" in stats_text:
+                                    self._parse_ffmpeg_stats(stats_text)
+                                    self._log_stderr_content(stats_text)
+                            except Exception as e:
+                                logger.debug(f"Error parsing stats on carriage return: {e}")
+                        elif buffer.strip():
+                            # Regular content with carriage return
+                            line_text = buffer.decode('utf-8', errors='ignore').strip()
+                            if line_text:
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
+                        buffer = b""
+
+                    # Prevent buffer from growing too large for non-stats content
+                    elif len(buffer) > 1024 and b"frame=" not in buffer:
+                        # Process whatever we have if it's not a stats line
+                        if buffer.strip():
+                            line_text = buffer.decode('utf-8', errors='ignore').strip()
+                            if line_text:
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
+                        buffer = b""
+
                 except socket.timeout:
                     # Ignore timeout when reading pipe (should not happen with blocking read, but for safety)
                     continue
                 except Exception as e:
-                    # Fängt andere unerwartete Fehler im Lesethread ab
                     logger.error(f"Error reading FFmpeg stderr for channel {self.channel_id}: {e}", exc_info=True)
                     break
-                
-                # Wenn das Byte nicht gelesen wurde (EOF)
-                if not byte:
-                    # Der Stream ist beendet (EOF), Schleife verlassen
-                    break
-
-                buffer += byte
-
-                # Check for frame= at the start of buffer (new stats line)
-                if buffer.endswith(b"frame="):
-                    # We detected the start of a stats line, read until we get a complete line
-                    # or hit a carriage return (which overwrites the previous stats)
-                    
-                    # Remove the "frame=" we just found to start clean
-                    buffer = buffer[:-6]
-                    
-                    while True:
-                        try:
-                            # Erneut try/except für die innere Schleife zum Lesen
-                            next_byte = self.transcode_process.stderr.read(1)
-                        except ValueError:
-                            logger.debug("FFmpeg stderr inner stream closed unexpectedly during read for channel %s.", self.channel_id)
-                            break
-                        except socket.timeout:
-                            continue
-                        except Exception:
-                            break
-
-                        if not next_byte:
-                            break
-
-                        buffer += next_byte
-
-                        # Break on carriage return (stats overwrite) or newline
-                        if next_byte in (b'\r', b'\n'):
-                            break
-
-                        # Also break if we have enough data for a typical stats line
-                        if len(buffer) > 200:  # Typical stats line length
-                            break
-
-                    # Process the stats line immediately
-                    if buffer.strip():
-                        try:
-                            stats_text = buffer.decode('utf-8', errors='ignore').strip()
-                            # Prepend "frame=" back for proper parsing, if it was indeed stats
-                            if "frame=" not in stats_text:
-                                stats_text = "frame=" + stats_text
-                                
-                            if stats_text and "frame=" in stats_text:
-                                self._parse_ffmpeg_stats(stats_text)
-                                # Log stats content at debug level
-                                self._log_stderr_content(stats_text) # <-- Beachten Sie den Fehler hier, sollte _log_stderr_content() existieren.
-                            else:
-                                # Log non-stats content that somehow contained 'frame=' but wasn't a stats line
-                                logger.debug(f"FFmpeg STDOUT/STDERR (non-stats): {stats_text}")
-                        except Exception as e:
-                            logger.debug(f"Error parsing immediate stats line: {e}")
-
-                    # Clear buffer after processing
-                    buffer = b""
-                    continue
-
-                # Handle regular line breaks for non-stats content
-                elif byte == b'\n':
-                    if buffer.strip():
-                        line_text = buffer.decode('utf-8', errors='ignore').strip()
-                        if line_text and not line_text.startswith("frame="):
-                            # HIER wurde die _log_stderr_content-Methode (aus dem vorherigen Log) durch logger.info ersetzt:
-                            logger.info(f"FFmpeg STDOUT/STDERR: {line_text}") 
-                    buffer = b""
-
-                # Handle carriage returns (potential stats overwrite)
-                elif byte == b'\r':
-                    # Check if this might be a stats line
-                    if b"frame=" in buffer:
-                        try:
-                            stats_text = buffer.decode('utf-8', errors='ignore').strip()
-                            if stats_text and "frame=" in stats_text:
-                                self._parse_ffmpeg_stats(stats_text)
-                                self._log_stderr_content(stats_text) # <-- Beachten Sie den Fehler hier
-                        except Exception as e:
-                            logger.debug(f"Error parsing stats on carriage return: {e}")
-                    elif buffer.strip():
-                        # Regular content with carriage return
-                        line_text = buffer.decode('utf-8', errors='ignore').strip()
-                        if line_text:
-                            logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
-                    buffer = b""
-
-                # Prevent buffer from growing too large for non-stats content
-                elif len(buffer) > 1024 and b"frame=" not in buffer:
-                    # Process whatever we have if it's not a stats line
-                    if buffer.strip():
-                        line_text = buffer.decode('utf-8', errors='ignore').strip()
-                        if line_text:
-                            logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
-                    buffer = b""
-
         except Exception as e:
             logger.error(f"Critical error in stderr reader thread for channel {self.channel_id}: {e}", exc_info=True)
         finally:
