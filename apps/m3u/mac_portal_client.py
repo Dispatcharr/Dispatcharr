@@ -116,7 +116,7 @@ class MacPortalClient:
                     proxies=proxies,
                     timeout=5,
                 )
-                if r.status_code == 200:
+                if r.status_code < 400:
                     self.portal_url = url
                     logger.info("MAC portal load.php detected: %s", url)
                     return self.portal_url
