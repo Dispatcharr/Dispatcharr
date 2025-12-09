@@ -351,7 +351,6 @@ class MacPortalClient:
         except Exception:
             logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen.")
     
-    # KORREKTUR: Öffentliche Methode zur Behebung des AttributeError
     def get_expires(self) -> Optional[str]:
         """
         Gibt das während der Verbindung abgerufene Ablaufdatum zurück.
@@ -424,7 +423,7 @@ class MacPortalClient:
                 "group": group_name,
                 "logo": ch.get("logo"),
                 "cmd": cmd, 
-                "url": cmd, # KORREKTUR: Fügt 'cmd' als 'url' für Anwendungskompatibilität hinzu
+                "url": cmd, # Fügt 'cmd' als 'url' für Anwendungskompatibilität hinzu
             })
             
         self.channels_cache = normalized
@@ -434,10 +433,11 @@ class MacPortalClient:
     # 4. Stream Generation
     # =========================================================================
 
-    def get_stream_url(self, cmd: str) -> Optional[str]:
+    # ❗ WICHTIGE KORREKTUR: Umbenennung zu 'create_link', um den Fehler zu beheben.
+    def create_link(self, cmd: str) -> Optional[str]:
         """
-        Konvertiert einen Kanal-'cmd' in eine echte URL unter Verwendung von create_link 
-        und dekodiert die resultierende URL.
+        Konvertiert einen Kanal-'cmd' in eine echte URL. 
+        Diese Methode wird von der Anwendung unter dem Namen 'create_link' erwartet.
         """
         if not cmd:
             return None
@@ -470,7 +470,7 @@ class MacPortalClient:
                  if " " in link:
                      link = link.split()[-1] 
                  
-                 # 2. KRITISCHE KORREKTUR: URL-Dekodierung, um die Duplizierung des Hostnamens zu beheben.
+                 # 2. URL-Dekodierung, um korrupte URLs zu beheben (z.B. doppelte Hostnamen)
                  link = unquote(link) 
                  
                  return link
