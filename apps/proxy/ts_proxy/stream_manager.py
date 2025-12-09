@@ -808,7 +808,7 @@ class StreamManager:
                         if buffer.strip():
                             line_text = buffer.decode('utf-8', errors='ignore').strip()
                             if line_text and not line_text.startswith("frame="):
-                                self._log_stderr_content(line_text)
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
                         buffer = b""
 
                     # Handle carriage returns (potential stats overwrite)
@@ -826,7 +826,7 @@ class StreamManager:
                             # Regular content with carriage return
                             line_text = buffer.decode('utf-8', errors='ignore').strip()
                             if line_text:
-                                self._log_stderr_content(line_text)
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
                         buffer = b""
 
                     # Prevent buffer from growing too large for non-stats content
@@ -835,7 +835,7 @@ class StreamManager:
                         if buffer.strip():
                             line_text = buffer.decode('utf-8', errors='ignore').strip()
                             if line_text:
-                                self._log_stderr_content(line_text)
+                                logger.info(f"FFmpeg STDOUT/STDERR: {line_text}")
                         buffer = b""
 
                 except socket.timeout:
