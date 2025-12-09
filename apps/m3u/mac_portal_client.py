@@ -5,7 +5,7 @@ import time
 import random
 import string
 from urllib.parse import urlparse, quote, unquote
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -122,6 +122,7 @@ class MacPortalClient:
             return r.json()
 
         except Exception as e:
+            # Beim Fehler im Request wird MacPortalError geworfen
             raise MacPortalError(str(e))
 
     # ---------------------------------------------------------------------
@@ -216,12 +217,17 @@ class MacPortalClient:
         data = self._request(self.portal_url, "POST", params, auth=True)
         js = data.get("js", {})
         self.play_token = js.get("play_token")
+        
+        # 💡 Prüfen Sie hier auf generische Fehler, die ein "EXPIRED" auslösen könnten
+        if js.get("status") == "ERROR" or js.get("error"):
+            msg = js.get("message", "Authorization failed during profile retrieval.")
+            raise MacPortalError(f"Authorization failed: {msg}")
+
 
     def _get_account_info(self):
-        """Versucht, Kontoinformationen und das Ablaufdatum abzurufen. Optionaler Schritt."""
+        """Versucht, Kontoinformationen und das Ablaufdatum abzurufen. Löst MacPortalError bei Blockierung/Ablauf aus."""
         self.expiry_date = None
         try:
-            # ✅ KORREKTUR: Nutzt GET und die korrekten Felder ('phone' zuerst)
             data = self._request(self.portal_url, "GET", {
                 "type": "account_info",
                 "action": "get_main_info"
@@ -232,15 +238,33 @@ class MacPortalClient:
             self.expiry_date = js.get("phone") or js.get("end_date") or js.get("expire")
             
             if self.expiry_date:
-                # 💡 Protokolliert den Erfolg, damit Sie ihn in den Logs sehen.
                 logger.info("Account Info: Ablaufdatum=%s", self.expiry_date)
             else:
                 logger.warning("Account-Informationen abgerufen, aber Ablaufdatum fehlt (MAC:%s).", self.mac)
 
+            # ===================================================================
+            # 🛠️ KORREKTUR FÜR TASK-DATEI: Fehler werfen, wenn abgelaufen
+            # ===================================================================
+            status = js.get("status")
+            access_status = js.get("access_status")
+            
+            # Prüfen auf Statuscodes (0 ist oft "blocked" oder "expired")
+            if status in ["0", 0, 4] or access_status in ["0", 0]:
+                 error_msg = f"Authorization failed: Account expired or blocked (Status: {status} / Access: {access_status})"
+                 if self.expiry_date:
+                      # Wichtig: Datum im Fehlertext platzieren, damit die Task-Datei es speichern kann
+                      error_msg += f" [Expiry Date: {self.expiry_date}]"
+                 raise MacPortalError(error_msg)
+            
+            # Prüfen auf explizite "expired"-Werte
+            if self.expiry_date and ("expired" in str(self.expiry_date).lower() or "blocked" in str(self.expiry_date).lower()):
+                 error_msg = f"Authorization failed: Account explicitly marked as expired/blocked. [Expiry Date: {self.expiry_date}]"
+                 raise MacPortalError(error_msg)
+            # ===================================================================
+
         except MacPortalError as e:
-            # 💡 Protokolliert den Fehler, falls der Abruf fehlschlägt.
-            logger.warning("Konnte Account-Informationen/Ablaufdatum nicht abrufen (MAC:%s): %s", self.mac, e)
-            self.expiry_date = None
+            # Wichtig: Geworfenen Fehler weitergeben (inkl. unseres neuen Fehlers)
+            raise e 
         except Exception:
             logger.exception("Unerwarteter Fehler beim Abrufen des Ablaufdatums (MAC:%s).", self.mac)
             self.expiry_date = None
@@ -251,8 +275,8 @@ class MacPortalClient:
         Gibt das während der Profilabfrage gespeicherte Ablaufdatum zurück.
         Wird von der Anwendung (tasks.py) erwartet.
         """
-        # Führt _get_account_info nur dann aus, wenn das Datum noch nicht gesetzt wurde
         if not self.expiry_date and self.portal_url:
+            # Erneuter Versuch, die Infos abzurufen, falls connect() es verpasst hat
             self._get_account_info()
             
         return self.expiry_date
