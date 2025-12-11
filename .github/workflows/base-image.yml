@@ -114,7 +114,7 @@ jobs:
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           labels: |
-            build_version=Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')
+            build_version=DispatcharrBase version: ${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}
             maintainer=${{ github.actor }}
             org.opencontainers.image.authors=${{ github.actor }}
             org.opencontainers.image.created=${{ needs.prepare.outputs.timestamp }}
@@ -127,7 +127,7 @@ jobs:
             org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.vendor=${{ needs.prepare.outputs.repo_owner }}
-            org.opencontainers.image.version=${{ needs.prepare.outputs.new_version }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}
           build-args: |
             REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
             REPO_NAME=${{ needs.prepare.outputs.repo_name }}
