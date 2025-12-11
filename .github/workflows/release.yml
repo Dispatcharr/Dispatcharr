@@ -25,6 +25,7 @@ jobs:
       new_version: ${{ steps.update_version.outputs.new_version }}
       repo_owner: ${{ steps.meta.outputs.repo_owner }}
       repo_name: ${{ steps.meta.outputs.repo_name }}
+      timestamp: ${{ steps.timestamp.outputs.timestamp }}
     steps:
       - uses: actions/checkout@v3
         with:
@@ -55,6 +56,12 @@ jobs:
 
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
           echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate timestamp for build
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date -u +'%Y%m%d%H%M%S')
+          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Commit and Tag
         run: |
@@ -116,10 +123,10 @@ jobs:
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
           labels: |
-            build_version=Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')
+            build_version=Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}
             maintainer=${{ github.actor }}
             org.opencontainers.image.authors=${{ github.actor }}
-            org.opencontainers.image.created=$(date -u +'%Y%m%d%H%M%S')
+            org.opencontainers.image.created=${{ needs.prepare.outputs.timestamp }}
             org.opencontainers.image.description=Your ultimate IPTV & stream Management companion.
             org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/
             org.opencontainers.image.licenses=See repository
@@ -170,10 +177,10 @@ jobs:
           # GitHub Container Registry manifests
           # latest tag
           docker buildx imagetools create \
-            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')" \
+            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}" \
             --annotation maintainer="${{ github.actor }}" \
             --annotation org.opencontainers.image.authors="${{ github.actor }}" \
-            --annotation org.opencontainers.image.created="$(date -u +'%Y%m%d%H%M%S')" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
             --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
             --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
             --annotation org.opencontainers.image.licenses="See repository" \
@@ -189,10 +196,10 @@ jobs:
 
           # version tag
           docker buildx imagetools create \
-            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')" \
+            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}" \
             --annotation maintainer="${{ github.actor }}" \
             --annotation org.opencontainers.image.authors="${{ github.actor }}" \
-            --annotation org.opencontainers.image.created="$(date -u +'%Y%m%d%H%M%S')" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
             --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
             --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
             --annotation org.opencontainers.image.licenses="See repository" \
@@ -209,10 +216,10 @@ jobs:
           # Docker Hub manifests
           # latest tag
           docker buildx imagetools create \
-            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')" \
+            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}" \
             --annotation maintainer="${{ github.actor }}" \
             --annotation org.opencontainers.image.authors="${{ github.actor }}" \
-            --annotation org.opencontainers.image.created="$(date -u +'%Y%m%d%H%M%S')" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
             --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
             --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
             --annotation org.opencontainers.image.licenses="See repository" \
@@ -228,10 +235,10 @@ jobs:
 
           # version tag
           docker buildx imagetools create \
-            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')" \
+            --annotation build_version="Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}" \
             --annotation maintainer="${{ github.actor }}" \
             --annotation org.opencontainers.image.authors="${{ github.actor }}" \
-            --annotation org.opencontainers.image.created="$(date -u +'%Y%m%d%H%M%S')" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
             --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
             --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
             --annotation org.opencontainers.image.licenses="See repository" \
