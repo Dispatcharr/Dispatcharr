@@ -169,18 +169,78 @@ jobs:
 
           # GitHub Container Registry manifests
           # branch tag (e.g. base or base-dev)
-          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
+          docker buildx imagetools create \
+            --annotation build_version="DispatcharrBase version: ${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --annotation maintainer="${{ github.actor }}" \
+            --annotation org.opencontainers.image.authors="${{ github.actor }}" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
+            --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
+            --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
+            --annotation org.opencontainers.image.licenses="See repository" \
+            --annotation org.opencontainers.image.ref.name="${{ github.sha }}" \
+            --annotation org.opencontainers.image.revision="${{ github.sha }}" \
+            --annotation org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.title="${{ needs.prepare.outputs.repo_name }}" \
+            --annotation org.opencontainers.image.url="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.vendor="${{ needs.prepare.outputs.repo_owner }}" \
+            --annotation org.opencontainers.image.version="${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
             ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
 
           # branch + timestamp tag
-          docker buildx imagetools create --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
+          docker buildx imagetools create \
+            --annotation build_version="DispatcharrBase version: ${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --annotation maintainer="${{ github.actor }}" \
+            --annotation org.opencontainers.image.authors="${{ github.actor }}" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
+            --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
+            --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
+            --annotation org.opencontainers.image.licenses="See repository" \
+            --annotation org.opencontainers.image.ref.name="${{ github.sha }}" \
+            --annotation org.opencontainers.image.revision="${{ github.sha }}" \
+            --annotation org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.title="${{ needs.prepare.outputs.repo_name }}" \
+            --annotation org.opencontainers.image.url="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.vendor="${{ needs.prepare.outputs.repo_owner }}" \
+            --annotation org.opencontainers.image.version="${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
             ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-arm64
 
           # Docker Hub manifests
           # branch tag (e.g. base or base-dev)
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
+          docker buildx imagetools create \
+            --annotation build_version="DispatcharrBase version: ${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --annotation maintainer="${{ github.actor }}" \
+            --annotation org.opencontainers.image.authors="${{ github.actor }}" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
+            --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
+            --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
+            --annotation org.opencontainers.image.licenses="See repository" \
+            --annotation org.opencontainers.image.ref.name="${{ github.sha }}" \
+            --annotation org.opencontainers.image.revision="${{ github.sha }}" \
+            --annotation org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.title="${{ needs.prepare.outputs.repo_name }}" \
+            --annotation org.opencontainers.image.url="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.vendor="${{ needs.prepare.outputs.repo_owner }}" \
+            --annotation org.opencontainers.image.version="${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
 
           # branch + timestamp tag
-          docker buildx imagetools create --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
+          docker buildx imagetools create \
+            --annotation build_version="DispatcharrBase version: ${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --annotation maintainer="${{ github.actor }}" \
+            --annotation org.opencontainers.image.authors="${{ github.actor }}" \
+            --annotation org.opencontainers.image.created="${{ needs.prepare.outputs.timestamp }}" \
+            --annotation org.opencontainers.image.description="Your ultimate IPTV & stream Management companion." \
+            --annotation org.opencontainers.image.documentation="https://dispatcharr.github.io/Dispatcharr-Docs/" \
+            --annotation org.opencontainers.image.licenses="See repository" \
+            --annotation org.opencontainers.image.ref.name="${{ github.sha }}" \
+            --annotation org.opencontainers.image.revision="${{ github.sha }}" \
+            --annotation org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.title="${{ needs.prepare.outputs.repo_name }}" \
+            --annotation org.opencontainers.image.url="https://github.com/${{ github.repository }}" \
+            --annotation org.opencontainers.image.vendor="${{ needs.prepare.outputs.repo_owner }}" \
+            --annotation org.opencontainers.image.version="${{ needs.prepare.outputs.branch_tag }}-${{ needs.prepare.outputs.timestamp }}" \
+            --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-arm64
