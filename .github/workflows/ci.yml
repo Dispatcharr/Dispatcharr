@@ -137,6 +137,21 @@ jobs:
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
+          labels: |
+            build_version=Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: $(date -u +'%Y-%m-%d %H:%M:%S')
+            maintainer=${{ github.actor }}
+            org.opencontainers.image.authors=${{ github.actor }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.timestamp }}
+            org.opencontainers.image.description=Your ultimate IPTV & stream Management companion.
+            org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/
+            org.opencontainers.image.licenses=See repository
+            org.opencontainers.image.ref.name=${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.vendor=${{ needs.prepare.outputs.repo_owner }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.new_version }}
           build-args: |
             REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
             REPO_NAME=${{ needs.prepare.outputs.repo_name }}
