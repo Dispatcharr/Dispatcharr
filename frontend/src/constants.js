@@ -303,6 +303,7 @@ export const REGION_CHOICES = [
   { value: 'tz', label: 'TZ' },
   { value: 'ua', label: 'UA' },
   { value: 'ug', label: 'UG' },
+  { value: 'uk', label: 'UK' },
   { value: 'um', label: 'UM' },
   { value: 'us', label: 'US' },
   { value: 'uy', label: 'UY' },
