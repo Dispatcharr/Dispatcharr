@@ -11,13 +11,14 @@ import argparse
 import errno
 import logging
 import os
+import subprocess
 import stat
 import time
 from typing import Dict, Optional
 from urllib.parse import urljoin
 
 import requests
-from fuse import FUSE, FuseOSError, LoggingMixIn, Operations
+from fuse import FUSE, FuseOSError, LoggingMixIn, Operations, fuse_get_context
 
 log = logging.getLogger("dispatcharr_fuse")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -109,6 +110,53 @@ class VODFuse(LoggingMixIn, Operations):
         # shared session pool across opens of the same path to avoid repeated upstream sessions
         # path -> {"session", "session_url", "size", "refcount", "last_used"}
         self.session_pool: Dict[str, Dict] = {}
+        self.proc_name_cache: Dict[int, str] = {}
+        self.access_log_once: set = set()
+
+    def _process_name(self, pid: int) -> str:
+        if pid in self.proc_name_cache:
+            return self.proc_name_cache[pid]
+        name = ""
+        try:
+            import psutil  # type: ignore
+
+            name = psutil.Process(pid).name()
+        except Exception:
+            try:
+                out = subprocess.check_output(["ps", "-p", str(pid), "-o", "comm="], text=True)
+                name = out.strip()
+            except Exception:
+                name = ""
+        self.proc_name_cache[pid] = name
+        return name
+
+    def _log_access(self, event: str, path: str, detail: str = ""):
+        try:
+            uid, gid, pid = fuse_get_context()
+        except Exception:
+            uid = gid = pid = -1
+        name = self._process_name(pid) if pid and pid > 1 else ""
+        key = (event, path, pid)
+        if key in self.access_log_once:
+            return
+        self.access_log_once.add(key)
+        log.info("FUSE %s pid=%s proc=%s uid=%s path=%s %s", event, pid, name, uid, path, detail)
+
+    def _is_background_process(self) -> bool:
+        """
+        Detect Spotlight/QuickLook/mdworker probes so we can serve zeros without opening upstream.
+        """
+        try:
+            uid, gid, pid = fuse_get_context()
+        except Exception:
+            return False
+        if not pid or pid < 2:
+            return False
+        name = self._process_name(pid)
+        return name.lower() in {
+            "mds", "mdworker", "mdworker_shared", "spotlight", "quicklookd", "qlmanage",
+            "photolibraryd", "photoanalysisd",
+        }
 
     # Helpers
     def _get_entries(self, path: str):
@@ -222,6 +270,7 @@ class VODFuse(LoggingMixIn, Operations):
 
     # FUSE operations
     def getattr(self, path, fh=None):
+        self._log_access("getattr", path)
         entry = self._find_entry(path)
         if not entry:
             raise FuseOSError(errno.ENOENT)
@@ -250,34 +299,35 @@ class VODFuse(LoggingMixIn, Operations):
         )
 
     def readdir(self, path, fh):
+        self._log_access("readdir", path)
         data = self._get_entries(path)
         entries = [".", ".."] + [e["name"] for e in data.get("entries", [])]
         for entry in entries:
             yield entry
 
     def open(self, path, flags):
+        self._log_access("open", path)
         entry = self._find_entry(path)
         if not entry or entry.get("is_dir"):
             raise FuseOSError(errno.EISDIR if entry else errno.ENOENT)
         return 0
 
     def read(self, path, size, offset, fh):
+        self._log_access("read", path, detail=f"size={size} offset={offset}")
         entry = self._find_entry(path)
         if not entry:
             raise FuseOSError(errno.ENOENT)
-        self._ensure_file_metadata(entry, allow_head=True)
         # Acquire or create per-path handle with session + session_url
         handle = self._get_handle(path, entry)
         handle["last_used"] = time.time()
 
-        # If this is the very first small read (e.g., Finder thumbnail/probe), serve zeros
-        # and avoid triggering an upstream session. A real read will follow if the user plays.
-        if (
-            not handle.get("activated")
-            and offset == 0
-            and size <= self.probe_read_bytes
-            and not handle.get("served_fake")
-        ):
+        # Treat Spotlight/QuickLook/md* processes as probes and avoid triggering upstream.
+        is_probe_read = self._is_background_process()
+        # Only issue HEAD when we believe this is a real playback request.
+        self._ensure_file_metadata(entry, allow_head=not is_probe_read)
+
+        # If this is a background probe, serve zeros and stay idle upstream.
+        if is_probe_read:
             handle["served_fake"] = True
             return b"\0" * size
 

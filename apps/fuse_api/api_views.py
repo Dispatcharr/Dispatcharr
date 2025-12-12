@@ -1,7 +1,8 @@
 import json
 from urllib.parse import unquote
 
-from django.db.models import Prefetch
+from django.db.models import OuterRef, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import JsonResponse, FileResponse, Http404
 from django.conf import settings
 import os
@@ -104,22 +105,27 @@ class FuseBrowseView(APIView):
                 m3u_relations__m3u_account__is_active=True,
             )
             .distinct()
-            .select_related("logo")
-            .prefetch_related(
-                Prefetch(
-                    "m3u_relations",
-                    queryset=M3UMovieRelation.objects.filter(
-                        m3u_account__is_active=True
-                    ).select_related("m3u_account"),
+            .annotate(
+                best_extension=Coalesce(
+                    Subquery(
+                        M3UMovieRelation.objects.filter(
+                            m3u_account__is_active=True,
+                            category=category,
+                            movie_id=OuterRef("pk"),
+                        )
+                        .order_by("-m3u_account__priority", "id")
+                        .values("container_extension")[:1]
+                    ),
+                    Value("mp4"),
                 )
             )
+            .only("id", "uuid", "name", "year")
             .order_by("name")
         )
 
         entries = []
         for movie in movies:
-            relation = _select_best_relation(getattr(movie, "m3u_relations", []))
-            extension = getattr(relation, "container_extension", None) or "mp4"
+            extension = getattr(movie, "best_extension", None) or "mp4"
             name = f"{movie.name} ({movie.year})" if movie.year else movie.name
             file_name = f"{name}.{extension}"
             stream_url = None
@@ -218,22 +224,28 @@ class FuseBrowseView(APIView):
                 series=series_obj,
                 season_number=season_number,
             )
-            .select_related("series")
-            .prefetch_related(
-                Prefetch(
-                    "m3u_relations",
-                    queryset=M3UEpisodeRelation.objects.filter(
-                        m3u_account__is_active=True
-                    ).select_related("m3u_account"),
+            .filter(m3u_relations__m3u_account__is_active=True)
+            .distinct()
+            .annotate(
+                best_extension=Coalesce(
+                    Subquery(
+                        M3UEpisodeRelation.objects.filter(
+                            m3u_account__is_active=True,
+                            episode_id=OuterRef("pk"),
+                        )
+                        .order_by("-m3u_account__priority", "id")
+                        .values("container_extension")[:1]
+                    ),
+                    Value("mp4"),
                 )
             )
+            .only("id", "uuid", "name", "series_id", "season_number", "episode_number")
             .order_by("episode_number")
         )
 
         entries = []
         for ep in episodes:
-            relation = _select_best_relation(getattr(ep, "m3u_relations", []))
-            extension = getattr(relation, "container_extension", None) or "mp4"
+            extension = getattr(ep, "best_extension", None) or "mp4"
             ep_num = ep.episode_number or 0
             season_num = ep.season_number or 0
             name = f"S{season_num:02d}E{ep_num:02d} - {ep.name}"
