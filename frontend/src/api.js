@@ -1339,6 +1339,26 @@ export default class API {
     }
   }
 
+  static async getFuseSettings() {
+    try {
+      const response = await request(`${host}/api/fuse/settings/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve FUSE settings', e);
+    }
+  }
+
+  static async updateFuseSettings(values) {
+    try {
+      return await request(`${host}/api/fuse/settings/1/`, {
+        method: 'PUT',
+        body: values,
+      });
+    } catch (e) {
+      errorNotification('Failed to update FUSE settings', e);
+    }
+  }
+
   static async getEnvironmentSettings() {
     try {
       const response = await request(`${host}/api/core/settings/env/`);

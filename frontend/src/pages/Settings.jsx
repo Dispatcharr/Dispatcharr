@@ -208,6 +208,8 @@ const SettingsPage = () => {
     path: '',
     exists: false,
   });
+  const [fuseSettingsSaved, setFuseSettingsSaved] = useState(false);
+  const [fuseSettingsLoading, setFuseSettingsLoading] = useState(false);
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
@@ -309,6 +311,16 @@ const SettingsPage = () => {
     }, {}),
   });
 
+  const fuseForm = useForm({
+    mode: 'controlled',
+    initialValues: {
+      enable_fuse: false,
+      backend_base_url: '',
+      movies_mount_path: '/mnt/vod_movies',
+      tv_mount_path: '/mnt/vod_tv',
+    },
+  });
+
   useEffect(() => {
     if (settings) {
       const formValues = Object.entries(settings).reduce(
@@ -405,12 +417,35 @@ const SettingsPage = () => {
     loadComskipConfig();
   }, []);
 
+  useEffect(() => {
+    const loadFuseSettings = async () => {
+      setFuseSettingsLoading(true);
+      try {
+        const data = await API.getFuseSettings();
+        if (data) {
+          fuseForm.setValues({
+            enable_fuse: Boolean(data.enable_fuse),
+            backend_base_url: data.backend_base_url || '',
+            movies_mount_path: data.movies_mount_path || '/mnt/vod_movies',
+            tv_mount_path: data.tv_mount_path || '/mnt/vod_tv',
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load FUSE settings', error);
+      } finally {
+        setFuseSettingsLoading(false);
+      }
+    };
+    loadFuseSettings();
+  }, []);
+
   // Clear success states when switching accordion panels
   useEffect(() => {
     setGeneralSettingsSaved(false);
     setProxySettingsSaved(false);
     setNetworkAccessSaved(false);
     setRehashSuccess(false);
+    setFuseSettingsSaved(false);
   }, [accordianValue]);
 
   const onSubmit = async () => {
@@ -532,6 +567,26 @@ const SettingsPage = () => {
     } catch (error) {
       // Error notifications are already shown by API functions
       console.error('Error saving proxy settings:', error);
+    }
+  };
+
+  const onFuseSettingsSubmit = async () => {
+    setFuseSettingsSaved(false);
+    try {
+      const payload = {
+        enable_fuse: fuseForm.values.enable_fuse,
+      };
+      const result = await API.updateFuseSettings(payload);
+      if (result) {
+        setFuseSettingsSaved(true);
+        notifications.show({
+          title: 'FUSE settings saved',
+          message: 'Host client can use these values to mount VOD drives.',
+          color: 'green',
+        });
+      }
+    } catch (error) {
+      console.error('Error saving FUSE settings:', error);
     }
   };
 
@@ -1297,6 +1352,61 @@ const SettingsPage = () => {
                         <Button
                           type="submit"
                           disabled={networkAccessForm.submitting}
+                          variant="default"
+                        >
+                          Save
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  </form>
+                </Accordion.Panel>
+              </Accordion.Item>
+
+              <Accordion.Item value="fuse-settings">
+                <Accordion.Control>
+                  <Box>FUSE / Virtual Drives</Box>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <form onSubmit={fuseForm.onSubmit(onFuseSettingsSubmit)}>
+                    <Stack gap="sm">
+                      {fuseSettingsSaved && (
+                        <Alert
+                          variant="light"
+                          color="green"
+                          title="Saved Successfully"
+                        />
+                      )}
+                      <Switch
+                        label="Enable FUSE integration"
+                        description="Exposes Movies/TV as read-only virtual drives via the host-side FUSE client."
+                        checked={fuseForm.values.enable_fuse}
+                        onChange={(event) =>
+                          fuseForm.setFieldValue(
+                            'enable_fuse',
+                            event.currentTarget.checked
+                          )
+                        }
+                      />
+                      <Text size="sm" c="dimmed">
+                        The host-side FUSE client runs outside Docker. Install macFUSE/libfuse/WinFsp on your machine,
+                        then run the provided fuse_client.py script to mount Movies or TV.
+                      </Text>
+                      <Button
+                        component="a"
+                        variant="light"
+                        href="/api/fuse/client-script/"
+                        download="fuse_client.py"
+                      >
+                        Download fuse_client.py
+                      </Button>
+                      <Text size="sm" c="dimmed">
+                        Example (Movies): <code>python fuse_client.py --mode movies --backend-url http://localhost:8000 --mountpoint /mnt/vod_movies</code>.{' '}
+                        Example (TV): <code>python fuse_client.py --mode tv --backend-url http://localhost:8000 --mountpoint /mnt/vod_tv</code>. Windows: run the same command in an elevated shell and mount to a drive letter (e.g. <code>M:\</code>).
+                      </Text>
+                      <Flex justify="flex-end">
+                        <Button
+                          type="submit"
+                          disabled={fuseSettingsLoading}
                           variant="default"
                         >
                           Save
