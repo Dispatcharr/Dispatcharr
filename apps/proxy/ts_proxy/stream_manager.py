@@ -645,6 +645,16 @@ class StreamManager:
             if content_lower.startswith('output #') or 'encoder' in content_lower:
                 self.ffmpeg_input_phase = False
 
+            # Parse VLC-specific output - look for TS demux type info for codec detection
+            if 'ts demux debug' in content_lower and 'type=' in content_lower and ('video' in content_lower or 'audio' in content_lower):
+                from .services.channel_service import ChannelService
+                ChannelService.parse_and_store_stream_info(self.channel_id, content, "vlc", self.current_stream_id)
+            
+            # Parse streamlink-specific output
+            if 'opening stream:' in content_lower or 'available streams:' in content_lower:
+                from .services.channel_service import ChannelService
+                ChannelService.parse_and_store_stream_info(self.channel_id, content, "streamlink", self.current_stream_id)
+
             # Only parse stream info if we're still in the input phase
             if ("stream #" in content_lower and
                 ("video:" in content_lower or "audio:" in content_lower) and

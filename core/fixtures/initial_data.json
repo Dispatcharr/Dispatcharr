@@ -40,5 +40,16 @@
       "is_active": true,
       "user_agent": "1"
     }
+  },
+  {
+    "model": "core.streamprofile",
+    "pk": 3,
+    "fields": {
+      "name": "vlc",
+      "command": "cvlc",
+      "parameters": "-vv -I dummy --no-video-title-show --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}",
+      "is_active": true,
+      "user_agent": "1"
+    }
   }
 ]
