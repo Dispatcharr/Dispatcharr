@@ -419,12 +419,12 @@ class ChannelService:
 
     @staticmethod
     def parse_and_store_stream_info(channel_id, stream_info_line, stream_type="video", stream_id=None):
-        """Parse FFmpeg stream info line and store in Redis metadata and database"""
+        """Parse FFmpeg/VLC/streamlink stream info line and store in Redis metadata and database"""
         try:
             if stream_type == "input":
                 # Example lines:
-                # Input #0, mpegts, from 'http://example.com/stream.ts':
-                # Input #0, hls, from 'http://example.com/stream.m3u8':
+                # FFmpeg: Input #0, mpegts, from 'http://example.com/stream.ts':
+                # FFmpeg: Input #0, hls, from 'http://example.com/stream.m3u8':
 
                 # Extract input format (e.g., "mpegts", "hls", "flv", etc.)
                 input_match = re.search(r'Input #\d+,\s*([^,]+)', stream_info_line)
@@ -438,6 +438,57 @@ class ChannelService:
                         ChannelService._update_stream_stats_in_db(stream_id, stream_type=input_format)
 
                 logger.debug(f"Input format info - Format: {input_format} for channel {channel_id}")
+
+            elif stream_type == "vlc":
+                # VLC parsing - extract codecs from TS demux output (no resolution/fps in stream-copy mode)
+                lower = stream_info_line.lower()
+                
+                # Video codec detection
+                video_codec_map = {
+                    ('avc', 'h.264', 'type=0x1b'): "h264",
+                    ('hevc', 'h.265', 'type=0x24'): "hevc",
+                    ('mpeg-2', 'type=0x02'): "mpeg2video",
+                    ('mpeg-4', 'type=0x10'): "mpeg4"
+                }
+                for patterns, codec in video_codec_map.items():
+                    if any(p in lower for p in patterns):
+                        ChannelService._update_stream_info_in_redis(channel_id, codec, None, None, None, None, None, None, None, None, None, None, None)
+                        if stream_id:
+                            ChannelService._update_stream_stats_in_db(stream_id, video_codec=codec)
+                        break
+                
+                # Audio codec detection
+                audio_codec_map = {
+                    ('type=0xf', 'adts'): "aac",
+                    ('type=0x03', 'type=0x04'): "mp3",
+                    ('type=0x06', 'type=0x81'): "ac3",
+                    ('type=0x0b', 'lpcm'): "pcm"
+                }
+                for patterns, codec in audio_codec_map.items():
+                    if any(p in lower for p in patterns):
+                        ChannelService._update_stream_info_in_redis(channel_id, None, None, None, None, None, None, None, codec, None, None, None, None)
+                        if stream_id:
+                            ChannelService._update_stream_stats_in_db(stream_id, audio_codec=codec)
+                        break
+
+            elif stream_type == "streamlink":
+                # Streamlink parsing - extract quality/resolution
+                quality_match = re.search(r'(\d+p|\d+x\d+)', stream_info_line)
+                if quality_match:
+                    quality = quality_match.group(1)
+                    if 'x' in quality:
+                        resolution = quality
+                        width, height = map(int, quality.split('x'))
+                    else:
+                        resolutions = {
+                            '2160p': ('3840x2160', 3840, 2160), '1080p': ('1920x1080', 1920, 1080),
+                            '720p': ('1280x720', 1280, 720), '480p': ('854x480', 854, 480), '360p': ('640x360', 640, 360)
+                        }
+                        resolution, width, height = resolutions.get(quality, ('1920x1080', 1920, 1080))
+                    
+                    ChannelService._update_stream_info_in_redis(channel_id, "h264", resolution, width, height, None, "yuv420p", None, None, None, None, None, None)
+                    if stream_id:
+                        ChannelService._update_stream_stats_in_db(stream_id, video_codec="h264", resolution=resolution, pixel_format="yuv420p")
 
             elif stream_type == "video":
                 # Example line:
