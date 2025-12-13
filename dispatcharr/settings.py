@@ -226,6 +226,13 @@ CELERY_BEAT_SCHEDULE = {
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
+# Backup settings
+BACKUP_ROOT = os.environ.get("BACKUP_ROOT", "/data/backups")
+BACKUP_DATA_DIRS = [
+    os.environ.get("LOGOS_DIR", "/data/logos"),
+    os.environ.get("UPLOADS_DIR", "/data/uploads"),
+    os.environ.get("PLUGINS_DIR", "/data/plugins"),
+]
 
 SERVER_IP = "127.0.0.1"
 
