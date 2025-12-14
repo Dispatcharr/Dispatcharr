@@ -1070,7 +1070,7 @@ def parse_channels_only(source):
         source.last_message = f"Successfully parsed {processed_channels} channels"
         source.save(update_fields=['status', 'last_message'])
 
-        # Send completion notification
+        # Send channel parsing completion
         send_epg_update(
             source.id,
             "parsing_channels",
@@ -1478,7 +1478,9 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
                         processed += 1
                         progress = min(95, int((processed / epg_count) * 100)) if epg_count > 0 else 50
-                        send_epg_update(epg_source.id, "parsing_programs", progress)
+                        send_epg_update(epg_source.id, "parsing_programs", progress,
+                                      processed=processed, total=epg_count,
+                                      message=f"Processing channel {processed}/{epg_count}")
                     except Exception as e:
                         logger.error(f"Error parsing programs for tvg_id={epg.tvg_id}: {e}", exc_info=True)
                         failed_entries.append(f"{epg.tvg_id}: {str(e)}")
@@ -1561,74 +1563,139 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             process = None
 
 
-@shared_task
-def track_parallel_epg_progress(source_id, group_result_id, total_channels):
+@shared_task(bind=True, max_retries=3)
+def track_parallel_epg_progress(self, source_id, group_result_id, total_channels):
     """
     Monitor parallel EPG parsing task group and aggregate progress.
 
     This task tracks the completion of parallel channel parsing tasks
     and sends periodic WebSocket progress updates to the frontend.
+
+    Note: GroupResult.restore() requires the group to have been saved via .save()
+    before this task runs. There's an inherent race condition - we retry a few
+    times if restore fails, giving the parent task time to complete the save.
     """
     from celery.result import GroupResult
 
     logger.info(f"Tracking progress for {total_channels} parallel EPG tasks (source {source_id})")
 
     try:
-        group_result = GroupResult.restore(group_result_id)
+        # Retry logic for race condition: the parent task may not have saved
+        # the GroupResult to Redis before this tracking task starts
+        group_result = None
+        for attempt in range(5):
+            group_result = GroupResult.restore(group_result_id)
+            if group_result is not None:
+                break
+            logger.debug(f"GroupResult not yet available, attempt {attempt + 1}/5")
+            time.sleep(0.5)  # Brief wait for save to propagate
+
+        if group_result is None:
+            logger.warning(
+                f"Could not restore GroupResult {group_result_id} after retries. "
+                f"This typically means .save() was not called on the GroupResult, "
+                f"or the result backend is misconfigured."
+            )
+            # Send completion notification anyway so UI doesn't get stuck
+            send_epg_update(source_id, "parsing_programs", 100, status="success")
+            return
 
         last_progress = 0
+        stall_count = 0
+        max_stalls = 30  # Exit after 60 seconds of no progress (30 * 2s)
+
         while not group_result.ready():
             try:
                 completed = group_result.completed_count()
                 progress = min(95, int((completed / total_channels) * 100)) if total_channels > 0 else 0
 
-                # Only send updates when progress changes significantly (every 5%)
-                if progress >= last_progress + 5 or progress == 0:
-                    send_epg_update(source_id, "parsing_programs", progress,
-                                  processed=completed, total=total_channels)
-                    last_progress = progress
-                    logger.debug(f"Parallel EPG progress: {completed}/{total_channels} ({progress}%)")
+                # ALWAYS send updates every 2 seconds so users see continuous activity
+                # This prevents anxiety about frozen/stuck parsing
+                send_epg_update(source_id, "parsing_programs", progress,
+                              processed=completed, total=total_channels,
+                              message=f"Processing batch {completed}/{total_channels}")
 
-                time.sleep(2)  # Update every 2 seconds
+                if progress != last_progress:
+                    logger.info(f"Parallel EPG progress: {completed}/{total_channels} batches ({progress}%)")
+                    last_progress = progress
+                    stall_count = 0
+                else:
+                    stall_count += 1
+
+                # Safety valve: if no progress for too long, assume tasks finished
+                # but results weren't properly tracked (can happen with Redis issues)
+                if stall_count >= max_stalls:
+                    logger.warning(
+                        f"No progress for {max_stalls * 2}s, assuming completion. "
+                        f"Last known: {completed}/{total_channels}"
+                    )
+                    break
+
+                time.sleep(2)  # Update every 2 seconds for continuous feedback
             except Exception as e:
                 logger.warning(f"Error checking parallel task progress: {e}")
                 time.sleep(5)  # Back off on errors
 
-        # Final update
+        # Final update and cleanup
         send_epg_update(source_id, "parsing_programs", 100, status="success")
         logger.info(f"Completed parallel EPG parsing for source {source_id}")
 
+        # Clean up Redis progress counter
+        from core.progress import ProgressTracker, make_progress_key
+        ProgressTracker.reset(make_progress_key("epg", source_id))
+
     except Exception as e:
         logger.error(f"Error in track_parallel_epg_progress: {e}", exc_info=True)
+        # Still send completion to avoid stuck UI
+        send_epg_update(source_id, "parsing_programs", 100, status="success")
+
+        # Clean up Redis counter on error too
+        from core.progress import ProgressTracker, make_progress_key
+        ProgressTracker.reset(make_progress_key("epg", source_id))
 
 
 @shared_task
-def parse_programs_chunk(epg_ids, source_id):
+def parse_programs_chunk(epg_ids, source_id, total_channels=None):
     """
-    Process a chunk of EPG channels sequentially within a single worker task.
+    Process a chunk of EPG channels with production-grade progress tracking.
 
-    This function is designed for parallel execution - multiple chunks are processed
-    simultaneously by different Celery workers. Within each chunk, channels are
-    processed sequentially to maintain memory efficiency.
+    Uses Redis atomic counters for real-time progress across parallel workers.
 
     Args:
         epg_ids: List of EPGData IDs to process
-        source_id: EPG source ID for logging
+        source_id: EPG source ID for logging and progress updates
+        total_channels: Total number of channels across all chunks
 
     Returns:
         int: Number of channels successfully processed
     """
+    from core.progress import ProgressTracker, make_progress_key
+
     processed_count = 0
+
+    # Create progress tracker with rate-limited updates
+    tracker = ProgressTracker(
+        key=make_progress_key("epg", source_id),
+        total=total_channels or len(epg_ids),
+        on_progress=lambda p, c, t: send_epg_update(
+            source_id, "parsing_programs", p,
+            processed=c, total=t,
+            message=f"Processing {c}/{t} channels"
+        ),
+        update_interval=0.5,  # Max 2 WebSocket messages per second
+    )
 
     for epg_id in epg_ids:
         try:
             result = parse_programs_for_tvg_id(epg_id)
             if result != "Task already running":
                 processed_count += 1
+                # Atomic increment with automatic progress updates
+                tracker.increment()
         except Exception as e:
             logger.error(f"Error parsing EPG {epg_id} in chunk: {e}")
 
-    # Cleanup after chunk to prevent memory accumulation
+    # Cleanup after chunk
     gc.collect()
 
     logger.debug(f"Completed chunk: {processed_count}/{len(epg_ids)} channels processed")
@@ -1699,19 +1766,34 @@ def parse_programs_for_source_parallel(epg_source_id, tvg_id=None):
 
         logger.info(f"Created {len(chunks)} task chunks from {len(epg_entries)} channels")
 
+        # Reset progress counter before starting
+        from core.progress import ProgressTracker, make_progress_key
+        ProgressTracker.reset(make_progress_key("epg", epg_source.id))
+
+        # Send initial progress notification
+        send_epg_update(epg_source.id, "parsing_programs", 0,
+                       message=f"Starting parallel processing: {len(chunks)} batches")
+
         # Create task group with chunked processing
         task_group = group([
-            parse_programs_chunk.s(chunk, epg_source.id)
+            parse_programs_chunk.s(chunk, epg_source.id, len(epg_entries))
             for chunk in chunks
         ])
 
         # Execute tasks in parallel
         group_result = task_group.apply_async()
 
+        # CRITICAL: Save the GroupResult to the result backend so it can be restored
+        # Without this, GroupResult.restore() returns None because the group metadata
+        # (list of child task IDs) isn't persisted - only the ID exists
+        group_result.save()
+
         # Track progress in background (tracks chunks, not individual channels)
+        # This task will send the final completion notification
         track_parallel_epg_progress.delay(epg_source.id, group_result.id, len(chunks))
 
         logger.info(f"Parallel EPG parsing initiated: {len(chunks)} chunks across workers")
+        # Return True but don't send completion - let progress tracker handle that
         return True
 
     except Exception as e:

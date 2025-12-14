@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 # Minimum requirements for parallel processing
 MIN_MEMORY_MB = 1024  # Don't go parallel below 1GB available
-MIN_WORKERS = 2       # Need at least 2 workers for parallelism to help
-MAX_PARALLEL_TASKS_PER_GB = 10  # Cap task fan-out based on memory
+MIN_CHANNELS_FOR_PARALLEL = 50  # Minimum channels to benefit from parallelism
+DEFAULT_MAX_BATCHES = 6  # Default maximum concurrent task batches
+ENV_MAX_BATCHES_KEY = 'EPG_MAX_CONCURRENT_BATCHES'  # Environment variable key
+SETTING_MAX_BATCHES_KEY = 'epg_max_concurrent_batches'  # CoreSettings key
 
 
 @lru_cache(maxsize=1)
@@ -65,35 +67,64 @@ def detect_system_resources():
     return resources
 
 
-def get_celery_worker_count():
+def celery_is_responsive():
     """
-    Get the number of active Celery workers.
-
-    This is the real constraint for parallel processing -
-    you can't parallelize beyond your worker count.
+    Check if Celery broker is responsive.
 
     Returns:
-        int: Number of active Celery workers (minimum 1)
+        bool: True if broker is reachable, False otherwise
+    """
+    try:
+        from dispatcharr.celery import app
+        inspect = app.control.inspect(timeout=1.0)
+        stats = inspect.stats()
+        return stats is not None
+    except Exception as e:
+        logger.warning(f"Celery health check failed: {e}")
+        return False
+
+
+def get_celery_autoscale_max():
+    """
+    Detect Celery autoscale maximum from worker configuration.
+
+    This checks worker stats for autoscaler settings rather than counting
+    active workers. Works with both autoscale and fixed concurrency configs.
+
+    Returns:
+        int: Maximum worker capacity (from autoscale max or pool size)
     """
     try:
         from dispatcharr.celery import app
 
-        # Inspect active workers
-        inspect = app.control.inspect()
-        active = inspect.active()
+        inspect = app.control.inspect(timeout=1.0)
+        stats = inspect.stats()
 
-        if active is None:
-            logger.debug("No response from Celery inspect - assuming single worker")
-            return 1
+        if not stats:
+            logger.debug("No Celery stats available, using default capacity")
+            return DEFAULT_MAX_BATCHES
 
-        # Count workers, not tasks
-        worker_count = len(active)
-        logger.debug(f"Detected {worker_count} active Celery workers")
-        return max(1, worker_count)
+        # Get stats from first worker (all workers should have same config)
+        worker_stats = next(iter(stats.values()))
+
+        # Check autoscaler configuration first
+        if 'autoscaler' in worker_stats and worker_stats['autoscaler']:
+            autoscale_max = worker_stats['autoscaler'].get('max', 1)
+            logger.debug(f"Detected Celery autoscale max: {autoscale_max}")
+            return max(1, autoscale_max)
+
+        # Fall back to pool max-concurrency for fixed worker pools
+        if 'pool' in worker_stats and worker_stats['pool']:
+            pool_max = worker_stats['pool'].get('max-concurrency', 1)
+            logger.debug(f"Detected Celery pool max-concurrency: {pool_max}")
+            return max(1, pool_max)
+
+        logger.debug("Could not detect Celery capacity, using default")
+        return DEFAULT_MAX_BATCHES
 
     except Exception as e:
-        logger.warning(f"Error detecting Celery workers: {e} - assuming single worker")
-        return 1
+        logger.warning(f"Error detecting Celery capacity: {e} - using default")
+        return DEFAULT_MAX_BATCHES
 
 
 def calculate_optimal_parallelism(channel_count):
@@ -149,63 +180,84 @@ def calculate_optimal_parallelism(channel_count):
     # If user didn't explicitly enable, auto-detect
     if not result['enabled']:
         resources = detect_system_resources()
-        worker_count = get_celery_worker_count()
 
-        # Decision matrix for auto-detection
+        # Decision matrix for auto-detection (trust Celery autoscale!)
+
+        # 1. Check Celery health (not worker count!)
+        if not celery_is_responsive():
+            result['reason'] = "Celery broker not responsive"
+            return result
+
+        # 2. Check constrained hardware
         if resources['is_constrained']:
-            result['reason'] = f"Constrained hardware detected ({resources['memory_mb']}MB RAM)"
+            result['reason'] = f"Constrained hardware ({resources['memory_mb']}MB RAM)"
             return result
 
+        # 3. Check available memory
         if resources['memory_mb'] < MIN_MEMORY_MB:
-            result['reason'] = f"Insufficient available memory ({resources['memory_mb']}MB < {MIN_MEMORY_MB}MB)"
+            result['reason'] = f"Low memory ({resources['memory_mb']}MB < {MIN_MEMORY_MB}MB)"
             return result
 
-        if worker_count < MIN_WORKERS:
-            result['reason'] = f"Insufficient Celery workers ({worker_count} < {MIN_WORKERS})"
+        # 4. Check channel count
+        if channel_count < MIN_CHANNELS_FOR_PARALLEL:
+            result['reason'] = f"Too few channels ({channel_count} < {MIN_CHANNELS_FOR_PARALLEL})"
             return result
 
-        # Small channel counts don't benefit from parallelism
-        if channel_count < 50:
-            result['reason'] = f"Too few channels to benefit ({channel_count} < 50)"
-            return result
-
-        # All checks passed - enable with calculated limits
+        # All checks passed - enable parallel mode!
+        # Celery autoscale will spawn workers as tasks queue up
         result['enabled'] = True
-        result['reason'] = f"Auto-enabled ({worker_count} workers, {resources['memory_mb']}MB RAM)"
+        result['reason'] = f"Auto-enabled ({channel_count} channels, {resources['memory_mb']}MB RAM)"
 
     # Calculate safe concurrency limits
     if result['enabled'] and result['max_concurrent'] == 1:
+        import os
         resources = detect_system_resources()
-        worker_count = get_celery_worker_count()
 
-        # Limit by workers (primary constraint)
-        max_by_workers = worker_count
+        # Get max batches from Celery autoscale config (dynamically detected!)
+        celery_max = get_celery_autoscale_max()
 
-        # Limit by memory (secondary constraint)
-        # Each parallel task might use 50-100MB during XML parsing
+        # Check for environment variable override
+        max_batches = celery_max
+        env_max = os.environ.get(ENV_MAX_BATCHES_KEY)
+        if env_max:
+            try:
+                max_batches = max(1, int(env_max))
+                logger.debug(f"Using max batches from environment: {max_batches} (overriding detected {celery_max})")
+            except ValueError:
+                logger.warning(f"Invalid {ENV_MAX_BATCHES_KEY}={env_max}, using detected {celery_max}")
+
+        # CoreSettings override takes precedence
+        try:
+            setting = CoreSettings.objects.filter(key=SETTING_MAX_BATCHES_KEY).first()
+            if setting and setting.value:
+                max_batches = max(1, int(setting.value))
+                logger.debug(f"Using max batches from CoreSettings: {max_batches}")
+        except Exception:
+            pass
+
+        # Limit by memory (50-100MB per task)
         max_by_memory = resources['memory_mb'] // 100
 
-        # Limit by channel count (no point spawning more tasks than chunks)
-        max_by_channels = min(channel_count // result['chunk_size'], 100)  # Cap at 100 concurrent
-
-        result['max_concurrent'] = max(1, min(
-            max_by_workers,
-            max_by_memory,
-            max_by_channels,
-            MAX_PARALLEL_TASKS_PER_GB * (resources['memory_mb'] // 1024)
-        ))
-
-        # Calculate chunk size - group channels to reduce task overhead
-        # Check for manual chunk size override
+        # Calculate chunk size (manual override or default)
+        chunk_size = result['chunk_size']
         try:
             chunk_setting = CoreSettings.objects.filter(key='epg_parallel_chunk_size').first()
             if chunk_setting and int(chunk_setting.value) > 0:
-                result['chunk_size'] = int(chunk_setting.value)
-            elif channel_count > result['max_concurrent'] * 5:
-                # Auto-calculate: aim for 10-20 task groups, not one task per channel
-                result['chunk_size'] = max(10, channel_count // (result['max_concurrent'] * 2))
+                chunk_size = int(chunk_setting.value)
         except Exception:
-            pass  # Use default chunk size
+            pass
+
+        # Limit by channels (don't create empty batches)
+        max_by_channels = max(1, (channel_count + chunk_size - 1) // chunk_size)
+
+        # Take minimum of all constraints
+        result['max_concurrent'] = min(
+            max_batches,        # Celery capacity (detected or configured)
+            max_by_memory,      # Memory safety limit
+            max_by_channels,    # Efficiency limit
+            100                 # Absolute safety cap
+        )
+        result['chunk_size'] = chunk_size
 
     logger.info(
         f"EPG parallelism: enabled={result['enabled']}, "
