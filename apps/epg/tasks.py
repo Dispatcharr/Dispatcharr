@@ -1601,16 +1601,12 @@ def track_parallel_epg_progress(self, source_id, group_result_id, total_channels
             return
 
         last_progress = 0
-        stall_count = 0
-        max_stalls = 30  # Exit after 60 seconds of no progress (30 * 2s)
 
         while not group_result.ready():
             try:
                 completed = group_result.completed_count()
                 progress = min(95, int((completed / total_channels) * 100)) if total_channels > 0 else 0
 
-                # ALWAYS send updates every 2 seconds so users see continuous activity
-                # This prevents anxiety about frozen/stuck parsing
                 send_epg_update(source_id, "parsing_programs", progress,
                               processed=completed, total=total_channels,
                               message=f"Processing batch {completed}/{total_channels}")
@@ -1618,20 +1614,8 @@ def track_parallel_epg_progress(self, source_id, group_result_id, total_channels
                 if progress != last_progress:
                     logger.info(f"Parallel EPG progress: {completed}/{total_channels} batches ({progress}%)")
                     last_progress = progress
-                    stall_count = 0
-                else:
-                    stall_count += 1
 
-                # Safety valve: if no progress for too long, assume tasks finished
-                # but results weren't properly tracked (can happen with Redis issues)
-                if stall_count >= max_stalls:
-                    logger.warning(
-                        f"No progress for {max_stalls * 2}s, assuming completion. "
-                        f"Last known: {completed}/{total_channels}"
-                    )
-                    break
-
-                time.sleep(2)  # Update every 2 seconds for continuous feedback
+                time.sleep(2)
             except Exception as e:
                 logger.warning(f"Error checking parallel task progress: {e}")
                 time.sleep(5)  # Back off on errors
@@ -1657,7 +1641,7 @@ def track_parallel_epg_progress(self, source_id, group_result_id, total_channels
 @shared_task
 def parse_programs_chunk(epg_ids, source_id, total_channels=None):
     """
-    Process a chunk of EPG channels with production-grade progress tracking.
+    Process a chunk of EPG channels with progress tracking.
 
     Uses Redis atomic counters for real-time progress across parallel workers.
 
