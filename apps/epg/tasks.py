@@ -828,23 +828,34 @@ def parse_channels_only(source):
             should_log_memory = False
             logger.warning("psutil not available for memory tracking")
 
-        # Replace full dictionary load with more efficient lookup set
-        existing_tvg_ids = set()
-        existing_epgs = {}  # Initialize the dictionary that will lazily load objects
+        # Pre-fetch all EPGData objects in chunks to avoid N+1 queries
+        existing_epgs = {}  # Will hold full objects indexed by tvg_id
         last_id = 0
         chunk_size = 5000
 
         while True:
-            tvg_id_chunk = set(EPGData.objects.filter(
+            # Fetch FULL OBJECTS in chunks (not just IDs)
+            epg_chunk = EPGData.objects.filter(
                 epg_source=source,
                 id__gt=last_id
-            ).order_by('id').values_list('tvg_id', flat=True)[:chunk_size])
+            ).order_by('id')[:chunk_size]
 
-            if not tvg_id_chunk:
+            epg_list = list(epg_chunk)
+            if not epg_list:
                 break
 
-            existing_tvg_ids.update(tvg_id_chunk)
-            last_id = EPGData.objects.filter(tvg_id__in=tvg_id_chunk).order_by('-id')[0].id
+            # Build dictionary: tvg_id -> EPGData object
+            for epg_obj in epg_list:
+                if epg_obj.tvg_id:
+                    existing_epgs[epg_obj.tvg_id] = epg_obj
+
+            last_id = epg_list[-1].id
+            del epg_list
+            gc.collect()
+
+        # Create set for fast existence checks
+        existing_tvg_ids = set(existing_epgs.keys())
+
         # Update progress to show file read starting
         send_epg_update(source.id, "parsing_channels", 10)
 
@@ -912,27 +923,9 @@ def parse_channels_only(source):
                         if not display_name:
                             display_name = tvg_id
 
-                        # Use lazy loading approach to reduce memory usage
+                        # Check if channel exists (object already pre-fetched above)
                         if tvg_id in existing_tvg_ids:
-                            # Only fetch the object if we need to update it and it hasn't been loaded yet
-                            if tvg_id not in existing_epgs:
-                                try:
-                                    # This loads the full EPG object from the database and caches it
-                                    existing_epgs[tvg_id] = EPGData.objects.get(tvg_id=tvg_id, epg_source=source)
-                                except EPGData.DoesNotExist:
-                                    # Handle race condition where record was deleted
-                                    existing_tvg_ids.remove(tvg_id)
-                                    epgs_to_create.append(EPGData(
-                                        tvg_id=tvg_id,
-                                        name=display_name,
-                                        icon_url=icon_url,
-                                        epg_source=source,
-                                    ))
-                                    logger.debug(f"[parse_channels_only] Added new channel to epgs_to_create 1: {tvg_id} - {display_name}")
-                                    processed_channels += 1
-                                    continue
-
-                            # We use the cached object to check if the name or icon_url has changed
+                            # Use the pre-fetched object (no database query!)
                             epg_obj = existing_epgs[tvg_id]
                             needs_update = False
                             if epg_obj.name != display_name:
@@ -963,7 +956,8 @@ def parse_channels_only(source):
                     # Batch processing
                     if len(epgs_to_create) >= batch_size:
                         logger.info(f"[parse_channels_only] Bulk creating {len(epgs_to_create)} EPG entries")
-                        EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+                        with transaction.atomic():
+                            EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
                         if process:
                             logger.info(f"[parse_channels_only] Memory after bulk_create: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                         del epgs_to_create  # Explicit deletion
@@ -976,7 +970,8 @@ def parse_channels_only(source):
                         logger.info(f"[parse_channels_only] Bulk updating {len(epgs_to_update)} EPG entries")
                         if process:
                             logger.info(f"[parse_channels_only] Memory before bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
-                        EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
+                        with transaction.atomic():
+                            EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
                         if process:
                             logger.info(f"[parse_channels_only] Memory after bulk_update: {process.memory_info().rss / 1024 / 1024:.2f} MB")
                         epgs_to_update = []
@@ -1039,11 +1034,13 @@ def parse_channels_only(source):
             logger.info(f"[parse_channels_only] Processed {processed_channels} channels")
         # Process any remaining items
         if epgs_to_create:
-            EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
+            with transaction.atomic():
+                EPGData.objects.bulk_create(epgs_to_create, ignore_conflicts=True)
             logger.debug(f"[parse_channels_only] Created final batch of {len(epgs_to_create)} EPG entries")
 
         if epgs_to_update:
-            EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
+            with transaction.atomic():
+                EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
             logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
         if process:
             logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")

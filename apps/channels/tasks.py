@@ -473,7 +473,7 @@ def match_epg_channels():
 
         # Get all EPG data
         epg_data = []
-        for epg in EPGData.objects.all():
+        for epg in EPGData.objects.select_related('epg_source').all():
             normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
             epg_data.append({
                 'id': epg.id,
@@ -500,18 +500,22 @@ def match_epg_channels():
             # Create mapping from channel_id to epg_data_id
             epg_mapping = {d["id"]: d["epg_data_id"] for d in channels_to_update_dicts}
 
-            # Update each channel with matched EPG data
+            # Batch fetch all needed EPGData objects in ONE query
+            epg_data_ids = list(epg_mapping.values())
+            epg_objects = EPGData.objects.in_bulk(epg_data_ids)  # Returns {id: obj} dict
+
+            # Update each channel with matched EPG data (no queries!)
             for channel_obj in channels_list:
                 epg_data_id = epg_mapping.get(channel_obj.id)
                 if epg_data_id:
-                    try:
-                        epg_data_obj = EPGData.objects.get(id=epg_data_id)
-                        channel_obj.epg_data = epg_data_obj
-                    except EPGData.DoesNotExist:
+                    if epg_data_id in epg_objects:
+                        channel_obj.epg_data = epg_objects[epg_data_id]  # No query!
+                    else:
                         logger.error(f"EPG data {epg_data_id} not found for channel {channel_obj.id}")
 
             # Bulk update all channels
-            Channel.objects.bulk_update(channels_list, ["epg_data"])
+            with transaction.atomic():
+                Channel.objects.bulk_update(channels_list, ["epg_data"])
 
         total_matched = len(matched_channels)
         if total_matched:
@@ -620,7 +624,7 @@ def match_selected_channels_epg(channel_ids):
 
         # Get all EPG data
         epg_data = []
-        for epg in EPGData.objects.all():
+        for epg in EPGData.objects.select_related('epg_source').all():
             normalized_tvg_id = epg.tvg_id.strip().lower() if epg.tvg_id else ""
             epg_data.append({
                 'id': epg.id,
@@ -647,18 +651,22 @@ def match_selected_channels_epg(channel_ids):
             # Create mapping from channel_id to epg_data_id
             epg_mapping = {d["id"]: d["epg_data_id"] for d in channels_to_update_dicts}
 
-            # Update each channel with matched EPG data
+            # Batch fetch all needed EPGData objects in ONE query
+            epg_data_ids = list(epg_mapping.values())
+            epg_objects = EPGData.objects.in_bulk(epg_data_ids)  # Returns {id: obj} dict
+
+            # Update each channel with matched EPG data (no queries!)
             for channel_obj in channels_list:
                 epg_data_id = epg_mapping.get(channel_obj.id)
                 if epg_data_id:
-                    try:
-                        epg_data_obj = EPGData.objects.get(id=epg_data_id)
-                        channel_obj.epg_data = epg_data_obj
-                    except EPGData.DoesNotExist:
+                    if epg_data_id in epg_objects:
+                        channel_obj.epg_data = epg_objects[epg_data_id]  # No query!
+                    else:
                         logger.error(f"EPG data {epg_data_id} not found for channel {channel_obj.id}")
 
             # Bulk update all channels
-            Channel.objects.bulk_update(channels_list, ["epg_data"])
+            with transaction.atomic():
+                Channel.objects.bulk_update(channels_list, ["epg_data"])
 
         total_matched = len(matched_channels)
         if total_matched:
