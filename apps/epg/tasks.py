@@ -13,7 +13,7 @@ from lxml import etree  # Using lxml exclusively
 import psutil  # Add import for memory tracking
 import zipfile
 
-from celery import shared_task
+from celery import shared_task, group
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -1539,6 +1539,171 @@ def parse_programs_for_source(epg_source, tvg_id=None):
             logger.info(f"[parse_programs_for_source] Final memory usage: {final_memory:.2f} MB difference: {final_memory - initial_memory:.2f} MB")
             # Explicitly clear the process object to prevent potential memory leaks
             process = None
+
+
+@shared_task
+def track_parallel_epg_progress(source_id, group_result_id, total_channels):
+    """
+    Monitor parallel EPG parsing task group and aggregate progress.
+
+    This task tracks the completion of parallel channel parsing tasks
+    and sends periodic WebSocket progress updates to the frontend.
+    """
+    from celery.result import GroupResult
+
+    logger.info(f"Tracking progress for {total_channels} parallel EPG tasks (source {source_id})")
+
+    try:
+        group_result = GroupResult.restore(group_result_id)
+
+        last_progress = 0
+        while not group_result.ready():
+            try:
+                completed = group_result.completed_count()
+                progress = min(95, int((completed / total_channels) * 100)) if total_channels > 0 else 0
+
+                # Only send updates when progress changes significantly (every 5%)
+                if progress >= last_progress + 5 or progress == 0:
+                    send_epg_update(source_id, "parsing_programs", progress,
+                                  processed=completed, total=total_channels)
+                    last_progress = progress
+                    logger.debug(f"Parallel EPG progress: {completed}/{total_channels} ({progress}%)")
+
+                time.sleep(2)  # Update every 2 seconds
+            except Exception as e:
+                logger.warning(f"Error checking parallel task progress: {e}")
+                time.sleep(5)  # Back off on errors
+
+        # Final update
+        send_epg_update(source_id, "parsing_programs", 100, status="success")
+        logger.info(f"Completed parallel EPG parsing for source {source_id}")
+
+    except Exception as e:
+        logger.error(f"Error in track_parallel_epg_progress: {e}", exc_info=True)
+
+
+@shared_task
+def parse_programs_chunk(epg_ids, source_id):
+    """
+    Process a chunk of EPG channels sequentially within a single worker task.
+
+    This function is designed for parallel execution - multiple chunks are processed
+    simultaneously by different Celery workers. Within each chunk, channels are
+    processed sequentially to maintain memory efficiency.
+
+    Args:
+        epg_ids: List of EPGData IDs to process
+        source_id: EPG source ID for logging
+
+    Returns:
+        int: Number of channels successfully processed
+    """
+    processed_count = 0
+
+    for epg_id in epg_ids:
+        try:
+            result = parse_programs_for_tvg_id(epg_id)
+            if result != "Task already running":
+                processed_count += 1
+        except Exception as e:
+            logger.error(f"Error parsing EPG {epg_id} in chunk: {e}")
+
+    # Cleanup after chunk to prevent memory accumulation
+    gc.collect()
+
+    logger.debug(f"Completed chunk: {processed_count}/{len(epg_ids)} channels processed")
+    return processed_count
+
+
+@shared_task
+def parse_programs_for_source_parallel(epg_source_id, tvg_id=None):
+    """
+    Smart parallel/sequential EPG parsing with adaptive resource detection.
+
+    Automatically detects available resources (memory, workers) and chooses
+    the optimal processing strategy. Designed to work safely on hardware
+    ranging from Raspberry Pi to dedicated servers.
+
+    Args:
+        epg_source_id: ID of the EPG source
+        tvg_id: Optional specific channel to parse (if None, parses all)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    from apps.epg.resource_detection import calculate_optimal_parallelism
+
+    try:
+        epg_source = EPGSource.objects.get(id=epg_source_id)
+    except EPGSource.DoesNotExist:
+        logger.error(f"EPG source {epg_source_id} not found")
+        return False
+
+    # Get channel count for resource detection
+    epg_query = EPGData.objects.filter(epg_source=epg_source)
+    if tvg_id:
+        epg_query = epg_query.filter(tvg_id=tvg_id)
+
+    channel_count = epg_query.count()
+
+    # Let resource detector make the smart decision
+    parallelism = calculate_optimal_parallelism(channel_count)
+
+    if not parallelism['enabled']:
+        logger.info(f"Using sequential mode: {parallelism['reason']}")
+        return parse_programs_for_source(epg_source_id, tvg_id)
+
+    logger.info(
+        f"Using parallel mode for {channel_count} channels: "
+        f"max_concurrent={parallelism['max_concurrent']}, "
+        f"chunk_size={parallelism['chunk_size']}, "
+        f"reason='{parallelism['reason']}'"
+    )
+
+    try:
+        # Get channel IDs
+        epg_entries = list(epg_query.values_list('id', flat=True))
+
+        if not epg_entries:
+            epg_source.status = 'success'
+            epg_source.save(update_fields=['status'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="success")
+            return True
+
+        # Chunk the channels to reduce task overhead
+        # Instead of 5000 tasks, create ~20 tasks of 250 channels each
+        chunks = [
+            epg_entries[i:i + parallelism['chunk_size']]
+            for i in range(0, len(epg_entries), parallelism['chunk_size'])
+        ]
+
+        logger.info(f"Created {len(chunks)} task chunks from {len(epg_entries)} channels")
+
+        # Create task group with chunked processing
+        task_group = group([
+            parse_programs_chunk.s(chunk, epg_source.id)
+            for chunk in chunks
+        ])
+
+        # Execute tasks in parallel
+        group_result = task_group.apply_async()
+
+        # Track progress in background (tracks chunks, not individual channels)
+        track_parallel_epg_progress.delay(epg_source.id, group_result.id, len(chunks))
+
+        logger.info(f"Parallel EPG parsing initiated: {len(chunks)} chunks across workers")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in parse_programs_for_source_parallel: {e}", exc_info=True)
+        epg_source.status = EPGSource.STATUS_ERROR
+        epg_source.last_message = f"Error in parallel parsing: {str(e)}"
+        epg_source.save(update_fields=['status', 'last_message'])
+        send_epg_update(epg_source.id, "parsing_programs", 100,
+                      status="error", message=epg_source.last_message)
+        return False
+
+
 def fetch_schedules_direct(source):
     logger.info(f"Fetching Schedules Direct data from source: {source.name}")
     try:
