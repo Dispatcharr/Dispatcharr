@@ -926,7 +926,27 @@ def parse_channels_only(source):
                         # Check if channel exists (object already pre-fetched above)
                         if tvg_id in existing_tvg_ids:
                             # Use the pre-fetched object (no database query!)
-                            epg_obj = existing_epgs[tvg_id]
+                            # Handle case where cache was cleared but ID still in set
+                            epg_obj = existing_epgs.get(tvg_id)
+                            if epg_obj is None:
+                                # Cache was cleared, need to re-fetch this one object
+                                try:
+                                    epg_obj = EPGData.objects.get(tvg_id=tvg_id, epg_source=source)
+                                    existing_epgs[tvg_id] = epg_obj  # Re-cache it
+                                except EPGData.DoesNotExist:
+                                    # Race condition - treat as new channel
+                                    existing_tvg_ids.discard(tvg_id)
+                                    epgs_to_create.append(EPGData(
+                                        tvg_id=tvg_id,
+                                        name=display_name,
+                                        icon_url=icon_url,
+                                        epg_source=source,
+                                    ))
+                                    logger.debug(f"[parse_channels_only] Added channel after cache miss: {tvg_id}")
+                                    processed_channels += 1
+                                    clear_element(elem)
+                                    continue
+
                             needs_update = False
                             if epg_obj.name != display_name:
                                 epg_obj.name = display_name
