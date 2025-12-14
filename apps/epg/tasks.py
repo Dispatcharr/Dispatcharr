@@ -207,7 +207,7 @@ def refresh_epg_data(source_id):
                 gc.collect()
                 return
 
-            parse_programs_for_source(source)
+            parse_programs_for_source_parallel(source.id)
 
         elif source.source_type == 'schedules_direct':
             fetch_schedules_direct(source)
