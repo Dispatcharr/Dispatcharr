@@ -1671,7 +1671,7 @@ def parse_programs_for_source_parallel(epg_source_id, tvg_id=None):
 
     if not parallelism['enabled']:
         logger.info(f"Using sequential mode: {parallelism['reason']}")
-        return parse_programs_for_source(epg_source_id, tvg_id)
+        return parse_programs_for_source(epg_source, tvg_id)
 
     logger.info(
         f"Using parallel mode for {channel_count} channels: "
