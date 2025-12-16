@@ -18,10 +18,10 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
 fi
 MODE="${MODE:-movies}"          # movies | tv
 BACKEND_URL="${BACKEND_URL:-http://10.0.0.192:5656}"
-MOUNTPOINT="${MOUNTPOINT:-$HOME/Desktop/vod_${MODE}}"
+MOUNTPOINT="${MOUNTPOINT:-/Volumes/vod_${MODE}}"
 VENV_PATH="${VENV_PATH:-$PROJECT_ROOT/.venv}"
 FUSE_MAX_READ="${FUSE_MAX_READ:-8388608}"       # 8 MiB
-READAHEAD_BYTES="${READAHEAD_BYTES:-1048576}"   # 1 MiB
+READAHEAD_BYTES="${READAHEAD_BYTES:-8388608}"   # 8 MiB
 
 if [[ "$MODE" != "movies" && "$MODE" != "tv" ]]; then
   echo "MODE must be 'movies' or 'tv'" >&2
@@ -64,8 +64,7 @@ fi
 
 # Prepare mountpoint (unmount if stale)
 diskutil umount force "$MOUNTPOINT" >/dev/null 2>&1 || true
-rm -rf "$MOUNTPOINT"
-mkdir -p "$MOUNTPOINT"
+
 # Disable Spotlight indexing on the mount to prevent background scans/thumbnails
 if command -v mdutil >/dev/null 2>&1; then
   mdutil -i off "$MOUNTPOINT" >/dev/null 2>&1 || true

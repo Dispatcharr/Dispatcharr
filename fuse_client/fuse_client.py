@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import stat
+import sys
 import time
 from typing import Dict, Optional
 from urllib.parse import urljoin
@@ -40,18 +41,29 @@ class FuseAPIClient:
         self.session = requests.Session()
 
     def browse(self, path: str) -> Dict:
-        resp = self.session.get(
-            f"{self.base}/api/fuse/browse/{self.mode}/", params={"path": path}
-        )
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self.session.get(
+                f"{self.base}/api/fuse/browse/{self.mode}/",
+                params={"path": path},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            log.error("Browse failed for %s: %s", path, exc)
+            raise FuseOSError(errno.ECONNREFUSED) from exc
 
     def stream_url(self, content_type: str, content_id: str) -> str:
-        resp = self.session.get(
-            f"{self.base}/api/fuse/stream/{content_type}/{content_id}/"
-        )
-        resp.raise_for_status()
-        return resp.json().get("stream_url")
+        try:
+            resp = self.session.get(
+                f"{self.base}/api/fuse/stream/{content_type}/{content_id}/",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json().get("stream_url")
+        except requests.RequestException as exc:
+            log.error("Stream URL lookup failed for %s:%s: %s", content_type, content_id, exc)
+            raise FuseOSError(errno.ECONNREFUSED) from exc
 
     def head_stream(self, url: str) -> Dict[str, Optional[int]]:
         """
@@ -409,7 +421,7 @@ def parse_args():
     parser.add_argument(
         "--readahead-bytes",
         type=int,
-        default=1 * 1024 * 1024,
+        default=8 * 1024 * 1024,
         help="Upstream range size to fetch and buffer per read (bytes)",
     )
     parser.add_argument(
@@ -435,6 +447,16 @@ def parse_args():
 def main():
     args = parse_args()
     api_client = FuseAPIClient(args.backend_url, args.mode)
+    try:
+        api_client.browse("/")  # Fail fast if backend is unreachable
+    except FuseOSError as exc:
+        log.error(
+            "Cannot reach backend %s for mode=%s: %s",
+            args.backend_url,
+            args.mode,
+            exc,
+        )
+        sys.exit(1)
     fuse = VODFuse(api_client, args.readahead_bytes, args.probe_read_bytes)
     FUSE(
         fuse,
