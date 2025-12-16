@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Automated configuration backup/restore system with scheduled backups, retention policies, and async task processing - Thanks [@stlalpha](https://github.com/stlalpha) (Closes #153)
+
+### Changed
+
+- Removed unreachable code path in m3u output - Thanks [@DawtCom](https://github.com/DawtCom)
+
 ### Fixed
 
-- nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup
+- VOD episode processing now correctly handles duplicate episodes (same episode in multiple languages/qualities) by reusing Episode records across multiple M3UEpisodeRelation entries instead of attempting to create duplicates (Fixes #556)
+- nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup (Fixes #744)
 - XtreamCodes EPG API now returns correct date/time format for start/end fields and proper string types for timestamps and channel_id
+- XtreamCodes EPG API now handles None values for title and description fields to prevent AttributeError
 
 ## [0.14.0] - 2025-12-09
 

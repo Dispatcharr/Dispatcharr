@@ -1232,7 +1232,13 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
 
 
 def batch_process_episodes(account, series, episodes_data, scan_start_time=None):
-    """Process episodes in batches for better performance"""
+    """Process episodes in batches for better performance.
+
+    Note: Multiple streams can represent the same episode (e.g., different languages
+    or qualities). Each stream has a unique stream_id, but they share the same
+    season/episode number. We create one Episode record per (series, season, episode)
+    and multiple M3UEpisodeRelation records pointing to it.
+    """
     if not episodes_data:
         return
 
@@ -1249,12 +1255,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
     logger.info(f"Batch processing {len(all_episodes_data)} episodes for series {series.name}")
 
     # Extract episode identifiers
-    episode_keys = []
+    # Note: episode_keys may have duplicates when multiple streams represent same episode
+    episode_keys = set()  # Use set to track unique episode keys
     episode_ids = []
     for episode_data in all_episodes_data:
         season_num = episode_data['_season_number']
         episode_num = episode_data.get('episode_num', 0)
-        episode_keys.append((series.id, season_num, episode_num))
+        episode_keys.add((series.id, season_num, episode_num))
         episode_ids.append(str(episode_data.get('id')))
 
     # Pre-fetch existing episodes
@@ -1276,6 +1283,10 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
     episodes_to_update = []
     relations_to_create = []
     relations_to_update = []
+
+    # Track episodes we're creating in this batch to avoid duplicates
+    # Key: (series_id, season_number, episode_number) -> Episode object
+    episodes_pending_creation = {}
 
     for episode_data in all_episodes_data:
         try:
@@ -1306,9 +1317,14 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 if backdrop:
                     custom_props['backdrop_path'] = [backdrop]
 
-            # Find existing episode
+            # Find existing episode - check DB first, then pending creations
             episode_key = (series.id, season_number, episode_number)
             episode = existing_episodes.get(episode_key)
+
+            # Check if we already have this episode pending creation (multiple streams for same episode)
+            if not episode and episode_key in episodes_pending_creation:
+                episode = episodes_pending_creation[episode_key]
+                logger.debug(f"Reusing pending episode for S{season_number:02d}E{episode_number:02d} (stream_id: {episode_id})")
 
             if episode:
                 # Update existing episode
@@ -1338,7 +1354,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                     episode.custom_properties = custom_props if custom_props else None
                     updated = True
 
-                if updated:
+                # Only add to update list if episode has a PK (exists in DB) and isn't already in list
+                # Episodes pending creation don't have PKs yet and will be created via bulk_create
+                if updated and episode.pk and episode not in episodes_to_update:
                     episodes_to_update.append(episode)
             else:
                 # Create new episode
@@ -1356,6 +1374,8 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                     custom_properties=custom_props if custom_props else None
                 )
                 episodes_to_create.append(episode)
+                # Track this episode so subsequent streams with same season/episode can reuse it
+                episodes_pending_creation[episode_key] = episode
 
             # Handle episode relation
             if episode_id in existing_relations:
@@ -1389,9 +1409,28 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
 
     # Execute batch operations
     with transaction.atomic():
-        # Create new episodes
+        # Create new episodes - use ignore_conflicts in case of race conditions
         if episodes_to_create:
-            Episode.objects.bulk_create(episodes_to_create)
+            Episode.objects.bulk_create(episodes_to_create, ignore_conflicts=True)
+
+            # Re-fetch the created episodes to get their PKs
+            # We need to do this because bulk_create with ignore_conflicts doesn't set PKs
+            created_episode_keys = [
+                (ep.series_id, ep.season_number, ep.episode_number)
+                for ep in episodes_to_create
+            ]
+            db_episodes = Episode.objects.filter(series=series)
+            episode_pk_map = {
+                (ep.series_id, ep.season_number, ep.episode_number): ep
+                for ep in db_episodes
+            }
+
+            # Update relations to point to the actual DB episodes with PKs
+            for relation in relations_to_create:
+                ep = relation.episode
+                key = (ep.series_id, ep.season_number, ep.episode_number)
+                if key in episode_pk_map:
+                    relation.episode = episode_pk_map[key]
 
         # Update existing episodes
         if episodes_to_update:
@@ -1400,9 +1439,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 'tmdb_id', 'imdb_id', 'custom_properties'
             ])
 
-        # Create new episode relations
+        # Create new episode relations - use ignore_conflicts for stream_id duplicates
         if relations_to_create:
-            M3UEpisodeRelation.objects.bulk_create(relations_to_create)
+            M3UEpisodeRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
         # Update existing episode relations
         if relations_to_update:

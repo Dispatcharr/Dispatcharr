@@ -161,18 +161,7 @@ def generate_m3u(request, profile_name=None, user=None):
                 channelprofilemembership__enabled=True
             ).order_by('channel_number')
         else:
-            if profile_name is not None:
-                try:
-                    channel_profile = ChannelProfile.objects.get(name=profile_name)
-                except ChannelProfile.DoesNotExist:
-                    logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
-                    raise Http404(f"Channel profile '{profile_name}' not found")
-                channels = Channel.objects.filter(
-                    channelprofilemembership__channel_profile=channel_profile,
-                    channelprofilemembership__enabled=True,
-                ).order_by("channel_number")
-            else:
-                channels = Channel.objects.order_by("channel_number")
+            channels = Channel.objects.order_by("channel_number")
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -2314,11 +2303,11 @@ def xc_get_epg(request, user, short=False):
         program_output = {
             "id": f"{id}",
             "epg_id": f"{epg_id}",
-            "title": base64.b64encode(title.encode()).decode(),
+            "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "description": base64.b64encode(description.encode()).decode(),
+            "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),
             "stop_timestamp": str(int(end.timestamp())),
