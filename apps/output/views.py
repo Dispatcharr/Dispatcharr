@@ -161,18 +161,7 @@ def generate_m3u(request, profile_name=None, user=None):
                 channelprofilemembership__enabled=True
             ).order_by('channel_number')
         else:
-            if profile_name is not None:
-                try:
-                    channel_profile = ChannelProfile.objects.get(name=profile_name)
-                except ChannelProfile.DoesNotExist:
-                    logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
-                    raise Http404(f"Channel profile '{profile_name}' not found")
-                channels = Channel.objects.filter(
-                    channelprofilemembership__channel_profile=channel_profile,
-                    channelprofilemembership__enabled=True,
-                ).order_by("channel_number")
-            else:
-                channels = Channel.objects.order_by("channel_number")
+            channels = Channel.objects.order_by("channel_number")
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -2314,11 +2303,11 @@ def xc_get_epg(request, user, short=False):
         program_output = {
             "id": f"{id}",
             "epg_id": f"{epg_id}",
-            "title": base64.b64encode(title.encode()).decode(),
+            "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "description": base64.b64encode(description.encode()).decode(),
+            "description": base64.b64encode((description or "").encode()).decode(),
             "channel_id": str(channel_num_int),
             "start_timestamp": str(int(start.timestamp())),
             "stop_timestamp": str(int(end.timestamp())),
@@ -2532,34 +2521,45 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Get episodes for this series from the same M3U account
-    episode_relations = M3UEpisodeRelation.objects.filter(
-        episode__series=series,
-        m3u_account=series_relation.m3u_account
-    ).select_related('episode').order_by('episode__season_number', 'episode__episode_number')
+    # Get unique episodes for this series that have relations from any active M3U account
+    # We query episodes directly to avoid duplicates when multiple relations exist
+    # (e.g., same episode in different languages/qualities)
+    from apps.vod.models import Episode
+    episodes = Episode.objects.filter(
+        series=series,
+        m3u_relations__m3u_account__is_active=True
+    ).distinct().order_by('season_number', 'episode_number')
 
     # Group episodes by season
     seasons = {}
-    for relation in episode_relations:
-        episode = relation.episode
+    for episode in episodes:
         season_num = episode.season_number or 1
         if season_num not in seasons:
             seasons[season_num] = []
 
-        # Try to get the highest priority related M3UEpisodeRelation for this episode (for video/audio/bitrate)
+        # Get the highest priority relation for this episode (for container_extension, video/audio/bitrate)
         from apps.vod.models import M3UEpisodeRelation
-        first_relation = M3UEpisodeRelation.objects.filter(
-            episode=episode
+        best_relation = M3UEpisodeRelation.objects.filter(
+            episode=episode,
+            m3u_account__is_active=True
         ).select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+
         video = audio = bitrate = None
-        if first_relation and first_relation.custom_properties:
-            info = first_relation.custom_properties.get('info')
-            if info and isinstance(info, dict):
-                info_info = info.get('info')
-                if info_info and isinstance(info_info, dict):
-                    video = info_info.get('video', {})
-                    audio = info_info.get('audio', {})
-                    bitrate = info_info.get('bitrate', 0)
+        container_extension = "mp4"
+        added_timestamp = str(int(episode.created_at.timestamp()))
+
+        if best_relation:
+            container_extension = best_relation.container_extension or "mp4"
+            added_timestamp = str(int(best_relation.created_at.timestamp()))
+            if best_relation.custom_properties:
+                info = best_relation.custom_properties.get('info')
+                if info and isinstance(info, dict):
+                    info_info = info.get('info')
+                    if info_info and isinstance(info_info, dict):
+                        video = info_info.get('video', {})
+                        audio = info_info.get('audio', {})
+                        bitrate = info_info.get('bitrate', 0)
+
         if video is None:
             video = episode.custom_properties.get('video', {}) if episode.custom_properties else {}
         if audio is None:
@@ -2572,8 +2572,8 @@ def xc_get_series_info(request, user, series_id):
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
-            "container_extension": relation.container_extension or "mp4",
-            "added": str(int(relation.created_at.timestamp())),
+            "container_extension": container_extension,
+            "added": added_timestamp,
             "custom_sid": None,
             "direct_source": "",
             "info": {
@@ -2889,7 +2889,7 @@ def xc_series_stream(request, username, password, stream_id, extension):
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
     try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').get(**filters)
+        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
     except M3UEpisodeRelation.DoesNotExist:
         return JsonResponse({"error": "Episode not found"}, status=404)
 

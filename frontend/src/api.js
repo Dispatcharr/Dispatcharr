@@ -1349,6 +1349,183 @@ export default class API {
     }
   }
 
+  // Backup API (async with Celery task polling)
+  static async listBackups() {
+    try {
+      const response = await request(`${host}/api/backups/`);
+      return response || [];
+    } catch (e) {
+      errorNotification('Failed to load backups', e);
+      throw e;
+    }
+  }
+
+  static async getBackupStatus(taskId, token = null) {
+    try {
+      let url = `${host}/api/backups/status/${taskId}/`;
+      if (token) {
+        url += `?token=${encodeURIComponent(token)}`;
+      }
+      const response = await request(url, { auth: !token });
+      return response;
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  static async waitForBackupTask(taskId, onProgress, token = null) {
+    const pollInterval = 2000; // Poll every 2 seconds
+    const maxAttempts = 300; // Max 10 minutes (300 * 2s)
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const status = await API.getBackupStatus(taskId, token);
+
+        if (onProgress) {
+          onProgress(status);
+        }
+
+        if (status.state === 'completed') {
+          return status.result;
+        } else if (status.state === 'failed') {
+          throw new Error(status.error || 'Task failed');
+        }
+      } catch (e) {
+        throw e;
+      }
+
+      // Wait before next poll
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    throw new Error('Task timed out');
+  }
+
+  static async createBackup(onProgress) {
+    try {
+      // Start the backup task
+      const response = await request(`${host}/api/backups/create/`, {
+        method: 'POST',
+      });
+
+      // Wait for the task to complete using token for auth
+      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      return result;
+    } catch (e) {
+      errorNotification('Failed to create backup', e);
+      throw e;
+    }
+  }
+
+  static async uploadBackup(file) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await request(
+        `${host}/api/backups/upload/`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to upload backup', e);
+      throw e;
+    }
+  }
+
+  static async deleteBackup(filename) {
+    try {
+      const encodedFilename = encodeURIComponent(filename);
+      await request(`${host}/api/backups/${encodedFilename}/delete/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete backup', e);
+      throw e;
+    }
+  }
+
+  static async getDownloadToken(filename) {
+    // Get a download token from the server
+    try {
+      const response = await request(`${host}/api/backups/${encodeURIComponent(filename)}/download-token/`);
+      return response.token;
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  static async downloadBackup(filename) {
+    try {
+      // Get a download token first (requires auth)
+      const token = await API.getDownloadToken(filename);
+      const encodedFilename = encodeURIComponent(filename);
+
+      // Build the download URL with token
+      const downloadUrl = `${host}/api/backups/${encodedFilename}/download/?token=${encodeURIComponent(token)}`;
+
+      // Use direct browser navigation instead of fetch to avoid CORS issues
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      return { filename };
+    } catch (e) {
+      errorNotification('Failed to download backup', e);
+      throw e;
+    }
+  }
+
+  static async restoreBackup(filename, onProgress) {
+    try {
+      // Start the restore task
+      const encodedFilename = encodeURIComponent(filename);
+      const response = await request(
+        `${host}/api/backups/${encodedFilename}/restore/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Wait for the task to complete using token for auth
+      // Token-based auth allows status polling even after DB restore invalidates user sessions
+      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      return result;
+    } catch (e) {
+      errorNotification('Failed to restore backup', e);
+      throw e;
+    }
+  }
+
+  static async getBackupSchedule() {
+    try {
+      const response = await request(`${host}/api/backups/schedule/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to get backup schedule', e);
+      throw e;
+    }
+  }
+
+  static async updateBackupSchedule(settings) {
+    try {
+      const response = await request(`${host}/api/backups/schedule/update/`, {
+        method: 'PUT',
+        body: settings,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update backup schedule', e);
+      throw e;
+    }
+  }
+
   static async getVersion() {
     try {
       const response = await request(`${host}/api/core/version/`, {
