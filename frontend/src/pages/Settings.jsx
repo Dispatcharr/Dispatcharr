@@ -50,9 +50,8 @@ import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
 import useLibraryStore from '../store/library';
 import LibraryFormModal from '../components/library/LibraryFormModal';
-import { Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import { KeyRound, Pencil, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 import tmdbLogoUrl from '../assets/tmdb-logo-blue.svg?url';
-import { IconKey } from '@tabler/icons-react';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -1234,7 +1233,7 @@ const SettingsPage = () => {
 
                       <Divider my="sm" />
                       <Group gap="xs" align="center">
-                        <IconKey size={16} />
+                        <KeyRound size={16} />
                         <Text fw={600} size="sm">
                           OpenSubtitles (optional)
                         </Text>
