@@ -30,7 +30,9 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
     fi
 fi
 # Configure nginx port
-sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
+NGINX_PORT=${DISPATCHER_SERVICE_PORT:-${DISPATCHER_PORT:-80}}
+sed -i "s|NGINX_PORT|${NGINX_PORT}|g" /etc/nginx/sites-enabled/default
+
 
 # Configure nginx based on IPv6 availability
 if ip -6 addr show | grep -q "inet6"; then

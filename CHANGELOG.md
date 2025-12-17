@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - nginx now gracefully handles hosts without IPv6 support by automatically disabling IPv6 binding at startup (Fixes #744)
 - XtreamCodes EPG API now returns correct date/time format for start/end fields and proper string types for timestamps and channel_id
 - XtreamCodes EPG API now handles None values for title and description fields to prevent AttributeError
+- Update init to work with port definitions in Kubernetes. [@jdblack](https://g
+ithub.com/jdblack)
 
 ## [0.14.0] - 2025-12-09
 
