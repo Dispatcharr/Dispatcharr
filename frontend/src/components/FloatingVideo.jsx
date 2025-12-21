@@ -4,6 +4,8 @@ import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import mpegts from 'mpegts.js';
 import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
+import API from '../api';
+import useMediaLibraryStore from '../store/mediaLibrary';
 
 export default function FloatingVideo() {
   const isVisible = useVideoStore((s) => s.isVisible);
@@ -14,6 +16,10 @@ export default function FloatingVideo() {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
   const videoContainerRef = useRef(null);
+  const playbackMetaRef = useRef({ contentType: null, metadata: null });
+  const progressStateRef = useRef({ lastSentAt: 0, lastPositionMs: 0 });
+  const progressInFlightRef = useRef(false);
+  const resumeAppliedRef = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
@@ -105,6 +111,82 @@ export default function FloatingVideo() {
       },
     },
   ];
+  const isVod = contentType === 'vod' || contentType === 'library';
+
+  useEffect(() => {
+    playbackMetaRef.current = { contentType, metadata };
+  }, [contentType, metadata]);
+
+  const reportLibraryProgress = useCallback(
+    async ({ force = false, completed = false } = {}) => {
+      const metaState = playbackMetaRef.current;
+      if (!metaState || metaState.contentType !== 'library') {
+        return;
+      }
+      const meta = metaState.metadata || {};
+      const mediaItemId = meta.mediaItemId;
+      if (!mediaItemId || !videoRef.current) {
+        return;
+      }
+
+      const video = videoRef.current;
+      const positionMs = Math.max(0, Math.floor((video.currentTime || 0) * 1000));
+      const durationMs = meta.durationMs
+        ? Math.floor(meta.durationMs)
+        : video.duration
+        ? Math.floor(video.duration * 1000)
+        : null;
+
+      if (!force) {
+        const now = Date.now();
+        const last = progressStateRef.current;
+        const timeDelta = now - last.lastSentAt;
+        const positionDelta = Math.abs(positionMs - last.lastPositionMs);
+        if (timeDelta < 10000 && positionDelta < 5000) {
+          return;
+        }
+        if (positionMs <= 0 && !completed) {
+          return;
+        }
+        progressStateRef.current = {
+          lastSentAt: now,
+          lastPositionMs: positionMs,
+        };
+      } else {
+        progressStateRef.current = {
+          lastSentAt: Date.now(),
+          lastPositionMs: positionMs,
+        };
+      }
+
+      if (progressInFlightRef.current && !force) {
+        return;
+      }
+      progressInFlightRef.current = true;
+      try {
+        const response = await API.updateMediaItemProgress(
+          mediaItemId,
+          {
+            position_ms: positionMs,
+            duration_ms: durationMs,
+            completed,
+            file_id: meta.fileId || null,
+          },
+          { suppressErrorNotification: true }
+        );
+        if (response?.id) {
+          const store = useMediaLibraryStore.getState();
+          store.upsertItems([response]);
+          store.setActiveProgress(response.watch_progress || null);
+        }
+      } catch (error) {
+        // Progress updates should not interrupt playback.
+      } finally {
+        progressInFlightRef.current = false;
+      }
+    },
+    []
+  );
 
   // Safely destroy the mpegts player to prevent errors
   const safeDestroyPlayer = () => {
@@ -170,16 +252,48 @@ export default function FloatingVideo() {
     console.log('Initializing VOD player for:', streamUrl);
 
     const video = videoRef.current;
+    resumeAppliedRef.current = false;
 
     // Enhanced video element configuration for VOD
     video.preload = 'metadata';
     video.crossOrigin = 'anonymous';
 
+    const applyResumeSeek = () => {
+      if (resumeAppliedRef.current) return;
+      const meta = playbackMetaRef.current?.metadata || {};
+      const resumePositionMs = Number(meta.resumePositionMs || 0);
+      const resumeHandledByServer = Boolean(meta.resumeHandledByServer);
+      if (!resumePositionMs || resumeHandledByServer) {
+        resumeAppliedRef.current = true;
+        return;
+      }
+      const resumeSeconds = Math.max(0, resumePositionMs / 1000);
+      if (!Number.isFinite(resumeSeconds) || resumeSeconds <= 0) {
+        resumeAppliedRef.current = true;
+        return;
+      }
+      const duration = Number.isFinite(video.duration) ? video.duration : null;
+      const safeSeconds =
+        duration && duration > 1
+          ? Math.min(resumeSeconds, Math.max(0, duration - 1))
+          : resumeSeconds;
+      try {
+        video.currentTime = safeSeconds;
+        resumeAppliedRef.current = true;
+      } catch (error) {
+        // Keep false so we can retry on the next readiness event.
+      }
+    };
+
     // Set up event listeners
     const handleLoadStart = () => setIsLoading(true);
+    const handleLoadedMetadata = () => {
+      applyResumeSeek();
+    };
     const handleLoadedData = () => setIsLoading(false);
     const handleCanPlay = () => {
       setIsLoading(false);
+      applyResumeSeek();
       // Auto-play for VOD content
       video.play().catch((e) => {
         console.log('Auto-play prevented:', e);
@@ -187,6 +301,15 @@ export default function FloatingVideo() {
       });
       // Start overlay timer when video is ready
       startOverlayTimer();
+    };
+    const handleTimeUpdate = () => {
+      reportLibraryProgress();
+    };
+    const handlePause = () => {
+      reportLibraryProgress({ force: true });
+    };
+    const handleEnded = () => {
+      reportLibraryProgress({ force: true, completed: true });
     };
     const handleError = (e) => {
       setIsLoading(false);
@@ -229,10 +352,14 @@ export default function FloatingVideo() {
 
     // Add event listeners
     video.addEventListener('loadstart', handleLoadStart);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('loadeddata', handleLoadedData);
     video.addEventListener('canplay', handleCanPlay);
     video.addEventListener('error', handleError);
     video.addEventListener('progress', handleProgress);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('ended', handleEnded);
 
     // Set the source
     video.src = streamUrl;
@@ -242,10 +369,14 @@ export default function FloatingVideo() {
     playerRef.current = {
       destroy: () => {
         video.removeEventListener('loadstart', handleLoadStart);
+        video.removeEventListener('loadedmetadata', handleLoadedMetadata);
         video.removeEventListener('loadeddata', handleLoadedData);
         video.removeEventListener('canplay', handleCanPlay);
         video.removeEventListener('error', handleError);
         video.removeEventListener('progress', handleProgress);
+        video.removeEventListener('timeupdate', handleTimeUpdate);
+        video.removeEventListener('pause', handlePause);
+        video.removeEventListener('ended', handleEnded);
         video.removeAttribute('src');
         video.load();
       },
@@ -378,7 +509,7 @@ export default function FloatingVideo() {
     safeDestroyPlayer();
 
     // Initialize the appropriate player based on content type
-    if (contentType === 'vod') {
+    if (isVod) {
       initializeVODPlayer();
     } else {
       initializeLivePlayer();
@@ -388,7 +519,7 @@ export default function FloatingVideo() {
     return () => {
       safeDestroyPlayer();
     };
-  }, [isVisible, streamUrl, contentType]);
+  }, [isVisible, streamUrl, contentType, isVod]);
 
   // Modified hideVideo handler to clean up player first
   const handleClose = (e) => {
@@ -396,6 +527,7 @@ export default function FloatingVideo() {
       e.stopPropagation();
       e.preventDefault();
     }
+    reportLibraryProgress({ force: true });
     safeDestroyPlayer();
     setTimeout(() => {
       hideVideo();
@@ -743,7 +875,7 @@ export default function FloatingVideo() {
         <Box
           style={{ position: 'relative' }}
           onMouseEnter={() => {
-            if (contentType === 'vod' && !isLoading) {
+            if (isVod && !isLoading) {
               setShowOverlay(true);
               if (overlayTimeoutRef.current) {
                 clearTimeout(overlayTimeoutRef.current);
@@ -751,7 +883,7 @@ export default function FloatingVideo() {
             }
           }}
           onMouseLeave={() => {
-            if (contentType === 'vod' && !isLoading) {
+            if (isVod && !isLoading) {
               startOverlayTimer();
             }
           }}
@@ -767,19 +899,19 @@ export default function FloatingVideo() {
               backgroundColor: '#000',
               borderRadius: '0 0 8px 8px',
               // Better controls styling for VOD
-              ...(contentType === 'vod' && {
+              ...(isVod && {
                 controlsList: 'nodownload',
                 playsInline: true,
               }),
             }}
             // Add poster for VOD if available
-            {...(contentType === 'vod' && {
+            {...(isVod && {
               poster: metadata?.logo?.url, // Use VOD poster if available
             })}
           />
 
           {/* VOD title overlay when not loading - auto-hides after 4 seconds */}
-          {!isLoading && metadata && contentType === 'vod' && showOverlay && (
+          {!isLoading && metadata && isVod && showOverlay && (
             <Box
               style={{
                 position: 'absolute',

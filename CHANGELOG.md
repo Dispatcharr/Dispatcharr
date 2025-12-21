@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Media Library app with library management, scanning pipeline, watch progress, and metadata sync
+- Libraries management page and Media Library browsing page in the frontend, plus sidebar navigation
+- Media Library API endpoints for libraries, scans, directory browse, items, episodes, and stream URLs
+- VOD integration for Media Library items, including local-file playback through the VOD proxy
+
+### Changed
+
+- VOD proxy supports local file streaming and optional inclusion of inactive accounts for library playback
+
 ### Fixed
 
 - XtreamCodes EPG `has_archive` field now returns integer `0` instead of string `"0"` for proper JSON type consistency

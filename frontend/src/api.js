@@ -2545,6 +2545,297 @@ export default class API {
     }
   }
 
+  // Media Library Methods
+  static async getLibraries() {
+    try {
+      const response = await request(`${host}/api/media-library/libraries/`);
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to retrieve libraries', e);
+    }
+  }
+
+  static async createLibrary(payload) {
+    try {
+      const response = await request(`${host}/api/media-library/libraries/`, {
+        method: 'POST',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create library', e);
+    }
+  }
+
+  static async updateLibrary(id, payload) {
+    try {
+      const response = await request(`${host}/api/media-library/libraries/${id}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update library', e);
+    }
+  }
+
+  static async deleteLibrary(id) {
+    try {
+      await request(`${host}/api/media-library/libraries/${id}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete library', e);
+    }
+  }
+
+  static async browseLibraryPath(path = '') {
+    try {
+      const params = new URLSearchParams();
+      if (path) {
+        params.append('path', path);
+      }
+      const response = await request(
+        `${host}/api/media-library/browse/?${params.toString()}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to browse library path', e);
+    }
+  }
+
+  static async getLibraryScans(libraryId, params = new URLSearchParams()) {
+    try {
+      if (libraryId) {
+        params.append('library', libraryId);
+      }
+      const response = await request(
+        `${host}/api/media-library/scans/?${params.toString()}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to retrieve library scans', e);
+    }
+  }
+
+  static async triggerLibraryScan(libraryId, { full = false } = {}) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/libraries/${libraryId}/scan/`,
+        {
+          method: 'POST',
+          body: { full },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start library scan', e);
+    }
+  }
+
+  static async cancelLibraryScan(scanId) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/scans/${scanId}/cancel/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to cancel library scan', e);
+    }
+  }
+
+  static async deleteLibraryScan(scanId) {
+    try {
+      await request(`${host}/api/media-library/scans/${scanId}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete library scan', e);
+    }
+  }
+
+  static async purgeLibraryScans(libraryId = null) {
+    try {
+      const params = new URLSearchParams();
+      if (libraryId) {
+        params.append('library', libraryId);
+      }
+      const response = await request(
+        `${host}/api/media-library/scans/purge/?${params.toString()}`,
+        {
+          method: 'DELETE',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to purge library scans', e);
+    }
+  }
+
+  static async getMediaItems(params = new URLSearchParams()) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/?${params.toString()}`
+      );
+      return response.results || response;
+    } catch (e) {
+      errorNotification('Failed to retrieve media items', e);
+    }
+  }
+
+  static async getMediaItem(id, options = {}) {
+    try {
+      const response = await request(`${host}/api/media-library/items/${id}/`);
+      return response;
+    } catch (e) {
+      if (!options.suppressErrorNotification) {
+        errorNotification('Failed to retrieve media item', e);
+      }
+      throw e;
+    }
+  }
+
+  static async updateMediaItem(id, payload) {
+    try {
+      const response = await request(`${host}/api/media-library/items/${id}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update media item', e);
+    }
+  }
+
+  static async deleteMediaItem(id) {
+    try {
+      await request(`${host}/api/media-library/items/${id}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete media item', e);
+    }
+  }
+
+  static async getMediaItemEpisodes(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/episodes/`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve episodes', e);
+    }
+  }
+
+  static async markMediaItemWatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/mark-watched/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to mark item watched', e);
+    }
+  }
+
+  static async updateMediaItemProgress(id, payload = {}, options = {}) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/progress/`,
+        {
+          method: 'POST',
+          body: payload,
+        }
+      );
+      return response;
+    } catch (e) {
+      if (!options.suppressErrorNotification) {
+        errorNotification('Failed to update media progress', e);
+      }
+    }
+  }
+
+  static async clearMediaItemProgress(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/clear-progress/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to clear media progress', e);
+    }
+  }
+
+  static async markSeriesWatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/series/mark-watched/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to mark series watched', e);
+    }
+  }
+
+  static async markSeriesUnwatched(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/series/clear-progress/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to clear series progress', e);
+    }
+  }
+
+  static async refreshMediaItemMetadata(id) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/refresh-metadata/`,
+        {
+          method: 'POST',
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to refresh metadata', e);
+    }
+  }
+
+  static async streamMediaItem(id, payload = {}) {
+    try {
+      const response = await request(
+        `${host}/api/media-library/items/${id}/stream/`,
+        {
+          method: 'POST',
+          body: payload,
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to start playback', e);
+    }
+  }
+
   // VOD Methods
   static async getMovies(params = new URLSearchParams()) {
     try {

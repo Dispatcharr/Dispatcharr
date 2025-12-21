@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import useSettingsStore from '../store/settings';
 import useUserAgentsStore from '../store/userAgents';
@@ -19,20 +20,24 @@ import {
   Group,
   FileInput,
   MultiSelect,
+  SimpleGrid,
   Select,
   Stack,
   Switch,
   Text,
   TextInput,
   NumberInput,
+  Title,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
+import { Plus } from 'lucide-react';
 import UserAgentsTable from '../components/tables/UserAgentsTable';
 import StreamProfilesTable from '../components/tables/StreamProfilesTable';
 import BackupManager from '../components/backups/BackupManager';
 import useLocalStorage from '../hooks/useLocalStorage';
 import useAuthStore from '../store/auth';
+import useLibraryStore from '../store/library';
 import {
   USER_LEVELS,
   NETWORK_ACCESS_OPTIONS,
@@ -41,6 +46,9 @@ import {
 } from '../constants';
 import ConfirmationDialog from '../components/ConfirmationDialog';
 import useWarningsStore from '../store/warnings';
+import LibraryCard from '../components/library/LibraryCard';
+import LibraryFormModal from '../components/library/LibraryFormModal';
+import LibraryScanDrawer from '../components/library/LibraryScanDrawer';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -183,6 +191,17 @@ const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
+  const navigate = useNavigate();
+  const libraries = useLibraryStore((s) => s.libraries);
+  const fetchLibraries = useLibraryStore((s) => s.fetchLibraries);
+  const createLibrary = useLibraryStore((s) => s.createLibrary);
+  const updateLibrary = useLibraryStore((s) => s.updateLibrary);
+  const deleteLibrary = useLibraryStore((s) => s.deleteLibrary);
+  const triggerScan = useLibraryStore((s) => s.triggerScan);
+  const upsertScan = useLibraryStore((s) => s.upsertScan);
+  const removeScan = useLibraryStore((s) => s.removeScan);
+  const cancelLibraryScan = useLibraryStore((s) => s.cancelLibraryScan);
+  const deleteLibraryScan = useLibraryStore((s) => s.deleteLibraryScan);
 
   const [accordianValue, setAccordianValue] = useState(null);
   const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
@@ -209,6 +228,12 @@ const SettingsPage = () => {
     path: '',
     exists: false,
   });
+  const [selectedLibraryId, setSelectedLibraryId] = useState(null);
+  const [libraryFormOpen, setLibraryFormOpen] = useState(false);
+  const [editingLibrary, setEditingLibrary] = useState(null);
+  const [librarySubmitting, setLibrarySubmitting] = useState(false);
+  const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
+  const [scanLoadingId, setScanLoadingId] = useState(null);
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
@@ -405,6 +430,12 @@ const SettingsPage = () => {
     };
     loadComskipConfig();
   }, []);
+
+  useEffect(() => {
+    if (authUser?.user_level == USER_LEVELS.ADMIN) {
+      fetchLibraries();
+    }
+  }, [authUser, fetchLibraries]);
 
   // Clear success states when switching accordion panels
   useEffect(() => {
@@ -698,6 +729,116 @@ const SettingsPage = () => {
     }
   };
 
+  const openCreateLibraryModal = () => {
+    setEditingLibrary(null);
+    setLibraryFormOpen(true);
+  };
+
+  const openEditLibraryModal = (library) => {
+    setEditingLibrary(library);
+    setLibraryFormOpen(true);
+  };
+
+  const handleLibrarySubmit = async (payload) => {
+    setLibrarySubmitting(true);
+    try {
+      if (editingLibrary) {
+        const updated = await updateLibrary(editingLibrary.id, payload);
+        if (updated) {
+          notifications.show({
+            title: 'Library updated',
+            message: `${updated.name} saved successfully.`,
+            color: 'green',
+          });
+        }
+      } else {
+        const created = await createLibrary(payload);
+        if (created) {
+          notifications.show({
+            title: 'Library created',
+            message: `${created.name} added.`,
+            color: 'green',
+          });
+        }
+      }
+      setLibraryFormOpen(false);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLibrarySubmitting(false);
+    }
+  };
+
+  const handleLibraryDelete = async (library) => {
+    if (
+      !window.confirm(
+        `Delete ${library.name}? This will remove the library and related VOD items.`
+      )
+    ) {
+      return;
+    }
+    const success = await deleteLibrary(library.id);
+    if (success) {
+      notifications.show({
+        title: 'Library deleted',
+        message: `${library.name} removed.`,
+        color: 'red',
+      });
+      if (selectedLibraryId === library.id) {
+        setSelectedLibraryId(null);
+      }
+    }
+  };
+
+  const handleLibraryScan = async (libraryId, full = false) => {
+    setSelectedLibraryId(libraryId);
+    setScanLoadingId(libraryId);
+    try {
+      const scan = await triggerScan(libraryId, { full });
+      if (scan) {
+        upsertScan(scan);
+        setScanDrawerOpen(true);
+        notifications.show({
+          title: full ? 'Full scan started' : 'Scan started',
+          message: 'The library scan has been queued.',
+          color: 'blue',
+        });
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setScanLoadingId(null);
+    }
+  };
+
+  const handleCancelLibraryScan = async (scanId) => {
+    try {
+      const updated = await cancelLibraryScan(scanId);
+      if (updated) {
+        upsertScan(updated);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const handleDeleteQueuedLibraryScan = async (scanId) => {
+    try {
+      const success = await deleteLibraryScan(scanId);
+      if (success) {
+        removeScan(scanId);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const handleBrowseLibrary = (library) => {
+    const target = library.library_type === 'shows' ? 'shows' : 'movies';
+    setSelectedLibraryId(library.id);
+    navigate(`/library/${target}`);
+  };
+
   return (
     <Center
       style={{
@@ -776,6 +917,69 @@ const SettingsPage = () => {
 
           {authUser.user_level == USER_LEVELS.ADMIN && (
             <>
+              <Accordion.Item value="media-library">
+                <Accordion.Control>Media Library</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack gap="xl">
+                    <Group justify="space-between" align="center">
+                      <Stack spacing={4}>
+                        <Title order={4}>Libraries</Title>
+                        <Text size="sm" c="dimmed">
+                          Manage your movie and TV show libraries.
+                        </Text>
+                      </Stack>
+                      <Button
+                        leftSection={<Plus size={16} />}
+                        onClick={openCreateLibraryModal}
+                      >
+                        Add Library
+                      </Button>
+                    </Group>
+
+                    {libraries.length === 0 ? (
+                      <Text c="dimmed">No libraries configured yet.</Text>
+                    ) : (
+                      <SimpleGrid
+                        cols={{ base: 1, md: 2, lg: 3 }}
+                        spacing="lg"
+                      >
+                        {libraries.map((library) => (
+                          <LibraryCard
+                            key={library.id}
+                            library={library}
+                            selected={selectedLibraryId === library.id}
+                            onSelect={() => handleBrowseLibrary(library)}
+                            onEdit={openEditLibraryModal}
+                            onDelete={handleLibraryDelete}
+                            onScan={(id) => handleLibraryScan(id, false)}
+                            loadingScan={scanLoadingId === library.id}
+                          />
+                        ))}
+                      </SimpleGrid>
+                    )}
+                  </Stack>
+
+                  <LibraryFormModal
+                    opened={libraryFormOpen}
+                    onClose={() => setLibraryFormOpen(false)}
+                    library={editingLibrary}
+                    onSubmit={handleLibrarySubmit}
+                    submitting={librarySubmitting}
+                  />
+
+                  <LibraryScanDrawer
+                    opened={scanDrawerOpen && Boolean(selectedLibraryId)}
+                    onClose={() => setScanDrawerOpen(false)}
+                    libraryId={selectedLibraryId}
+                    onCancelJob={handleCancelLibraryScan}
+                    onDeleteQueuedJob={handleDeleteQueuedLibraryScan}
+                    onStartScan={() => handleLibraryScan(selectedLibraryId, false)}
+                    onStartFullScan={() =>
+                      handleLibraryScan(selectedLibraryId, true)
+                    }
+                  />
+                </Accordion.Panel>
+              </Accordion.Item>
               <Accordion.Item value="dvr-settings">
                 <Accordion.Control>DVR</Accordion.Control>
                 <Accordion.Panel>

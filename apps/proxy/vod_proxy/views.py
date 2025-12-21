@@ -6,6 +6,8 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
+import mimetypes
+import os
 import requests
 from django.http import StreamingHttpResponse, JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
@@ -145,6 +147,7 @@ class VODStreamView(View):
             # Extract preferred M3U account ID and stream ID from query parameters
             preferred_m3u_account_id = request.GET.get('m3u_account_id')
             preferred_stream_id = request.GET.get('stream_id')
+            include_inactive = request.GET.get('include_inactive') in ('1', 'true', 'yes')
 
             if preferred_m3u_account_id:
                 try:
@@ -157,7 +160,13 @@ class VODStreamView(View):
                 logger.info(f"[VOD-PARAM] Preferred stream ID: {preferred_stream_id}")
 
             # Get the content object and its relation
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+            content_obj, relation = self._get_content_and_relation(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                include_inactive=include_inactive,
+            )
             if not content_obj or not relation:
                 logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
                 raise Http404(f"Content not found: {content_type} {content_id}")
@@ -167,6 +176,10 @@ class VODStreamView(View):
             # Get M3U account from relation
             m3u_account = relation.m3u_account
             logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+
+            local_path = self._get_local_file_path(relation)
+            if local_path:
+                return self._stream_local_file(request, local_path, relation)
 
             # Get stream URL from relation
             stream_url = self._get_stream_url_from_relation(relation)
@@ -268,10 +281,20 @@ class VODStreamView(View):
                 logger.info(f"[VOD-HEAD] Preferred stream ID: {preferred_stream_id}")
 
             # Get content and relation (same as GET)
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+            content_obj, relation = self._get_content_and_relation(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                include_inactive=include_inactive,
+            )
             if not content_obj or not relation:
                 logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
                 return HttpResponse("Content not found", status=404)
+
+            local_path = self._get_local_file_path(relation)
+            if local_path:
+                return self._head_local_file(local_path, relation, session_url, session_id)
 
             # Get M3U account and stream URL
             m3u_account = relation.m3u_account
@@ -385,7 +408,14 @@ class VODStreamView(View):
             logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
             return HttpResponse(f"HEAD error: {str(e)}", status=500)
 
-    def _get_content_and_relation(self, content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
+    def _get_content_and_relation(
+        self,
+        content_type,
+        content_id,
+        preferred_m3u_account_id=None,
+        preferred_stream_id=None,
+        include_inactive=False,
+    ):
         """Get the content object and its M3U relation"""
         try:
             logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
@@ -399,7 +429,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = content_obj.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -430,7 +462,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = content_obj.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -468,7 +502,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = episode.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = episode.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -523,6 +559,86 @@ class VODStreamView(View):
         except Exception as e:
             logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
             return None
+
+    def _get_local_file_path(self, relation):
+        props = getattr(relation, "custom_properties", None)
+        if not isinstance(props, dict):
+            return None
+        path = props.get("file_path")
+        if not path:
+            return None
+        if not os.path.exists(path):
+            logger.warning("[VOD-LOCAL] File not found at %s", path)
+            return None
+        return path
+
+    def _stream_local_file(self, request, file_path, relation):
+        props = getattr(relation, "custom_properties", {}) if relation else {}
+        file_name = None
+        if isinstance(props, dict):
+            file_name = props.get("file_name")
+        file_name = file_name or os.path.basename(file_path)
+
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        file_size = os.path.getsize(file_path)
+        range_header = request.META.get("HTTP_RANGE", "").strip()
+
+        def file_iterator(path, start=0, end=None, chunk_size=8192):
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                remaining = (end - start + 1) if end is not None else None
+                while True:
+                    if remaining is not None and remaining <= 0:
+                        break
+                    bytes_to_read = min(chunk_size, remaining) if remaining is not None else chunk_size
+                    data = handle.read(bytes_to_read)
+                    if not data:
+                        break
+                    if remaining is not None:
+                        remaining -= len(data)
+                    yield data
+
+        if range_header.startswith("bytes="):
+            try:
+                range_spec = range_header.split("=", 1)[1]
+                start_str, end_str = range_spec.split("-", 1)
+                start = int(start_str) if start_str else 0
+                end = int(end_str) if end_str else file_size - 1
+                start = max(0, start)
+                end = min(file_size - 1, end)
+                length = end - start + 1
+
+                resp = StreamingHttpResponse(
+                    file_iterator(file_path, start, end),
+                    status=206,
+                    content_type=content_type,
+                )
+                resp["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                resp["Content-Length"] = str(length)
+                resp["Accept-Ranges"] = "bytes"
+                resp["Content-Disposition"] = f'inline; filename="{file_name}"'
+                return resp
+            except Exception as exc:
+                logger.warning("[VOD-LOCAL] Range parse failed: %s", exc)
+
+        response = FileResponse(open(file_path, "rb"), content_type=content_type)
+        response["Content-Length"] = str(file_size)
+        response["Accept-Ranges"] = "bytes"
+        response["Content-Disposition"] = f'inline; filename="{file_name}"'
+        return response
+
+    def _head_local_file(self, file_path, relation, session_url, session_id):
+        if not os.path.exists(file_path):
+            return HttpResponse("Content not found", status=404)
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        file_size = os.path.getsize(file_path)
+        response = HttpResponse()
+        response["Content-Length"] = str(file_size)
+        response["Content-Type"] = content_type
+        response["Accept-Ranges"] = "bytes"
+        response["X-Session-URL"] = session_url
+        response["X-Dispatcharr-Session"] = session_id
+        return response
 
     def _get_m3u_profile(self, m3u_account, profile_id, session_id=None):
         """Get appropriate M3U profile for streaming using Redis-based viewer counts

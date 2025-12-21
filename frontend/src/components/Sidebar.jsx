@@ -5,12 +5,12 @@ import {
   ListOrdered,
   Play,
   Database,
-  SlidersHorizontal,
   LayoutGrid,
   Settings as LucideSettings,
   Copy,
   ChartLine,
   Video,
+  Library as LibraryIcon,
   PlugZap,
   LogOut,
   User,
@@ -105,6 +105,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             icon: <Video size={20} />,
           },
           {
+            label: 'Media Library',
+            path: '/library/movies',
+            icon: <LibraryIcon size={20} />,
+          },
+          {
             label: 'M3U & EPG Manager',
             icon: <Play size={20} />,
             path: '/sources',
@@ -135,6 +140,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             icon: <ListOrdered size={20} />,
             path: '/channels',
             badge: `(${Object.keys(channels).length})`,
+          },
+          {
+            label: 'Media Library',
+            path: '/library/movies',
+            icon: <LibraryIcon size={20} />,
           },
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
           {

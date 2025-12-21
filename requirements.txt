@@ -18,6 +18,8 @@ m3u8
 rapidfuzz==3.14.3
 regex # Required by transformers but also used for advanced regex features
 tzlocal
+guessit==3.8.0
+python-dateutil==2.9.0.post0
 
 # PyTorch dependencies (CPU only)
 --extra-index-url https://download.pytorch.org/whl/cpu/

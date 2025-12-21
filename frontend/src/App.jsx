@@ -18,6 +18,7 @@ import PluginsPage from './pages/Plugins';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
+import LibraryPage from './pages/Library';
 import useAuthStore from './store/auth';
 import useLogosStore from './store/logos';
 import FloatingVideo from './components/FloatingVideo';
@@ -153,6 +154,7 @@ const App = () => {
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
                         <Route path="/vods" element={<VODsPage />} />
+                        <Route path="/library/:mediaType" element={<LibraryPage />} />
                       </>
                     ) : (
                       <Route path="/login" element={<Login needsSuperuser />} />
