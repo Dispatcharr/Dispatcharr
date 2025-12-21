@@ -44,6 +44,17 @@ class LibraryViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         library = serializer.save()
         sync_library_vod_account_state(library)
+        if library.auto_scan_enabled:
+            scan = LibraryScan.objects.create(
+                library=library,
+                scan_type=LibraryScan.SCAN_QUICK,
+                status=LibraryScan.STATUS_QUEUED,
+                summary="Quick scan",
+                stages={},
+            )
+            task = scan_library.delay(library.id, full=False, scan_id=scan.id)
+            scan.task_id = task.id
+            scan.save(update_fields=["task_id", "updated_at"])
 
     def perform_update(self, serializer):
         library = serializer.save()
