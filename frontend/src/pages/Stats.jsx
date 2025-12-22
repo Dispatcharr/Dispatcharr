@@ -481,8 +481,8 @@ const VODCard = ({ vodContent, stopVODClient }) => {
                   size={16}
                   style={{
                     transform: isClientExpanded
-                      ? 'rotate(180deg)'
-                      : 'rotate(0deg)',
+                      ? 'rotate(0deg)' // Now points DOWN when expanded
+                      : 'rotate(180deg)', // Now points UP when closed
                     transition: 'transform 0.2s',
                   }}
                 />
