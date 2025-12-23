@@ -1026,6 +1026,318 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream_content_with_session: {e}", exc_info=True)
             return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
+    def stream_local_file_with_session(self, session_id, content_obj, file_path, relation,
+                                       client_ip, client_user_agent, request, range_header=None):
+        """Stream local file content with Redis-backed connection tracking.
+        
+        This method handles local file streaming while maintaining connection tracking
+        in Redis for visibility in stats and proper resource management.
+        
+        Args:
+            session_id: Unique session identifier
+            content_obj: Movie or Episode model instance
+            file_path: Absolute path to the local file
+            relation: M3U relation object (for metadata like file_name)
+            client_ip: Client IP address
+            client_user_agent: Client user agent string
+            request: Django request object
+            range_header: Optional HTTP Range header for partial content
+            
+        Returns:
+            StreamingHttpResponse for the file content
+        """
+        content_type_str = "movie" if isinstance(content_obj, Movie) else "episode"
+        content_uuid = str(content_obj.uuid)
+        content_name = content_obj.name if hasattr(content_obj, 'name') else str(content_obj)
+        client_id = session_id
+
+        logger.info(f"[{client_id}] Worker {self.worker_id} - Local file streaming request for {content_type_str} {content_name}")
+        logger.info(f"[{client_id}] Local file path: {file_path}")
+
+        try:
+            # Validate file exists
+            if not os.path.exists(file_path):
+                logger.error(f"[{client_id}] Local file not found: {file_path}")
+                return HttpResponse("File not found", status=404)
+
+            # Get file metadata
+            file_size = os.path.getsize(file_path)
+            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            
+            # Get custom file name from relation if available
+            props = getattr(relation, "custom_properties", {}) if relation else {}
+            file_name = None
+            if isinstance(props, dict):
+                file_name = props.get("file_name")
+            file_name = file_name or os.path.basename(file_path)
+
+            logger.info(f"[{client_id}] File size: {file_size}, MIME type: {mime_type}, filename: {file_name}")
+
+            # Create Redis-backed connection for tracking
+            redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+
+            # Check if connection exists, create if not
+            existing_state = redis_connection._get_connection_state()
+            if not existing_state:
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Creating new Redis connection for local file")
+
+                # Create connection state in Redis with local file metadata
+                # We use file:// URL scheme to indicate this is a local file
+                if not redis_connection.create_connection(
+                    stream_url=f"file://{file_path}",
+                    headers={},  # No HTTP headers needed for local files
+                    m3u_profile_id=None,  # Local files don't use M3U profiles
+                    content_obj_type=content_type_str,
+                    content_uuid=content_uuid,
+                    content_name=content_name,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    worker_id=self.worker_id
+                ):
+                    logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection for local file")
+                    return HttpResponse("Failed to create connection", status=500)
+
+                # Update content length and type in connection state
+                if redis_connection._acquire_lock():
+                    try:
+                        state = redis_connection._get_connection_state()
+                        if state:
+                            state.content_length = str(file_size)
+                            state.content_type = mime_type
+                            state.total_content_size = file_size
+                            state.connection_type = "local_file"
+                            redis_connection._save_connection_state(state)
+                    finally:
+                        redis_connection._release_lock()
+
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Created local file connection in Redis")
+            else:
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Using existing Redis connection for local file")
+
+                # Update last activity
+                if redis_connection._acquire_lock():
+                    try:
+                        state = redis_connection._get_connection_state()
+                        if state:
+                            state.last_activity = time.time()
+                            state.worker_id = self.worker_id
+                            redis_connection._save_connection_state(state)
+                    finally:
+                        redis_connection._release_lock()
+
+            # Parse range header for partial content support
+            start_byte = 0
+            end_byte = file_size - 1
+            is_range_request = False
+
+            if range_header and range_header.startswith("bytes="):
+                try:
+                    range_spec = range_header.split("=", 1)[1]
+                    start_str, end_str = range_spec.split("-", 1)
+                    start_byte = int(start_str) if start_str else 0
+                    end_byte = int(end_str) if end_str else file_size - 1
+                    
+                    # Clamp to valid range
+                    start_byte = max(0, start_byte)
+                    end_byte = min(file_size - 1, end_byte)
+                    
+                    if start_byte > end_byte or start_byte >= file_size:
+                        logger.warning(f"[{client_id}] Range not satisfiable: {range_header}")
+                        return HttpResponse("Requested Range Not Satisfiable", status=416)
+                    
+                    is_range_request = True
+                    logger.info(f"[{client_id}] Range request: bytes {start_byte}-{end_byte}/{file_size}")
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"[{client_id}] Failed to parse range header '{range_header}': {e}")
+
+            content_length = end_byte - start_byte + 1
+
+            # Store seek information for stats API
+            if is_range_request and start_byte > 0:
+                try:
+                    position_percentage = (start_byte / file_size) * 100
+                    current_timestamp = time.time()
+
+                    if redis_connection._acquire_lock():
+                        try:
+                            state = redis_connection._get_connection_state()
+                            if state:
+                                state.last_seek_byte = start_byte
+                                state.last_seek_percentage = position_percentage
+                                state.total_content_size = file_size
+                                state.last_seek_timestamp = current_timestamp
+                                state.last_activity = current_timestamp
+                                redis_connection._save_connection_state(state)
+                                logger.info(f"[{client_id}] *** LOCAL FILE SEEK *** {position_percentage:.1f}% at byte {start_byte:,}/{file_size:,}")
+                        finally:
+                            redis_connection._release_lock()
+                except Exception as e:
+                    logger.error(f"[{client_id}] Error storing local file seek info: {e}")
+
+            # Create streaming generator for the file
+            def local_file_generator():
+                decremented = False
+                stop_signal_detected = False
+                chunk_size = 65536  # 64KB chunks for local files (larger than network streaming)
+                
+                try:
+                    logger.info(f"[{client_id}] Worker {self.worker_id} - Starting local file stream")
+                    redis_connection.increment_active_streams()
+
+                    bytes_sent = 0
+                    chunk_count = 0
+                    stop_key = get_vod_client_stop_key(client_id)
+
+                    with open(file_path, "rb") as f:
+                        f.seek(start_byte)
+                        remaining = content_length
+
+                        while remaining > 0:
+                            bytes_to_read = min(chunk_size, remaining)
+                            chunk = f.read(bytes_to_read)
+                            
+                            if not chunk:
+                                break
+                                
+                            yield chunk
+                            bytes_sent += len(chunk)
+                            remaining -= len(chunk)
+                            chunk_count += 1
+
+                            # Check for stop signal every 100 chunks
+                            if chunk_count % 100 == 0:
+                                if self.redis_client and self.redis_client.exists(stop_key):
+                                    logger.info(f"[{client_id}] Worker {self.worker_id} - Stop signal detected, terminating local file stream")
+                                    self.redis_client.delete(stop_key)
+                                    stop_signal_detected = True
+                                    break
+
+                                # Update connection state periodically
+                                if redis_connection._acquire_lock():
+                                    try:
+                                        state = redis_connection._get_connection_state()
+                                        if state:
+                                            state.last_activity = time.time()
+                                            state.bytes_sent = bytes_sent
+                                            redis_connection._save_connection_state(state)
+                                    finally:
+                                        redis_connection._release_lock()
+
+                    if stop_signal_detected:
+                        logger.info(f"[{client_id}] Worker {self.worker_id} - Local file stream stopped by signal: {bytes_sent} bytes sent")
+                    else:
+                        logger.info(f"[{client_id}] Worker {self.worker_id} - Local file stream completed: {bytes_sent} bytes sent")
+
+                    redis_connection.decrement_active_streams()
+                    decremented = True
+
+                    # Schedule cleanup if no active streams
+                    if not redis_connection.has_active_streams():
+                        def delayed_cleanup():
+                            time.sleep(1)
+                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for cleanup after local file completion")
+                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+
+                        cleanup_thread = threading.Thread(target=delayed_cleanup)
+                        cleanup_thread.daemon = True
+                        cleanup_thread.start()
+
+                except GeneratorExit:
+                    logger.info(f"[{client_id}] Worker {self.worker_id} - Client disconnected from local file stream")
+                    if not decremented:
+                        redis_connection.decrement_active_streams()
+                        decremented = True
+
+                    if not redis_connection.has_active_streams():
+                        def delayed_cleanup():
+                            time.sleep(1)
+                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for cleanup after local file disconnect")
+                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+
+                        cleanup_thread = threading.Thread(target=delayed_cleanup)
+                        cleanup_thread.daemon = True
+                        cleanup_thread.start()
+
+                except Exception as e:
+                    logger.error(f"[{client_id}] Worker {self.worker_id} - Error in local file stream: {e}")
+                    if not decremented:
+                        redis_connection.decrement_active_streams()
+                        decremented = True
+                    redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+
+                finally:
+                    if not decremented:
+                        redis_connection.decrement_active_streams()
+
+            # Create streaming response
+            response = StreamingHttpResponse(
+                streaming_content=local_file_generator(),
+                content_type=mime_type,
+                status=206 if is_range_request else 200
+            )
+
+            # Set response headers
+            response['Content-Length'] = str(content_length)
+            response['Accept-Ranges'] = 'bytes'
+            response['Content-Disposition'] = f'inline; filename="{file_name}"'
+            response['Cache-Control'] = 'no-cache'
+            response['X-Worker-ID'] = self.worker_id
+            response['X-Content-Source'] = 'local-file'
+
+            if is_range_request:
+                response['Content-Range'] = f"bytes {start_byte}-{end_byte}/{file_size}"
+
+            logger.info(f"[{client_id}] Worker {self.worker_id} - Local file response ready (status: {response.status_code})")
+            return response
+
+        except Exception as e:
+            logger.error(f"[{client_id}] Worker {self.worker_id} - Error in stream_local_file_with_session: {e}", exc_info=True)
+            return HttpResponse(f"Local file streaming error: {str(e)}", status=500)
+
+    def head_local_file_with_session(self, session_id, content_obj, file_path, relation,
+                                     client_ip, client_user_agent, session_url):
+        """Handle HEAD request for local file with session tracking.
+        
+        Args:
+            session_id: Unique session identifier
+            content_obj: Movie or Episode model instance
+            file_path: Absolute path to the local file
+            relation: M3U relation object
+            client_ip: Client IP address
+            client_user_agent: Client user agent string
+            session_url: URL to include in X-Session-URL header
+            
+        Returns:
+            HttpResponse with file metadata headers
+        """
+        content_type_str = "movie" if isinstance(content_obj, Movie) else "episode"
+        content_name = content_obj.name if hasattr(content_obj, 'name') else str(content_obj)
+
+        logger.info(f"[{session_id}] Worker {self.worker_id} - HEAD request for local file: {content_name}")
+
+        try:
+            if not os.path.exists(file_path):
+                logger.error(f"[{session_id}] Local file not found: {file_path}")
+                return HttpResponse("File not found", status=404)
+
+            file_size = os.path.getsize(file_path)
+            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+            response = HttpResponse()
+            response['Content-Length'] = str(file_size)
+            response['Content-Type'] = mime_type
+            response['Accept-Ranges'] = 'bytes'
+            response['X-Session-URL'] = session_url
+            response['X-Dispatcharr-Session'] = session_id
+            response['X-Content-Source'] = 'local-file'
+
+            logger.info(f"[{session_id}] Worker {self.worker_id} - HEAD response: size={file_size}, type={mime_type}")
+            return response
+
+        except Exception as e:
+            logger.error(f"[{session_id}] Worker {self.worker_id} - Error in head_local_file_with_session: {e}", exc_info=True)
+            return HttpResponse(f"HEAD error: {str(e)}", status=500)
+
     def _apply_timeshift_parameters(self, original_url, utc_start=None, utc_end=None, offset=None):
         """Apply timeshift parameters to URL"""
         if not any([utc_start, utc_end, offset]):
