@@ -2,6 +2,8 @@ import mimetypes
 import os
 from typing import Optional
 
+from django.utils import timezone
+
 from apps.media_library.models import Library, MediaFile, MediaItem, MediaItemVODLink
 from apps.m3u.models import M3UAccount
 from apps.vod.models import (
@@ -139,6 +141,25 @@ def _relation_payload(media_item: MediaItem, file: Optional[MediaFile]) -> dict:
     )
 
 
+def _update_series_relation_flags(relation: M3USeriesRelation, media_item: MediaItem) -> None:
+    custom_properties = _merge_custom_properties(
+        relation.custom_properties,
+        {
+            "source": "media-library",
+            "library_id": media_item.library_id,
+            "media_item_id": media_item.id,
+            "episodes_fetched": True,
+            "detailed_fetched": True,
+        },
+    )
+    update_fields = ["last_episode_refresh", "updated_at"]
+    relation.last_episode_refresh = timezone.now()
+    if custom_properties != (relation.custom_properties or {}):
+        relation.custom_properties = custom_properties
+        update_fields.append("custom_properties")
+    relation.save(update_fields=update_fields)
+
+
 def sync_vod_for_media_item(media_item: MediaItem) -> None:
     library = media_item.library
     account = sync_library_vod_account_state(library)
@@ -262,22 +283,15 @@ def _sync_series(media_item: MediaItem, account: M3UAccount, link: MediaItemVODL
     link.save(update_fields=["vod_series", "vod_movie", "vod_episode", "updated_at"])
 
     category = _ensure_uncategorized("series")
-    M3USeriesRelation.objects.update_or_create(
+    relation, _ = M3USeriesRelation.objects.update_or_create(
         m3u_account=account,
         series=series,
         defaults={
             "category": category,
             "external_series_id": str(media_item.id),
-            "custom_properties": _merge_custom_properties(
-                {},
-                {
-                    "source": "media-library",
-                    "library_id": media_item.library_id,
-                    "media_item_id": media_item.id,
-                },
-            ),
         },
     )
+    _update_series_relation_flags(relation, media_item)
 
 
 def _sync_episode(media_item: MediaItem, account: M3UAccount, link: MediaItemVODLink) -> None:
@@ -294,6 +308,17 @@ def _sync_episode(media_item: MediaItem, account: M3UAccount, link: MediaItemVOD
 
     if not parent_link.vod_series:
         return
+
+    category = _ensure_uncategorized("series")
+    relation, _ = M3USeriesRelation.objects.update_or_create(
+        m3u_account=account,
+        series=parent_link.vod_series,
+        defaults={
+            "category": category,
+            "external_series_id": str(parent.id),
+        },
+    )
+    _update_series_relation_flags(relation, parent)
 
     logo = _ensure_logo(media_item) or _ensure_logo(parent)
     custom_properties = _merge_custom_properties(
