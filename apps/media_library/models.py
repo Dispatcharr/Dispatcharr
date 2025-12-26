@@ -102,6 +102,7 @@ class MediaItem(models.Model):
     backdrop_url = models.TextField(blank=True, default="")
     movie_db_id = models.CharField(max_length=64, blank=True, default="")
     imdb_id = models.CharField(max_length=32, blank=True, default="")
+    youtube_trailer = models.TextField(blank=True, default="")
     metadata = models.JSONField(blank=True, null=True)
     metadata_source = models.CharField(max_length=32, blank=True, default="")
     metadata_last_synced_at = models.DateTimeField(null=True, blank=True)

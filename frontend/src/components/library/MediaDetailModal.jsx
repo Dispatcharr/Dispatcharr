@@ -70,6 +70,15 @@ const resolveArtworkUrl = (url, envMode) => {
   return url;
 };
 
+const getEmbedUrl = (url) => {
+  if (!url) return '';
+  const match = url.match(
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|video_id=)([\w-]+)/
+  );
+  const videoId = match ? match[1] : url;
+  return `https://www.youtube.com/embed/${videoId}`;
+};
+
 const MediaDetailModal = ({ opened, onClose }) => {
   const activeItem = useMediaLibraryStore((s) => s.activeItem);
   const activeItemLoading = useMediaLibraryStore((s) => s.activeItemLoading);
@@ -89,6 +98,8 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const [resumeModalOpen, setResumeModalOpen] = useState(false);
   const [resumeMode, setResumeMode] = useState('start');
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [trailerModalOpen, setTrailerModalOpen] = useState(false);
+  const [trailerUrl, setTrailerUrl] = useState('');
 
   const [episodes, setEpisodes] = useState([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
@@ -292,6 +303,8 @@ const MediaDetailModal = ({ opened, onClose }) => {
       setEpisodesLoading(false);
       setEpisodePlayLoadingId(null);
       setEditModalOpen(false);
+      setTrailerModalOpen(false);
+      setTrailerUrl('');
       return;
     }
     if (activeItem?.item_type === 'show') {
@@ -921,6 +934,18 @@ const MediaDetailModal = ({ opened, onClose }) => {
                       >
                         {primaryButtonLabel}
                       </Button>
+                      {activeItem?.youtube_trailer && (
+                        <Button
+                          variant="outline"
+                          color="red"
+                          onClick={() => {
+                            setTrailerUrl(getEmbedUrl(activeItem.youtube_trailer));
+                            setTrailerModalOpen(true);
+                          }}
+                        >
+                          Watch Trailer
+                        </Button>
+                      )}
                       {canResume && activeItem?.item_type !== 'show' && (
                         <Text size="sm" c="dimmed">
                           Resume at{' '}
@@ -1313,6 +1338,36 @@ const MediaDetailModal = ({ opened, onClose }) => {
             </Button>
           </Group>
         </Stack>
+      </Modal>
+
+      <Modal
+        opened={trailerModalOpen}
+        onClose={() => setTrailerModalOpen(false)}
+        title="Trailer"
+        size="xl"
+        centered
+        withCloseButton
+      >
+        <Box style={{ position: 'relative', paddingBottom: '56.25%', height: 0 }}>
+          {trailerUrl && (
+            <iframe
+              src={trailerUrl}
+              title="YouTube Trailer"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              referrerPolicy="strict-origin-when-cross-origin"
+              allowFullScreen
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                borderRadius: 8,
+              }}
+            />
+          )}
+        </Box>
       </Modal>
     </>
   );

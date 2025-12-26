@@ -137,6 +137,7 @@ class MediaItemSerializer(serializers.ModelSerializer):
             "backdrop_url",
             "movie_db_id",
             "imdb_id",
+            "youtube_trailer",
             "metadata_source",
             "metadata_last_synced_at",
             "first_imported_at",

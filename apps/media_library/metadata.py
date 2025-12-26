@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Optional, Tuple
 
@@ -66,6 +67,10 @@ GENRE_ID_MAP: dict[int, str] = {
     10768: "War & Politics",
     10770: "TV Movie",
 }
+
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:video_id=|v=|youtu\.be/|youtube\.com/embed/)([A-Za-z0-9_-]{6,})"
+)
 
 
 def _get_library_metadata_prefs(media_item: MediaItem) -> dict[str, Any]:
@@ -383,6 +388,27 @@ def _nfo_runtime_minutes(root: ET.Element) -> Optional[int]:
     return None
 
 
+def _extract_youtube_id(value: str | None) -> Optional[str]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = _YOUTUBE_ID_RE.search(text)
+    if match:
+        return match.group(1)
+    if "://" not in text:
+        return text
+    return None
+
+
+def _nfo_trailer(root: ET.Element) -> Optional[str]:
+    trailer = _safe_xml_text(root.find("trailer"))
+    if not trailer:
+        return None
+    return _extract_youtube_id(trailer) or trailer
+
+
 def _find_library_base_path(file_path: str, library) -> Optional[str]:
     # Identify which library location contains the file path.
     if not file_path:
@@ -612,6 +638,7 @@ def fetch_local_nfo_metadata(
     sort_title = _safe_xml_text(root.find("sorttitle"))
     synopsis = _safe_xml_text(root.find("plot")) or _safe_xml_text(root.find("outline"))
     tagline = _safe_xml_text(root.find("tagline"))
+    youtube_trailer = _nfo_trailer(root)
     premiered = _safe_xml_text(root.find("premiered")) or _safe_xml_text(root.find("aired"))
     release_year = _parse_xml_int(_safe_xml_text(root.find("year"))) or _parse_release_year(premiered)
     runtime_minutes = _nfo_runtime_minutes(root)
@@ -643,6 +670,7 @@ def fetch_local_nfo_metadata(
             rating,
             poster_url,
             backdrop_url,
+            youtube_trailer,
             imdb_id,
             tmdb_id,
             cast,
@@ -658,6 +686,7 @@ def fetch_local_nfo_metadata(
             "sort_title": sort_title,
             "synopsis": synopsis,
             "tagline": tagline,
+            "youtube_trailer": youtube_trailer,
             "release_year": release_year,
             "runtime_minutes": runtime_minutes,
             "genres": genres,
@@ -674,6 +703,7 @@ def fetch_local_nfo_metadata(
                 "sort_title": sort_title,
                 "synopsis": synopsis,
                 "tagline": tagline,
+                "youtube_trailer": youtube_trailer,
                 "release_year": release_year,
                 "runtime_minutes": runtime_minutes,
                 "genres": genres,
@@ -1046,6 +1076,39 @@ def _tmdb_candidate_year(payload: dict) -> Optional[int]:
     )
 
 
+def _tmdb_trailer_key(payload: dict | None) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    videos = payload.get("videos")
+    if not isinstance(videos, dict):
+        return None
+    results = videos.get("results") or []
+    if not isinstance(results, list):
+        return None
+    candidates = [
+        entry
+        for entry in results
+        if isinstance(entry, dict)
+        and entry.get("site") == "YouTube"
+        and entry.get("key")
+    ]
+    if not candidates:
+        return None
+
+    def score(entry: dict) -> tuple[int, int]:
+        score_value = 0
+        if entry.get("type") == "Trailer":
+            score_value += 3
+        elif entry.get("type") == "Teaser":
+            score_value += 1
+        if entry.get("official"):
+            score_value += 2
+        return score_value, 0
+
+    best = max(candidates, key=score)
+    return best.get("key")
+
+
 def _select_tmdb_candidate(
     results: list[dict],
     title: str,
@@ -1182,7 +1245,7 @@ def _tmdb_fetch_details(
     if normalized_key in _TMDB_DETAIL_CACHE:
         return _TMDB_DETAIL_CACHE[normalized_key]
 
-    params = {"api_key": api_key, "append_to_response": "credits"}
+    params = {"api_key": api_key, "append_to_response": "credits,videos"}
     if prefs and prefs.get("language"):
         params["language"] = prefs["language"]
 
@@ -1270,6 +1333,7 @@ def fetch_tmdb_metadata(
         cast, crew = _normalize_credits(credits_payload)
         genres = [entry.get("name") for entry in details.get("genres", []) if entry.get("name")]
         runtime = details.get("runtime")
+        trailer_key = _tmdb_trailer_key(details)
         release_year = _parse_release_year(details.get("release_date")) or media_item.release_year
         metadata = _to_serializable(
             {
@@ -1282,6 +1346,7 @@ def fetch_tmdb_metadata(
                 "poster": build_image_url(details.get("poster_path")),
                 "backdrop": build_image_url(details.get("backdrop_path")),
                 "runtime_minutes": runtime,
+                "youtube_trailer": trailer_key,
                 "genres": genres,
                 "studios": [
                     entry.get("name")
@@ -1334,6 +1399,7 @@ def fetch_tmdb_metadata(
         genres = [entry.get("name") for entry in details.get("genres", []) if entry.get("name")]
         runtime_list = details.get("episode_run_time") or []
         runtime = runtime_list[0] if runtime_list else None
+        trailer_key = _tmdb_trailer_key(details)
         release_year = _parse_release_year(details.get("first_air_date")) or media_item.release_year
         metadata = _to_serializable(
             {
@@ -1345,6 +1411,7 @@ def fetch_tmdb_metadata(
                 "poster": build_image_url(details.get("poster_path")),
                 "backdrop": build_image_url(details.get("backdrop_path")),
                 "runtime_minutes": runtime,
+                "youtube_trailer": trailer_key,
                 "genres": genres,
                 "studios": [
                     entry.get("name")
@@ -1775,6 +1842,16 @@ def apply_metadata(
         update_fields.append("tagline")
         changed = True
 
+    youtube_trailer = metadata.get("youtube_trailer") or metadata.get("trailer")
+    if (
+        youtube_trailer
+        and youtube_trailer != media_item.youtube_trailer
+        and can_update(media_item.youtube_trailer)
+    ):
+        media_item.youtube_trailer = youtube_trailer
+        update_fields.append("youtube_trailer")
+        changed = True
+
     rating = metadata.get("rating")
     if rating and rating != media_item.rating and can_update(media_item.rating):
         media_item.rating = rating
@@ -1898,6 +1975,8 @@ def _needs_remote_metadata(media_item: MediaItem) -> bool:
         media_item.crew,
         media_item.rating,
     ]
+    if media_item.item_type in {MediaItem.TYPE_MOVIE, MediaItem.TYPE_SHOW}:
+        required_fields.append(media_item.youtube_trailer)
     return any(_is_empty_value(value) for value in required_fields)
 
 
