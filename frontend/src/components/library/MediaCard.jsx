@@ -9,6 +9,7 @@ import {
   Text,
 } from '@mantine/core';
 import { Film, Library as LibraryIcon, Tv2 } from 'lucide-react';
+import useSettingsStore from '../../store/settings';
 
 const typeIcon = {
   movie: <Film size={18} />,
@@ -63,6 +64,14 @@ const formatRuntime = (runtimeMs) => {
   return `${hours}h ${minutes}m`;
 };
 
+const resolveArtworkUrl = (url, envMode) => {
+  if (!url) return url;
+  if (envMode === 'dev' && url.startsWith('/')) {
+    return `${window.location.protocol}//${window.location.hostname}:5656${url}`;
+  }
+  return url;
+};
+
 const MediaCard = ({
   item,
   onClick,
@@ -71,6 +80,7 @@ const MediaCard = ({
   showTypeBadge = true,
   style = {},
 }) => {
+  const envMode = useSettingsStore((s) => s.environment.env_mode);
   const [isTouch, setIsTouch] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -136,8 +146,12 @@ const MediaCard = ({
   const watchSummary = item.watch_summary;
   const status = watchSummary?.status;
   const runtimeText = formatRuntime(item.runtime_ms);
+  const posterUrl = useMemo(
+    () => resolveArtworkUrl(item.poster_url, envMode),
+    [item.poster_url, envMode]
+  );
   const hasGenres = Array.isArray(item.genres) && item.genres.length > 0;
-  const hasPoster = Boolean(item.poster_url);
+  const hasPoster = Boolean(posterUrl);
   const showEpisodeBadge =
     item.item_type === 'show' && watchSummary?.total_episodes;
   const isActive = isExpanded || (!isTouch && isHovered) || isFocused;
@@ -226,11 +240,13 @@ const MediaCard = ({
           />
           {hasPoster ? (
             <Image
-              src={item.poster_url}
+              src={posterUrl}
               alt={item.title}
               height="100%"
               width="100%"
               fit="contain"
+              loading="lazy"
+              decoding="async"
               style={{ position: 'absolute', inset: 0 }}
             />
           ) : (

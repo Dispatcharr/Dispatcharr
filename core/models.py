@@ -162,6 +162,8 @@ DVR_COMSKIP_ENABLED_KEY = slugify("DVR Comskip Enabled")
 DVR_COMSKIP_CUSTOM_PATH_KEY = slugify("DVR Comskip Custom Path")
 DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
 DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
+TMDB_API_KEY = slugify("TMDB API Key")
+PREFER_LOCAL_METADATA_KEY = slugify("Prefer Local Metadata")
 SYSTEM_TIME_ZONE_KEY = slugify("System Time Zone")
 
 
@@ -349,6 +351,27 @@ class CoreSettings(models.Model):
             obj.value = value
             obj.save(update_fields=["value"])
         return value
+
+    @classmethod
+    def get_tmdb_api_key(cls):
+        """Return configured TMDB API key or None when unset."""
+        try:
+            value = cls.objects.get(key=TMDB_API_KEY).value
+        except cls.DoesNotExist:
+            return None
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    @classmethod
+    def get_prefer_local_metadata(cls):
+        """Return True when local NFO metadata is preferred."""
+        try:
+            value = cls.objects.get(key=PREFER_LOCAL_METADATA_KEY).value
+        except cls.DoesNotExist:
+            return False
+        return str(value).lower() in ("1", "true", "yes", "on")
 
     @classmethod
     def get_dvr_series_rules(cls):

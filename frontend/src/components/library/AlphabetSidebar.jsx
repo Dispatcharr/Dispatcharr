@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Box, Stack, UnstyledButton, Text } from '@mantine/core';
 
 const letters = ['#', 'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
 
 const HOTZONE_WIDTH = 20;      // px: invisible strip you hover to reveal
-const IDLE_FADE_MS = 1500;     // ms of no mouse movement before fade out
+const HOTZONE_BOTTOM_OFFSET = 24; // px: keep a little margin from the bottom
 const LETTER_GAP = 6;          // must match Stack spacing
 const BASE_FONT_PX = 12;       // Mantine "xs" ~ 12px by default
 const MAX_SCALE_BOOST = 0.35;  // how large letters grow at the cursor
@@ -17,32 +17,20 @@ export default function AlphabetSidebar({
   right = 16,
 }) {
   const [isHot, setIsHot] = useState(false);       // pointer inside hot zone or sidebar
-  const [isIdle, setIsIdle] = useState(false);     // idle while still hovered
   const [mouseY, setMouseY] = useState(null);      // y relative to sidebar
+  const [hoveredLetter, setHoveredLetter] = useState(null);
   const sidebarRef = useRef(null);
-  const idleTimerRef = useRef(null);
-
-  // Reset idle timer whenever mouse moves inside the sidebar
-  const poke = () => {
-    setIsIdle(false);
-    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    idleTimerRef.current = setTimeout(() => setIsIdle(true), IDLE_FADE_MS);
-  };
-
-  useEffect(() => () => idleTimerRef.current && clearTimeout(idleTimerRef.current), []);
+  const hotZoneHeight = `calc(100vh - ${top}px - ${HOTZONE_BOTTOM_OFFSET}px)`;
 
   const handleMouseMove = (e) => {
     if (!sidebarRef.current) return;
     const rect = sidebarRef.current.getBoundingClientRect();
     setMouseY(e.clientY - rect.top);
-    poke();
   };
 
   const handleMouseLeave = () => {
     setIsHot(false);
-    setIsIdle(false);
     setMouseY(null);
-    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
   };
 
   // Precompute the center Y for each letter button (approx.)
@@ -53,7 +41,7 @@ export default function AlphabetSidebar({
   }, []);
 
   // Visible when hovering the hot zone or the sidebar, unless idling.
-  const visible = isHot && !isIdle;
+  const visible = isHot;
 
   return (
     <>
@@ -66,7 +54,7 @@ export default function AlphabetSidebar({
           top,
           right: 0,
           width: HOTZONE_WIDTH,
-          height: '70vh',
+          height: hotZoneHeight,
           zIndex: 2,
         }}
       />
@@ -104,11 +92,18 @@ export default function AlphabetSidebar({
             const boost = Math.exp(-(d * d) / (2 * SIGMA_PX * SIGMA_PX)); // 0..1
             scale = 1 + MAX_SCALE_BOOST * boost;
           }
+          if (hoveredLetter === letter) {
+            scale = Math.max(scale, 1.5);
+          }
 
           return (
             <UnstyledButton
               key={letter}
               onClick={() => isEnabled && onSelect?.(letter)}
+              onMouseEnter={() => setHoveredLetter(letter)}
+              onMouseLeave={() => setHoveredLetter(null)}
+              onFocus={() => setHoveredLetter(letter)}
+              onBlur={() => setHoveredLetter(null)}
               style={{
                 opacity: isEnabled ? 1 : 0.3,
                 cursor: isEnabled ? 'pointer' : 'default',

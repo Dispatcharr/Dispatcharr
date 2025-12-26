@@ -87,6 +87,7 @@ const LibraryPage = () => {
   const itemsBackgroundLoading = useMediaLibraryStore((s) => s.backgroundLoading);
   const setItemFilters = useMediaLibraryStore((s) => s.setFilters);
   const fetchItems = useMediaLibraryStore((s) => s.fetchItems);
+  const clearItems = useMediaLibraryStore((s) => s.clearItems);
   const setSelectedMediaLibrary = useMediaLibraryStore((s) => s.setSelectedLibraryId);
   const openItem = useMediaLibraryStore((s) => s.openItem);
   const closeItem = useMediaLibraryStore((s) => s.closeItem);
@@ -124,14 +125,14 @@ const LibraryPage = () => {
 
     if (!libraries || libraries.length === 0) {
       setSelectedMediaLibrary(null);
-      fetchItems([]);
+      clearItems();
       return;
     }
 
     setSelectedMediaLibrary(ids.length === 1 ? ids[0] : null);
 
     if (ids.length === 0) {
-      fetchItems([]);
+      clearItems();
       return;
     }
 
@@ -153,7 +154,15 @@ const LibraryPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [libraries, relevantLibraryIds, fetchItems, setSelectedMediaLibrary, debouncedSearch, itemTypeFilter]);
+  }, [
+    libraries,
+    relevantLibraryIds,
+    fetchItems,
+    clearItems,
+    setSelectedMediaLibrary,
+    debouncedSearch,
+    itemTypeFilter,
+  ]);
 
   const filteredItems = useMemo(() => {
     const typeFiltered = items.filter((item) => item.item_type === itemTypeFilter);

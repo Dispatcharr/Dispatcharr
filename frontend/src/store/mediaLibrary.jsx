@@ -7,6 +7,7 @@ const defaultFilters = {
 };
 
 const pollHandles = new Map();
+const inFlightRequests = new Map();
 
 const schedulePoll = (itemId, callback, delayMs) => {
   const handle = setTimeout(callback, delayMs);
@@ -41,6 +42,23 @@ const useMediaLibraryStore = create((set, get) => ({
   setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
 
   fetchItems: async (libraryIds = [], { background = false, limit, ordering } = {}) => {
+    const resolvedLibraryIds =
+      libraryIds === undefined ? get().activeLibraryIds || [] : libraryIds;
+    const explicitEmpty = Array.isArray(libraryIds) && libraryIds.length === 0;
+
+    if (!resolvedLibraryIds || resolvedLibraryIds.length === 0) {
+      if (explicitEmpty) {
+        set({
+          items: [],
+          itemsById: {},
+          loading: false,
+          backgroundLoading: false,
+          activeLibraryIds: [],
+        });
+      }
+      return [];
+    }
+
     if (background) {
       set({ backgroundLoading: true });
     } else {
@@ -49,7 +67,7 @@ const useMediaLibraryStore = create((set, get) => ({
 
     try {
       const params = new URLSearchParams();
-      libraryIds.forEach((id) => params.append('library', id));
+      resolvedLibraryIds.forEach((id) => params.append('library', id));
       if (get().filters.type) {
         params.append('type', get().filters.type);
       }
@@ -63,27 +81,48 @@ const useMediaLibraryStore = create((set, get) => ({
         params.append('limit', limit);
       }
 
-      const response = await API.getMediaItems(params);
-      const items = Array.isArray(response) ? response : response?.results || [];
-      const itemsById = items.reduce((acc, item) => {
-        acc[item.id] = item;
-        return acc;
-      }, {});
+      const requestKey = `${params.toString()}|bg:${background ? '1' : '0'}`;
+      if (inFlightRequests.has(requestKey)) {
+        return await inFlightRequests.get(requestKey);
+      }
 
-      set({
-        items,
-        itemsById,
-        loading: false,
-        backgroundLoading: false,
-        activeLibraryIds: libraryIds,
+      const requestPromise = (async () => {
+        const response = await API.getMediaItems(params);
+        const items = Array.isArray(response) ? response : response?.results || [];
+        const itemsById = items.reduce((acc, item) => {
+          acc[item.id] = item;
+          return acc;
+        }, {});
+
+        set({
+          items,
+          itemsById,
+          loading: false,
+          backgroundLoading: false,
+          activeLibraryIds: resolvedLibraryIds,
+        });
+
+        return items;
+      })();
+
+      inFlightRequests.set(requestKey, requestPromise);
+      return await requestPromise.finally(() => {
+        inFlightRequests.delete(requestKey);
       });
-
-      return items;
     } catch (error) {
       set({ loading: false, backgroundLoading: false });
       return [];
     }
   },
+
+  clearItems: () =>
+    set({
+      items: [],
+      itemsById: {},
+      loading: false,
+      backgroundLoading: false,
+      activeLibraryIds: [],
+    }),
 
   upsertItems: (items) => {
     if (!Array.isArray(items)) return;

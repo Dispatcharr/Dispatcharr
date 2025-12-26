@@ -22,6 +22,8 @@ class LibraryLocationSerializer(serializers.ModelSerializer):
 
 class LibrarySerializer(serializers.ModelSerializer):
     locations = LibraryLocationSerializer(many=True)
+    movie_count = serializers.IntegerField(read_only=True)
+    show_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Library
@@ -38,6 +40,8 @@ class LibrarySerializer(serializers.ModelSerializer):
             "add_to_vod",
             "last_scan_at",
             "last_successful_scan_at",
+            "movie_count",
+            "show_count",
             "locations",
             "created_at",
             "updated_at",

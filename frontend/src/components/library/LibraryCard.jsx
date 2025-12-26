@@ -36,6 +36,11 @@ const LibraryCard = ({
   onScan,
   loadingScan = false,
 }) => {
+  const isShowLibrary = library.library_type === 'shows';
+  const countValue = isShowLibrary ? library.show_count : library.movie_count;
+  const count = Number.isFinite(Number(countValue)) ? Number(countValue) : 0;
+  const countLabel = isShowLibrary ? 'Series' : 'Movies';
+
   return (
     <Card
       shadow={selected ? 'lg' : 'sm'}
@@ -75,6 +80,10 @@ const LibraryCard = ({
             {library.description}
           </Text>
         )}
+
+        <Text size="sm" c="dimmed">
+          {count} {countLabel}
+        </Text>
 
         <Group gap="sm">
           <Tooltip label="Last scan">

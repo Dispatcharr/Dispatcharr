@@ -12,13 +12,17 @@ import useUserAgentsStore from '../store/userAgents';
 import useStreamProfilesStore from '../store/streamProfiles';
 import {
   Accordion,
+  Anchor,
   Alert,
   Box,
   Button,
   Center,
+  Divider,
   Flex,
   Group,
   FileInput,
+  List,
+  Modal,
   MultiSelect,
   SimpleGrid,
   Select,
@@ -49,6 +53,7 @@ import useWarningsStore from '../store/warnings';
 import LibraryCard from '../components/library/LibraryCard';
 import LibraryFormModal from '../components/library/LibraryFormModal';
 import LibraryScanDrawer from '../components/library/LibraryScanDrawer';
+import tmdbLogoUrl from '../assets/tmdb-logo-blue.svg?url';
 
 const TIMEZONE_FALLBACKS = [
   'UTC',
@@ -202,6 +207,8 @@ const SettingsPage = () => {
   const removeScan = useLibraryStore((s) => s.removeScan);
   const cancelLibraryScan = useLibraryStore((s) => s.cancelLibraryScan);
   const deleteLibraryScan = useLibraryStore((s) => s.deleteLibraryScan);
+  const tmdbSetting = settings['tmdb-api-key'];
+  const preferLocalSetting = settings['prefer-local-metadata'];
 
   const [accordianValue, setAccordianValue] = useState(null);
   const [networkAccessSaved, setNetworkAccessSaved] = useState(false);
@@ -234,6 +241,10 @@ const SettingsPage = () => {
   const [librarySubmitting, setLibrarySubmitting] = useState(false);
   const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
   const [scanLoadingId, setScanLoadingId] = useState(null);
+  const [tmdbKey, setTmdbKey] = useState('');
+  const [preferLocalMetadata, setPreferLocalMetadata] = useState(false);
+  const [savingMetadataSettings, setSavingMetadataSettings] = useState(false);
+  const [tmdbHelpOpen, setTmdbHelpOpen] = useState(false);
 
   // UI / local storage settings
   const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
@@ -430,6 +441,16 @@ const SettingsPage = () => {
     };
     loadComskipConfig();
   }, []);
+
+  useEffect(() => {
+    const currentKey = tmdbSetting?.value ?? '';
+    setTmdbKey(currentKey);
+    const preferValue = preferLocalSetting?.value;
+    const normalized = String(preferValue ?? '').toLowerCase();
+    setPreferLocalMetadata(
+      ['1', 'true', 'yes', 'on'].includes(normalized)
+    );
+  }, [tmdbSetting?.value, preferLocalSetting?.value]);
 
   useEffect(() => {
     if (authUser?.user_level == USER_LEVELS.ADMIN) {
@@ -647,6 +668,56 @@ const SettingsPage = () => {
           persistTimeZoneSetting(value);
         }
         break;
+    }
+  };
+
+  const handleSaveMetadataSettings = async () => {
+    setSavingMetadataSettings(true);
+    try {
+      const tasks = [];
+      const preferValue = preferLocalMetadata ? 'true' : 'false';
+      if (preferLocalSetting?.id) {
+        tasks.push(
+          API.updateSetting({ ...preferLocalSetting, value: preferValue })
+        );
+      } else {
+        tasks.push(
+          API.createSetting({
+            key: 'prefer-local-metadata',
+            name: 'Prefer Local Metadata',
+            value: preferValue,
+          })
+        );
+      }
+
+      const trimmedKey = (tmdbKey || '').trim();
+      if (tmdbSetting?.id) {
+        tasks.push(API.updateSetting({ ...tmdbSetting, value: trimmedKey }));
+      } else if (trimmedKey) {
+        tasks.push(
+          API.createSetting({
+            key: 'tmdb-api-key',
+            name: 'TMDB API Key',
+            value: trimmedKey,
+          })
+        );
+      }
+
+      await Promise.all(tasks);
+      notifications.show({
+        title: 'Metadata settings saved',
+        message: 'Metadata preferences updated successfully.',
+        color: 'green',
+      });
+    } catch (error) {
+      console.error('Failed to save metadata settings', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Unable to save metadata settings.',
+        color: 'red',
+      });
+    } finally {
+      setSavingMetadataSettings(false);
     }
   };
 
@@ -921,6 +992,71 @@ const SettingsPage = () => {
                 <Accordion.Control>Media Library</Accordion.Control>
                 <Accordion.Panel>
                   <Stack gap="xl">
+                    <Stack gap="sm">
+                      <Group justify="space-between" align="flex-start">
+                        <Stack spacing={4}>
+                          <Title order={4}>Metadata Sources</Title>
+                          <Text size="sm" c="dimmed">
+                            Prefer local NFO metadata, then fill missing fields
+                            from TMDB.
+                          </Text>
+                        </Stack>
+                      </Group>
+                      <Switch
+                        label="Prefer local metadata (.nfo files)"
+                        description="Use NFO data first and fill missing fields from TMDB."
+                        checked={preferLocalMetadata}
+                        onChange={(event) =>
+                          setPreferLocalMetadata(event.currentTarget.checked)
+                        }
+                      />
+                      <TextInput
+                        label="TMDB API Key"
+                        placeholder="Enter TMDB API key"
+                        value={tmdbKey}
+                        onChange={(event) =>
+                          setTmdbKey(event.currentTarget.value)
+                        }
+                        description="Used for metadata and artwork lookups."
+                      />
+                      <Group justify="space-between" align="center">
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          onClick={() => setTmdbHelpOpen(true)}
+                        >
+                          Where do I get this?
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={handleSaveMetadataSettings}
+                          loading={savingMetadataSettings}
+                        >
+                          Save Metadata Settings
+                        </Button>
+                      </Group>
+                      <Center>
+                        <Anchor
+                          href="https://www.themoviedb.org/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <img
+                            src={tmdbLogoUrl}
+                            alt="TMDB logo"
+                            style={{
+                              width: 140,
+                              height: 'auto',
+                              display: 'block',
+                            }}
+                          />
+                        </Anchor>
+                      </Center>
+                    </Stack>
+
+                    <Divider />
+
                     <Group justify="space-between" align="center">
                       <Stack spacing={4}>
                         <Title order={4}>Libraries</Title>
@@ -1526,6 +1662,53 @@ const SettingsPage = () => {
           )}
         </Accordion>
       </Box>
+
+      <Modal
+        opened={tmdbHelpOpen}
+        onClose={() => setTmdbHelpOpen(false)}
+        title="How to get a TMDB API key"
+        size="lg"
+        overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
+      >
+        <Stack spacing="sm">
+          <Text size="sm">
+            Dispatcharr uses TMDB (The Movie Database) for artwork and
+            metadata. You can create a key in a few minutes:
+          </Text>
+          <List size="sm" spacing="xs">
+            <List.Item>
+              Visit{' '}
+              <Anchor
+                href="https://www.themoviedb.org/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                themoviedb.org
+              </Anchor>{' '}
+              and sign in or create a free account.
+            </List.Item>
+            <List.Item>
+              Open your{' '}
+              <Anchor
+                href="https://www.themoviedb.org/settings/api"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                TMDB account settings
+              </Anchor>{' '}
+              and choose <Text component="span" fw={500}>API</Text>.
+            </List.Item>
+            <List.Item>
+              Complete the short API application and copy the v3 API key into
+              the field above.
+            </List.Item>
+          </List>
+          <Text size="sm" c="dimmed">
+            TMDB issues separate v3 and v4 keys. Dispatcharr only needs the v3
+            API key for metadata lookups.
+          </Text>
+        </Stack>
+      </Modal>
 
       <ConfirmationDialog
         opened={rehashConfirmOpen}

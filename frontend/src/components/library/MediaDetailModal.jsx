@@ -37,6 +37,7 @@ import API from '../../api';
 import useMediaLibraryStore from '../../store/mediaLibrary';
 import useVideoStore from '../../store/useVideoStore';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import { USER_LEVELS } from '../../constants';
 import MediaEditModal from './MediaEditModal';
 
@@ -49,7 +50,6 @@ const CAST_TILE_SPACING = 1;
 const STACK_TIGHT = 4;          // was 6
 const SECTION_STACK = 12;       // was larger in some places
 const DETAIL_SCROLL_HEIGHT = '82vh';
-const DETAIL_PANEL_MIN_HEIGHT = '72vh';
 const DETAIL_POSTER_MAX_HEIGHT = '72vh';
 // ----------------------------
 
@@ -60,6 +60,14 @@ const runtimeLabel = (runtimeMs) => {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   if (hours) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+};
+
+const resolveArtworkUrl = (url, envMode) => {
+  if (!url) return url;
+  if (envMode === 'dev' && url.startsWith('/')) {
+    return `${window.location.protocol}//${window.location.hostname}:5656${url}`;
+  }
+  return url;
 };
 
 const MediaDetailModal = ({ opened, onClose }) => {
@@ -74,6 +82,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const pollItem = useMediaLibraryStore((s) => s.pollItem);
   const showVideo = useVideoStore((s) => s.showVideo);
   const userLevel = useAuthStore((s) => s.user?.user_level ?? 0);
+  const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const canEditMetadata = userLevel >= USER_LEVELS.ADMIN;
 
   const [startingPlayback, setStartingPlayback] = useState(false);
@@ -332,8 +341,6 @@ const MediaDetailModal = ({ opened, onClose }) => {
       .filter(Boolean);
   }, [activeItem]);
   const hasCredits = castPeople.length > 0 || crewPeople.length > 0;
-  const detailPanelMinHeight =
-    activeItem?.item_type === 'show' ? DETAIL_PANEL_MIN_HEIGHT : 'auto';
 
   const handleStartPlayback = async (mode = 'start') => {
     if (!activeItem) return;
@@ -379,7 +386,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
         mediaTitle: activeItem.title,
         name: activeItem.title,
         year: activeItem.release_year,
-        logo: activeItem.poster_url ? { url: activeItem.poster_url } : undefined,
+        logo: posterUrl ? { url: posterUrl } : undefined,
         progressId: activeProgress?.id,
         resumePositionMs,
         resumeHandledByServer,
@@ -532,6 +539,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
         episodeDetail.runtime_ms ??
         episodeDetail.files?.[0]?.duration_ms ??
         null;
+      const episodePosterUrl = resolveArtworkUrl(episodeDetail.poster_url, env_mode);
 
       showVideo(playbackUrl, 'library', {
         mediaItemId: episodeDetail.id,
@@ -541,12 +549,12 @@ const MediaDetailModal = ({ opened, onClose }) => {
         name: episodeDetail.title,
         year: episodeDetail.release_year,
         logo:
-          episodeDetail.poster_url
-            ? { url: episodeDetail.poster_url }
-            : activeItem?.poster_url
-            ? { url: activeItem.poster_url }
+          episodePosterUrl
+            ? { url: episodePosterUrl }
+            : posterUrl
+            ? { url: posterUrl }
             : undefined,
-        showPoster: activeItem?.poster_url,
+        showPoster: posterUrl,
         progressId: episodeProgress?.id,
         resumePositionMs,
         resumeHandledByServer,
@@ -686,6 +694,27 @@ const MediaDetailModal = ({ opened, onClose }) => {
   );
 
   const files = activeItem?.files || [];
+  const posterUrl = useMemo(
+    () => resolveArtworkUrl(activeItem?.poster_url, env_mode),
+    [activeItem?.poster_url, env_mode]
+  );
+  const backdropUrl = useMemo(() => {
+    const fallback = activeItem?.id
+      ? `/api/media-library/items/${activeItem.id}/artwork/backdrop/`
+      : '';
+    return resolveArtworkUrl(activeItem?.backdrop_url || fallback, env_mode);
+  }, [activeItem?.backdrop_url, activeItem?.id, env_mode]);
+  const modalBackgroundStyle = useMemo(() => {
+    if (!backdropUrl) {
+      return { backgroundColor: '#1f1f1f' };
+    }
+    return {
+      backgroundImage: `linear-gradient(180deg, rgba(8, 10, 12, 0.92), rgba(8, 10, 12, 0.86) 45%, rgba(8, 10, 12, 0.92)), url('${backdropUrl}')`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
+    };
+  }, [backdropUrl]);
 
   const seasonOptions = useMemo(
     () =>
@@ -742,6 +771,17 @@ const MediaDetailModal = ({ opened, onClose }) => {
         size="xl"
         overlayProps={{ backgroundOpacity: 0.55, blur: 4 }}
         padding="md"
+        styles={{
+          content: {
+            ...modalBackgroundStyle,
+          },
+          header: {
+            background: 'transparent',
+          },
+          body: {
+            background: 'transparent',
+          },
+        }}
         title={
           <Group justify="space-between" align="center" gap="xs">
             <Text fw={600} truncate>
@@ -770,7 +810,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
           <ScrollArea h={DETAIL_SCROLL_HEIGHT} offsetScrollbars>
             <Stack spacing="xl">
               <Group align="flex-start" gap="xl" wrap="wrap">
-                {activeItem.poster_url ? (
+                {posterUrl ? (
                   <Box w={{ base: '100%', sm: 240 }} style={{ flexShrink: 0, maxWidth: 260 }}>
                     <Box
                       style={{
@@ -784,7 +824,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
                       }}
                     >
                       <Image
-                        src={activeItem.poster_url}
+                        src={posterUrl}
                         alt={activeItem.title}
                         width="100%"
                         height="100%"
@@ -796,7 +836,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
 
                 <Stack
                   spacing={SECTION_STACK}
-                  style={{ flex: 1, minWidth: 0, minHeight: detailPanelMinHeight }}
+                  style={{ flex: 1, minWidth: 0 }}
                 >
                   {metadataPending && (
                     <Alert
@@ -938,74 +978,75 @@ const MediaDetailModal = ({ opened, onClose }) => {
                       </Group>
                     )}
                   </Stack>
+                </Stack>
+              </Group>
 
-                {activeItem.item_type === 'show' && (
-                  <>
-                    <Divider label="Episodes" labelPosition="center" />
-                    {episodesLoading ? (
-                      <Group justify="center" py="md">
-                        <Loader size="sm" />
+              {activeItem.item_type === 'show' && (
+                <Stack spacing={STACK_TIGHT} style={{ width: '100%' }}>
+                  <Divider label="Episodes" labelPosition="center" />
+                  {episodesLoading ? (
+                    <Group justify="center" py="md">
+                      <Loader size="sm" />
+                    </Group>
+                  ) : sortedSeasons.length === 0 ? (
+                    <Text size="sm" c="dimmed">
+                      No episodes discovered yet.
+                    </Text>
+                  ) : (
+                    <Stack spacing="md">
+                      <Group justify="space-between" align="center">
+                        <Select
+                          label="Season"
+                          data={seasonOptions}
+                          value={
+                            selectedSeason != null ? String(selectedSeason) : null
+                          }
+                          onChange={(value) => {
+                            setSeasonManuallySelected(true);
+                            setSelectedSeason(value ? Number(value) : null);
+                          }}
+                          placeholder="Select season"
+                          allowDeselect={false}
+                          w={220}
+                        />
+                        <Badge variant="outline" size="xs">
+                          {visibleEpisodes.length} episode
+                          {visibleEpisodes.length === 1 ? '' : 's'}
+                        </Badge>
                       </Group>
-                    ) : sortedSeasons.length === 0 ? (
-                      <Text size="sm" c="dimmed">
-                        No episodes discovered yet.
-                      </Text>
-                    ) : (
-                      <Stack spacing="md">
-                        <Group justify="space-between" align="center">
-                          <Select
-                            label="Season"
-                            data={seasonOptions}
-                            value={
-                              selectedSeason != null ? String(selectedSeason) : null
-                            }
-                            onChange={(value) => {
-                              setSeasonManuallySelected(true);
-                              setSelectedSeason(value ? Number(value) : null);
-                            }}
-                            placeholder="Select season"
-                            allowDeselect={false}
-                            w={220}
-                          />
-                          <Badge variant="outline" size="xs">
-                            {visibleEpisodes.length} episode
-                            {visibleEpisodes.length === 1 ? '' : 's'}
-                          </Badge>
-                        </Group>
-                        {visibleEpisodes.length === 0 ? (
-                          <Text size="sm" c="dimmed">
-                            No episodes available for this season.
-                          </Text>
-                        ) : (
-                          <Stack spacing={STACK_TIGHT}>
-                            {visibleEpisodes.map((episode) => {
-                              const episodeProgress = episode.watch_progress;
-                              const episodeStatus = episode.watch_summary?.status;
-                              const progressPercent = episodeProgress?.percentage
-                                ? Math.round(episodeProgress.percentage * 100)
-                                : null;
-                              const isWatched = episodeStatus === 'watched';
-                              const isInProgress = episodeStatus === 'in_progress';
-                              const episodeLoading = episodeActionLoading[episode.id];
-                              const isExpanded = expandedEpisodeIds.has(episode.id);
-                              const synopsisText = episode.synopsis?.trim();
-                              return (
-                                <Group
-                                  key={episode.id}
-                                  justify="space-between"
-                                  align="flex-start"
-                                  gap="md"
-                                  role="button"
-                                  tabIndex={0}
-                                  onClick={(event) => handleEpisodeCardClick(episode.id, event)}
-                                  onKeyDown={(event) => handleEpisodeCardKeyDown(episode.id, event)}
-                                  style={{
-                                    border: '1px solid rgba(148, 163, 184, 0.15)',
-                                    borderRadius: 12,
-                                    padding: '10px 12px',
-                                    cursor: 'pointer',
-                                  }}
-                                >
+                      {visibleEpisodes.length === 0 ? (
+                        <Text size="sm" c="dimmed">
+                          No episodes available for this season.
+                        </Text>
+                      ) : (
+                        <Stack spacing={STACK_TIGHT}>
+                          {visibleEpisodes.map((episode) => {
+                            const episodeProgress = episode.watch_progress;
+                            const episodeStatus = episode.watch_summary?.status;
+                            const progressPercent = episodeProgress?.percentage
+                              ? Math.round(episodeProgress.percentage * 100)
+                              : null;
+                            const isWatched = episodeStatus === 'watched';
+                            const isInProgress = episodeStatus === 'in_progress';
+                            const episodeLoading = episodeActionLoading[episode.id];
+                            const isExpanded = expandedEpisodeIds.has(episode.id);
+                            const synopsisText = episode.synopsis?.trim();
+                            return (
+                              <Stack
+                                key={episode.id}
+                                spacing={STACK_TIGHT}
+                                role="button"
+                                tabIndex={0}
+                                onClick={(event) => handleEpisodeCardClick(episode.id, event)}
+                                onKeyDown={(event) => handleEpisodeCardKeyDown(episode.id, event)}
+                                style={{
+                                  border: '1px solid rgba(148, 163, 184, 0.15)',
+                                  borderRadius: 12,
+                                  padding: '10px 12px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <Group justify="space-between" align="flex-start" gap="md" wrap="wrap">
                                   <Stack spacing={STACK_TIGHT} style={{ flex: 1, minWidth: 0 }}>
                                     <Group justify="space-between" align="center">
                                       <Text fw={600} size="sm" lineClamp={1}>
@@ -1016,7 +1057,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
                                       <Group gap={6}>
                                         {isWatched && (
                                           <Badge size="xs" color="green">
-                                                Watched
+                                            Watched
                                           </Badge>
                                         )}
                                         {isInProgress && (
@@ -1045,86 +1086,66 @@ const MediaDetailModal = ({ opened, onClose }) => {
                                         </Group>
                                       )}
                                     </Group>
-                                    {synopsisText ? (
-                                      <Text size="xs" c="dimmed" lineClamp={isExpanded ? undefined : 2}>
-                                        {synopsisText}
-                                      </Text>
-                                    ) : null}
                                   </Stack>
-                                  <Stack spacing={STACK_TIGHT} align="flex-end">
-                                    <Group gap={6}>
-                                      <Button
-                                        size="xs"
-                                        variant="light"
-                                        leftSection={<PlayCircle size={16} />}
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          handlePlayEpisode(episode, {
-                                            sequence: playbackPlan?.sorted ?? orderedEpisodes,
-                                          });
-                                        }}
-                                        loading={episodePlayLoadingId === episode.id}
-                                      >
-                                        Play
-                                      </Button>
-                                      <Button
-                                        size="xs"
-                                        variant="subtle"
-                                        leftSection={
-                                          isWatched ? <Undo2 size={14} /> : <CheckCircle2 size={14} />
-                                        }
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          isWatched
-                                            ? handleEpisodeMarkUnwatched(episode)
-                                            : handleEpisodeMarkWatched(episode);
-                                        }}
-                                        loading={episodeLoading === 'watch' || episodeLoading === 'unwatch'}
-                                      >
-                                        {isWatched ? 'Unwatch' : 'Mark watched'}
-                                      </Button>
-                                      <ActionIcon
-                                        color="red"
-                                        variant="subtle"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          handleEpisodeDelete(episode);
-                                        }}
-                                        loading={episodeLoading === 'delete'}
-                                        title="Delete episode"
-                                      >
-                                        <Trash2 size={16} />
-                                      </ActionIcon>
-                                    </Group>
-                                  </Stack>
+                                  <Group gap={6}>
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      leftSection={<PlayCircle size={16} />}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handlePlayEpisode(episode, {
+                                          sequence: playbackPlan?.sorted ?? orderedEpisodes,
+                                        });
+                                      }}
+                                      loading={episodePlayLoadingId === episode.id}
+                                    >
+                                      Play
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      variant="subtle"
+                                      leftSection={
+                                        isWatched ? <Undo2 size={14} /> : <CheckCircle2 size={14} />
+                                      }
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        isWatched
+                                          ? handleEpisodeMarkUnwatched(episode)
+                                          : handleEpisodeMarkWatched(episode);
+                                      }}
+                                      loading={episodeLoading === 'watch' || episodeLoading === 'unwatch'}
+                                    >
+                                      {isWatched ? 'Unwatch' : 'Mark watched'}
+                                    </Button>
+                                    <ActionIcon
+                                      color="red"
+                                      variant="subtle"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleEpisodeDelete(episode);
+                                      }}
+                                      loading={episodeLoading === 'delete'}
+                                      title="Delete episode"
+                                    >
+                                      <Trash2 size={16} />
+                                    </ActionIcon>
+                                  </Group>
                                 </Group>
-                              );
-                            })}
-                          </Stack>
-                        )}
-                      </Stack>
-                    )}
-                  </>
-                )}
-
-                <Divider label="Metadata" labelPosition="center" />
-
-                <Stack spacing={STACK_TIGHT}>
-                  <Group gap="xs">
-                    {activeItem.imdb_id && (
-                      <Badge
-                        component="a"
-                        href={`https://www.imdb.com/title/${activeItem.imdb_id}`}
-                        target="_blank"
-                        leftSection={<Info size={14} />}
-                      >
-                        IMDB {activeItem.imdb_id}
-                      </Badge>
-                    )}
-                  </Group>
+                                {synopsisText ? (
+                                  <Text size="xs" c="dimmed" lineClamp={isExpanded ? undefined : 2}>
+                                    {synopsisText}
+                                  </Text>
+                                ) : null}
+                              </Stack>
+                            );
+                          })}
+                        </Stack>
+                      )}
+                    </Stack>
+                  )}
                 </Stack>
-                </Stack>
-              </Group>
+              )}
 
               {hasCredits ? (
                 <Stack spacing={STACK_TIGHT} style={{ width: '100%' }}>

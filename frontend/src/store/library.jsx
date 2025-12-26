@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import API from '../api';
 
+let librariesInFlight = null;
+
 const useLibraryStore = create((set, get) => ({
   libraries: [],
   loading: false,
@@ -9,13 +11,23 @@ const useLibraryStore = create((set, get) => ({
   scansLoading: false,
 
   fetchLibraries: async () => {
-    set({ loading: true, error: null });
-    try {
-      const libraries = await API.getLibraries();
-      set({ libraries: Array.isArray(libraries) ? libraries : [], loading: false });
-    } catch (error) {
-      set({ error: error.message || 'Failed to load libraries.', loading: false });
+    if (librariesInFlight) {
+      return librariesInFlight;
     }
+    set({ loading: true, error: null });
+    librariesInFlight = (async () => {
+      try {
+        const libraries = await API.getLibraries();
+        set({ libraries: Array.isArray(libraries) ? libraries : [], loading: false });
+        return libraries;
+      } catch (error) {
+        set({ error: error.message || 'Failed to load libraries.', loading: false });
+        return null;
+      }
+    })();
+    return librariesInFlight.finally(() => {
+      librariesInFlight = null;
+    });
   },
 
   createLibrary: async (payload) => {

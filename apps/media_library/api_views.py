@@ -1,10 +1,17 @@
+import logging
+import mimetypes
 import os
+from django.conf import settings
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.urls import reverse
+from django.db.models import Count, Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.accounts.permissions import Authenticated, IsAdmin, permission_classes_by_action
@@ -16,8 +23,58 @@ from apps.media_library.serializers import (
     MediaItemSerializer,
     MediaItemUpdateSerializer,
 )
+from apps.media_library.metadata import find_local_artwork_path
 from apps.media_library.tasks import refresh_media_item_metadata, scan_library
 from apps.media_library.vod import sync_library_vod_account_state, sync_vod_for_media_item
+
+logger = logging.getLogger(__name__)
+
+
+def _serve_artwork_response(request, item: MediaItem, asset_type: str):
+    logger.debug(
+        "Artwork request path=%s item_id=%s asset_type=%s",
+        request.path,
+        item.id,
+        asset_type,
+    )
+    path = find_local_artwork_path(item, asset_type)
+    if not path:
+        file = item.files.filter(is_primary=True).first() or item.files.first()
+        logger.debug(
+            "Artwork not found item_id=%s asset_type=%s library_id=%s file_path=%s",
+            item.id,
+            asset_type,
+            item.library_id,
+            file.path if file else None,
+        )
+        response = Response(
+            {"detail": "Artwork not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+        if settings.DEBUG:
+            response["X-Dispatcharr-Artwork-Status"] = "not-found"
+        return response
+    try:
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        response = FileResponse(open(path, "rb"), content_type=content_type)
+    except OSError:
+        logger.debug(
+            "Artwork file unavailable item_id=%s asset_type=%s path=%s",
+            item.id,
+            asset_type,
+            path,
+        )
+        response = Response(
+            {"detail": "Artwork not available."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+        if settings.DEBUG:
+            response["X-Dispatcharr-Artwork-Status"] = "unavailable"
+        return response
+    response["Cache-Control"] = "private, max-age=3600"
+    if settings.DEBUG:
+        response["X-Dispatcharr-Artwork-Path"] = path
+    return response
 
 
 class MediaLibraryPagination(PageNumberPagination):
@@ -32,8 +89,24 @@ class MediaLibraryPagination(PageNumberPagination):
 
 
 class LibraryViewSet(viewsets.ModelViewSet):
-    queryset = Library.objects.prefetch_related("locations")
     serializer_class = LibrarySerializer
+
+    def get_queryset(self):
+        return (
+            Library.objects.prefetch_related("locations")
+            .annotate(
+                movie_count=Count(
+                    "items",
+                    filter=Q(items__item_type=MediaItem.TYPE_MOVIE),
+                    distinct=True,
+                ),
+                show_count=Count(
+                    "items",
+                    filter=Q(items__item_type=MediaItem.TYPE_SHOW),
+                    distinct=True,
+                ),
+            )
+        )
 
     def get_permissions(self):
         try:
@@ -153,6 +226,9 @@ class MediaItemViewSet(viewsets.ModelViewSet):
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
+            action = getattr(self, self.action, None)
+            if action and hasattr(action, "permission_classes"):
+                return [perm() for perm in action.permission_classes]
             return [Authenticated()]
 
     def get_queryset(self):
@@ -269,6 +345,28 @@ class MediaItemViewSet(viewsets.ModelViewSet):
                 "requires_transcode": False,
             }
         )
+
+    def _serve_artwork(self, request, asset_type: str):
+        item = self.get_object()
+        return _serve_artwork_response(request, item, asset_type)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="artwork/poster",
+        permission_classes=[AllowAny],
+    )
+    def artwork_poster(self, request, pk=None):
+        return self._serve_artwork(request, "poster")
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="artwork/backdrop",
+        permission_classes=[AllowAny],
+    )
+    def artwork_backdrop(self, request, pk=None):
+        return self._serve_artwork(request, "backdrop")
 
     def _get_duration_ms(self, media_item: MediaItem) -> int:
         if media_item.runtime_ms:
@@ -435,6 +533,20 @@ class MediaItemViewSet(viewsets.ModelViewSet):
         WatchProgress.objects.filter(user=request.user, media_item__in=episodes).delete()
         serializer = MediaItemSerializer(series, context={"request": request})
         return Response({"item": serializer.data})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def artwork_poster(request, pk: int):
+    item = get_object_or_404(MediaItem, pk=pk)
+    return _serve_artwork_response(request, item, "poster")
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def artwork_backdrop(request, pk: int):
+    item = get_object_or_404(MediaItem, pk=pk)
+    return _serve_artwork_response(request, item, "backdrop")
 
 
 @api_view(["GET"])
