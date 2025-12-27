@@ -9,16 +9,10 @@ const useLogosStore = create((set, get) => ({
   hasLoadedAll: false, // Track if we've loaded all logos
   hasLoadedChannelLogos: false, // Track if we've loaded channel logos
   error: null,
+  allowLogoRendering: false, // Gate to prevent logo rendering until tables are ready
 
-  // Basic CRUD operations
-  setLogos: (logos) => {
-    set({
-      logos: logos.reduce((acc, logo) => {
-        acc[logo.id] = { ...logo };
-        return acc;
-      }, {}),
-    });
-  },
+  // Enable logo rendering (call this after tables have loaded and painted)
+  enableLogoRendering: () => set({ allowLogoRendering: true }),
 
   addLogo: (newLogo) =>
     set((state) => {
@@ -73,6 +67,9 @@ const useLogosStore = create((set, get) => ({
 
   // Smart loading methods
   fetchLogos: async (pageSize = 100) => {
+    // Don't fetch if logo fetching is not allowed yet
+    if (!get().allowLogoFetching) return [];
+
     set({ isLoading: true, error: null });
     try {
       const response = await api.getLogos({ page_size: pageSize });
@@ -163,59 +160,28 @@ const useLogosStore = create((set, get) => ({
   },
 
   fetchChannelAssignableLogos: async () => {
-    const { backgroundLoading, hasLoadedChannelLogos, channelLogos } = get();
+    const { hasLoadedChannelLogos, channelLogos } = get();
 
-    // Prevent concurrent calls
-    if (
-      backgroundLoading ||
-      (hasLoadedChannelLogos && Object.keys(channelLogos).length > 0)
-    ) {
+    // Return cached if already loaded
+    if (hasLoadedChannelLogos && Object.keys(channelLogos).length > 0) {
       return Object.values(channelLogos);
     }
 
-    set({ backgroundLoading: true, error: null });
-    try {
-      // Load all channel logos (no special filtering needed - all Logo entries are for channels)
-      const response = await api.getLogos({
-        no_pagination: 'true', // Get all channel logos
-      });
+    // Fetch all logos and cache them as channel logos
+    const logos = await get().fetchAllLogos();
 
-      // Handle both paginated and non-paginated responses
-      const logos = Array.isArray(response) ? response : response.results || [];
+    set({
+      channelLogos: logos.reduce((acc, logo) => {
+        acc[logo.id] = { ...logo };
+        return acc;
+      }, {}),
+      hasLoadedChannelLogos: true,
+    });
 
-      console.log(`Fetched ${logos.length} channel logos`);
-
-      // Store in both places, but this is intentional and only when specifically requested
-      set({
-        logos: {
-          ...get().logos, // Keep existing logos
-          ...logos.reduce((acc, logo) => {
-            acc[logo.id] = { ...logo };
-            return acc;
-          }, {}),
-        },
-        channelLogos: logos.reduce((acc, logo) => {
-          acc[logo.id] = { ...logo };
-          return acc;
-        }, {}),
-        hasLoadedChannelLogos: true,
-        backgroundLoading: false,
-      });
-
-      return logos;
-    } catch (error) {
-      console.error('Failed to fetch channel logos:', error);
-      set({
-        error: 'Failed to load channel logos.',
-        backgroundLoading: false,
-      });
-      throw error;
-    }
+    return logos;
   },
 
   fetchLogosByIds: async (logoIds) => {
-    if (!logoIds || logoIds.length === 0) return [];
-
     try {
       // Filter out logos we already have
       const missingIds = logoIds.filter((id) => !get().logos[id]);

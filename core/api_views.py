@@ -142,8 +142,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
                     },
                     status=status.HTTP_200_OK,
                 )
-
-            return Response(in_network, status=status.HTTP_200_OK)
+                
+            response_data = {
+                **in_network,
+                "client_ip": str(client_ip)
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
 
         return Response({}, status=status.HTTP_200_OK)
 

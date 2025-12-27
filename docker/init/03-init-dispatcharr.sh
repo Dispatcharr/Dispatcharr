@@ -36,6 +36,14 @@ if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
 fi
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
+# Configure nginx based on IPv6 availability
+if ip -6 addr show | grep -q "inet6"; then
+    echo "✅ IPv6 is available, enabling IPv6 in nginx"
+else
+    echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
+    sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+fi
+
 # NOTE: mac doesn't run as root, so only manage permissions
 # if this script is running as root
 if [ "$(id -u)" = "0" ]; then

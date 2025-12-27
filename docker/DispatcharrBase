@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     python-is-python3 python3-pip \
     libpcre3 libpcre3-dev libpq-dev procps \
     build-essential gcc pciutils \
-    nginx streamlink comskip\
+    nginx streamlink comskip \
+    vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Create Python virtual environment ---

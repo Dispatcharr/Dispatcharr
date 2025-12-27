@@ -20,7 +20,6 @@ import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import LibraryPage from './pages/Library';
 import useAuthStore from './store/auth';
-import useLogosStore from './store/logos';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -41,8 +40,6 @@ const defaultRoute = '/channels';
 
 const App = () => {
   const [open, setOpen] = useState(true);
-  const [backgroundLoadingStarted, setBackgroundLoadingStarted] =
-    useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
@@ -82,11 +79,7 @@ const App = () => {
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
-          // Start background logo loading after app is fully initialized (only once)
-          if (!backgroundLoadingStarted) {
-            setBackgroundLoadingStarted(true);
-            useLogosStore.getState().startBackgroundLoading();
-          }
+          // Logos are now loaded at the end of initData, no need for background loading
         } else {
           await logout();
         }
@@ -97,7 +90,7 @@ const App = () => {
     };
 
     checkAuth();
-  }, [initializeAuth, initData, logout, backgroundLoadingStarted]);
+  }, [initializeAuth, initData, logout]);
 
   return (
     <MantineProvider

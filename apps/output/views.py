@@ -174,16 +174,26 @@ def generate_m3u(request, profile_name=None, user=None):
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
     # Build EPG URL with query parameters if needed
-    epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+    # Check if this is an XC API request (has username/password in GET params and user is authenticated)
+    xc_username = request.GET.get('username')
+    xc_password = request.GET.get('password')
 
-    # Optionally preserve certain query parameters
-    preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
-    query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
-    if query_params:
-        from urllib.parse import urlencode
-        epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+    if user is not None and xc_username and xc_password:
+        # This is an XC API request - use XC-style EPG URL
+        base_url = build_absolute_uri_with_port(request, '')
+        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
     else:
-        epg_url = epg_base_url
+        # Regular request - use standard EPG endpoint
+        epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+
+        # Optionally preserve certain query parameters
+        preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+        query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
+        if query_params:
+            from urllib.parse import urlencode
+            epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+        else:
+            epg_url = epg_base_url
 
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
@@ -247,12 +257,10 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                base_url = request.build_absolute_uri('/')[:-1]
-                stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
         else:
             # Standard behavior - use proxy URL
-            base_url = request.build_absolute_uri('/')[:-1]
-            stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -2258,7 +2266,7 @@ def xc_get_epg(request, user, short=False):
     # Get the mapped integer for this specific channel
     channel_num_int = channel_num_map.get(channel.id, int(channel.channel_number))
 
-    limit = request.GET.get('limit', 4)
+    limit = int(request.GET.get('limit', 4))
     if channel.epg_data:
         # Check if this is a dummy EPG that generates on-demand
         if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
@@ -2932,19 +2940,16 @@ def get_host_and_port(request):
     if xfh:
         if ":" in xfh:
             host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs, or omit if port doesn't match standard for scheme
-            # (e.g., HTTPS but port is 9191 = behind external reverse proxy)
+            # Omit standard ports from URLs
             if port == standard_port:
                 return host, None
-            # If port doesn't match standard and X-Forwarded-Proto is set, likely behind external RP
-            if request.META.get("HTTP_X_FORWARDED_PROTO"):
-                host = xfh.split(":")[0]  # Strip port, will check for proper port below
-            else:
-                return host, port
+            # Non-standard port in X-Forwarded-Host - return it
+            # This handles reverse proxies on non-standard ports (e.g., https://example.com:8443)
+            return host, port
         else:
             host = xfh
 
-        # Check for X-Forwarded-Port header (if we didn't already find a valid port)
+        # Check for X-Forwarded-Port header (if we didn't find a port in X-Forwarded-Host)
         port = request.META.get("HTTP_X_FORWARDED_PORT")
         if port:
             # Omit standard ports from URLs
@@ -2962,22 +2967,28 @@ def get_host_and_port(request):
     else:
         host = raw_host
 
-    # 3. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
+    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    port = request.META.get("HTTP_X_FORWARDED_PORT")
+    if port:
+        # Omit standard ports from URLs
+        return host, None if port == standard_port else port
+
+    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
     # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
     if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
         return host, None
 
-    # 4. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
 
-    # 5. Dev fallback: guess port 5656
+    # 6. Dev fallback: guess port 5656
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
         return host, "5656"
 
-    # 6. Final fallback: assume standard port for scheme (omit from URL)
+    # 7. Final fallback: assume standard port for scheme (omit from URL)
     return host, None
 
 def build_absolute_uri_with_port(request, path):

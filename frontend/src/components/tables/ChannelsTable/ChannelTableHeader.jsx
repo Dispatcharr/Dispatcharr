@@ -12,20 +12,22 @@ import {
   Text,
   TextInput,
   Tooltip,
-  UnstyledButton,
   useMantineTheme,
 } from '@mantine/core';
 import {
   ArrowDown01,
   Binary,
-  Check,
   CircleCheck,
-  Ellipsis,
   EllipsisVertical,
   SquareMinus,
   SquarePen,
   SquarePlus,
   Settings,
+  Eye,
+  EyeOff,
+  Filter,
+  Square,
+  SquareCheck,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
@@ -102,6 +104,10 @@ const ChannelTableHeader = ({
   editChannel,
   deleteChannels,
   selectedTableIds,
+  showDisabled,
+  setShowDisabled,
+  showOnlyStreamlessChannels,
+  setShowOnlyStreamlessChannels,
 }) => {
   const theme = useMantineTheme();
 
@@ -208,6 +214,14 @@ const ChannelTableHeader = ({
     );
   };
 
+  const toggleShowDisabled = () => {
+    setShowDisabled(!showDisabled);
+  };
+
+  const toggleShowOnlyStreamlessChannels = () => {
+    setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels);
+  };
+
   return (
     <Group justify="space-between">
       <Group gap={5} style={{ paddingLeft: 10 }}>
@@ -236,6 +250,41 @@ const ChannelTableHeader = ({
         }}
       >
         <Flex gap={6}>
+          <Menu shadow="md" width={200}>
+            <Menu.Target>
+              <Button size="xs" variant="default" onClick={() => {}}>
+                <Filter size={18} />
+              </Button>
+            </Menu.Target>
+
+            <Menu.Dropdown>
+              <Menu.Item
+                onClick={toggleShowDisabled}
+                leftSection={
+                  showDisabled ? <Eye size={18} /> : <EyeOff size={18} />
+                }
+                disabled={selectedProfileId === '0'}
+              >
+                <Text size="xs">
+                  {showDisabled ? 'Hide Disabled' : 'Show Disabled'}
+                </Text>
+              </Menu.Item>
+
+              <Menu.Item
+                onClick={toggleShowOnlyStreamlessChannels}
+                leftSection={
+                  showOnlyStreamlessChannels ? (
+                    <SquareCheck size={18} />
+                  ) : (
+                    <Square size={18} />
+                  )
+                }
+              >
+                <Text size="xs">Only Empty Channels</Text>
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+
           <Button
             leftSection={<SquarePen size={18} />}
             variant="default"
