@@ -9,6 +9,7 @@ from apps.media_library.metadata import METADATA_CACHE_TIMEOUT, sync_metadata
 from apps.media_library.models import Library, LibraryScan, MediaItem
 from apps.media_library.scanner import ScanCancelled, scan_library_files
 from apps.media_library.vod import sync_vod_for_media_item
+from core.models import CoreSettings
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,14 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
             stages={},
         )
 
+    if scan.status == LibraryScan.STATUS_CANCELLED:
+        scan.finished_at = scan.finished_at or timezone.now()
+        scan.save(update_fields=["finished_at", "updated_at"])
+        _update_stage(scan, STAGE_DISCOVERY, status="cancelled")
+        _update_stage(scan, STAGE_METADATA, status="skipped")
+        _update_stage(scan, STAGE_ARTWORK, status="skipped")
+        return
+
     scan.task_id = self.request.id
     scan.status = LibraryScan.STATUS_RUNNING
     scan.started_at = timezone.now()
@@ -77,16 +86,15 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
         scan.refresh_from_db(fields=["status"])
         return scan.status == LibraryScan.STATUS_CANCELLED
 
-    def progress_callback(processed: int, total: int):
+    def progress_callback(processed: int, _total: int):
         scan.processed_files = processed
-        scan.total_files = total
+        scan.total_files = processed
         scan.save(update_fields=["processed_files", "total_files", "updated_at"])
         _update_stage(
             scan,
             STAGE_DISCOVERY,
             status="running",
             processed=processed,
-            total=total,
         )
 
     try:
@@ -159,6 +167,9 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
     metadata_qs = MediaItem.objects.filter(id__in=metadata_ids)
     metadata_qs = _filter_metadata_queryset(metadata_qs, force=full)
     metadata_total = metadata_qs.count()
+    artwork_total = metadata_qs.filter(
+        item_type__in=[MediaItem.TYPE_MOVIE, MediaItem.TYPE_SHOW]
+    ).count()
     if not metadata_total:
         _update_stage(scan, STAGE_METADATA, status="completed", processed=0, total=0)
         _update_stage(scan, STAGE_ARTWORK, status="completed", processed=0, total=0)
@@ -170,10 +181,11 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
         return
 
     _update_stage(scan, STAGE_METADATA, status="running", processed=0, total=metadata_total)
-    _update_stage(scan, STAGE_ARTWORK, status="running", processed=0, total=metadata_total)
+    _update_stage(scan, STAGE_ARTWORK, status="running", processed=0, total=artwork_total)
 
     processed = 0
     artwork_processed = 0
+    allow_remote = not CoreSettings.get_prefer_local_metadata()
 
     for media_item in metadata_qs.iterator():
         if cancel_check():
@@ -184,13 +196,17 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
             _update_stage(scan, STAGE_ARTWORK, status="cancelled")
             return
 
-        updated = sync_metadata(media_item, force=full)
+        updated = sync_metadata(media_item, force=full, allow_remote=allow_remote)
         try:
             sync_vod_for_media_item(media_item)
         except Exception:
             logger.exception("Failed to sync VOD for media item %s", media_item.id)
         processed += 1
-        if updated and (updated.poster_url or updated.backdrop_url):
+        if (
+            media_item.item_type in {MediaItem.TYPE_MOVIE, MediaItem.TYPE_SHOW}
+            and updated
+            and (updated.poster_url or updated.backdrop_url)
+        ):
             artwork_processed += 1
 
         if processed % 25 == 0 or processed == metadata_total:
@@ -206,7 +222,7 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
                 STAGE_ARTWORK,
                 status="running",
                 processed=artwork_processed,
-                total=metadata_total,
+                total=artwork_total,
             )
 
     _update_stage(
@@ -221,7 +237,7 @@ def scan_library(self, library_id: int, *, full: bool = False, scan_id: int | No
         STAGE_ARTWORK,
         status="completed",
         processed=artwork_processed,
-        total=metadata_total,
+        total=artwork_total,
     )
 
     scan.status = LibraryScan.STATUS_COMPLETED

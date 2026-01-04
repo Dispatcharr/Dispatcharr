@@ -820,7 +820,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
         ) : !activeItem ? (
           <Text c="dimmed">Select a media item to see its details.</Text>
         ) : (
-          <ScrollArea h={DETAIL_SCROLL_HEIGHT} offsetScrollbars>
+          <ScrollArea.Autosize mah={DETAIL_SCROLL_HEIGHT} offsetScrollbars>
             <Stack spacing="xl">
               <Group align="flex-start" gap="xl" wrap="wrap">
                 {posterUrl ? (
@@ -1294,7 +1294,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
                 </Stack>
               ) : null}
             </Stack>
-          </ScrollArea>
+          </ScrollArea.Autosize>
         )}
       </Modal>
       {canEditMetadata && activeItem && (

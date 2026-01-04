@@ -29,6 +29,8 @@ const DvrSettingsForm = React.lazy(() =>
   import('../components/forms/settings/DvrSettingsForm.jsx'));
 const SystemSettingsForm = React.lazy(() =>
   import('../components/forms/settings/SystemSettingsForm.jsx'));
+const MediaLibrarySettingsForm = React.lazy(() =>
+  import('../components/forms/settings/MediaLibrarySettingsForm.jsx'));
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -54,6 +56,18 @@ const SettingsPage = () => {
 
           {authUser.user_level == USER_LEVELS.ADMIN && (
             <>
+              <AccordionItem value="media-library">
+                <AccordionControl>Media Library</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <MediaLibrarySettingsForm
+                        active={accordianValue === 'media-library'} />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
               <AccordionItem value="dvr-settings">
                 <AccordionControl>DVR</AccordionControl>
                 <AccordionPanel>

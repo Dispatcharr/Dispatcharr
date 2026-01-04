@@ -245,14 +245,23 @@ const LibraryScanDrawer = ({
     if (!stage) return '0';
     const processed = stage.processed ?? 0;
     const total = stage.total ?? 0;
+    const status = stage.status || 'pending';
+    const isDiscoveryRunningUnknown =
+      stageKey === 'discovery' &&
+      status === 'running' &&
+      (!total || total <= processed);
 
-    if (stage.status === 'skipped') {
+    if (isDiscoveryRunningUnknown) {
+      return processed > 0 ? `${processed} files scanned` : 'Scanning files...';
+    }
+
+    if (status === 'skipped') {
       return 'Not required';
     }
     if (total > 0 && total >= processed) {
       return `${processed} / ${total}`;
     }
-    if (stage.status === 'completed' && processed === 0) {
+    if (status === 'completed' && processed === 0) {
       return 'Done';
     }
 
@@ -412,6 +421,10 @@ const LibraryScanDrawer = ({
                       {stageOrder.map(({ key, label }) => {
                         const stage = scan.stages?.[key] || EMPTY_STAGE;
                         const stageStatus = stage.status || 'pending';
+                        const isDiscoveryRunningUnknown =
+                          key === 'discovery' &&
+                          stageStatus === 'running' &&
+                          (!stage.total || stage.total <= stage.processed);
                         const percent = getStagePercent(stage);
                         const progressColor = stageColorMap[key] || 'gray';
                         const badgeColor =
@@ -422,7 +435,7 @@ const LibraryScanDrawer = ({
                         const percentDisplay =
                           stageStatus === 'completed'
                             ? '100%'
-                            : stageStatus === 'skipped'
+                            : stageStatus === 'skipped' || isDiscoveryRunningUnknown
                               ? null
                               : `${percent}%`;
                         return (
@@ -445,13 +458,15 @@ const LibraryScanDrawer = ({
                                 </Text>
                               )}
                             </Group>
-                            <Progress
-                              value={percent}
-                              size="sm"
-                              striped={animated}
-                              animated={animated}
-                              color={progressColor}
-                            />
+                            {!isDiscoveryRunningUnknown && (
+                              <Progress
+                                value={percent}
+                                size="sm"
+                                striped={animated}
+                                animated={animated}
+                                color={progressColor}
+                              />
+                            )}
                           </Stack>
                         );
                       })}

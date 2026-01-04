@@ -8,6 +8,7 @@ import useLibraryStore from '../store/library';
 import LibraryCard from '../components/library/LibraryCard';
 import LibraryFormModal from '../components/library/LibraryFormModal';
 import LibraryScanDrawer from '../components/library/LibraryScanDrawer';
+import ConfirmationDialog from '../components/ConfirmationDialog';
 
 const LibrariesPage = () => {
   const navigate = useNavigate();
@@ -29,14 +30,39 @@ const LibrariesPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
   const [scanLoadingId, setScanLoadingId] = useState(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState(() => new Set());
 
   useEffect(() => {
     fetchLibraries();
   }, [fetchLibraries]);
 
+  useEffect(() => {
+    setPendingDeleteIds((prev) => {
+      if (!prev.size) return prev;
+      const activeIds = new Set(libraries.map((library) => library.id));
+      let changed = false;
+      const next = new Set();
+      prev.forEach((id) => {
+        if (activeIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [libraries]);
+
   const selectedLibrary = useMemo(
     () => libraries.find((lib) => lib.id === selectedLibraryId) || null,
     [libraries, selectedLibraryId]
+  );
+
+  const visibleLibraries = useMemo(
+    () => libraries.filter((library) => !pendingDeleteIds.has(library.id)),
+    [libraries, pendingDeleteIds]
   );
 
   const openCreateModal = () => {
@@ -79,20 +105,49 @@ const LibrariesPage = () => {
     }
   };
 
-  const handleDelete = async (library) => {
-    if (!window.confirm(`Delete ${library.name}? This will remove the library and related VOD items.`)) {
-      return;
+  const handleDelete = (library) => {
+    setDeleteTarget(library);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteDialogOpen(false);
+    setDeleteTarget(null);
+    setPendingDeleteIds((prev) => {
+      const next = new Set(prev);
+      next.add(target.id);
+      return next;
+    });
+    if (selectedLibraryId === target.id) {
+      setSelectedLibraryId(null);
+      setScanDrawerOpen(false);
     }
-    const success = await deleteLibrary(library.id);
+
+    const success = await deleteLibrary(target.id);
     if (success) {
       notifications.show({
         title: 'Library deleted',
-        message: `${library.name} removed.`,
+        message: `${target.name} removed.`,
         color: 'red',
       });
-      if (selectedLibraryId === library.id) {
-        setSelectedLibraryId(null);
-      }
+      setPendingDeleteIds((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+    } else {
+      notifications.show({
+        title: 'Unable to delete library',
+        message: `Failed to delete ${target.name}.`,
+        color: 'red',
+      });
+      setPendingDeleteIds((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
     }
   };
 
@@ -159,11 +214,11 @@ const LibrariesPage = () => {
           </Button>
         </Group>
 
-        {libraries.length === 0 ? (
+        {visibleLibraries.length === 0 ? (
           <Text c="dimmed">No libraries configured yet.</Text>
         ) : (
           <SimpleGrid cols={{ base: 1, md: 2, lg: 3 }} spacing="lg">
-            {libraries.map((library) => (
+            {visibleLibraries.map((library) => (
               <LibraryCard
                 key={library.id}
                 library={library}
@@ -195,6 +250,30 @@ const LibrariesPage = () => {
         onDeleteQueuedJob={handleDeleteQueuedScan}
         onStartScan={() => handleScan(selectedLibraryId, false)}
         onStartFullScan={() => handleScan(selectedLibraryId, true)}
+      />
+
+      <ConfirmationDialog
+        opened={deleteDialogOpen}
+        onClose={() => {
+          setDeleteDialogOpen(false);
+          setDeleteTarget(null);
+        }}
+        onConfirm={handleDeleteConfirm}
+        title="Delete library"
+        message={
+          deleteTarget ? (
+            <div style={{ whiteSpace: 'pre-line' }}>
+              {`Delete ${deleteTarget.name}?
+
+This will remove the library and related VOD items.`}
+            </div>
+          ) : (
+            'Delete this library? This will remove the library and related VOD items.'
+          )
+        }
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        size="md"
       />
     </Box>
   );

@@ -167,6 +167,29 @@ def _safe_xml_text(node: ET.Element | None) -> Optional[str]:
     return text or None
 
 
+def _normalize_xml_tag(tag: Any) -> str:
+    if not isinstance(tag, str):
+        return ""
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _iter_nfo_nodes(root: ET.Element, *tags: str):
+    tag_set = {tag.lower() for tag in tags if tag}
+    for node in root.iter():
+        if _normalize_xml_tag(node.tag) in tag_set:
+            yield node
+
+
+def _find_child_text(node: ET.Element, *tags: str) -> Optional[str]:
+    tag_set = {tag.lower() for tag in tags if tag}
+    for child in list(node):
+        if _normalize_xml_tag(child.tag) in tag_set:
+            value = _safe_xml_text(child)
+            if value:
+                return value
+    return None
+
+
 def _parse_xml_int(text: str | None) -> Optional[int]:
     if not text:
         return None
@@ -289,15 +312,15 @@ def _nfo_list(root: ET.Element, tag: str) -> list[str]:
 
 def _nfo_cast(root: ET.Element) -> list[dict[str, Any]]:
     cast: list[dict[str, Any]] = []
-    for actor in root.findall("actor"):
-        name = _safe_xml_text(actor.find("name")) or _safe_xml_text(actor)
+    for actor in _iter_nfo_nodes(root, "actor"):
+        name = _find_child_text(actor, "name") or _safe_xml_text(actor)
         if not name:
             continue
         cast.append(
             {
                 "name": name,
-                "character": _safe_xml_text(actor.find("role")),
-                "profile_url": _safe_xml_text(actor.find("thumb")),
+                "character": _find_child_text(actor, "role", "character"),
+                "profile_url": _find_child_text(actor, "thumb", "profile"),
             }
         )
     return cast
@@ -305,12 +328,12 @@ def _nfo_cast(root: ET.Element) -> list[dict[str, Any]]:
 
 def _nfo_crew(root: ET.Element) -> list[dict[str, Any]]:
     crew: list[dict[str, Any]] = []
-    for director in root.findall("director"):
-        name = _safe_xml_text(director)
+    for director in _iter_nfo_nodes(root, "director"):
+        name = _find_child_text(director, "name") or _safe_xml_text(director)
         if name:
             crew.append({"name": name, "job": "Director", "department": "Directing"})
-    for writer in root.findall("credits"):
-        name = _safe_xml_text(writer)
+    for writer in _iter_nfo_nodes(root, "credits", "writer"):
+        name = _find_child_text(writer, "name") or _safe_xml_text(writer)
         if name:
             crew.append({"name": name, "job": "Writer", "department": "Writing"})
     return crew
@@ -407,6 +430,60 @@ def _nfo_trailer(root: ET.Element) -> Optional[str]:
     if not trailer:
         return None
     return _extract_youtube_id(trailer) or trailer
+
+
+_NFO_ROOT_TAGS = ("movie", "tvshow", "episodedetails", "episode")
+
+
+def _extract_nfo_root_xml(payload: str) -> Optional[str]:
+    if not payload:
+        return None
+    match = re.search(
+        r"<(" + "|".join(_NFO_ROOT_TAGS) + r")\b[^>]*>",
+        payload,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    tag = match.group(1).lower()
+    start = match.start()
+    payload_lower = payload.lower()
+    end_tag = f"</{tag}>"
+    end = payload_lower.rfind(end_tag)
+    if end == -1:
+        return None
+    end += len(end_tag)
+    return payload[start:end]
+
+
+def _parse_nfo_root(nfo_path: str) -> tuple[Optional[ET.Element], Optional[str]]:
+    try:
+        tree = ET.parse(nfo_path)
+    except (ET.ParseError, OSError) as exc:
+        parse_error = exc
+    else:
+        root = tree.getroot()
+        if root is None:
+            return None, "NFO did not contain metadata."
+        return root, None
+
+    try:
+        with open(nfo_path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            payload = handle.read()
+    except OSError as exc:
+        return None, f"Failed to parse NFO: {exc}"
+
+    extracted = _extract_nfo_root_xml(payload)
+    if not extracted:
+        return None, f"Failed to parse NFO: {parse_error}"
+
+    try:
+        root = ET.fromstring(extracted)
+    except ET.ParseError as exc:
+        return None, f"Failed to parse NFO: {exc}"
+    if root is None:
+        return None, "NFO did not contain metadata."
+    return root, None
 
 
 def _find_library_base_path(file_path: str, library) -> Optional[str]:
@@ -622,14 +699,9 @@ def fetch_local_nfo_metadata(
     if not nfo_path:
         return None, "No NFO file found."
 
-    try:
-        tree = ET.parse(nfo_path)
-    except (ET.ParseError, OSError) as exc:
-        return None, f"Failed to parse NFO: {exc}"
-
-    root = tree.getroot()
-    if root is None:
-        return None, "NFO did not contain metadata."
+    root, error = _parse_nfo_root(nfo_path)
+    if error:
+        return None, error
 
     imdb_id, tmdb_id = _nfo_unique_ids(root)
     title = _safe_xml_text(root.find("title")) or _safe_xml_text(
@@ -1980,7 +2052,12 @@ def _needs_remote_metadata(media_item: MediaItem) -> bool:
     return any(_is_empty_value(value) for value in required_fields)
 
 
-def sync_metadata(media_item: MediaItem, *, force: bool = False) -> Optional[MediaItem]:
+def sync_metadata(
+    media_item: MediaItem,
+    *,
+    force: bool = False,
+    allow_remote: bool = True,
+) -> Optional[MediaItem]:
     # Orchestrate metadata sources: NFO -> TMDB -> Movie-DB.
     prefer_local = CoreSettings.get_prefer_local_metadata()
     has_local_metadata = False
@@ -1993,8 +2070,11 @@ def sync_metadata(media_item: MediaItem, *, force: bool = False) -> Optional[Med
         elif local_error:
             logger.debug("Local metadata skipped for %s: %s", media_item, local_error)
 
-        if has_local_metadata and not _needs_remote_metadata(media_item):
+        if has_local_metadata and not allow_remote:
             return media_item
+
+    if not allow_remote:
+        return media_item if has_local_metadata else None
 
     tmdb_metadata = None
     tmdb_error = None

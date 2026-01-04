@@ -3,6 +3,7 @@ from datetime import timezone as dt_timezone
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.media_library.classification import classify_media_entry
@@ -106,6 +107,7 @@ def scan_library_files(
 
     file_updates: list[MediaFile] = []
     file_creates: list[MediaFile] = []
+    seen_paths: set[str] = set()
 
     def flush_updates():
         nonlocal file_updates, file_creates
@@ -186,6 +188,7 @@ def scan_library_files(
         cache_key = (parent.id, season_number, episode_number, title)
         if cache_key in episode_cache:
             return episode_cache[cache_key]
+        normalized_title = normalize_title(title)
         query = MediaItem.objects.filter(
             library=library,
             parent=parent,
@@ -195,8 +198,10 @@ def scan_library_files(
             query = query.filter(season_number=season_number)
         if episode_number is not None:
             query = query.filter(episode_number=episode_number)
-        if season_number is None and episode_number is None:
-            query = query.filter(title=title)
+        if season_number is None or episode_number is None:
+            query = query.filter(
+                Q(normalized_title=normalized_title) | Q(title=title)
+            )
         item = query.first()
         if not item:
             item = MediaItem.objects.create(
@@ -205,7 +210,7 @@ def scan_library_files(
                 item_type=MediaItem.TYPE_EPISODE,
                 title=title,
                 sort_title=title,
-                normalized_title=normalize_title(title),
+                normalized_title=normalized_title,
                 season_number=season_number,
                 episode_number=episode_number,
             )
@@ -229,12 +234,19 @@ def scan_library_files(
                 file_name = os.path.basename(full_path)
                 if not _is_media_file(file_name):
                     continue
+                if full_path in seen_paths:
+                    continue
+                seen_paths.add(full_path)
 
                 result.total_files += 1
                 result.processed_files += 1
                 processed_since_update += 1
 
-                stat = os.stat(full_path)
+                try:
+                    stat = os.stat(full_path)
+                except OSError as exc:
+                    result.errors.append({"path": full_path, "error": str(exc)})
+                    continue
                 modified_at = timezone.datetime.fromtimestamp(
                     stat.st_mtime, tz=dt_timezone.utc
                 )
