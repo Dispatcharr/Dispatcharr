@@ -35,9 +35,6 @@ RUN rm -rf /app/frontend
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-# Run Django collectstatic
-RUN python manage.py collectstatic --noinput
-
 # Add timestamp argument
 ARG TIMESTAMP
 

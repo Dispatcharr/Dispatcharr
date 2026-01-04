@@ -30,23 +30,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. - Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
+- Region code options now intentionally include both `GB` (ISO 3166-1 standard) and `UK` (commonly used by EPG/XMLTV providers) to accommodate real-world EPG data variations. Many providers use `UK` in channel identifiers (e.g., `BBCOne.uk`) despite `GB` being the official ISO country code. Users should select the region code that matches their specific EPG provider's convention for optimal region-based EPG matching bonuses - Thanks [@bigpandaaaa](https://github.com/bigpandaaaa)
 - Channel number inputs in stream-to-channel creation modals no longer have a maximum value restriction, allowing users to enter any valid channel number supported by the database
 - Stream log parsing refactored to use factory pattern: Simplified `ChannelService.parse_and_store_stream_info()` to route parsing through specialized log parsers instead of inline program-specific logic (~150 lines of code removed)
 - Stream profile names in fixtures updated to use proper capitalization (ffmpeg → FFmpeg, streamlink → Streamlink)
 - Frontend component refactoring for improved code organization and maintainability - Thanks [@nick4810](https://github.com/nick4810)
-  - Extracted large nested components into separate files (RecordingCard, RecordingDetailsModal, RecurringRuleModal, RecordingSynopsis)
-  - Moved business logic from components into dedicated utility files (dateTimeUtils, RecordingCardUtils, RecordingDetailsModalUtils, RecurringRuleModalUtils, DVRUtils)
-  - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal) with loading fallbacks
+  - Extracted large nested components into separate files (RecordingCard, RecordingDetailsModal, RecurringRuleModal, RecordingSynopsis, GuideRow, HourTimeline, PluginCard, ProgramRecordingModal, SeriesRecordingModal, Field)
+  - Moved business logic from components into dedicated utility files (dateTimeUtils, RecordingCardUtils, RecordingDetailsModalUtils, RecurringRuleModalUtils, DVRUtils, guideUtils, PluginsUtils, PluginCardUtils, notificationUtils)
+  - Lazy loaded heavy components (SuperuserForm, RecordingDetailsModal, ProgramRecordingModal, SeriesRecordingModal, PluginCard) with loading fallbacks
   - Removed unused Dashboard and Home pages
+  - Guide page refactoring: Extracted GuideRow and HourTimeline components, moved grid calculations and utility functions to guideUtils.js, added loading states for initial data fetching, improved performance through better memoization
+  - Plugins page refactoring: Extracted PluginCard and Field components, added Zustand store for plugin state management, improved plugin action confirmation handling, better separation of concerns between UI and business logic
 - Logo loading optimization: Logos now load only after both Channels and Streams tables complete loading to prevent blocking initial page render, with rendering gated by table readiness to ensure data loads before visual elements
 - M3U stream URLs now use `build_absolute_uri_with_port()` for consistency with EPG and logo URLs, ensuring uniform port handling across all M3U file URLs
+- Settings and Logos page refactoring for improved readability and separation of concerns - Thanks [@nick4810](https://github.com/nick4810)
+  - Extracted individual settings forms (DVR, Network Access, Proxy, Stream, System, UI) into separate components with dedicated utility files
+  - Moved larger nested components into their own files
+  - Moved business logic into corresponding utils/ files
+  - Extracted larger in-line component logic into its own function
+  - Each panel in Settings now uses its own form state with the parent component handling active state management
 
 ### Fixed
 
+- Auto Channel Sync Force EPG Source feature not properly forcing "No EPG" assignment - When selecting "Force EPG Source" > "No EPG (Disabled)", channels were still being auto-matched to EPG data instead of forcing dummy/no EPG. Now correctly sets `force_dummy_epg` flag to prevent unwanted EPG assignment. (Fixes #788)
+- VOD episode processing now properly handles season and episode numbers from APIs that return string values instead of integers, with comprehensive error logging to track data quality issues - Thanks [@patchy8736](https://github.com/patchy8736) (Fixes #770)
+- VOD episode-to-stream relations are now validated to ensure episodes have been saved to the database before creating relations, preventing integrity errors when bulk_create operations encounter conflicts - Thanks [@patchy8736](https://github.com/patchy8736)
+- VOD category filtering now correctly handles category names containing pipe "|" characters (e.g., "PL | BAJKI", "EN | MOVIES") by using `rsplit()` to split from the right instead of the left, ensuring the category type is correctly extracted as the last segment - Thanks [@Vitekant](https://github.com/Vitekant)
 - M3U and EPG URLs now correctly preserve non-standard HTTPS ports (e.g., `:8443`) when accessed behind reverse proxies that forward the port in headers — `get_host_and_port()` now properly checks `X-Forwarded-Port` header before falling back to other detection methods (Fixes #704)
 - M3U and EPG manager page no longer crashes when a playlist references a deleted channel group (Fixes screen blank on navigation)
 - Stream validation now returns original URL instead of redirected URL to prevent issues with temporary redirect URLs that expire before clients can connect
 - XtreamCodes EPG limit parameter now properly converted to integer to prevent type errors when accessing EPG listings (Fixes #781)
+- Docker container file permissions: Django management commands (`migrate`, `collectstatic`) now run as the non-root user to prevent root-owned `__pycache__` and static files from causing permission issues - Thanks [@sethwv](https://github.com/sethwv)
 - Stream validation now continues with GET request if HEAD request fails due to connection issues - Thanks [@kvnnap](https://github.com/kvnnap) (Fixes #782)
 - XtreamCodes M3U files now correctly set `x-tvg-url` and `url-tvg` headers to reference XC EPG URL (`xmltv.php`) instead of standard EPG endpoint when downloaded via XC API (Fixes #629)
 

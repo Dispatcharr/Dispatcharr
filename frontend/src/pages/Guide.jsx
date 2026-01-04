@@ -5,248 +5,94 @@ import React, {
   useEffect,
   useRef,
   useCallback,
+  Suspense,
 } from 'react';
-import dayjs from 'dayjs';
-import API from '../api';
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
-import logo from '../images/logo.png';
 import useVideoStore from '../store/useVideoStore'; // NEW import
-import { notifications } from '@mantine/notifications';
 import useSettingsStore from '../store/settings';
 import {
-  Title,
-  Box,
-  Flex,
-  Button,
-  Text,
-  Paper,
-  Group,
-  TextInput,
-  Select,
   ActionIcon,
+  Box,
+  Button,
+  Flex,
+  Group,
+  LoadingOverlay,
+  Paper,
+  Select,
+  Text,
+  TextInput,
+  Title,
   Tooltip,
-  Transition,
-  Modal,
-  Stack,
 } from '@mantine/core';
-import { Search, X, Clock, Video, Calendar, Play } from 'lucide-react';
+import { Calendar, Clock, Search, Video, X } from 'lucide-react';
 import './guide.css';
 import useEPGsStore from '../store/epgs';
-import useLocalStorage from '../hooks/useLocalStorage';
 import { useElementSize } from '@mantine/hooks';
 import { VariableSizeList } from 'react-window';
 import {
-  PROGRAM_HEIGHT,
-  EXPANDED_PROGRAM_HEIGHT,
   buildChannelIdMap,
-  mapProgramsByChannel,
+  calculateDesiredScrollPosition,
+  calculateEarliestProgramStart,
+  calculateEnd,
+  calculateHourTimeline,
+  calculateLatestProgramEnd,
+  calculateLeftScrollPosition,
+  calculateNowPosition,
+  calculateScrollPosition,
+  calculateScrollPositionByTimeClick,
+  calculateStart,
+  CHANNEL_WIDTH,
   computeRowHeights,
+  createRecording,
+  createSeriesRule,
+  evaluateSeriesRule,
+  EXPANDED_PROGRAM_HEIGHT,
+  fetchPrograms,
+  fetchRules,
+  filterGuideChannels,
+  formatTime,
+  getGroupOptions,
+  getProfileOptions,
+  getRuleByProgram,
+  HOUR_WIDTH,
+  mapChannelsById,
+  mapProgramsByChannel,
+  mapRecordingsByProgramId,
+  matchChannelByTvgId,
+  MINUTE_BLOCK_WIDTH,
+  MINUTE_INCREMENT,
+  PROGRAM_HEIGHT,
+  sortChannels,
 } from './guideUtils';
-
-/** Layout constants */
-const CHANNEL_WIDTH = 120; // Width of the channel/logo column
-const HOUR_WIDTH = 450; // Increased from 300 to 450 to make each program wider
-const MINUTE_INCREMENT = 15; // For positioning programs every 15 min
-const MINUTE_BLOCK_WIDTH = HOUR_WIDTH / (60 / MINUTE_INCREMENT);
-
-const GuideRow = React.memo(({ index, style, data }) => {
-  const {
-    filteredChannels,
-    programsByChannelId,
-    expandedProgramId,
-    rowHeights,
-    logos,
-    hoveredChannelId,
-    setHoveredChannelId,
-    renderProgram,
-    handleLogoClick,
-    contentWidth,
-  } = data;
-
-  const channel = filteredChannels[index];
-  if (!channel) {
-    return null;
-  }
-
-  const channelPrograms = programsByChannelId.get(channel.id) || [];
-  const rowHeight =
-    rowHeights[index] ??
-    (channelPrograms.some((program) => program.id === expandedProgramId)
-      ? EXPANDED_PROGRAM_HEIGHT
-      : PROGRAM_HEIGHT);
-
-  return (
-    <div
-      data-testid="guide-row"
-      style={{ ...style, width: contentWidth, height: rowHeight }}
-    >
-      <Box
-        style={{
-          display: 'flex',
-          height: '100%',
-          borderBottom: '0px solid #27272A',
-          transition: 'height 0.2s ease',
-          position: 'relative',
-          overflow: 'visible',
-        }}
-      >
-        <Box
-          className="channel-logo"
-          style={{
-            width: CHANNEL_WIDTH,
-            minWidth: CHANNEL_WIDTH,
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: '#18181B',
-            borderRight: '1px solid #27272A',
-            borderBottom: '1px solid #27272A',
-            boxShadow: '2px 0 5px rgba(0,0,0,0.2)',
-            left: 0,
-            zIndex: 30,
-            height: '100%',
-            transition: 'height 0.2s ease',
-            cursor: 'pointer',
-            position: 'relative',
-          }}
-          onClick={(event) => handleLogoClick(channel, event)}
-          onMouseEnter={() => setHoveredChannelId(channel.id)}
-          onMouseLeave={() => setHoveredChannelId(null)}
-        >
-          {hoveredChannelId === channel.id && (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                width: '100%',
-                height: '100%',
-                backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                zIndex: 10,
-                animation: 'fadeIn 0.2s',
-              }}
-            >
-              <Play size={32} color="#fff" fill="#fff" />
-            </Flex>
-          )}
-
-          <Flex
-            direction="column"
-            align="center"
-            justify="space-between"
-            style={{
-              width: '100%',
-              height: '100%',
-              padding: '4px',
-              boxSizing: 'border-box',
-              zIndex: 5,
-              position: 'relative',
-            }}
-          >
-            <Box
-              style={{
-                width: '100%',
-                height: `${rowHeight - 32}px`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-                padding: '4px',
-                marginBottom: '4px',
-              }}
-            >
-              <img
-                src={logos[channel.logo_id]?.cache_url || logo}
-                alt={channel.name}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                }}
-              />
-            </Box>
-
-            <Text
-              size="sm"
-              weight={600}
-              style={{
-                position: 'absolute',
-                bottom: '4px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                backgroundColor: '#18181B',
-                padding: '2px 8px',
-                borderRadius: 4,
-                fontSize: '0.85em',
-                border: '1px solid #27272A',
-                height: '24px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minWidth: '36px',
-              }}
-            >
-              {channel.channel_number || '-'}
-            </Text>
-          </Flex>
-        </Box>
-
-        <Box
-          style={{
-            flex: 1,
-            position: 'relative',
-            height: '100%',
-            transition: 'height 0.2s ease',
-            paddingLeft: 0,
-          }}
-        >
-          {channelPrograms.length > 0 ? (
-            channelPrograms.map((program) =>
-              renderProgram(program, undefined, channel)
-            )
-          ) : (
-            <>
-              {Array.from({ length: Math.ceil(24 / 2) }).map(
-                (_, placeholderIndex) => (
-                  <Box
-                    key={`placeholder-${channel.id}-${placeholderIndex}`}
-                    style={{
-                      position: 'absolute',
-                      left: placeholderIndex * (HOUR_WIDTH * 2),
-                      top: 0,
-                      width: HOUR_WIDTH * 2,
-                      height: rowHeight - 4,
-                      border: '1px dashed #2D3748',
-                      borderRadius: '4px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#4A5568',
-                    }}
-                  >
-                    <Text size="sm">No program data</Text>
-                  </Box>
-                )
-              )}
-            </>
-          )}
-        </Box>
-      </Box>
-    </div>
-  );
-});
+import {
+  getShowVideoUrl,
+} from '../utils/cards/RecordingCardUtils.js';
+import {
+  add,
+  convertToMs,
+  format,
+  getNow,
+  initializeTime,
+  startOfDay,
+  useDateTimeFormat,
+} from '../utils/dateTimeUtils.js';
+import GuideRow from '../components/GuideRow.jsx';
+import HourTimeline from '../components/HourTimeline';
+const ProgramRecordingModal = React.lazy(() =>
+  import('../components/forms/ProgramRecordingModal'));
+const SeriesRecordingModal = React.lazy(() =>
+  import('../components/forms/SeriesRecordingModal'));
+import { showNotification } from '../utils/notificationUtils.js';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 export default function TVChannelGuide({ startDate, endDate }) {
   const channels = useChannelsStore((s) => s.channels);
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
+  const isLoading = useChannelsStore((s) => s.isLoading);
+  const [isProgramsLoading, setIsProgramsLoading] = useState(true);
   const logos = useLogosStore((s) => s.logos);
 
   const tvgsById = useEPGsStore((s) => s.tvgsById);
@@ -254,8 +100,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   const [programs, setPrograms] = useState([]);
   const [guideChannels, setGuideChannels] = useState([]);
-  const [filteredChannels, setFilteredChannels] = useState([]);
-  const [now, setNow] = useState(dayjs());
+  const [now, setNow] = useState(getNow());
   const [expandedProgramId, setExpandedProgramId] = useState(null); // Track expanded program
   const [recordingForProgram, setRecordingForProgram] = useState(null);
   const [recordChoiceOpen, setRecordChoiceOpen] = useState(false);
@@ -290,81 +135,38 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   // Load program data once
   useEffect(() => {
-    if (!Object.keys(channels).length === 0) {
+    if (Object.keys(channels).length === 0) {
       console.warn('No channels provided or empty channels array');
-      notifications.show({ title: 'No channels available', color: 'red.5' });
+      showNotification({ title: 'No channels available', color: 'red.5' });
+      setIsProgramsLoading(false);
       return;
     }
 
-    const fetchPrograms = async () => {
-      console.log('Fetching program grid...');
-      const fetched = await API.getGrid(); // GETs your EPG grid
-      console.log(`Received ${fetched.length} programs`);
+    const sortedChannels = sortChannels(channels);
+    setGuideChannels(sortedChannels);
 
-      // Include ALL channels, sorted by channel number - don't filter by EPG data
-      const sortedChannels = Object.values(channels).sort(
-        (a, b) =>
-          (a.channel_number || Infinity) - (b.channel_number || Infinity)
-      );
-
-      console.log(`Using all ${sortedChannels.length} available channels`);
-
-      const processedPrograms = fetched.map((program) => {
-        const start = dayjs(program.start_time);
-        const end = dayjs(program.end_time);
-        return {
-          ...program,
-          startMs: start.valueOf(),
-          endMs: end.valueOf(),
-        };
+    fetchPrograms()
+      .then((data) => {
+        setPrograms(data);
+        setIsProgramsLoading(false);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch programs:', error);
+        setIsProgramsLoading(false);
       });
-
-      setGuideChannels(sortedChannels);
-      setFilteredChannels(sortedChannels); // Initialize filtered channels
-      setPrograms(processedPrograms);
-    };
-
-    fetchPrograms();
   }, [channels]);
 
   // Apply filters when search, group, or profile changes
-  useEffect(() => {
-    if (!guideChannels.length) return;
+  const filteredChannels = useMemo(() => {
+    if (!guideChannels.length) return [];
 
-    let result = [...guideChannels];
-
-    // Apply search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter((channel) =>
-        channel.name.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply channel group filter
-    if (selectedGroupId !== 'all') {
-      result = result.filter(
-        (channel) => channel.channel_group_id === parseInt(selectedGroupId)
-      );
-    }
-
-    // Apply profile filter
-    if (selectedProfileId !== 'all') {
-      // Get the profile's enabled channels
-      const profileChannels = profiles[selectedProfileId]?.channels || [];
-      // Check if channels is a Set (from the error message, it likely is)
-      const enabledChannelIds = Array.isArray(profileChannels)
-        ? profileChannels.filter((pc) => pc.enabled).map((pc) => pc.id)
-        : profiles[selectedProfileId]?.channels instanceof Set
-          ? Array.from(profiles[selectedProfileId].channels)
-          : [];
-
-      result = result.filter((channel) =>
-        enabledChannelIds.includes(channel.id)
-      );
-    }
-
-    setFilteredChannels(result);
+    return filterGuideChannels(
+      guideChannels,
+      searchQuery,
+      selectedGroupId,
+      selectedProfileId,
+      profiles
+    );
   }, [
     searchQuery,
     selectedGroupId,
@@ -374,61 +176,44 @@ export default function TVChannelGuide({ startDate, endDate }) {
   ]);
 
   // Use start/end from props or default to "today at midnight" +24h
-  const defaultStart = dayjs(startDate || dayjs().startOf('day'));
-  const defaultEnd = endDate ? dayjs(endDate) : defaultStart.add(24, 'hour');
+  const defaultStart = initializeTime(startDate || startOfDay(getNow()));
+  const defaultEnd = endDate
+    ? initializeTime(endDate)
+    : add(defaultStart, 24, 'hour');
 
   // Expand timeline if needed based on actual earliest/ latest program
-  const earliestProgramStart = useMemo(() => {
-    if (!programs.length) return defaultStart;
-    return programs.reduce((acc, p) => {
-      const s = dayjs(p.start_time);
-      return s.isBefore(acc) ? s : acc;
-    }, defaultStart);
-  }, [programs, defaultStart]);
+  const earliestProgramStart = useMemo(
+    () => calculateEarliestProgramStart(programs, defaultStart),
+    [programs, defaultStart]
+  );
 
-  const latestProgramEnd = useMemo(() => {
-    if (!programs.length) return defaultEnd;
-    return programs.reduce((acc, p) => {
-      const e = dayjs(p.end_time);
-      return e.isAfter(acc) ? e : acc;
-    }, defaultEnd);
-  }, [programs, defaultEnd]);
+  const latestProgramEnd = useMemo(
+    () => calculateLatestProgramEnd(programs, defaultEnd),
+    [programs, defaultEnd]
+  );
 
-  const start = earliestProgramStart.isBefore(defaultStart)
-    ? earliestProgramStart
-    : defaultStart;
-  const end = latestProgramEnd.isAfter(defaultEnd)
-    ? latestProgramEnd
-    : defaultEnd;
+  const start = calculateStart(earliestProgramStart, defaultStart);
+  const end = calculateEnd(latestProgramEnd, defaultEnd);
 
   const channelIdByTvgId = useMemo(
     () => buildChannelIdMap(guideChannels, tvgsById, epgs),
     [guideChannels, tvgsById, epgs]
   );
 
-  const channelById = useMemo(() => {
-    const map = new Map();
-    guideChannels.forEach((channel) => {
-      map.set(channel.id, channel);
-    });
-    return map;
-  }, [guideChannels]);
+  const channelById = useMemo(
+    () => mapChannelsById(guideChannels),
+    [guideChannels]
+  );
 
   const programsByChannelId = useMemo(
     () => mapProgramsByChannel(programs, channelIdByTvgId),
     [programs, channelIdByTvgId]
   );
 
-  const recordingsByProgramId = useMemo(() => {
-    const map = new Map();
-    (recordings || []).forEach((recording) => {
-      const programId = recording?.custom_properties?.program?.id;
-      if (programId != null) {
-        map.set(programId, recording);
-      }
-    });
-    return map;
-  }, [recordings]);
+  const recordingsByProgramId = useMemo(
+    () => mapRecordingsByProgramId(recordings),
+    [recordings]
+  );
 
   const rowHeights = useMemo(
     () =>
@@ -445,62 +230,19 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [rowHeights]
   );
 
-  const [timeFormatSetting] = useLocalStorage('time-format', '12h');
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  // Use user preference for time format
-  const timeFormat = timeFormatSetting === '12h' ? 'h:mm A' : 'HH:mm';
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MMMM D' : 'D MMMM';
+  const [timeFormat, dateFormat] = useDateTimeFormat();
 
   // Format day label using relative terms when possible (Today, Tomorrow, etc)
   const formatDayLabel = useCallback(
-    (time) => {
-      const today = dayjs().startOf('day');
-      const tomorrow = today.add(1, 'day');
-      const weekLater = today.add(7, 'day');
-
-      const day = time.startOf('day');
-
-      if (day.isSame(today, 'day')) {
-        return 'Today';
-      } else if (day.isSame(tomorrow, 'day')) {
-        return 'Tomorrow';
-      } else if (day.isBefore(weekLater)) {
-        // Within a week, show day name
-        return time.format('dddd');
-      } else {
-        // Beyond a week, show month and day
-        return time.format(dateFormat);
-      }
-    },
+    (time) => formatTime(time, dateFormat),
     [dateFormat]
   );
 
   // Hourly marks with day labels
-  const hourTimeline = useMemo(() => {
-    const hours = [];
-    let current = start;
-    let currentDay = null;
-
-    while (current.isBefore(end)) {
-      // Check if we're entering a new day
-      const day = current.startOf('day');
-      const isNewDay = !currentDay || !day.isSame(currentDay, 'day');
-
-      if (isNewDay) {
-        currentDay = day;
-      }
-
-      // Add day information to our hour object
-      hours.push({
-        time: current,
-        isNewDay,
-        dayLabel: formatDayLabel(current),
-      });
-
-      current = current.add(1, 'hour');
-    }
-    return hours;
-  }, [start, end, formatDayLabel]);
+  const hourTimeline = useMemo(
+    () => calculateHourTimeline(start, end, formatDayLabel),
+    [start, end, formatDayLabel]
+  );
 
   useEffect(() => {
     const node = guideRef.current;
@@ -542,17 +284,16 @@ export default function TVChannelGuide({ startDate, endDate }) {
   // Update "now" every second
   useEffect(() => {
     const interval = setInterval(() => {
-      setNow(dayjs());
+      setNow(getNow());
     }, 1000);
     return () => clearInterval(interval);
   }, []);
 
   // Pixel offset for the "now" vertical line
-  const nowPosition = useMemo(() => {
-    if (now.isBefore(start) || now.isAfter(end)) return -1;
-    const minutesSinceStart = now.diff(start, 'minute');
-    return (minutesSinceStart / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
-  }, [now, start, end]);
+  const nowPosition = useMemo(
+    () => calculateNowPosition(now, start, end),
+    [now, start, end]
+  );
 
   useEffect(() => {
     const tvGuide = tvGuideRef.current;
@@ -765,31 +506,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
   // Scroll to the nearest half-hour mark ONLY on initial load
   useEffect(() => {
     if (programs.length > 0 && !initialScrollComplete) {
-      const roundedNow =
-        now.minute() < 30
-          ? now.startOf('hour')
-          : now.startOf('hour').add(30, 'minute');
-      const nowOffset = roundedNow.diff(start, 'minute');
-      const scrollPosition =
-        (nowOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH -
-        MINUTE_BLOCK_WIDTH;
-
-      const scrollPos = Math.max(scrollPosition, 0);
-      syncScrollLeft(scrollPos);
+      syncScrollLeft(calculateScrollPosition(now, start));
 
       setInitialScrollComplete(true);
     }
   }, [programs, start, now, initialScrollComplete, syncScrollLeft]);
 
   const findChannelByTvgId = useCallback(
-    (tvgId) => {
-      const channelIds = channelIdByTvgId.get(String(tvgId));
-      if (!channelIds || channelIds.length === 0) {
-        return null;
-      }
-      // Return the first channel that matches this TVG ID
-      return channelById.get(channelIds[0]) || null;
-    },
+    (tvgId) => matchChannelByTvgId(channelIdByTvgId, channelById, tvgId),
     [channelById, channelIdByTvgId]
   );
 
@@ -798,19 +522,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
       setRecordChoiceProgram(program);
       setRecordChoiceOpen(true);
       try {
-        const rules = await API.listSeriesRules();
-        const rule = (rules || []).find(
-          (r) =>
-            String(r.tvg_id) === String(program.tvg_id) &&
-            (!r.title || r.title === program.title)
-        );
+        const rules = await fetchRules();
+        const rule = getRuleByProgram(rules, program);
         setExistingRuleMode(rule ? rule.mode : null);
       } catch (error) {
         console.warn('Failed to fetch series rules metadata', error);
       }
 
-      const existingRecording = recordingsByProgramId.get(program.id) || null;
-      setRecordingForProgram(existingRecording);
+      setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
     },
     [recordingsByProgramId]
   );
@@ -819,7 +538,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     async (program) => {
       const channel = findChannelByTvgId(program.tvg_id);
       if (!channel) {
-        notifications.show({
+        showNotification({
           title: 'Unable to schedule recording',
           message: 'No channel found for this program.',
           color: 'red.6',
@@ -827,24 +546,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
         return;
       }
 
-      await API.createRecording({
-        channel: `${channel.id}`,
-        start_time: program.start_time,
-        end_time: program.end_time,
-        custom_properties: { program },
-      });
-      notifications.show({ title: 'Recording scheduled' });
+      await createRecording(channel, program);
+      showNotification({ title: 'Recording scheduled' });
     },
     [findChannelByTvgId]
   );
 
   const saveSeriesRule = useCallback(async (program, mode) => {
-    await API.createSeriesRule({
-      tvg_id: program.tvg_id,
-      mode,
-      title: program.title,
-    });
-    await API.evaluateSeriesRules(program.tvg_id);
+    await createSeriesRule(program, mode);
+    await evaluateSeriesRule(program);
     try {
       await useChannelsStore.getState().fetchRecordings();
     } catch (error) {
@@ -853,7 +563,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         error
       );
     }
-    notifications.show({
+    showNotification({
       title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
     });
   }, []);
@@ -861,7 +571,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const openRules = useCallback(async () => {
     setRulesOpen(true);
     try {
-      const r = await API.listSeriesRules();
+      const r = await fetchRules();
       setRules(r);
     } catch (error) {
       console.warn('Failed to load series rules', error);
@@ -878,12 +588,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         return;
       }
 
-      let vidUrl = `/proxy/ts/stream/${matched.uuid}`;
-      if (env_mode === 'dev') {
-        vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-      }
-
-      showVideo(vidUrl);
+      showVideo(getShowVideoUrl(matched, env_mode));
     },
     [env_mode, findChannelByTvgId, showVideo]
   );
@@ -892,12 +597,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     (channel, event) => {
       event.stopPropagation();
 
-      let vidUrl = `/proxy/ts/stream/${channel.uuid}`;
-      if (env_mode === 'dev') {
-        vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-      }
-
-      showVideo(vidUrl);
+      showVideo(getShowVideoUrl(channel, env_mode));
     },
     [env_mode, showVideo]
   );
@@ -906,13 +606,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
     (program, event) => {
       event.stopPropagation();
 
-      const programStartMs =
-        program.startMs ?? dayjs(program.start_time).valueOf();
-      const startOffsetMinutes = (programStartMs - start.valueOf()) / 60000;
-      const leftPx =
-        (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
-      const desiredScrollPosition = Math.max(0, leftPx - 20);
-
       if (expandedProgramId === program.id) {
         setExpandedProgramId(null);
         setRecordingForProgram(null);
@@ -920,6 +613,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
         setExpandedProgramId(program.id);
         setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
       }
+
+      const leftPx = calculateLeftScrollPosition(program, start);
+      const desiredScrollPosition = calculateDesiredScrollPosition(leftPx);
 
       const guideNode = guideRef.current;
       if (guideNode) {
@@ -948,16 +644,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       return;
     }
 
-    const roundedNow =
-      now.minute() < 30
-        ? now.startOf('hour')
-        : now.startOf('hour').add(30, 'minute');
-    const nowOffset = roundedNow.diff(start, 'minute');
-    const scrollPosition =
-      (nowOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH - MINUTE_BLOCK_WIDTH;
-
-    const scrollPos = Math.max(scrollPosition, 0);
-    syncScrollLeft(scrollPos, 'smooth');
+    syncScrollLeft(calculateScrollPosition(now, start), 'smooth');
   }, [now, nowPosition, start, syncScrollLeft]);
 
   const handleTimelineScroll = useCallback(() => {
@@ -1000,44 +687,26 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   const handleTimeClick = useCallback(
     (clickedTime, event) => {
-      const rect = event.currentTarget.getBoundingClientRect();
-      const clickPositionX = event.clientX - rect.left;
-      const percentageAcross = clickPositionX / rect.width;
-      const minuteWithinHour = Math.floor(percentageAcross * 60);
-
-      let snappedMinute;
-      if (minuteWithinHour < 7.5) {
-        snappedMinute = 0;
-      } else if (minuteWithinHour < 22.5) {
-        snappedMinute = 15;
-      } else if (minuteWithinHour < 37.5) {
-        snappedMinute = 30;
-      } else if (minuteWithinHour < 52.5) {
-        snappedMinute = 45;
-      } else {
-        snappedMinute = 0;
-        clickedTime = clickedTime.add(1, 'hour');
-      }
-
-      const snappedTime = clickedTime.minute(snappedMinute);
-      const snappedOffset = snappedTime.diff(start, 'minute');
-      const scrollPosition =
-        (snappedOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
-
-      syncScrollLeft(scrollPosition, 'smooth');
+      syncScrollLeft(
+        calculateScrollPositionByTimeClick(event, clickedTime, start),
+        'smooth'
+      );
     },
     [start, syncScrollLeft]
   );
   const renderProgram = useCallback(
     (program, channelStart = start, channel = null) => {
-      const programStartMs =
-        program.startMs ?? dayjs(program.start_time).valueOf();
-      const programEndMs = program.endMs ?? dayjs(program.end_time).valueOf();
-      const programStart = dayjs(programStartMs);
-      const programEnd = dayjs(programEndMs);
+      const {
+        programStart,
+        programEnd,
+        startMs: programStartMs,
+        endMs: programEndMs,
+        isLive,
+        isPast,
+      } = program;
 
       const startOffsetMinutes =
-        (programStartMs - channelStart.valueOf()) / 60000;
+        (programStartMs - convertToMs(channelStart)) / 60000;
       const durationMinutes = (programEndMs - programStartMs) / 60000;
       const leftPx =
         (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
@@ -1048,10 +717,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       const recording = recordingsByProgramId.get(program.id);
 
-      const isLive = now.isAfter(programStart) && now.isBefore(programEnd);
-      const isPast = now.isAfter(programEnd);
       const isExpanded = expandedProgramId === program.id;
-
       const rowHeight = isExpanded ? EXPANDED_PROGRAM_HEIGHT : PROGRAM_HEIGHT;
       const MIN_EXPANDED_WIDTH = 450;
       const expandedWidthPx = Math.max(widthPx, MIN_EXPANDED_WIDTH);
@@ -1069,36 +735,61 @@ export default function TVChannelGuide({ startDate, endDate }) {
         textOffsetLeft = Math.min(visibleStart, maxOffset);
       }
 
+      const RecordButton = () => {
+        return (
+          <Button
+            leftSection={<Calendar size={14} />}
+            variant="filled"
+            color="red"
+            size="xs"
+            onClick={(event) => {
+              event.stopPropagation();
+              openRecordChoice(program);
+            }}
+          >
+            Record
+          </Button>
+        );
+      };
+      const WatchNow = () => {
+        return (
+          <Button
+            leftSection={<Video size={14} />}
+            variant="filled"
+            color="blue"
+            size="xs"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleWatchStream(program);
+            }}
+          >
+            Watch Now
+          </Button>
+        );
+      };
       return (
         <Box
           className="guide-program-container"
           key={`${channel?.id || 'unknown'}-${program.id || `${program.tvg_id}-${program.start_time}`}`}
           style={{
-            position: 'absolute',
-            left: leftPx + gapSize,
-            top: 0,
-            width: isExpanded ? expandedWidthPx : widthPx,
-            height: rowHeight - 4,
             cursor: 'pointer',
             zIndex: isExpanded ? 25 : 5,
-            transition: isExpanded
-              ? 'height 0.2s ease, width 0.2s ease'
-              : 'height 0.2s ease',
+            transition: isExpanded ? 'height 0.2s ease, width 0.2s ease' : 'height 0.2s ease',
           }}
+          pos='absolute'
+          left={leftPx + gapSize}
+          top={0}
+          w={isExpanded ? expandedWidthPx : widthPx}
+          h={rowHeight - 4}
           onClick={(event) => handleProgramClick(program, event)}
         >
           <Paper
             elevation={isExpanded ? 4 : 2}
             className={`guide-program ${isLive ? 'live' : isPast ? 'past' : 'not-live'} ${isExpanded ? 'expanded' : ''}`}
             style={{
-              width: '100%',
-              height: '100%',
               overflow: 'hidden',
-              position: 'relative',
-              display: 'flex',
               flexDirection: 'column',
               justifyContent: isExpanded ? 'flex-start' : 'space-between',
-              padding: isExpanded ? '12px' : '8px',
               backgroundColor: isExpanded
                 ? isLive
                   ? '#1a365d'
@@ -1110,10 +801,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   : isPast
                     ? '#27272A'
                     : '#2c5282',
-              color: isPast ? '#a0aec0' : '#fff',
               boxShadow: isExpanded ? '0 4px 8px rgba(0,0,0,0.4)' : 'none',
               transition: 'all 0.2s ease',
             }}
+            w={'100%'}
+            h={'100%'}
+            pos='relative'
+            display={'flex'}
+            p={isExpanded ? 12 : 8}
+            c={isPast ? '#a0aec0' : '#fff'}
           >
             <Box
               style={{
@@ -1125,11 +821,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 component="div"
                 size={isExpanded ? 'lg' : 'md'}
                 style={{
-                  fontWeight: 'bold',
                   whiteSpace: 'nowrap',
                   textOverflow: 'ellipsis',
                   overflow: 'hidden',
                 }}
+                fw={'bold'}
               >
                 <Group gap="xs">
                   {recording && (
@@ -1154,8 +850,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   overflow: 'hidden',
                 }}
               >
-                {programStart.format(timeFormat)} -{' '}
-                {programEnd.format(timeFormat)}
+                {format(programStart, timeFormat)} -{' '}
+                {format(programEnd, timeFormat)}
               </Text>
             </Box>
 
@@ -1169,13 +865,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 <Text
                   size="xs"
                   style={{
-                    marginTop: '4px',
                     whiteSpace: isExpanded ? 'normal' : 'nowrap',
                     textOverflow: isExpanded ? 'clip' : 'ellipsis',
                     overflow: isExpanded ? 'auto' : 'hidden',
-                    color: isPast ? '#718096' : '#cbd5e0',
-                    maxHeight: isExpanded ? '80px' : 'unset',
                   }}
+                  mt={4}
+                  c={isPast ? '#718096' : '#cbd5e0'}
+                  mah={isExpanded ? '80px' : 'unset'}
                 >
                   {program.description}
                 </Text>
@@ -1183,37 +879,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
             )}
 
             {isExpanded && (
-              <Box style={{ marginTop: 'auto' }}>
+              <Box mt={'auto'}>
                 <Flex gap="md" justify="flex-end" mt={8}>
-                  {!isPast && (
-                    <Button
-                      leftSection={<Calendar size={14} />}
-                      variant="filled"
-                      color="red"
-                      size="xs"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openRecordChoice(program);
-                      }}
-                    >
-                      Record
-                    </Button>
-                  )}
+                  {!isPast && <RecordButton />}
 
-                  {isLive && (
-                    <Button
-                      leftSection={<Video size={14} />}
-                      variant="filled"
-                      color="blue"
-                      size="xs"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleWatchStream(program);
-                      }}
-                    >
-                      Watch Now
-                    </Button>
-                  )}
+                  {isLive && <WatchNow />}
                 </Flex>
               </Box>
             )}
@@ -1296,49 +966,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
   }, [searchQuery, selectedGroupId, selectedProfileId]);
 
   // Create group options for dropdown - but only include groups used by guide channels
-  const groupOptions = useMemo(() => {
-    const options = [{ value: 'all', label: 'All Channel Groups' }];
-
-    if (channelGroups && guideChannels.length > 0) {
-      // Get unique channel group IDs from the channels that have program data
-      const usedGroupIds = new Set();
-      guideChannels.forEach((channel) => {
-        if (channel.channel_group_id) {
-          usedGroupIds.add(channel.channel_group_id);
-        }
-      });
-      // Only add groups that are actually used by channels in the guide
-      Object.values(channelGroups)
-        .filter((group) => usedGroupIds.has(group.id))
-        .sort((a, b) => a.name.localeCompare(b.name)) // Sort alphabetically
-        .forEach((group) => {
-          options.push({
-            value: group.id.toString(),
-            label: group.name,
-          });
-        });
-    }
-    return options;
-  }, [channelGroups, guideChannels]);
+  const groupOptions = useMemo(
+    () => getGroupOptions(channelGroups, guideChannels),
+    [channelGroups, guideChannels]
+  );
 
   // Create profile options for dropdown
-  const profileOptions = useMemo(() => {
-    const options = [{ value: 'all', label: 'All Profiles' }];
-
-    if (profiles) {
-      Object.values(profiles).forEach((profile) => {
-        if (profile.id !== '0') {
-          // Skip the 'All' default profile
-          options.push({
-            value: profile.id.toString(),
-            label: profile.name,
-          });
-        }
-      });
-    }
-
-    return options;
-  }, [profiles]);
+  const profileOptions = useMemo(() => getProfileOptions(profiles), [profiles]);
 
   // Clear all filters
   const clearFilters = () => {
@@ -1357,40 +991,45 @@ export default function TVChannelGuide({ startDate, endDate }) {
     setSelectedProfileId(value || 'all');
   };
 
+  const handleClearSearchQuery = () => {
+    setSearchQuery('');
+  };
+  const handleChangeSearchQuery = (e) => {
+    setSearchQuery(e.target.value);
+  };
+
   return (
     <Box
       ref={tvGuideRef}
       className="tv-guide"
       style={{
         overflow: 'hidden',
-        width: '100%',
-        height: '100%',
-        // backgroundColor: 'rgb(39, 39, 42)',
-        color: '#fff',
-        fontFamily: 'Roboto, sans-serif',
       }}
+      w={'100%'}
+      h={'100%'}
+      c='#ffffff'
+      ff={'Roboto, sans-serif'}
       onClick={handleClickOutside} // Close expanded program when clicking outside
     >
       {/* Sticky top bar */}
       <Flex
         direction="column"
         style={{
-          // backgroundColor: '#424242',
-          color: '#fff',
-          padding: '12px 20px',
-          position: 'sticky',
-          top: 0,
           zIndex: 1000,
+          position: 'sticky'
         }}
+        c='#ffffff'
+        p={'12px 20px'}
+        top={0}
       >
         {/* Title and current time */}
         <Flex justify="space-between" align="center" mb={12}>
-          <Title order={3} style={{ fontWeight: 'bold' }}>
+          <Title order={3} fw={'bold'}>
             TV Guide
           </Title>
           <Flex align="center" gap="md">
             <Text>
-              {now.format(`dddd, ${dateFormat}, YYYY • ${timeFormat}`)}
+              {format(now, `dddd, ${dateFormat}, YYYY • ${timeFormat}`)}
             </Text>
             <Tooltip label="Jump to current time">
               <ActionIcon
@@ -1411,13 +1050,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
           <TextInput
             placeholder="Search channels..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ width: '250px' }} // Reduced width from flex: 1
+            onChange={handleChangeSearchQuery}
+            w={'250px'} // Reduced width from flex: 1
             leftSection={<Search size={16} />}
             rightSection={
               searchQuery ? (
                 <ActionIcon
-                  onClick={() => setSearchQuery('')}
+                  onClick={handleClearSearchQuery}
                   variant="subtle"
                   color="gray"
                   size="sm"
@@ -1433,7 +1072,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             data={groupOptions}
             value={selectedGroupId}
             onChange={handleGroupChange} // Use the new handler
-            style={{ width: '220px' }}
+            w={'220px'}
             clearable={true} // Allow clearing the selection
           />
 
@@ -1442,7 +1081,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             data={profileOptions}
             value={selectedProfileId}
             onChange={handleProfileChange} // Use the new handler
-            style={{ width: '180px' }}
+            w={'180px'}
             clearable={true} // Allow clearing the selection
           />
 
@@ -1460,14 +1099,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
             onClick={openRules}
             style={{
               backgroundColor: '#245043',
-              border: '1px solid #3BA882',
-              color: '#FFFFFF',
             }}
+            bd={'1px solid #3BA882'}
+            color='#FFFFFF'
           >
             Series Rules
           </Button>
 
-          <Text size="sm" color="dimmed">
+          <Text size="sm" c="dimmed">
             {filteredChannels.length}{' '}
             {filteredChannels.length === 1 ? 'channel' : 'channels'}
           </Text>
@@ -1477,34 +1116,34 @@ export default function TVChannelGuide({ startDate, endDate }) {
       {/* Guide container with headers and scrollable content */}
       <Box
         style={{
-          display: 'flex',
           flexDirection: 'column',
-          height: 'calc(100vh - 120px)',
         }}
+        display={'flex'}
+        h={'calc(100vh - 120px)'}
       >
         {/* Logo header - Sticky, non-scrollable */}
         <Box
           style={{
-            display: 'flex',
-            position: 'sticky',
-            top: 0,
             zIndex: 100,
+            position: 'sticky'
           }}
+          display={'flex'}
+          top={0}
         >
           {/* Logo header cell - sticky in both directions */}
           <Box
             style={{
-              width: CHANNEL_WIDTH,
-              minWidth: CHANNEL_WIDTH,
               flexShrink: 0,
-              height: '40px',
               backgroundColor: '#18181B',
               borderBottom: '1px solid #27272A',
               borderRight: '1px solid #27272A', // Increased border width
-              position: 'sticky',
-              left: 0,
               zIndex: 200,
             }}
+            w={CHANNEL_WIDTH}
+            miw={CHANNEL_WIDTH}
+            h={'40px'}
+            pos='sticky'
+            left={0}
           />
 
           {/* Timeline header with its own scrollbar */}
@@ -1512,122 +1151,33 @@ export default function TVChannelGuide({ startDate, endDate }) {
             style={{
               flex: 1,
               overflow: 'hidden',
-              position: 'relative',
             }}
+            pos='relative'
           >
             <Box
               ref={timelineRef}
               style={{
                 overflowX: 'auto',
                 overflowY: 'hidden',
-                position: 'relative',
               }}
+              pos='relative'
               onScroll={handleTimelineScroll}
               onWheel={handleTimelineWheel} // Add wheel event handler
             >
               <Box
                 style={{
-                  display: 'flex',
                   backgroundColor: '#1E2A27',
                   borderBottom: '1px solid #27272A',
-                  width: hourTimeline.length * HOUR_WIDTH,
                 }}
+                display={'flex'}
+                w={hourTimeline.length * HOUR_WIDTH}
               >
-                {' '}
-                {hourTimeline.map((hourData) => {
-                  const { time, isNewDay } = hourData;
-
-                  return (
-                    <Box
-                      key={time.format()}
-                      style={{
-                        width: HOUR_WIDTH,
-                        height: '40px',
-                        position: 'relative',
-                        color: '#a0aec0',
-                        borderRight: '1px solid #8DAFAA',
-                        cursor: 'pointer',
-                        borderLeft: isNewDay ? '2px solid #3BA882' : 'none', // Highlight day boundaries
-                        backgroundColor: isNewDay ? '#1E2A27' : '#1B2421', // Subtle background for new days
-                      }}
-                      onClick={(e) => handleTimeClick(time, e)}
-                    >
-                      {/* Remove the special day label for new days since we'll show day for all hours */}
-
-                      {/* Position time label at the left border of each hour block */}
-                      <Text
-                        size="sm"
-                        style={{
-                          position: 'absolute',
-                          top: '8px', // Consistent positioning for all hours
-                          left: '4px',
-                          transform: 'none',
-                          borderRadius: '2px',
-                          lineHeight: 1.2,
-                          textAlign: 'left',
-                        }}
-                      >
-                        {/* Show day above time for every hour using the same format */}
-                        <Text
-                          span
-                          size="xs"
-                          style={{
-                            display: 'block',
-                            opacity: 0.7,
-                            fontWeight: isNewDay ? 600 : 400, // Still emphasize day transitions
-                            color: isNewDay ? '#3BA882' : undefined,
-                          }}
-                        >
-                          {formatDayLabel(time)}{' '}
-                          {/* Use same formatDayLabel function for all hours */}
-                        </Text>
-                        {time.format(timeFormat)}
-                        <Text span size="xs" ml={1} opacity={0.7}>
-                          {/*time.format('A')*/}
-                        </Text>
-                      </Text>
-
-                      {/* Hour boundary marker - more visible */}
-                      <Box
-                        style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: '1px',
-                          backgroundColor: '#27272A',
-                          zIndex: 10,
-                        }}
-                      />
-
-                      {/* Quarter hour tick marks */}
-                      <Box
-                        style={{
-                          position: 'absolute',
-                          bottom: 0,
-                          width: '100%',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          padding: '0 1px',
-                        }}
-                      >
-                        {[15, 30, 45].map((minute) => (
-                          <Box
-                            key={minute}
-                            style={{
-                              width: '1px',
-                              height: '8px',
-                              backgroundColor: '#718096',
-                              position: 'absolute',
-                              bottom: 0,
-                              left: `${(minute / 60) * 100}%`,
-                            }}
-                          />
-                        ))}
-                      </Box>
-                    </Box>
-                  );
-                })}
+                <HourTimeline
+                  hourTimeline={hourTimeline}
+                  timeFormat={timeFormat}
+                  formatDayLabel={formatDayLabel}
+                  handleTimeClick={handleTimeClick}
+                />
               </Box>
             </Box>
           </Box>
@@ -1638,22 +1188,23 @@ export default function TVChannelGuide({ startDate, endDate }) {
           ref={guideContainerRef}
           style={{
             flex: 1,
-            position: 'relative',
             overflow: 'hidden',
           }}
+          pos='relative'
         >
+          <LoadingOverlay visible={isLoading || isProgramsLoading} />
           {nowPosition >= 0 && (
             <Box
               style={{
-                position: 'absolute',
-                left: nowPosition + CHANNEL_WIDTH - guideScrollLeft,
-                top: 0,
-                bottom: 0,
-                width: '2px',
                 backgroundColor: '#38b2ac',
                 zIndex: 15,
                 pointerEvents: 'none',
               }}
+              pos='absolute'
+              left={nowPosition + CHANNEL_WIDTH - guideScrollLeft}
+              top={0}
+              bottom={0}
+              w={'2px'}
             />
           )}
 
@@ -1674,13 +1225,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               {GuideRow}
             </VariableSizeList>
           ) : (
-            <Box
-              style={{
-                padding: '30px',
-                textAlign: 'center',
-                color: '#a0aec0',
-              }}
-            >
+            <Box p={'30px'} ta='center' color='#a0aec0'>
               <Text size="lg">No channels match your filters</Text>
               <Button variant="subtle" onClick={clearFilters} mt={10}>
                 Clear Filters
@@ -1691,216 +1236,35 @@ export default function TVChannelGuide({ startDate, endDate }) {
       </Box>
       {/* Record choice modal */}
       {recordChoiceOpen && recordChoiceProgram && (
-        <Modal
-          opened={recordChoiceOpen}
-          onClose={() => setRecordChoiceOpen(false)}
-          title={`Record: ${recordChoiceProgram.title}`}
-          centered
-          radius="md"
-          zIndex={9999}
-          overlayProps={{ color: '#000', backgroundOpacity: 0.55, blur: 0 }}
-          styles={{
-            content: { backgroundColor: '#18181B', color: 'white' },
-            header: { backgroundColor: '#18181B', color: 'white' },
-            title: { color: 'white' },
-          }}
-        >
-          <Flex direction="column" gap="sm">
-            <Button
-              onClick={() => {
-                recordOne(recordChoiceProgram);
-                setRecordChoiceOpen(false);
-              }}
-            >
-              Just this one
-            </Button>
-            <Button
-              variant="light"
-              onClick={() => {
-                saveSeriesRule(recordChoiceProgram, 'all');
-                setRecordChoiceOpen(false);
-              }}
-            >
-              Every episode
-            </Button>
-            <Button
-              variant="light"
-              onClick={() => {
-                saveSeriesRule(recordChoiceProgram, 'new');
-                setRecordChoiceOpen(false);
-              }}
-            >
-              New episodes only
-            </Button>
-            {recordingForProgram && (
-              <>
-                <Button
-                  color="orange"
-                  variant="light"
-                  onClick={async () => {
-                    try {
-                      await API.deleteRecording(recordingForProgram.id);
-                    } catch (error) {
-                      console.warn('Failed to delete recording', error);
-                    }
-                    try {
-                      await useChannelsStore.getState().fetchRecordings();
-                    } catch (error) {
-                      console.warn(
-                        'Failed to refresh recordings after delete',
-                        error
-                      );
-                    }
-                    setRecordChoiceOpen(false);
-                  }}
-                >
-                  Remove this recording
-                </Button>
-                <Button
-                  color="red"
-                  variant="light"
-                  onClick={async () => {
-                    try {
-                      await API.bulkRemoveSeriesRecordings({
-                        tvg_id: recordChoiceProgram.tvg_id,
-                        title: recordChoiceProgram.title,
-                        scope: 'title',
-                      });
-                    } catch (error) {
-                      console.warn(
-                        'Failed to remove scheduled series recordings',
-                        error
-                      );
-                    }
-                    try {
-                      await API.deleteSeriesRule(recordChoiceProgram.tvg_id);
-                    } catch (error) {
-                      console.warn('Failed to delete series rule', error);
-                    }
-                    try {
-                      await useChannelsStore.getState().fetchRecordings();
-                    } catch (error) {
-                      console.warn(
-                        'Failed to refresh recordings after series delete',
-                        error
-                      );
-                    }
-                    setRecordChoiceOpen(false);
-                  }}
-                >
-                  Remove this series (scheduled)
-                </Button>
-              </>
-            )}
-            {existingRuleMode && (
-              <Button
-                color="red"
-                variant="subtle"
-                onClick={async () => {
-                  await API.deleteSeriesRule(recordChoiceProgram.tvg_id);
-                  setExistingRuleMode(null);
-                  setRecordChoiceOpen(false);
-                }}
-              >
-                Remove series rule ({existingRuleMode})
-              </Button>
-            )}
-          </Flex>
-        </Modal>
+        <ErrorBoundary>
+          <Suspense fallback={<LoadingOverlay />}>
+            <ProgramRecordingModal
+              opened={recordChoiceOpen}
+              onClose={() => setRecordChoiceOpen(false)}
+              program={recordChoiceProgram}
+              recording={recordingForProgram}
+              existingRuleMode={existingRuleMode}
+              onRecordOne={() => recordOne(recordChoiceProgram)}
+              onRecordSeriesAll={() => saveSeriesRule(recordChoiceProgram, 'all')}
+              onRecordSeriesNew={() => saveSeriesRule(recordChoiceProgram, 'new')}
+              onExistingRuleModeChange={setExistingRuleMode}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* Series rules modal */}
       {rulesOpen && (
-        <Modal
-          opened={rulesOpen}
-          onClose={() => setRulesOpen(false)}
-          title="Series Recording Rules"
-          centered
-          radius="md"
-          zIndex={9999}
-          overlayProps={{ color: '#000', backgroundOpacity: 0.55, blur: 0 }}
-          styles={{
-            content: { backgroundColor: '#18181B', color: 'white' },
-            header: { backgroundColor: '#18181B', color: 'white' },
-            title: { color: 'white' },
-          }}
-        >
-          <Stack gap="sm">
-            {(!rules || rules.length === 0) && (
-              <Text size="sm" c="dimmed">
-                No series rules configured
-              </Text>
-            )}
-            {rules &&
-              rules.map((r) => (
-                <Flex
-                  key={`${r.tvg_id}-${r.mode}`}
-                  justify="space-between"
-                  align="center"
-                >
-                  <Text size="sm">
-                    {r.title || r.tvg_id} —{' '}
-                    {r.mode === 'new' ? 'New episodes' : 'Every episode'}
-                  </Text>
-                  <Group gap="xs">
-                    <Button
-                      size="xs"
-                      variant="subtle"
-                      onClick={async () => {
-                        await API.evaluateSeriesRules(r.tvg_id);
-                        try {
-                          await useChannelsStore.getState().fetchRecordings();
-                        } catch (error) {
-                          console.warn(
-                            'Failed to refresh recordings after evaluation',
-                            error
-                          );
-                        }
-                        notifications.show({
-                          title: 'Evaluated',
-                          message: 'Checked for episodes',
-                        });
-                      }}
-                    >
-                      Evaluate Now
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="light"
-                      color="orange"
-                      onClick={async () => {
-                        await API.bulkRemoveSeriesRecordings({
-                          tvg_id: r.tvg_id,
-                          title: r.title,
-                          scope: 'title',
-                        });
-                        try {
-                          await API.deleteSeriesRule(r.tvg_id);
-                        } catch (error) {
-                          console.warn(
-                            'Failed to delete series rule during removal',
-                            error
-                          );
-                        }
-                        try {
-                          await useChannelsStore.getState().fetchRecordings();
-                        } catch (error) {
-                          console.warn(
-                            'Failed to refresh recordings after bulk removal',
-                            error
-                          );
-                        }
-                        const updated = await API.listSeriesRules();
-                        setRules(updated);
-                      }}
-                    >
-                      Remove this series (scheduled)
-                    </Button>
-                  </Group>
-                </Flex>
-              ))}
-          </Stack>
-        </Modal>
+        <ErrorBoundary>
+          <Suspense fallback={<LoadingOverlay />}>
+            <SeriesRecordingModal
+              opened={rulesOpen}
+              onClose={() => setRulesOpen(false)}
+              rules={rules}
+              onRulesUpdate={setRules}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </Box>
   );

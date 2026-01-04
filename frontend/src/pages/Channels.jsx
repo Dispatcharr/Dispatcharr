@@ -65,6 +65,7 @@ const PageContent = () => {
   if (!authUser.id) return <></>;
 
   if (authUser.user_level <= USER_LEVELS.STANDARD) {
+    handleStreamsReady();
     return (
       <Box style={{ padding: 10 }}>
         <ChannelsTable onReady={handleChannelsReady} />

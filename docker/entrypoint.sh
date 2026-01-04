@@ -100,7 +100,7 @@ export POSTGRES_DIR=/data/db
 if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
     # Define all variables to process
     variables=(
-        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED
+        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
         POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
         REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
@@ -174,9 +174,9 @@ else
     pids+=("$nginx_pid")
 fi
 
-cd /app
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
+# Run Django commands as non-root user to prevent permission issues
+su - $POSTGRES_USER -c "cd /app && python manage.py migrate --noinput"
+su - $POSTGRES_USER -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then

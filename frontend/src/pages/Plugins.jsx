@@ -1,353 +1,108 @@
-import React, { useEffect, useState } from 'react';
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
-  AppShell,
-  Box,
+  ActionIcon,
   Alert,
+  AppShellMain,
+  Box,
   Button,
-  Card,
+  Divider,
+  FileInput,
   Group,
   Loader,
+  Modal,
+  SimpleGrid,
   Stack,
   Switch,
   Text,
-  TextInput,
-  NumberInput,
-  Select,
-  Divider,
-  ActionIcon,
-  SimpleGrid,
-  Modal,
-  FileInput,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { RefreshCcw, Trash2 } from 'lucide-react';
-import API from '../api';
-import { notifications } from '@mantine/notifications';
+import { showNotification, updateNotification, } from '../utils/notificationUtils.js';
+import { usePluginStore } from '../store/plugins.jsx';
+import {
+  deletePluginByKey,
+  importPlugin,
+  runPluginAction,
+  setPluginEnabled,
+  updatePluginSettings,
+} from '../utils/pages/PluginsUtils.js';
+import { RefreshCcw } from 'lucide-react';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
+const PluginCard = React.lazy(() =>
+  import('../components/cards/PluginCard.jsx'));
 
-const Field = ({ field, value, onChange }) => {
-  const common = { label: field.label, description: field.help_text };
-  const effective = value ?? field.default;
-  switch (field.type) {
-    case 'boolean':
-      return (
-        <Switch
-          checked={!!effective}
-          onChange={(e) => onChange(field.id, e.currentTarget.checked)}
-          label={field.label}
-          description={field.help_text}
-        />
-      );
-    case 'number':
-      return (
-        <NumberInput
-          value={value ?? field.default ?? 0}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'select':
-      return (
-        <Select
-          value={(value ?? field.default ?? '') + ''}
-          data={(field.options || []).map((o) => ({
-            value: o.value + '',
-            label: o.label,
-          }))}
-          onChange={(v) => onChange(field.id, v)}
-          {...common}
-        />
-      );
-    case 'string':
-    default:
-      return (
-        <TextInput
-          value={value ?? field.default ?? ''}
-          onChange={(e) => onChange(field.id, e.currentTarget.value)}
-          {...common}
-        />
-      );
-  }
-};
+const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
+  const plugins = usePluginStore((state) => state.plugins);
+  const loading = usePluginStore((state) => state.loading);
+  const hasFetchedRef = useRef(false);
 
-const PluginCard = ({
-  plugin,
-  onSaveSettings,
-  onRunAction,
-  onToggleEnabled,
-  onRequireTrust,
-  onRequestDelete,
-}) => {
-  const [settings, setSettings] = useState(plugin.settings || {});
-  const [saving, setSaving] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [enabled, setEnabled] = useState(!!plugin.enabled);
-  const [lastResult, setLastResult] = useState(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmConfig, setConfirmConfig] = useState({
-    title: '',
-    message: '',
-    onConfirm: null,
-  });
+  useEffect(() => {
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
+      usePluginStore.getState().fetchPlugins();
+    }
+  }, []);
 
-  // Keep local enabled state in sync with props (e.g., after import + enable)
-  React.useEffect(() => {
-    setEnabled(!!plugin.enabled);
-  }, [plugin.enabled]);
-  // Sync settings if plugin changes identity
-  React.useEffect(() => {
-    setSettings(plugin.settings || {});
-  }, [plugin.key]);
+  const handleTogglePluginEnabled = async (key, next) => {
+    const resp = await setPluginEnabled(key, next);
 
-  const updateField = (id, val) => {
-    setSettings((prev) => ({ ...prev, [id]: val }));
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSaveSettings(plugin.key, settings);
-      notifications.show({
-        title: 'Saved',
-        message: `${plugin.name} settings updated`,
-        color: 'green',
+    if (resp?.success) {
+      usePluginStore.getState().updatePlugin(key, {
+        enabled: next,
+        ever_enabled: resp?.ever_enabled,
       });
-    } finally {
-      setSaving(false);
     }
   };
 
-  const missing = plugin.missing;
+  if (loading && plugins.length === 0) {
+    return <Loader />;
+  }
+
   return (
-    <Card
-      shadow="sm"
-      radius="md"
-      withBorder
-      style={{ opacity: !missing && enabled ? 1 : 0.6 }}
-    >
-      <Group justify="space-between" mb="xs" align="center">
-        <div>
-          <Text fw={600}>{plugin.name}</Text>
-          <Text size="sm" c="dimmed">
-            {plugin.description}
+    <>
+      {plugins.length > 0 &&
+        <SimpleGrid
+          cols={2}
+          spacing="md"
+          breakpoints={[{ maxWidth: '48em', cols: 1 }]}
+        >
+          <ErrorBoundary>
+            <Suspense fallback={<Loader />}>
+              {plugins.map((p) => (
+                <PluginCard
+                  key={p.key}
+                  plugin={p}
+                  onSaveSettings={updatePluginSettings}
+                  onRunAction={runPluginAction}
+                  onToggleEnabled={handleTogglePluginEnabled}
+                  onRequireTrust={onRequireTrust}
+                  onRequestDelete={onRequestDelete}
+                  onRequestConfirm={onRequestConfirm}
+                />
+              ))}
+            </Suspense>
+          </ErrorBoundary>
+        </SimpleGrid>
+      }
+
+      {plugins.length === 0 && (
+        <Box>
+          <Text c="dimmed">
+            No plugins found. Drop a plugin into <code>/data/plugins</code>{' '}
+            and reload.
           </Text>
-        </div>
-        <Group gap="xs" align="center">
-          <ActionIcon
-            variant="subtle"
-            color="red"
-            title="Delete plugin"
-            onClick={() => onRequestDelete && onRequestDelete(plugin)}
-          >
-            <Trash2 size={16} />
-          </ActionIcon>
-          <Text size="xs" c="dimmed">
-            v{plugin.version || '1.0.0'}
-          </Text>
-          <Switch
-            checked={!missing && enabled}
-            onChange={async (e) => {
-              const next = e.currentTarget.checked;
-              if (next && !plugin.ever_enabled && onRequireTrust) {
-                const ok = await onRequireTrust(plugin);
-                if (!ok) {
-                  // Revert
-                  setEnabled(false);
-                  return;
-                }
-              }
-              setEnabled(next);
-              const resp = await onToggleEnabled(plugin.key, next);
-              if (next && resp?.ever_enabled) {
-                plugin.ever_enabled = true;
-              }
-            }}
-            size="xs"
-            onLabel="On"
-            offLabel="Off"
-            disabled={missing}
-          />
-        </Group>
-      </Group>
-
-      {missing && (
-        <Text size="sm" c="red">
-          Missing plugin files. Re-import or delete this entry.
-        </Text>
+        </Box>
       )}
-
-      {!missing && plugin.fields && plugin.fields.length > 0 && (
-        <Stack gap="xs" mt="sm">
-          {plugin.fields.map((f) => (
-            <Field
-              key={f.id}
-              field={f}
-              value={settings?.[f.id]}
-              onChange={updateField}
-            />
-          ))}
-          <Group>
-            <Button loading={saving} onClick={save} variant="default" size="xs">
-              Save Settings
-            </Button>
-          </Group>
-        </Stack>
-      )}
-
-      {!missing && plugin.actions && plugin.actions.length > 0 && (
-        <>
-          <Divider my="sm" />
-          <Stack gap="xs">
-            {plugin.actions.map((a) => (
-              <Group key={a.id} justify="space-between">
-                <div>
-                  <Text>{a.label}</Text>
-                  {a.description && (
-                    <Text size="sm" c="dimmed">
-                      {a.description}
-                    </Text>
-                  )}
-                </div>
-                <Button
-                  loading={running}
-                  disabled={!enabled}
-                  onClick={async () => {
-                    setRunning(true);
-                    setLastResult(null);
-                    try {
-                      // Determine if confirmation is required from action metadata or fallback field
-                      const actionConfirm = a.confirm;
-                      const confirmField = (plugin.fields || []).find(
-                        (f) => f.id === 'confirm'
-                      );
-                      let requireConfirm = false;
-                      let confirmTitle = `Run ${a.label}?`;
-                      let confirmMessage = `You're about to run "${a.label}" from "${plugin.name}".`;
-                      if (actionConfirm) {
-                        if (typeof actionConfirm === 'boolean') {
-                          requireConfirm = actionConfirm;
-                        } else if (typeof actionConfirm === 'object') {
-                          requireConfirm = actionConfirm.required !== false;
-                          if (actionConfirm.title)
-                            confirmTitle = actionConfirm.title;
-                          if (actionConfirm.message)
-                            confirmMessage = actionConfirm.message;
-                        }
-                      } else if (confirmField) {
-                        const settingVal = settings?.confirm;
-                        const effectiveConfirm =
-                          (settingVal !== undefined
-                            ? settingVal
-                            : confirmField.default) ?? false;
-                        requireConfirm = !!effectiveConfirm;
-                      }
-
-                      if (requireConfirm) {
-                        await new Promise((resolve) => {
-                          setConfirmConfig({
-                            title: confirmTitle,
-                            message: confirmMessage,
-                            onConfirm: resolve,
-                          });
-                          setConfirmOpen(true);
-                        });
-                      }
-
-                      // Save settings before running to ensure backend uses latest values
-                      try {
-                        await onSaveSettings(plugin.key, settings);
-                      } catch (e) {
-                        /* ignore, run anyway */
-                      }
-                      const resp = await onRunAction(plugin.key, a.id);
-                      if (resp?.success) {
-                        setLastResult(resp.result || {});
-                        const msg =
-                          resp.result?.message || 'Plugin action completed';
-                        notifications.show({
-                          title: plugin.name,
-                          message: msg,
-                          color: 'green',
-                        });
-                      } else {
-                        const err = resp?.error || 'Unknown error';
-                        setLastResult({ error: err });
-                        notifications.show({
-                          title: `${plugin.name} error`,
-                          message: String(err),
-                          color: 'red',
-                        });
-                      }
-                    } finally {
-                      setRunning(false);
-                    }
-                  }}
-                  size="xs"
-                >
-                  {running ? 'Running…' : 'Run'}
-                </Button>
-              </Group>
-            ))}
-            {running && (
-              <Text size="sm" c="dimmed">
-                Running action… please wait
-              </Text>
-            )}
-            {!running && lastResult?.file && (
-              <Text size="sm" c="dimmed">
-                Output: {lastResult.file}
-              </Text>
-            )}
-            {!running && lastResult?.error && (
-              <Text size="sm" c="red">
-                Error: {String(lastResult.error)}
-              </Text>
-            )}
-          </Stack>
-        </>
-      )}
-      <Modal
-        opened={confirmOpen}
-        onClose={() => {
-          setConfirmOpen(false);
-          setConfirmConfig({ title: '', message: '', onConfirm: null });
-        }}
-        title={confirmConfig.title}
-        centered
-      >
-        <Stack>
-          <Text size="sm">{confirmConfig.message}</Text>
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              size="xs"
-              onClick={() => {
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="xs"
-              onClick={() => {
-                const cb = confirmConfig.onConfirm;
-                setConfirmOpen(false);
-                setConfirmConfig({ title: '', message: '', onConfirm: null });
-                cb && cb(true);
-              }}
-            >
-              Confirm
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-    </Card>
+    </>
   );
 };
 
 export default function PluginsPage() {
-  const [loading, setLoading] = useState(true);
-  const [plugins, setPlugins] = useState([]);
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -358,118 +113,172 @@ export default function PluginsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [uploadNoticeId, setUploadNoticeId] = useState(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState({
+    title: '',
+    message: '',
+    resolve: null,
+  });
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const list = await API.getPlugins();
-      setPlugins(list);
-    } finally {
-      setLoading(false);
-    }
+  const handleReload = () => {
+    usePluginStore.getState().invalidatePlugins();
   };
 
-  useEffect(() => {
-    load();
+  const handleRequestDelete = useCallback((pl) => {
+    setDeleteTarget(pl);
+    setDeleteOpen(true);
   }, []);
 
-  const requireTrust = (plugin) => {
+  const requireTrust = useCallback((plugin) => {
     return new Promise((resolve) => {
       setTrustResolve(() => resolve);
       setTrustOpen(true);
     });
+  }, []);
+
+  const showImportForm = useCallback(() => {
+    setImportOpen(true);
+    setImported(null);
+    setImportFile(null);
+    setEnableAfterImport(false);
+  }, []);
+
+  const requestConfirm = useCallback((title, message) => {
+    return new Promise((resolve) => {
+      setConfirmConfig({ title, message, resolve });
+      setConfirmOpen(true);
+    });
+  }, []);
+
+  const handleImportPlugin = () => {
+    return async () => {
+      setImporting(true);
+      const id = showNotification({
+        title: 'Uploading plugin',
+        message: 'Backend may restart; please wait…',
+        loading: true,
+        autoClose: false,
+        withCloseButton: false,
+      });
+      try {
+        const resp = await importPlugin(importFile);
+        if (resp?.success && resp.plugin) {
+          setImported(resp.plugin);
+          usePluginStore.getState().invalidatePlugins();
+
+          updateNotification({
+            id,
+            loading: false,
+            color: 'green',
+            title: 'Imported',
+            message:
+              'Plugin imported. If the app briefly disconnected, it should be back now.',
+            autoClose: 3000,
+          });
+        } else {
+          updateNotification({
+            id,
+            loading: false,
+            color: 'red',
+            title: 'Import failed',
+            message: resp?.error || 'Unknown error',
+            autoClose: 5000,
+          });
+        }
+      } catch (e) {
+        // API.importPlugin already showed a concise error; just update the loading notice
+        updateNotification({
+          id,
+          loading: false,
+          color: 'red',
+          title: 'Import failed',
+          message:
+            (e?.body && (e.body.error || e.body.detail)) ||
+            e?.message ||
+            'Failed',
+          autoClose: 5000,
+        });
+      } finally {
+        setImporting(false);
+      }
+    };
   };
 
+  const handleEnablePlugin = () => {
+    return async () => {
+      if (!imported) return;
+
+      const proceed = imported.ever_enabled || (await requireTrust(imported));
+      if (proceed) {
+        const resp = await setPluginEnabled(imported.key, true);
+        if (resp?.success) {
+          usePluginStore.getState().updatePlugin(imported.key, { enabled: true, ever_enabled: true });
+
+          showNotification({
+            title: imported.name,
+            message: 'Plugin enabled',
+            color: 'green',
+          });
+        }
+        setImportOpen(false);
+        setImported(null);
+        setEnableAfterImport(false);
+      }
+    };
+  };
+
+  const handleDeletePlugin = () => {
+    return async () => {
+      if (!deleteTarget) return;
+      setDeleting(true);
+      try {
+        const resp = await deletePluginByKey(deleteTarget.key);
+        if (resp?.success) {
+          usePluginStore.getState().removePlugin(deleteTarget.key);
+
+          showNotification({
+            title: deleteTarget.name,
+            message: 'Plugin deleted',
+            color: 'green',
+          });
+        }
+        setDeleteOpen(false);
+        setDeleteTarget(null);
+      } finally {
+        setDeleting(false);
+      }
+    };
+  };
+
+  const handleConfirm = useCallback((confirmed) => {
+    const resolver = confirmConfig.resolve;
+    setConfirmOpen(false);
+    setConfirmConfig({ title: '', message: '', resolve: null });
+    if (resolver) resolver(confirmed);
+  }, [confirmConfig.resolve]);
+
   return (
-    <AppShell.Main style={{ padding: 16 }}>
+    <AppShellMain p={16}>
       <Group justify="space-between" mb="md">
         <Text fw={700} size="lg">
           Plugins
         </Text>
         <Group>
-          <Button
-            size="xs"
-            variant="light"
-            onClick={() => {
-              setImportOpen(true);
-              setImported(null);
-              setImportFile(null);
-              setEnableAfterImport(false);
-            }}
-          >
+          <Button size="xs" variant="light" onClick={showImportForm}>
             Import Plugin
           </Button>
-          <ActionIcon
-            variant="light"
-            onClick={async () => {
-              await API.reloadPlugins();
-              await load();
-            }}
-            title="Reload"
-          >
+          <ActionIcon variant="light" onClick={handleReload} title="Reload">
             <RefreshCcw size={18} />
           </ActionIcon>
         </Group>
       </Group>
 
-      {loading ? (
-        <Loader />
-      ) : (
-        <>
-          <SimpleGrid
-            cols={2}
-            spacing="md"
-            verticalSpacing="md"
-            breakpoints={[{ maxWidth: '48em', cols: 1 }]}
-          >
-            {plugins.map((p) => (
-              <PluginCard
-                key={p.key}
-                plugin={p}
-                onSaveSettings={API.updatePluginSettings}
-                onRunAction={API.runPluginAction}
-                onToggleEnabled={async (key, next) => {
-                  const resp = await API.setPluginEnabled(key, next);
-                  if (resp?.ever_enabled !== undefined) {
-                    setPlugins((prev) =>
-                      prev.map((pl) =>
-                        pl.key === key
-                          ? {
-                              ...pl,
-                              ever_enabled: resp.ever_enabled,
-                              enabled: resp.enabled,
-                            }
-                          : pl
-                      )
-                    );
-                  } else {
-                    setPlugins((prev) =>
-                      prev.map((pl) =>
-                        pl.key === key ? { ...pl, enabled: next } : pl
-                      )
-                    );
-                  }
-                  return resp;
-                }}
-                onRequireTrust={requireTrust}
-                onRequestDelete={(plugin) => {
-                  setDeleteTarget(plugin);
-                  setDeleteOpen(true);
-                }}
-              />
-            ))}
-          </SimpleGrid>
-          {plugins.length === 0 && (
-            <Box>
-              <Text c="dimmed">
-                No plugins found. Drop a plugin into <code>/data/plugins</code>{' '}
-                and reload.
-              </Text>
-            </Box>
-          )}
-        </>
-      )}
+      <PluginsList
+        onRequestDelete={handleRequestDelete}
+        onRequireTrust={requireTrust}
+        onRequestConfirm={requestConfirm}
+      />
+
       {/* Import Plugin Modal */}
       <Modal
         opened={importOpen}
@@ -520,61 +329,7 @@ export default function PluginsPage() {
               size="xs"
               loading={importing}
               disabled={!importFile}
-              onClick={async () => {
-                setImporting(true);
-                const id = notifications.show({
-                  title: 'Uploading plugin',
-                  message: 'Backend may restart; please wait…',
-                  loading: true,
-                  autoClose: false,
-                  withCloseButton: false,
-                });
-                setUploadNoticeId(id);
-                try {
-                  const resp = await API.importPlugin(importFile);
-                  if (resp?.success && resp.plugin) {
-                    setImported(resp.plugin);
-                    setPlugins((prev) => [
-                      resp.plugin,
-                      ...prev.filter((p) => p.key !== resp.plugin.key),
-                    ]);
-                    notifications.update({
-                      id,
-                      loading: false,
-                      color: 'green',
-                      title: 'Imported',
-                      message:
-                        'Plugin imported. If the app briefly disconnected, it should be back now.',
-                      autoClose: 3000,
-                    });
-                  } else {
-                    notifications.update({
-                      id,
-                      loading: false,
-                      color: 'red',
-                      title: 'Import failed',
-                      message: resp?.error || 'Unknown error',
-                      autoClose: 5000,
-                    });
-                  }
-                } catch (e) {
-                  // API.importPlugin already showed a concise error; just update the loading notice
-                  notifications.update({
-                    id,
-                    loading: false,
-                    color: 'red',
-                    title: 'Import failed',
-                    message:
-                      (e?.body && (e.body.error || e.body.detail)) ||
-                      e?.message ||
-                      'Failed',
-                    autoClose: 5000,
-                  });
-                } finally {
-                  setImporting(false);
-                  setUploadNoticeId(null);
-                }
-              }}
+              onClick={handleImportPlugin()}
             >
               Upload
             </Button>
@@ -612,36 +367,7 @@ export default function PluginsPage() {
                 <Button
                   size="xs"
                   disabled={!enableAfterImport}
-                  onClick={async () => {
-                    if (!imported) return;
-                    let proceed = true;
-                    if (!imported.ever_enabled) {
-                      proceed = await requireTrust(imported);
-                    }
-                    if (proceed) {
-                      const resp = await API.setPluginEnabled(
-                        imported.key,
-                        true
-                      );
-                      if (resp?.success) {
-                        setPlugins((prev) =>
-                          prev.map((p) =>
-                            p.key === imported.key
-                              ? { ...p, enabled: true, ever_enabled: true }
-                              : p
-                          )
-                        );
-                        notifications.show({
-                          title: imported.name,
-                          message: 'Plugin enabled',
-                          color: 'green',
-                        });
-                      }
-                      setImportOpen(false);
-                      setImported(null);
-                      setEnableAfterImport(false);
-                    }
-                  }}
+                  onClick={handleEnablePlugin()}
                 >
                   Enable
                 </Button>
@@ -727,33 +453,37 @@ export default function PluginsPage() {
               size="xs"
               color="red"
               loading={deleting}
-              onClick={async () => {
-                if (!deleteTarget) return;
-                setDeleting(true);
-                try {
-                  const resp = await API.deletePlugin(deleteTarget.key);
-                  if (resp?.success) {
-                    setPlugins((prev) =>
-                      prev.filter((p) => p.key !== deleteTarget.key)
-                    );
-                    notifications.show({
-                      title: deleteTarget.name,
-                      message: 'Plugin deleted',
-                      color: 'green',
-                    });
-                  }
-                  setDeleteOpen(false);
-                  setDeleteTarget(null);
-                } finally {
-                  setDeleting(false);
-                }
-              }}
+              onClick={handleDeletePlugin()}
             >
               Delete
             </Button>
           </Group>
         </Stack>
       </Modal>
-    </AppShell.Main>
+
+      {/* Confirmation modal */}
+      <Modal
+        opened={confirmOpen}
+        onClose={() => handleConfirm(false)}
+        title={confirmConfig.title}
+        centered
+      >
+        <Stack>
+          <Text size="sm">{confirmConfig.message}</Text>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              size="xs"
+              onClick={() => handleConfirm(false)}
+            >
+              Cancel
+            </Button>
+            <Button size="xs" onClick={() => handleConfirm(true)}>
+              Confirm
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </AppShellMain>
   );
 }

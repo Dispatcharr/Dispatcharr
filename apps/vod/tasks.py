@@ -1292,8 +1292,17 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
         try:
             episode_id = str(episode_data.get('id'))
             episode_name = episode_data.get('title', 'Unknown Episode')
-            season_number = episode_data['_season_number']
-            episode_number = episode_data.get('episode_num', 0)
+            # Ensure season and episode numbers are integers (API may return strings)
+            try:
+                season_number = int(episode_data['_season_number'])
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid season_number '{episode_data.get('_season_number')}' for episode '{episode_name}': {e}")
+                season_number = 0
+            try:
+                episode_number = int(episode_data.get('episode_num', 0))
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid episode_num '{episode_data.get('episode_num')}' for episode '{episode_name}': {e}")
+                episode_number = 0
             info = episode_data.get('info', {})
 
             # Extract episode metadata
@@ -1324,7 +1333,7 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
             # Check if we already have this episode pending creation (multiple streams for same episode)
             if not episode and episode_key in episodes_pending_creation:
                 episode = episodes_pending_creation[episode_key]
-                logger.debug(f"Reusing pending episode for S{season_number:02d}E{episode_number:02d} (stream_id: {episode_id})")
+                logger.debug(f"Reusing pending episode for S{season_number}E{episode_number} (stream_id: {episode_id})")
 
             if episode:
                 # Update existing episode
@@ -1431,6 +1440,21 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 key = (ep.series_id, ep.season_number, ep.episode_number)
                 if key in episode_pk_map:
                     relation.episode = episode_pk_map[key]
+
+        # Filter out relations with unsaved episodes (no PK)
+        # This can happen if bulk_create had a conflict and ignore_conflicts=True didn't save the episode
+        valid_relations_to_create = []
+        for relation in relations_to_create:
+            if relation.episode.pk is not None:
+                valid_relations_to_create.append(relation)
+            else:
+                season_num = relation.episode.season_number
+                episode_num = relation.episode.episode_number
+                logger.warning(
+                    f"Skipping relation for episode S{season_num}E{episode_num} "
+                    f"- episode not saved to database"
+                )
+        relations_to_create = valid_relations_to_create
 
         # Update existing episodes
         if episodes_to_update:
