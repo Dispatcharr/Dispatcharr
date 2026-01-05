@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useFormik } from 'formik';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
 import API from '../../api';
@@ -41,6 +42,11 @@ import useEPGsStore from '../../store/epgs';
 
 import { FixedSizeList as List } from 'react-window';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+
+const validationSchema = Yup.object({
+  name: Yup.string().required('Name is required'),
+  channel_group_id: Yup.string().required('Channel group is required'),
+});
 
 const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const theme = useMantineTheme();
@@ -100,7 +106,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   const handleLogoSuccess = ({ logo }) => {
     if (logo && logo.id) {
-      formik.setFieldValue('logo_id', logo.id);
+      setValue('logo_id', logo.id);
       ensureLogosLoaded(); // Refresh logos
     }
     setLogoModalOpen(false);
@@ -124,7 +130,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       if (response.matched) {
         // Update the form with the new EPG data
         if (response.channel && response.channel.epg_data_id) {
-          formik.setFieldValue('epg_data_id', response.channel.epg_data_id);
+          setValue('epg_data_id', response.channel.epg_data_id);
         }
 
         notifications.show({
@@ -152,7 +158,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const handleSetNameFromEpg = () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
       notifications.show({
         title: 'No EPG Selected',
@@ -164,7 +170,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.name) {
-      formik.setFieldValue('name', tvg.name);
+      setValue('name', tvg.name);
       notifications.show({
         title: 'Success',
         message: `Channel name set to "${tvg.name}"`,
@@ -180,7 +186,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const handleSetLogoFromEpg = async () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
       notifications.show({
         title: 'No EPG Selected',
@@ -207,7 +213,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       );
 
       if (matchingLogo) {
-        formik.setFieldValue('logo_id', matchingLogo.id);
+        setValue('logo_id', matchingLogo.id);
         notifications.show({
           title: 'Success',
           message: `Logo set to "${matchingLogo.name}"`,
@@ -231,7 +237,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
           // Create logo by calling the Logo API directly
           const newLogo = await API.createLogo(newLogoData);
 
-          formik.setFieldValue('logo_id', newLogo.id);
+          setValue('logo_id', newLogo.id);
 
           notifications.update({
             id: 'creating-logo',
@@ -264,7 +270,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const handleSetTvgIdFromEpg = () => {
-    const epgDataId = formik.values.epg_data_id;
+    const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
       notifications.show({
         title: 'No EPG Selected',
@@ -276,7 +282,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.tvg_id) {
-      formik.setFieldValue('tvg_id', tvg.tvg_id);
+      setValue('tvg_id', tvg.tvg_id);
       notifications.show({
         title: 'Success',
         message: `TVG-ID set to "${tvg.tvg_id}"`,
@@ -291,130 +297,130 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     }
   };
 
-  const formik = useFormik({
-    initialValues: {
-      name: '',
-      channel_number: '', // Change from 0 to empty string for consistency
-      channel_group_id:
-        Object.keys(channelGroups).length > 0
+  const defaultValues = useMemo(
+    () => ({
+      name: channel?.name || '',
+      channel_number:
+        channel?.channel_number !== null &&
+        channel?.channel_number !== undefined
+          ? channel.channel_number
+          : '',
+      channel_group_id: channel?.channel_group_id
+        ? `${channel.channel_group_id}`
+        : Object.keys(channelGroups).length > 0
           ? Object.keys(channelGroups)[0]
           : '',
-      stream_profile_id: '0',
-      tvg_id: '',
-      tvc_guide_stationid: '',
-      epg_data_id: '',
-      logo_id: '',
-      user_level: '0',
-    },
-    validationSchema: Yup.object({
-      name: Yup.string().required('Name is required'),
-      channel_group_id: Yup.string().required('Channel group is required'),
+      stream_profile_id: channel?.stream_profile_id
+        ? `${channel.stream_profile_id}`
+        : '0',
+      tvg_id: channel?.tvg_id || '',
+      tvc_guide_stationid: channel?.tvc_guide_stationid || '',
+      epg_data_id: channel?.epg_data_id ?? '',
+      logo_id: channel?.logo_id ? `${channel.logo_id}` : '',
+      user_level: `${channel?.user_level ?? '0'}`,
     }),
-    onSubmit: async (values, { setSubmitting }) => {
-      let response;
+    [channel, channelGroups]
+  );
 
-      try {
-        const formattedValues = { ...values };
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm({
+    defaultValues,
+    resolver: yupResolver(validationSchema),
+  });
 
-        // Convert empty or "0" stream_profile_id to null for the API
-        if (
-          !formattedValues.stream_profile_id ||
-          formattedValues.stream_profile_id === '0'
-        ) {
-          formattedValues.stream_profile_id = null;
-        }
+  const onSubmit = async (values) => {
+    let response;
 
-        // Ensure tvg_id is properly included (no empty strings)
-        formattedValues.tvg_id = formattedValues.tvg_id || null;
+    try {
+      const formattedValues = { ...values };
 
-        // Ensure tvc_guide_stationid is properly included (no empty strings)
-        formattedValues.tvc_guide_stationid =
-          formattedValues.tvc_guide_stationid || null;
+      // Convert empty or "0" stream_profile_id to null for the API
+      if (
+        !formattedValues.stream_profile_id ||
+        formattedValues.stream_profile_id === '0'
+      ) {
+        formattedValues.stream_profile_id = null;
+      }
 
-        if (channel) {
-          // If there's an EPG to set, use our enhanced endpoint
-          if (values.epg_data_id !== (channel.epg_data_id ?? '')) {
-            // Use the special endpoint to set EPG and trigger refresh
-            const epgResponse = await API.setChannelEPG(
-              channel.id,
-              values.epg_data_id
-            );
+      // Ensure tvg_id is properly included (no empty strings)
+      formattedValues.tvg_id = formattedValues.tvg_id || null;
 
-            // Remove epg_data_id from values since we've handled it separately
-            const { epg_data_id, ...otherValues } = formattedValues;
+      // Ensure tvc_guide_stationid is properly included (no empty strings)
+      formattedValues.tvc_guide_stationid =
+        formattedValues.tvc_guide_stationid || null;
 
-            // Update other channel fields if needed
-            if (Object.keys(otherValues).length > 0) {
-              response = await API.updateChannel({
-                id: channel.id,
-                ...otherValues,
-                streams: channelStreams.map((stream) => stream.id),
-              });
-            }
-          } else {
-            // No EPG change, regular update
+      if (channel) {
+        // If there's an EPG to set, use our enhanced endpoint
+        if (values.epg_data_id !== (channel.epg_data_id ?? '')) {
+          // Use the special endpoint to set EPG and trigger refresh
+          const epgResponse = await API.setChannelEPG(
+            channel.id,
+            values.epg_data_id
+          );
+
+          // Remove epg_data_id from values since we've handled it separately
+          const { epg_data_id, ...otherValues } = formattedValues;
+
+          // Update other channel fields if needed
+          if (Object.keys(otherValues).length > 0) {
             response = await API.updateChannel({
               id: channel.id,
-              ...formattedValues,
+              ...otherValues,
               streams: channelStreams.map((stream) => stream.id),
             });
           }
         } else {
-          // New channel creation - use the standard method
-          response = await API.addChannel({
+          // No EPG change, regular update
+          response = await API.updateChannel({
+            id: channel.id,
             ...formattedValues,
             streams: channelStreams.map((stream) => stream.id),
           });
         }
-      } catch (error) {
-        console.error('Error saving channel:', error);
+      } else {
+        // New channel creation - use the standard method
+        response = await API.addChannel({
+          ...formattedValues,
+          streams: channelStreams.map((stream) => stream.id),
+        });
       }
+    } catch (error) {
+      console.error('Error saving channel:', error);
+    }
 
-      formik.resetForm();
-      API.requeryChannels();
+    reset();
+    API.requeryChannels();
 
-      // Refresh channel profiles to update the membership information
-      useChannelsStore.getState().fetchChannelProfiles();
+    // Refresh channel profiles to update the membership information
+    useChannelsStore.getState().fetchChannelProfiles();
 
-      setSubmitting(false);
-      setTvgFilter('');
-      setLogoFilter('');
-      onClose();
-    },
-  });
+    setTvgFilter('');
+    setLogoFilter('');
+    onClose();
+  };
 
   useEffect(() => {
-    if (channel) {
-      if (channel.epg_data_id) {
-        const epgSource = epgs[tvgsById[channel.epg_data_id]?.epg_source];
-        setSelectedEPG(epgSource ? `${epgSource.id}` : '');
-      }
+    reset(defaultValues);
+    setChannelStreams(channel?.streams || []);
 
-      formik.setValues({
-        name: channel.name || '',
-        channel_number:
-          channel.channel_number !== null ? channel.channel_number : '',
-        channel_group_id: channel.channel_group_id
-          ? `${channel.channel_group_id}`
-          : '',
-        stream_profile_id: channel.stream_profile_id
-          ? `${channel.stream_profile_id}`
-          : '0',
-        tvg_id: channel.tvg_id || '',
-        tvc_guide_stationid: channel.tvc_guide_stationid || '',
-        epg_data_id: channel.epg_data_id ?? '',
-        logo_id: channel.logo_id ? `${channel.logo_id}` : '',
-        user_level: `${channel.user_level}`,
-      });
-
-      setChannelStreams(channel.streams || []);
+    if (channel?.epg_data_id) {
+      const epgSource = epgs[tvgsById[channel.epg_data_id]?.epg_source];
+      setSelectedEPG(epgSource ? `${epgSource.id}` : '');
     } else {
-      formik.resetForm();
+      setSelectedEPG('');
+    }
+
+    if (!channel) {
       setTvgFilter('');
       setLogoFilter('');
-      setChannelStreams([]); // Ensure streams are cleared when adding a new channel
     }
-  }, [channel, tvgsById, channelGroups]);
+  }, [defaultValues, channel, reset, epgs, tvgsById]);
 
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
@@ -431,10 +437,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     // If a new group was created and returned, update the form with it
     if (newGroup && newGroup.id) {
       // Preserve all current form values while updating just the channel_group_id
-      formik.setValues({
-        ...formik.values,
-        channel_group_id: `${newGroup.id}`,
-      });
+      setValue('channel_group_id', `${newGroup.id}`);
     }
   };
 
@@ -472,7 +475,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         }
         styles={{ content: { '--mantine-color-body': '#27272A' } }}
       >
-        <form onSubmit={formik.handleSubmit}>
+        <form onSubmit={handleSubmit(onSubmit)}>
           <Group justify="space-between" align="top">
             <Stack gap="5" style={{ flex: 1 }}>
               <TextInput
@@ -481,7 +484,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 label={
                   <Group gap="xs">
                     <span>Channel Name</span>
-                    {formik.values.epg_data_id && (
+                    {watch('epg_data_id') && (
                       <Button
                         size="xs"
                         variant="transparent"
@@ -495,9 +498,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
-                value={formik.values.name}
-                onChange={formik.handleChange}
-                error={formik.errors.name ? formik.touched.name : ''}
+                {...register('name')}
+                error={errors.name?.message}
                 size="xs"
                 style={{ flex: 1 }}
               />
@@ -516,8 +518,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       label="Channel Group"
                       readOnly
                       value={
-                        channelGroups[formik.values.channel_group_id]
-                          ? channelGroups[formik.values.channel_group_id].name
+                        channelGroups[watch('channel_group_id')]
+                          ? channelGroups[watch('channel_group_id')].name
                           : ''
                       }
                       onClick={() => setGroupPopoverOpened(true)}
@@ -557,7 +559,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             >
                               <UnstyledButton
                                 onClick={() => {
-                                  formik.setFieldValue(
+                                  setValue(
                                     'channel_group_id',
                                     filteredGroups[index].id
                                   );
@@ -587,16 +589,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   id="channel_group_id"
                   name="channel_group_id"
                   label="Channel Group"
-                  value={formik.values.channel_group_id}
+                  value={watch('channel_group_id')}
                   searchable
                   onChange={(value) => {
-                    formik.setFieldValue('channel_group_id', value); // Update Formik's state with the new value
+                    setValue('channel_group_id', value);
                   }}
-                  error={
-                    formik.errors.channel_group_id
-                      ? formik.touched.channel_group_id
-                      : ''
-                  }
+                  error={errors.channel_group_id?.message}
                   data={Object.values(channelGroups).map((option, index) => ({
                     value: `${option.id}`,
                     label: option.name,
@@ -622,15 +620,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="stream_profile_id"
                 label="Stream Profile"
                 name="stream_profile_id"
-                value={formik.values.stream_profile_id}
+                value={watch('stream_profile_id')}
                 onChange={(value) => {
-                  formik.setFieldValue('stream_profile_id', value); // Update Formik's state with the new value
+                  setValue('stream_profile_id', value);
                 }}
-                error={
-                  formik.errors.stream_profile_id
-                    ? formik.touched.stream_profile_id
-                    : ''
-                }
+                error={errors.stream_profile_id?.message}
                 data={[{ value: '0', label: '(use default)' }].concat(
                   streamProfiles.map((option) => ({
                     value: `${option.id}`,
@@ -648,13 +642,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     value: `${value}`,
                   };
                 })}
-                value={formik.values.user_level}
+                value={watch('user_level')}
                 onChange={(value) => {
-                  formik.setFieldValue('user_level', value);
+                  setValue('user_level', value);
                 }}
-                error={
-                  formik.errors.user_level ? formik.touched.user_level : ''
-                }
+                error={errors.user_level?.message}
               />
             </Stack>
 
@@ -684,7 +676,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       label={
                         <Group gap="xs">
                           <span>Logo</span>
-                          {formik.values.epg_data_id && (
+                          {watch('epg_data_id') && (
                             <Button
                               size="xs"
                               variant="transparent"
@@ -699,9 +691,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </Group>
                       }
                       readOnly
-                      value={
-                        channelLogos[formik.values.logo_id]?.name || 'Default'
-                      }
+                      value={channelLogos[watch('logo_id')]?.name || 'Default'}
                       onClick={() => {
                         console.log(
                           'Logo input clicked, setting popover opened to true'
@@ -756,10 +746,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                                 borderRadius: '4px',
                               }}
                               onClick={() => {
-                                formik.setFieldValue(
-                                  'logo_id',
-                                  filteredLogos[index].id
-                                );
+                                setValue('logo_id', filteredLogos[index].id);
                                 setLogoPopoverOpened(false);
                               }}
                               onMouseEnter={(e) => {
@@ -810,7 +797,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
                 <Stack gap="xs" align="center">
                   <LazyLogo
-                    logoId={formik.values.logo_id}
+                    logoId={watch('logo_id')}
                     alt="channel logo"
                     style={{ height: 40 }}
                   />
@@ -833,19 +820,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="channel_number"
                 name="channel_number"
                 label="Channel # (blank to auto-assign)"
-                value={formik.values.channel_number}
-                onChange={(value) =>
-                  formik.setFieldValue('channel_number', value)
-                }
-                error={
-                  formik.errors.channel_number
-                    ? formik.touched.channel_number
-                    : ''
-                }
+                value={watch('channel_number')}
+                onChange={(value) => setValue('channel_number', value)}
+                error={errors.channel_number?.message}
                 size="xs"
                 step={0.1} // Add step prop to allow decimal inputs
                 precision={1} // Specify decimal precision
-                removeTrailingZeros // Optional: remove trailing zeros for cleaner display
               />
 
               <TextInput
@@ -854,7 +834,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 label={
                   <Group gap="xs">
                     <span>TVG-ID</span>
-                    {formik.values.epg_data_id && (
+                    {watch('epg_data_id') && (
                       <Button
                         size="xs"
                         variant="transparent"
@@ -868,9 +848,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     )}
                   </Group>
                 }
-                value={formik.values.tvg_id}
-                onChange={formik.handleChange}
-                error={formik.errors.tvg_id ? formik.touched.tvg_id : ''}
+                {...register('tvg_id')}
+                error={errors.tvg_id?.message}
                 size="xs"
               />
 
@@ -878,13 +857,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 id="tvc_guide_stationid"
                 name="tvc_guide_stationid"
                 label="Gracenote StationId"
-                value={formik.values.tvc_guide_stationid}
-                onChange={formik.handleChange}
-                error={
-                  formik.errors.tvc_guide_stationid
-                    ? formik.touched.tvc_guide_stationid
-                    : ''
-                }
+                {...register('tvc_guide_stationid')}
+                error={errors.tvc_guide_stationid?.message}
                 size="xs"
               />
 
@@ -904,9 +878,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         <Button
                           size="xs"
                           variant="transparent"
-                          onClick={() =>
-                            formik.setFieldValue('epg_data_id', null)
-                          }
+                          onClick={() => setValue('epg_data_id', null)}
                         >
                           Use Dummy
                         </Button>
@@ -933,7 +905,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                     }
                     readOnly
                     value={(() => {
-                      const tvg = tvgsById[formik.values.epg_data_id];
+                      const tvg = tvgsById[watch('epg_data_id')];
                       const epgSource = tvg && epgs[tvg.epg_source];
                       const tvgLabel = tvg ? tvg.name || tvg.id : '';
                       if (epgSource && tvgLabel) {
@@ -953,7 +925,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                           color="white"
                           onClick={(e) => {
                             e.stopPropagation();
-                            formik.setFieldValue('epg_data_id', null);
+                            setValue('epg_data_id', null);
                           }}
                           title="Create new group"
                           size="small"
@@ -1012,12 +984,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             size="xs"
                             onClick={() => {
                               if (filteredTvgs[index].id == '0') {
-                                formik.setFieldValue('epg_data_id', null);
+                                setValue('epg_data_id', null);
                               } else {
-                                formik.setFieldValue(
-                                  'epg_data_id',
-                                  filteredTvgs[index].id
-                                );
+                                setValue('epg_data_id', filteredTvgs[index].id);
                                 // Also update selectedEPG to match the EPG source of the selected tvg
                                 if (filteredTvgs[index].epg_source) {
                                   setSelectedEPG(
@@ -1047,11 +1016,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
             <Button
               type="submit"
               variant="default"
-              disabled={formik.isSubmitting}
-              loading={formik.isSubmitting}
+              disabled={isSubmitting}
+              loading={isSubmitting}
               loaderProps={{ type: 'dots' }}
             >
-              {formik.isSubmitting ? 'Saving...' : 'Submit'}
+              {isSubmitting ? 'Saving...' : 'Submit'}
             </Button>
           </Flex>
         </form>

@@ -236,12 +236,8 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Add annotation for association counts"""
-        from django.db.models import Count
-        return ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
-        )
+        """Return channel groups with prefetched relations for efficient counting"""
+        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -277,15 +273,20 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="cleanup")
     def cleanup_unused_groups(self, request):
         """Delete all channel groups with no channels or M3U account associations"""
-        from django.db.models import Count
+        from django.db.models import Q, Exists, OuterRef
 
-        # Find groups with no channels and no M3U account associations
+        # Find groups with no channels and no M3U account associations using Exists subqueries
+        from .models import Channel, ChannelGroupM3UAccount
+
+        has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
+        has_accounts = ChannelGroupM3UAccount.objects.filter(channel_group_id=OuterRef('pk'))
+
         unused_groups = ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
+            has_channels=Exists(has_channels),
+            has_accounts=Exists(has_accounts)
         ).filter(
-            channel_count=0,
-            m3u_account_count=0
+            has_channels=False,
+            has_accounts=False
         )
 
         deleted_count = unused_groups.count()
