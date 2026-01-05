@@ -654,12 +654,26 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 if id(relation.movie) in created_movies:
                     relation.movie = created_movies[id(relation.movie)]
 
-            # Handle relations
-            if relations_to_create:
-                M3UMovieRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
+            # Also update relations_to_update to reference saved movies
+            for relation in relations_to_update:
+                if id(relation.movie) in created_movies:
+                    relation.movie = created_movies[id(relation.movie)]
 
-            if relations_to_update:
-                M3UMovieRelation.objects.bulk_update(relations_to_update, [
+            # Filter out relations with unsaved movies (no PK)
+            valid_relations_to_create = [r for r in relations_to_create if r.movie.pk is not None]
+            valid_relations_to_update = [r for r in relations_to_update if r.movie.pk is not None]
+
+            if len(valid_relations_to_create) < len(relations_to_create):
+                logger.warning(f"Skipping {len(relations_to_create) - len(valid_relations_to_create)} movie relations with unsaved movies")
+            if len(valid_relations_to_update) < len(relations_to_update):
+                logger.warning(f"Skipping {len(relations_to_update) - len(valid_relations_to_update)} movie relation updates with unsaved movies")
+
+            # Handle relations
+            if valid_relations_to_create:
+                M3UMovieRelation.objects.bulk_create(valid_relations_to_create, ignore_conflicts=True)
+
+            if valid_relations_to_update:
+                M3UMovieRelation.objects.bulk_update(valid_relations_to_update, [
                     'movie', 'category', 'container_extension', 'custom_properties', 'last_seen'
                 ])
 
@@ -985,12 +999,26 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 if id(relation.series) in created_series:
                     relation.series = created_series[id(relation.series)]
 
-            # Handle relations
-            if relations_to_create:
-                M3USeriesRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
+            # Also update relations_to_update to reference saved series
+            for relation in relations_to_update:
+                if id(relation.series) in created_series:
+                    relation.series = created_series[id(relation.series)]
 
-            if relations_to_update:
-                M3USeriesRelation.objects.bulk_update(relations_to_update, [
+            # Filter out relations with unsaved series (no PK)
+            valid_relations_to_create = [r for r in relations_to_create if r.series.pk is not None]
+            valid_relations_to_update = [r for r in relations_to_update if r.series.pk is not None]
+
+            if len(valid_relations_to_create) < len(relations_to_create):
+                logger.warning(f"Skipping {len(relations_to_create) - len(valid_relations_to_create)} series relations with unsaved series")
+            if len(valid_relations_to_update) < len(relations_to_update):
+                logger.warning(f"Skipping {len(relations_to_update) - len(valid_relations_to_update)} series relation updates with unsaved series")
+
+            # Handle relations
+            if valid_relations_to_create:
+                M3USeriesRelation.objects.bulk_create(valid_relations_to_create, ignore_conflicts=True)
+
+            if valid_relations_to_update:
+                M3USeriesRelation.objects.bulk_update(valid_relations_to_update, [
                     'series', 'category', 'custom_properties', 'last_seen'
                 ])
 
