@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
 - Fixed onboarding message appearing in the Channels Table when filtered results are empty. The onboarding message now only displays when there are no channels created at all, not when channels exist but are filtered out by current filters.
 - Fixed `M3UMovieRelation.get_stream_url()` and `M3UEpisodeRelation.get_stream_url()` to use XC client's `_normalize_url()` method instead of simple `rstrip('/')`. This properly handles malformed M3U account URLs (e.g., containing `/player_api.php` or query parameters) before constructing VOD stream endpoints, matching behavior of live channel URL building. (Closes #722)
+- Fixed bulk_create and bulk_update errors during VOD content refresh by pre-checking object existence with optimized bulk queries (3 queries total instead of N per batch) before creating new objects. This ensures all movie/series objects have primary keys before relation operations, preventing "prohibited to prevent data loss due to unsaved related object" errors. (Fixes #813)
 
 ## [0.16.0] - 2026-01-04
 
