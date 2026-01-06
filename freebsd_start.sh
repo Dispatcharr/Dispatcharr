@@ -77,10 +77,15 @@ configure_variables() {
   POSTGRES_DB="dispatcharr"
   POSTGRES_USER="dispatch"
   POSTGRES_PASSWORD="secret"
+  POSTGRES_HOST="localhost"
   NGINX_HTTP_PORT="9191"
   WEBSOCKET_PORT="8001"
   GUNICORN_SOCKET="/var/run/dispatcharr/dispatcharr.sock"
-  PYTHON_BIN=$(command -v python3) || true
+  # defaults for Gunicorn/celery/etc
+  DISPATCHARR_WORKERS="4"
+  DISPATCHARR_TIMEOUT="300"
+  DJANGO_SECRET_KEY="freebsd-install-temp-key-change-in-production"
+  PYTHON_BIN=$(command -v python3 || true)
   RC_DIR="/usr/local/etc/rc.d"
   NGINX_CONFD="/usr/local/etc/nginx"
 }
@@ -113,10 +118,11 @@ install_packages() {
     bash \
     gmake
 
-  # Install Python packages via pip for better compatibility
-  if ! pkg info -e py311-gunicorn; then
+  # Install Gunicorn via pip if not provided by pkg (use configured python)
+  PY_PIP_BIN="${PYTHON_BIN:-python3}"
+  if ! pkg info -e py311-gunicorn >/dev/null 2>&1; then
     echo ">>> Installing Gunicorn via pip..."
-    python3.11 -m pip install --break-system-packages gunicorn
+    "${PY_PIP_BIN}" -m pip install --break-system-packages gunicorn || true
   fi
 
   echo ">>> Enabling and starting PostgreSQL..."
@@ -156,7 +162,7 @@ create_dispatcharr_user() {
   fi
   if ! pw user show "$DISPATCH_USER" >/dev/null 2>&1; then
     # FreeBSD's pw command: -m creates home, -d specifies home dir, -s shell, -g primary group
-    pw useradd "$DISPATCH_USER" -g "$DISPATCH_GROUP" -s /bin/sh -m -d /usr/local/dispatcharr -w no
+    pw useradd "$DISPATCH_USER" -g "$DISPATCH_GROUP" -s /bin/sh -m -d "$APP_DIR" -w no
   fi
 }
 
@@ -168,31 +174,31 @@ setup_postgresql() {
   echo ">>> Checking PostgreSQL database and user..."
 
   # Wait for PostgreSQL to be ready (use TCP or check /tmp for socket)
-  until pg_isready -h localhost >/dev/null 2>&1; do
+  until pg_isready -h "${POSTGRES_HOST}" >/dev/null 2>&1; do
     echo "Waiting for PostgreSQL to start..."
     sleep 2
   done
 
-  db_exists=$(su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='$POSTGRES_DB'\"")
+  db_exists=$(su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'\"")
   if [ "$db_exists" != "1" ]; then
     echo ">>> Creating database '${POSTGRES_DB}'..."
-    su - postgres -c "createdb $POSTGRES_DB"
+    su - postgres -c "createdb ${POSTGRES_DB}"
   else
     echo ">>> Database '${POSTGRES_DB}' already exists, skipping creation."
   fi
 
-  user_exists=$(su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$POSTGRES_USER'\"")
+  user_exists=$(su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER}'\"")
   if [ "$user_exists" != "1" ]; then
     echo ">>> Creating user '${POSTGRES_USER}'..."
-    su - postgres -c "psql -c \"CREATE USER $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';\""
+    su - postgres -c "psql -c \"CREATE USER ${POSTGRES_USER} WITH PASSWORD '${POSTGRES_PASSWORD}';\""
   else
     echo ">>> User '${POSTGRES_USER}' already exists, skipping creation."
   fi
 
   echo ">>> Granting privileges..."
-  su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE $POSTGRES_DB TO $POSTGRES_USER;\""
-  su - postgres -c "psql -c \"ALTER DATABASE $POSTGRES_DB OWNER TO $POSTGRES_USER;\""
-  su - postgres -c "psql -d $POSTGRES_DB -c \"ALTER SCHEMA public OWNER TO $POSTGRES_USER;\""
+  su - postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};\""
+  su - postgres -c "psql -c \"ALTER DATABASE ${POSTGRES_DB} OWNER TO ${POSTGRES_USER};\""
+  su - postgres -c "psql -d ${POSTGRES_DB} -c \"ALTER SCHEMA public OWNER TO ${POSTGRES_USER};\""
 }
 
 ##############################################################################
@@ -214,14 +220,14 @@ clone_dispatcharr_repo() {
       git fetch origin
       git reset --hard HEAD
       git fetch origin
-      git checkout $DISPATCH_BRANCH
-      git pull origin $DISPATCH_BRANCH
+      git checkout ${DISPATCH_BRANCH}
+      git pull origin ${DISPATCH_BRANCH}
     "
   else
     echo ">>> Cloning Dispatcharr repo into ${APP_DIR}..."
     rm -rf "$APP_DIR"/*
     chown "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR"
-    su - "$DISPATCH_USER" -c "git clone -b $DISPATCH_BRANCH https://github.com/Dispatcharr/Dispatcharr.git $APP_DIR"
+    su - "$DISPATCH_USER" -c "git clone -b ${DISPATCH_BRANCH} https://github.com/Dispatcharr/Dispatcharr.git ${APP_DIR}"
   fi
 }
 
@@ -231,15 +237,14 @@ clone_dispatcharr_repo() {
 
 setup_python_env() {
   echo ">>> Setting up Python virtual environment..."
+  PY_BIN="${PYTHON_BIN:-python3}"
   su - "$DISPATCH_USER" -c "
     cd '$APP_DIR'
-    ${PYTHON_BIN} -m venv --system-site-packages env
+    ${PY_BIN} -m venv --system-site-packages env
     env/bin/pip install --upgrade pip
   "
 
   # Create FreeBSD-specific requirements file
-  # Remove packages installed via pkg (torch, gevent, cryptography, regex), Linux-specific wheel URLs,
-  # and ML packages that require Rust/maturin (not available on FreeBSD by default)
   echo ">>> Creating FreeBSD-specific requirements.txt..."
   su - "$DISPATCH_USER" -c "
     cd '$APP_DIR'
@@ -252,7 +257,7 @@ setup_python_env() {
     grep -v '^transformers' | \
     grep -v '^huggingface' | \
     grep -v '^regex ' > requirements-freebsd.txt
-    env/bin/pip install -r requirements-freebsd.txt
+    env/bin/pip install -r requirements-freebsd.txt || true
   "
 
   # Link ffmpeg for the venv
@@ -305,11 +310,11 @@ django_migrate_collectstatic() {
   echo ">>> Running Django migrations & collectstatic..."
   su - "$DISPATCH_USER" -c "
     cd '$APP_DIR'
-    export POSTGRES_DB='$POSTGRES_DB'
-    export POSTGRES_USER='$POSTGRES_USER'
-    export POSTGRES_PASSWORD='$POSTGRES_PASSWORD'
-    export POSTGRES_HOST='localhost'
-    export DJANGO_SECRET_KEY='freebsd-install-temp-key-change-in-production'
+    export POSTGRES_DB='${POSTGRES_DB}'
+    export POSTGRES_USER='${POSTGRES_USER}'
+    export POSTGRES_PASSWORD='${POSTGRES_PASSWORD}'
+    export POSTGRES_HOST='${POSTGRES_HOST}'
+    export DJANGO_SECRET_KEY='${DJANGO_SECRET_KEY}'
     env/bin/python manage.py migrate --noinput || echo 'Migrate failed, continuing...'
     env/bin/python manage.py collectstatic --noinput || echo 'Collectstatic failed, continuing...'
   "
@@ -322,7 +327,10 @@ django_migrate_collectstatic() {
 configure_services() {
   echo ">>> Creating FreeBSD rc.d service scripts..."
 
-  # Gunicorn rc.d script
+  # We'll write template files with placeholders and then substitute
+  # placeholders to ensure other runtime variables like $name remain intact.
+
+  # Gunicorn rc.d script template
   cat >"$RC_DIR/dispatcharr" <<'EOF'
 #!/bin/sh
 #
@@ -333,11 +341,11 @@ configure_services() {
 . /etc/rc.subr
 
 # Environment variables
-export DJANGO_SECRET_KEY="freebsd-install-temp-key-change-in-production"
-export POSTGRES_DB="dispatcharr"
-export POSTGRES_USER="dispatch"
-export POSTGRES_PASSWORD="secret"
-export POSTGRES_HOST="localhost"
+export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+export POSTGRES_DB="__POSTGRES_DB__"
+export POSTGRES_USER="__POSTGRES_USER__"
+export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+export POSTGRES_HOST="__POSTGRES_HOST__"
 
 name="dispatcharr"
 rcvar="dispatcharr_enable"
@@ -347,12 +355,12 @@ load_rc_config $name
 : ${dispatcharr_enable:="NO"}
 : ${dispatcharr_user:="dispatcharr"}
 : ${dispatcharr_group:="dispatcharr"}
-: ${dispatcharr_appdir:="/usr/local/dispatcharr"}
-: ${dispatcharr_socket:="/var/run/dispatcharr/dispatcharr.sock"}
-: ${dispatcharr_workers:="4"}
-: ${dispatcharr_timeout:="300"}
+: ${dispatcharr_appdir:="__APP_DIR__"}
+: ${dispatcharr_socket:="__GUNICORN_SOCKET__"}
+: ${dispatcharr_workers:="__WORKERS__"}
+: ${dispatcharr_timeout:="__TIMEOUT__"}
 
-pidfile="/var/run/dispatcharr/${name}.pid"
+pidfile="__PID_DIR__/dispatcharr.pid"
 command="${dispatcharr_appdir}/env/bin/gunicorn"
 command_args="
     --workers=${dispatcharr_workers}
@@ -376,7 +384,7 @@ dispatcharr_prestart()
     chown ${dispatcharr_user}:${dispatcharr_group} $(dirname ${pidfile})
 
     # Wait for PostgreSQL
-    until pg_isready -h localhost >/dev/null 2>&1; do
+    until pg_isready -h __POSTGRES_HOST__ >/dev/null 2>&1; do
         echo "Waiting for PostgreSQL..."
         sleep 1
     done
@@ -387,7 +395,7 @@ dispatcharr_prestart()
 run_rc_command "$1"
 EOF
 
-  # Celery Worker rc.d script
+  # Celery Worker rc.d script template
   cat >"$RC_DIR/dispatcharr_celery" <<'EOF'
 #!/bin/sh
 #
@@ -398,11 +406,11 @@ EOF
 . /etc/rc.subr
 
 # Environment variables
-export DJANGO_SECRET_KEY="freebsd-install-temp-key-change-in-production"
-export POSTGRES_DB="dispatcharr"
-export POSTGRES_USER="dispatch"
-export POSTGRES_PASSWORD="secret"
-export POSTGRES_HOST="localhost"
+export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+export POSTGRES_DB="__POSTGRES_DB__"
+export POSTGRES_USER="__POSTGRES_USER__"
+export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+export POSTGRES_HOST="__POSTGRES_HOST__"
 
 name="dispatcharr_celery"
 rcvar="dispatcharr_celery_enable"
@@ -411,9 +419,9 @@ load_rc_config $name
 
 : ${dispatcharr_celery_enable:="NO"}
 : ${dispatcharr_celery_user:="dispatcharr"}
-: ${dispatcharr_celery_appdir:="/usr/local/dispatcharr"}
+: ${dispatcharr_celery_appdir:="__APP_DIR__"}
 
-pidfile="/var/run/dispatcharr/${name}.pid"
+pidfile="__PID_DIR__/dispatcharr_celery.pid"
 command="${dispatcharr_celery_appdir}/env/bin/celery"
 command_args="-A dispatcharr worker -l info --pidfile=${pidfile}"
 required_files="${dispatcharr_celery_appdir}/dispatcharr/celery.py"
@@ -430,7 +438,7 @@ dispatcharr_celery_prestart()
 run_rc_command "$1"
 EOF
 
-  # Celery Beat rc.d script
+  # Celery Beat rc.d script template
   cat >"$RC_DIR/dispatcharr_celerybeat" <<'EOF'
 #!/bin/sh
 #
@@ -441,11 +449,11 @@ EOF
 . /etc/rc.subr
 
 # Environment variables
-export DJANGO_SECRET_KEY="freebsd-install-temp-key-change-in-production"
-export POSTGRES_DB="dispatcharr"
-export POSTGRES_USER="dispatch"
-export POSTGRES_PASSWORD="secret"
-export POSTGRES_HOST="localhost"
+export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+export POSTGRES_DB="__POSTGRES_DB__"
+export POSTGRES_USER="__POSTGRES_USER__"
+export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+export POSTGRES_HOST="__POSTGRES_HOST__"
 
 name="dispatcharr_celerybeat"
 rcvar="dispatcharr_celerybeat_enable"
@@ -454,9 +462,9 @@ load_rc_config $name
 
 : ${dispatcharr_celerybeat_enable:="NO"}
 : ${dispatcharr_celerybeat_user:="dispatcharr"}
-: ${dispatcharr_celerybeat_appdir:="/usr/local/dispatcharr"}
+: ${dispatcharr_celerybeat_appdir:="__APP_DIR__"}
 
-pidfile="/var/run/dispatcharr/${name}.pid"
+pidfile="__PID_DIR__/dispatcharr_celerybeat.pid"
 command="${dispatcharr_celerybeat_appdir}/env/bin/celery"
 command_args="-A dispatcharr beat -l info --pidfile=${pidfile}"
 required_files="${dispatcharr_celerybeat_appdir}/dispatcharr/celery.py"
@@ -473,7 +481,7 @@ dispatcharr_celerybeat_prestart()
 run_rc_command "$1"
 EOF
 
-  # Daphne rc.d script
+  # Daphne rc.d script template
   cat >"$RC_DIR/dispatcharr_daphne" <<'EOF'
 #!/bin/sh
 #
@@ -484,11 +492,11 @@ EOF
 . /etc/rc.subr
 
 # Environment variables
-export DJANGO_SECRET_KEY="freebsd-install-temp-key-change-in-production"
-export POSTGRES_DB="dispatcharr"
-export POSTGRES_USER="dispatch"
-export POSTGRES_PASSWORD="secret"
-export POSTGRES_HOST="localhost"
+export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+export POSTGRES_DB="__POSTGRES_DB__"
+export POSTGRES_USER="__POSTGRES_USER__"
+export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+export POSTGRES_HOST="__POSTGRES_HOST__"
 
 name="dispatcharr_daphne"
 rcvar="dispatcharr_daphne_enable"
@@ -497,10 +505,10 @@ load_rc_config $name
 
 : ${dispatcharr_daphne_enable:="NO"}
 : ${dispatcharr_daphne_user:="dispatcharr"}
-: ${dispatcharr_daphne_appdir:="/usr/local/dispatcharr"}
-: ${dispatcharr_daphne_port:="8001"}
+: ${dispatcharr_daphne_appdir:="__APP_DIR__"}
+: ${dispatcharr_daphne_port:="__WEBSOCKET_PORT__"}
 
-pidfile="/var/run/dispatcharr/${name}.pid"
+pidfile="__PID_DIR__/dispatcharr_daphne.pid"
 command="${dispatcharr_daphne_appdir}/env/bin/daphne"
 command_args="-b 0.0.0.0 -p ${dispatcharr_daphne_port} dispatcharr.asgi:application"
 required_files="${dispatcharr_daphne_appdir}/dispatcharr/asgi.py"
@@ -516,6 +524,23 @@ dispatcharr_daphne_prestart()
 
 run_rc_command "$1"
 EOF
+
+  # Substitute placeholders with configured values. Use BSD sed compatible -i ''.
+  for f in "$RC_DIR/dispatcharr" "$RC_DIR/dispatcharr_celery" "$RC_DIR/dispatcharr_celerybeat" "$RC_DIR/dispatcharr_daphne"; do
+    sed -i '' "s|__DJANGO_SECRET_KEY__|${DJANGO_SECRET_KEY}|g" "$f"
+    sed -i '' "s|__POSTGRES_DB__|${POSTGRES_DB}|g" "$f"
+    sed -i '' "s|__POSTGRES_USER__|${POSTGRES_USER}|g" "$f"
+    sed -i '' "s|__POSTGRES_PASSWORD__|${POSTGRES_PASSWORD}|g" "$f"
+    sed -i '' "s|__POSTGRES_HOST__|${POSTGRES_HOST}|g" "$f"
+    sed -i '' "s|__APP_DIR__|${APP_DIR}|g" "$f"
+    sed -i '' "s|__GUNICORN_SOCKET__|${GUNICORN_SOCKET}|g" "$f"
+    sed -i '' "s|__WORKERS__|${DISPATCHARR_WORKERS}|g" "$f"
+    sed -i '' "s|__TIMEOUT__|${DISPATCHARR_TIMEOUT}|g" "$f"
+    sed -i '' "s|__WEBSOCKET_PORT__|${WEBSOCKET_PORT}|g" "$f"
+    # Use a PID dir variable; keep consistent with GUNICORN_SOCKET dirname
+    PID_DIR=$(dirname "${GUNICORN_SOCKET}")
+    sed -i '' "s|__PID_DIR__|${PID_DIR}|g" "$f"
+  done
 
   # Make scripts executable
   chmod +x "$RC_DIR/dispatcharr"
