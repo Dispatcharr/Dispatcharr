@@ -1,6 +1,6 @@
 # Work-in-progress to get a FreeBSD start script
 
-**Warning:** freebsd_start.sh should work but be sure env secrets
+**Warning:** freebsd_start.sh should work but be sure to edit the variables in the configure_variables() func
 
 # 🎬 Dispatcharr — Your Ultimate IPTV & Stream Management Companion
 <p align="center">
