@@ -1,10 +1,13 @@
+# Work-in-progress to get a FreeBSD start script
+
+**Warning:** freebsd_start.sh should work but be sure env secrets
+
 # 🎬 Dispatcharr — Your Ultimate IPTV & Stream Management Companion
 <p align="center">
   <img src="https://raw.githubusercontent.com/Dispatcharr/Dispatcharr/refs/heads/main/frontend/src/images/logo.png" height="200" alt="Dispatcharr Logo" />
 </p>
 
 ---
-
 ## 📖 What is Dispatcharr?
 
 Dispatcharr is an **open-source powerhouse** for managing IPTV streams and EPG data with elegance and control.\
