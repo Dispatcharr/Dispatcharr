@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed Channels table EPG column showing "Not Assigned" on initial load for users with large EPG datasets. Added `tvgsLoaded` flag to EPG store to track when EPG data has finished loading, ensuring the table waits for EPG data before displaying. EPG cells now show animated skeleton placeholders while loading instead of incorrectly showing "Not Assigned". (Fixes #810)
 - Fixed VOD profile connection count not being decremented when stream connection fails (timeout, 404, etc.), preventing profiles from reaching capacity limits and rejecting valid stream requests
 - Fixed React warning in Channel form by removing invalid `removeTrailingZeros` prop from NumberInput component
 - Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
