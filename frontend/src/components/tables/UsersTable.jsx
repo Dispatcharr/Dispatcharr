@@ -272,7 +272,7 @@ const UsersTable = () => {
             .filter((profile) => userProfiles.includes(profile.id))
             .map((profile) => profile.name);
           return (
-            <Group gap={4} wrap="wrap">
+            <Group gap={4} wrap="wrap" py={4}>
               {profileNames.length > 0 ? (
                 profileNames.map((name, index) => (
                   <Badge
