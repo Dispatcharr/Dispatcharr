@@ -141,6 +141,15 @@ const UsersTable = () => {
   /**
    * useMemo
    */
+  // Create a profile ID to name lookup map for efficient rendering
+  const profileIdToName = useMemo(() => {
+    const map = {};
+    Object.values(profiles).forEach((profile) => {
+      map[profile.id] = profile.name;
+    });
+    return map;
+  }, [profiles]);
+
   const columns = useMemo(
     () => [
       {
@@ -268,9 +277,9 @@ const UsersTable = () => {
         grow: true,
         cell: ({ getValue }) => {
           const userProfiles = getValue() || [];
-          const profileNames = Object.values(profiles)
-            .filter((profile) => userProfiles.includes(profile.id))
-            .map((profile) => profile.name);
+          const profileNames = userProfiles
+            .map((id) => profileIdToName[id])
+            .filter(Boolean); // Filter out any undefined values
           return (
             <Group gap={4} wrap="wrap" py={4}>
               {profileNames.length > 0 ? (
@@ -308,7 +317,7 @@ const UsersTable = () => {
         ),
       },
     ],
-    [theme, editUser, deleteUser, visiblePasswords, togglePasswordVisibility]
+    [theme, editUser, deleteUser, visiblePasswords, togglePasswordVisibility, profileIdToName]
   );
 
   const closeUserForm = () => {
