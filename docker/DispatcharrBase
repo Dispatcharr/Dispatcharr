@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
-    python3.13 python3.13-dev python3.13-venv \
+    python3.13 python3.13-dev python3.13-venv libpython3.13 \
     python-is-python3 python3-pip \
     libpcre3 libpcre3-dev libpq-dev procps pciutils \
     nginx streamlink comskip \
@@ -34,13 +34,14 @@ RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir build && \
     cd numpy-*/ && \
     $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
     mv dist/*.whl /opt/ && \
-    cd / && rm -rf /tmp/numpy-*
+    cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz && \
+    $VIRTUAL_ENV/bin/pip uninstall -y build
 
 # --- Clean up build dependencies to reduce image size ---
-RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev ninja-build && \
+RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev libpcre3-dev python3.13-dev ninja-build && \
     apt-get autoremove -y --purge && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
