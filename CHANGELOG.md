@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution.
 - VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
 - Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
+- Stats and VOD pages refactored for clearer separation of concerns: extracted Stream/VOD connection cards (StreamConnectionCard, VodConnectionCard, VODCard, SeriesCard), moved page logic into dedicated utils, and lazy-loaded heavy components with ErrorBoundary fallbacks to improve readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
 
 ### Fixed
 

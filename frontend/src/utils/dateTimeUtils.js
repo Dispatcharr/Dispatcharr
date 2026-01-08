@@ -14,6 +14,8 @@ dayjs.extend(timezone);
 
 export const convertToMs = (dateTime) => dayjs(dateTime).valueOf();
 
+export const convertToSec = (dateTime) => dayjs(dateTime).unix();
+
 export const initializeTime = (dateTime) => dayjs(dateTime);
 
 export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
@@ -27,6 +29,9 @@ export const isSame = (date1, date2, unit = 'day') =>
 
 export const add = (dateTime, value, unit) => dayjs(dateTime).add(value, unit);
 
+export const subtract = (dateTime, value, unit) =>
+  dayjs(dateTime).subtract(value, unit);
+
 export const diff = (date1, date2, unit = 'millisecond') =>
   dayjs(date1).diff(date2, unit);
 
@@ -34,6 +39,10 @@ export const format = (dateTime, formatStr) =>
   dayjs(dateTime).format(formatStr);
 
 export const getNow = () => dayjs();
+
+export const toFriendlyDuration = (dateTime, unit) => dayjs.duration(dateTime, unit).humanize();
+
+export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
 
 export const getNowMs = () => Date.now();
 
