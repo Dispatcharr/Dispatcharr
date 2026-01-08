@@ -5,6 +5,7 @@ const useEPGsStore = create((set) => ({
   epgs: {},
   tvgs: [],
   tvgsById: {},
+  tvgsLoaded: false,
   isLoading: false,
   error: null,
   refreshProgress: {},
@@ -36,11 +37,16 @@ const useEPGsStore = create((set) => ({
           acc[tvg.id] = tvg;
           return acc;
         }, {}),
+        tvgsLoaded: true,
         isLoading: false,
       });
     } catch (error) {
       console.error('Failed to fetch tvgs:', error);
-      set({ error: 'Failed to load tvgs.', isLoading: false });
+      set({
+        error: 'Failed to load tvgs.',
+        tvgsLoaded: true,
+        isLoading: false,
+      });
     }
   },
 

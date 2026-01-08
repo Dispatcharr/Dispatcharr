@@ -15,6 +15,7 @@ DATA_DIRS=(
 APP_DIRS=(
     "/app/logo_cache"
     "/app/media"
+    "/app/static"
 )
 
 # Create all directories

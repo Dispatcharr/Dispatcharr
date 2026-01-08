@@ -369,7 +369,8 @@ const LiveGroupFilter = ({
                           if (
                             group.custom_properties?.custom_epg_id !==
                               undefined ||
-                            group.custom_properties?.force_dummy_epg
+                            group.custom_properties?.force_dummy_epg ||
+                            group.custom_properties?.force_epg_selected
                           ) {
                             selectedValues.push('force_epg');
                           }
@@ -432,23 +433,20 @@ const LiveGroupFilter = ({
 
                                 // Handle force_epg
                                 if (selectedOptions.includes('force_epg')) {
-                                  // Migrate from old force_dummy_epg if present
+                                  // Set default to force_dummy_epg if no EPG settings exist yet
                                   if (
-                                    newCustomProps.force_dummy_epg &&
-                                    newCustomProps.custom_epg_id === undefined
+                                    newCustomProps.custom_epg_id ===
+                                      undefined &&
+                                    !newCustomProps.force_dummy_epg
                                   ) {
-                                    // Migrate: force_dummy_epg=true becomes custom_epg_id=null
-                                    newCustomProps.custom_epg_id = null;
-                                    delete newCustomProps.force_dummy_epg;
-                                  } else if (
-                                    newCustomProps.custom_epg_id === undefined
-                                  ) {
-                                    // New configuration: initialize with null (no EPG/default dummy)
-                                    newCustomProps.custom_epg_id = null;
+                                    // Default to "No EPG (Disabled)"
+                                    newCustomProps.force_dummy_epg = true;
                                   }
                                 } else {
-                                  // Only remove custom_epg_id when deselected
+                                  // Remove all EPG settings when deselected
                                   delete newCustomProps.custom_epg_id;
+                                  delete newCustomProps.force_dummy_epg;
+                                  delete newCustomProps.force_epg_selected;
                                 }
 
                                 // Handle group_override
@@ -1124,7 +1122,8 @@ const LiveGroupFilter = ({
 
                       {/* Show EPG selector when force_epg is selected */}
                       {(group.custom_properties?.custom_epg_id !== undefined ||
-                        group.custom_properties?.force_dummy_epg) && (
+                        group.custom_properties?.force_dummy_epg ||
+                        group.custom_properties?.force_epg_selected) && (
                         <Tooltip
                           label="Force a specific EPG source for all auto-synced channels in this group. For dummy EPGs, all channels will share the same EPG data. For regular EPG sources (XMLTV, Schedules Direct), channels will be matched by their tvg_id within that source. Select 'No EPG' to disable EPG assignment."
                           withArrow
@@ -1133,44 +1132,90 @@ const LiveGroupFilter = ({
                             label="EPG Source"
                             placeholder="No EPG (Disabled)"
                             value={(() => {
-                              // Handle migration from force_dummy_epg
+                              // Show custom EPG if set
                               if (
                                 group.custom_properties?.custom_epg_id !==
-                                undefined
+                                  undefined &&
+                                group.custom_properties?.custom_epg_id !== null
                               ) {
-                                // Convert to string, use '0' for null/no EPG
-                                return group.custom_properties.custom_epg_id ===
-                                  null
-                                  ? '0'
-                                  : group.custom_properties.custom_epg_id.toString();
-                              } else if (
-                                group.custom_properties?.force_dummy_epg
-                              ) {
-                                // Show "No EPG" for old force_dummy_epg configs
+                                return group.custom_properties.custom_epg_id.toString();
+                              }
+                              // Show "No EPG" if force_dummy_epg is set
+                              if (group.custom_properties?.force_dummy_epg) {
                                 return '0';
                               }
-                              return '0';
+                              // Otherwise show empty/placeholder
+                              return null;
                             })()}
                             onChange={(value) => {
-                              // Convert back: '0' means no EPG (null)
-                              const newValue =
-                                value === '0' ? null : parseInt(value);
-                              setGroupStates(
-                                groupStates.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
+                              if (value === '0') {
+                                // "No EPG (Disabled)" selected - use force_dummy_epg
+                                setGroupStates(
+                                  groupStates.map((state) => {
+                                    if (
+                                      state.channel_group ===
+                                      group.channel_group
+                                    ) {
+                                      const newProps = {
                                         ...state.custom_properties,
-                                        custom_epg_id: newValue,
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
+                                      };
+                                      delete newProps.custom_epg_id;
+                                      delete newProps.force_epg_selected;
+                                      newProps.force_dummy_epg = true;
+                                      return {
+                                        ...state,
+                                        custom_properties: newProps,
+                                      };
+                                    }
+                                    return state;
+                                  })
+                                );
+                              } else if (value) {
+                                // Specific EPG source selected
+                                const epgId = parseInt(value);
+                                setGroupStates(
+                                  groupStates.map((state) => {
+                                    if (
+                                      state.channel_group ===
+                                      group.channel_group
+                                    ) {
+                                      const newProps = {
+                                        ...state.custom_properties,
+                                      };
+                                      newProps.custom_epg_id = epgId;
+                                      delete newProps.force_dummy_epg;
+                                      delete newProps.force_epg_selected;
+                                      return {
+                                        ...state,
+                                        custom_properties: newProps,
+                                      };
+                                    }
+                                    return state;
+                                  })
+                                );
+                              } else {
+                                // Cleared - remove all EPG settings
+                                setGroupStates(
+                                  groupStates.map((state) => {
+                                    if (
+                                      state.channel_group ===
+                                      group.channel_group
+                                    ) {
+                                      const newProps = {
+                                        ...state.custom_properties,
+                                      };
+                                      delete newProps.custom_epg_id;
+                                      delete newProps.force_dummy_epg;
+                                      delete newProps.force_epg_selected;
+                                      return {
+                                        ...state,
+                                        custom_properties: newProps,
+                                      };
+                                    }
+                                    return state;
+                                  })
+                                );
+                              }
                             }}
                             data={[
                               { value: '0', label: 'No EPG (Disabled)' },

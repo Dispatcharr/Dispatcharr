@@ -184,13 +184,13 @@ jobs:
           echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
 
           # GitHub Container Registry manifests
-          # latest tag
+          # Create one manifest with both latest and version tags
           docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
             --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
             --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=latest" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
             --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
             --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
             --annotation "index:org.opencontainers.image.licenses=See repository" \
@@ -200,34 +200,17 @@ jobs:
             --annotation "index:maintainer=${{ github.actor }}" \
             --annotation "index:build_version=Dispatcharr version: ${VERSION} Build date: ${TIMESTAMP}" \
             --tag ghcr.io/${OWNER}/${REPO}:latest \
-            ghcr.io/${OWNER}/${REPO}:latest-amd64 ghcr.io/${OWNER}/${REPO}:latest-arm64
+            --tag ghcr.io/${OWNER}/${REPO}:${VERSION} \
+            ghcr.io/${OWNER}/${REPO}:${VERSION}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-arm64
 
-          # version tag
+          # Docker Hub manifests
+          # Create one manifest with both latest and version tags
           docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
             --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
             --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.version=${VERSION}" \
-            --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "index:org.opencontainers.image.licenses=See repository" \
-            --annotation "index:org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/" \
-            --annotation "index:org.opencontainers.image.vendor=${OWNER}" \
-            --annotation "index:org.opencontainers.image.authors=${{ github.actor }}" \
-            --annotation "index:maintainer=${{ github.actor }}" \
-            --annotation "index:build_version=Dispatcharr version: ${VERSION} Build date: ${TIMESTAMP}" \
-            --tag ghcr.io/${OWNER}/${REPO}:${VERSION} \
-            ghcr.io/${OWNER}/${REPO}:${VERSION}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-arm64
-
-          # Docker Hub manifests
-          # latest tag
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
-            --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
-            --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=latest" \
             --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
             --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
             --annotation "index:org.opencontainers.image.licenses=See repository" \
@@ -237,23 +220,6 @@ jobs:
             --annotation "index:maintainer=${{ github.actor }}" \
             --annotation "index:build_version=Dispatcharr version: ${VERSION} Build date: ${TIMESTAMP}" \
             --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:latest-arm64
-
-          # version tag
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
-            --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
-            --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=${VERSION}" \
-            --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "index:org.opencontainers.image.licenses=See repository" \
-            --annotation "index:org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/" \
-            --annotation "index:org.opencontainers.image.vendor=${OWNER}" \
-            --annotation "index:org.opencontainers.image.authors=${{ github.actor }}" \
-            --annotation "index:maintainer=${{ github.actor }}" \
-            --annotation "index:build_version=Dispatcharr version: ${VERSION} Build date: ${TIMESTAMP}" \
             --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION} \
             docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-arm64
 

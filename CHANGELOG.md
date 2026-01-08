@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution.
+- VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
+- Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
+
+### Fixed
+
+- Fixed Channels table EPG column showing "Not Assigned" on initial load for users with large EPG datasets. Added `tvgsLoaded` flag to EPG store to track when EPG data has finished loading, ensuring the table waits for EPG data before displaying. EPG cells now show animated skeleton placeholders while loading instead of incorrectly showing "Not Assigned". (Fixes #810)
+- Fixed VOD profile connection count not being decremented when stream connection fails (timeout, 404, etc.), preventing profiles from reaching capacity limits and rejecting valid stream requests
+- Fixed React warning in Channel form by removing invalid `removeTrailingZeros` prop from NumberInput component
+- Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
+- Fixed onboarding message appearing in the Channels Table when filtered results are empty. The onboarding message now only displays when there are no channels created at all, not when channels exist but are filtered out by current filters.
+- Fixed `M3UMovieRelation.get_stream_url()` and `M3UEpisodeRelation.get_stream_url()` to use XC client's `_normalize_url()` method instead of simple `rstrip('/')`. This properly handles malformed M3U account URLs (e.g., containing `/player_api.php` or query parameters) before constructing VOD stream endpoints, matching behavior of live channel URL building. (Closes #722)
+- Fixed bulk_create and bulk_update errors during VOD content refresh by pre-checking object existence with optimized bulk queries (3 queries total instead of N per batch) before creating new objects. This ensures all movie/series objects have primary keys before relation operations, preventing "prohibited to prevent data loss due to unsaved related object" errors. Additionally fixed duplicate key constraint violations by treating TMDB/IMDB ID values of `0` or `'0'` as invalid (some providers use this to indicate "no ID"), converting them to NULL to prevent multiple items from incorrectly sharing the same ID. (Fixes #813)
+
+## [0.16.0] - 2026-01-04
+
 ### Added
 
 - Advanced filtering for Channels table: Filter menu now allows toggling disabled channels visibility (when a profile is selected) and filtering to show only empty channels without streams (Closes #182)
@@ -22,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Fixed event viewer arrow direction (previously inverted) — UI behavior corrected. - Thanks [@drnikcuk](https://github.com/drnikcuk) (Closes #772)
+- Region code options now intentionally include both `GB` (ISO 3166-1 standard) and `UK` (commonly used by EPG/XMLTV providers) to accommodate real-world EPG data variations. Many providers use `UK` in channel identifiers (e.g., `BBCOne.uk`) despite `GB` being the official ISO country code. Users should select the region code that matches their specific EPG provider's convention for optimal region-based EPG matching bonuses - Thanks [@bigpandaaaa](https://github.com/bigpandaaaa)
 - Channel number inputs in stream-to-channel creation modals no longer have a maximum value restriction, allowing users to enter any valid channel number supported by the database
 - Stream log parsing refactored to use factory pattern: Simplified `ChannelService.parse_and_store_stream_info()` to route parsing through specialized log parsers instead of inline program-specific logic (~150 lines of code removed)
 - Stream profile names in fixtures updated to use proper capitalization (ffmpeg → FFmpeg, streamlink → Streamlink)
@@ -43,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto Channel Sync Force EPG Source feature not properly forcing "No EPG" assignment - When selecting "Force EPG Source" > "No EPG (Disabled)", channels were still being auto-matched to EPG data instead of forcing dummy/no EPG. Now correctly sets `force_dummy_epg` flag to prevent unwanted EPG assignment. (Fixes #788)
 - VOD episode processing now properly handles season and episode numbers from APIs that return string values instead of integers, with comprehensive error logging to track data quality issues - Thanks [@patchy8736](https://github.com/patchy8736) (Fixes #770)
 - VOD episode-to-stream relations are now validated to ensure episodes have been saved to the database before creating relations, preventing integrity errors when bulk_create operations encounter conflicts - Thanks [@patchy8736](https://github.com/patchy8736)
 - VOD category filtering now correctly handles category names containing pipe "|" characters (e.g., "PL | BAJKI", "EN | MOVIES") by using `rsplit()` to split from the right instead of the left, ensuring the category type is correctly extracted as the last segment - Thanks [@Vitekant](https://github.com/Vitekant)
@@ -50,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - M3U and EPG manager page no longer crashes when a playlist references a deleted channel group (Fixes screen blank on navigation)
 - Stream validation now returns original URL instead of redirected URL to prevent issues with temporary redirect URLs that expire before clients can connect
 - XtreamCodes EPG limit parameter now properly converted to integer to prevent type errors when accessing EPG listings (Fixes #781)
+- Docker container file permissions: Django management commands (`migrate`, `collectstatic`) now run as the non-root user to prevent root-owned `__pycache__` and static files from causing permission issues - Thanks [@sethwv](https://github.com/sethwv)
 - Stream validation now continues with GET request if HEAD request fails due to connection issues - Thanks [@kvnnap](https://github.com/kvnnap) (Fixes #782)
 - XtreamCodes M3U files now correctly set `x-tvg-url` and `url-tvg` headers to reference XC EPG URL (`xmltv.php`) instead of standard EPG endpoint when downloaded via XC API (Fixes #629)
 

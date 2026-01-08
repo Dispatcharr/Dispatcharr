@@ -179,8 +179,8 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 # Channel Group
 #
 class ChannelGroupSerializer(serializers.ModelSerializer):
-    channel_count = serializers.IntegerField(read_only=True)
-    m3u_account_count = serializers.IntegerField(read_only=True)
+    channel_count = serializers.SerializerMethodField()
+    m3u_account_count = serializers.SerializerMethodField()
     m3u_accounts = ChannelGroupM3UAccountSerializer(
         many=True,
         read_only=True
@@ -189,6 +189,14 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChannelGroup
         fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
+
+    def get_channel_count(self, obj):
+        """Get count of channels in this group"""
+        return obj.channels.count()
+
+    def get_m3u_account_count(self, obj):
+        """Get count of M3U accounts associated with this group"""
+        return obj.m3u_accounts.count()
 
 
 class ChannelProfileSerializer(serializers.ModelSerializer):

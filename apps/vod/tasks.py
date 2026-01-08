@@ -410,10 +410,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
@@ -614,26 +614,41 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # First, create new movies and get their IDs
             created_movies = {}
             if movies_to_create:
-                Movie.objects.bulk_create(movies_to_create, ignore_conflicts=True)
+                # Bulk query to check which movies already exist
+                tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
+                imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
+                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
 
-                # Get the newly created movies with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (movie.name, movie.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = movie
+
+                # Check each movie against the bulk query results
+                movies_actually_created = []
                 for movie in movies_to_create:
-                    # Find the movie by its unique identifiers
-                    if movie.tmdb_id:
-                        db_movie = Movie.objects.filter(tmdb_id=movie.tmdb_id).first()
-                    elif movie.imdb_id:
-                        db_movie = Movie.objects.filter(imdb_id=movie.imdb_id).first()
-                    else:
-                        db_movie = Movie.objects.filter(
-                            name=movie.name,
-                            year=movie.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[movie.tmdb_id]
+                    elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[movie.imdb_id]
+                    elif not movie.tmdb_id and not movie.imdb_id:
+                        existing = existing_by_name_year.get((movie.name, movie.year))
 
-                    if db_movie:
-                        created_movies[id(movie)] = db_movie
+                    if existing:
+                        created_movies[id(movie)] = existing
+                    else:
+                        movies_actually_created.append(movie)
+                        created_movies[id(movie)] = movie
+
+                # Bulk create only movies that don't exist
+                if movies_actually_created:
+                    Movie.objects.bulk_create(movies_actually_created)
 
             # Update existing movies
             if movies_to_update:
@@ -649,12 +664,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         movie.logo = movie._logo_to_update
                         movie.save(update_fields=['logo'])
 
-            # Update relations to reference the correct movie objects
+            # Update relations to reference the correct movie objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.movie) in created_movies:
                     relation.movie = created_movies[id(relation.movie)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.movie) in created_movies:
+                    relation.movie = created_movies[id(relation.movie)]
+
+            # All movies now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3UMovieRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -724,10 +743,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year)
@@ -945,26 +964,41 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # First, create new series and get their IDs
             created_series = {}
             if series_to_create:
-                Series.objects.bulk_create(series_to_create, ignore_conflicts=True)
+                # Bulk query to check which series already exist
+                tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
+                imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
+                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
 
-                # Get the newly created series with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (series.name, series.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = series
+
+                # Check each series against the bulk query results
+                series_actually_created = []
                 for series in series_to_create:
-                    # Find the series by its unique identifiers
-                    if series.tmdb_id:
-                        db_series = Series.objects.filter(tmdb_id=series.tmdb_id).first()
-                    elif series.imdb_id:
-                        db_series = Series.objects.filter(imdb_id=series.imdb_id).first()
-                    else:
-                        db_series = Series.objects.filter(
-                            name=series.name,
-                            year=series.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[series.tmdb_id]
+                    elif series.imdb_id and series.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[series.imdb_id]
+                    elif not series.tmdb_id and not series.imdb_id:
+                        existing = existing_by_name_year.get((series.name, series.year))
 
-                    if db_series:
-                        created_series[id(series)] = db_series
+                    if existing:
+                        created_series[id(series)] = existing
+                    else:
+                        series_actually_created.append(series)
+                        created_series[id(series)] = series
+
+                # Bulk create only series that don't exist
+                if series_actually_created:
+                    Series.objects.bulk_create(series_actually_created)
 
             # Update existing series
             if series_to_update:
@@ -980,12 +1014,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         series.logo = series._logo_to_update
                         series.save(update_fields=['logo'])
 
-            # Update relations to reference the correct series objects
+            # Update relations to reference the correct series objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.series) in created_series:
                     relation.series = created_series[id(relation.series)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.series) in created_series:
+                    relation.series = created_series[id(relation.series)]
+
+            # All series now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3USeriesRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
