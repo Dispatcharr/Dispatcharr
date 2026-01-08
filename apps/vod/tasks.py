@@ -410,10 +410,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
@@ -743,10 +743,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year)
