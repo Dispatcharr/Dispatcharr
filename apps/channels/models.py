@@ -589,6 +589,11 @@ class ChannelGroupM3UAccount(models.Model):
         blank=True,
         help_text='Starting channel number for auto-created channels in this group'
     )
+    last_seen = models.DateTimeField(
+        default=datetime.now,
+        db_index=True,
+        help_text='Last time this group was seen in the M3U source during a refresh'
+    )
 
     class Meta:
         unique_together = ("channel_group", "m3u_account")
