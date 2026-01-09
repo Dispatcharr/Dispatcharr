@@ -119,6 +119,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "current_viewers",
             "updated_at",
             "last_seen",
+            "is_stale",
             "stream_profile_id",
             "is_custom",
             "channel_group",
@@ -155,7 +156,7 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChannelGroupM3UAccount
-        fields = ["m3u_accounts", "channel_group", "enabled", "auto_channel_sync", "auto_sync_channel_start", "custom_properties"]
+        fields = ["m3u_accounts", "channel_group", "enabled", "auto_channel_sync", "auto_sync_channel_start", "custom_properties", "is_stale", "last_seen"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

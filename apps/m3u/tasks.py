@@ -594,11 +594,13 @@ def process_groups(account, groups, scan_start_time=None):
 
                 existing_rel.custom_properties = updated_custom_props
                 existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
                 logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
             else:
                 # Update last_seen even if xc_id hasn't changed
                 existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
                 logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
         else:
@@ -614,6 +616,7 @@ def process_groups(account, groups, scan_start_time=None):
                     custom_properties=custom_props,
                     enabled=auto_enable_new_groups_live,
                     last_seen=scan_start_time,
+                    is_stale=False,
                 )
             )
 
@@ -624,7 +627,7 @@ def process_groups(account, groups, scan_start_time=None):
 
     # Bulk update existing relationships
     if relations_to_update:
-        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties', 'last_seen'])
+        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties', 'last_seen', 'is_stale'])
         logger.info(f"Updated {len(relations_to_update)} existing group relationships for account {account.id}")
 
 
@@ -831,6 +834,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
+                            "is_stale": False,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -866,10 +870,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         setattr(obj, key, value)
                     obj.last_seen = timezone.now()
                     obj.updated_at = timezone.now()  # Update timestamp only for changed streams
+                    obj.is_stale = False
                     streams_to_update.append(obj)
                 else:
                     # Always update last_seen, even if nothing else changed
                     obj.last_seen = timezone.now()
+                    obj.is_stale = False
                     # Don't update updated_at for unchanged streams
                     streams_to_update.append(obj)
 
@@ -880,6 +886,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 stream_props["updated_at"] = (
                     timezone.now()
                 )  # Set initial updated_at for new streams
+                stream_props["is_stale"] = False
                 streams_to_create.append(Stream(**stream_props))
 
         try:
@@ -891,7 +898,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1004,6 +1011,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
+                "is_stale": False,
             }
 
             if stream_hash not in stream_hashes:
@@ -1043,11 +1051,15 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties = stream_props["custom_properties"]
                 obj.updated_at = timezone.now()
 
+            # Always mark as not stale since we saw it in this refresh
+            obj.is_stale = False
+
             streams_to_update.append(obj)
         else:
             # New stream
             stream_props["last_seen"] = timezone.now()
             stream_props["updated_at"] = timezone.now()
+            stream_props["is_stale"] = False
             streams_to_create.append(Stream(**stream_props))
 
     try:
@@ -1059,7 +1071,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
                     batch_size=200
                 )
     except Exception as e:
@@ -2841,6 +2853,20 @@ def refresh_single_m3u_account(account_id):
         Stream.objects.filter(
             id=-1
         ).exists()  # This will never find anything but ensures DB sync
+
+        # Mark streams that weren't seen in this refresh as stale (pending deletion)
+        stale_stream_count = Stream.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
+
+        # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
+        stale_group_count = ChannelGroupM3UAccount.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_group_count} group relationships as stale for account {account_id}")
 
         # Now run cleanup
         streams_deleted = cleanup_streams(account_id, refresh_start_timestamp)

@@ -94,6 +94,11 @@ class Stream(models.Model):
         db_index=True,
     )
     last_seen = models.DateTimeField(db_index=True, default=datetime.now)
+    is_stale = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream is stale (not seen in recent refresh, pending deletion)"
+    )
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
     # Stream statistics fields
@@ -593,6 +598,11 @@ class ChannelGroupM3UAccount(models.Model):
         default=datetime.now,
         db_index=True,
         help_text='Last time this group was seen in the M3U source during a refresh'
+    )
+    is_stale = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text='Whether this group relationship is stale (not seen in recent refresh, pending deletion)'
     )
 
     class Meta:
