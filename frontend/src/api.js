@@ -336,6 +336,15 @@ export default class API {
         delete channelData.channel_number;
       }
 
+      // Add channel profile IDs based on current selection
+      const selectedProfileId = useChannelsStore.getState().selectedProfileId;
+      if (selectedProfileId && selectedProfileId !== '0') {
+        // Specific profile selected - add only to that profile
+        channelData.channel_profile_ids = [parseInt(selectedProfileId)];
+      }
+      // If selectedProfileId is '0' or not set, don't include channel_profile_ids
+      // which will trigger the backend's default behavior of adding to all profiles
+
       if (channel.logo_file) {
         // Must send FormData for file upload
         body = new FormData();
