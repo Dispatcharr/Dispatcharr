@@ -432,10 +432,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if channel_profile_id:
             try:
                 profile_id_int = int(channel_profile_id)
-                filters["channelprofilemembership__channel_profile_id"] = profile_id_int
 
                 if show_disabled_param is None:
+                    # Show only enabled channels: channels that have a membership
+                    # record for this profile with enabled=True
+                    # Default is DISABLED (channels without membership are hidden)
+                    filters["channelprofilemembership__channel_profile_id"] = profile_id_int
                     filters["channelprofilemembership__enabled"] = True
+                # If show_disabled is True, show all channels (no filtering needed)
+
             except (ValueError, TypeError):
                 # Ignore invalid profile id values
                 pass
