@@ -114,11 +114,9 @@ install_packages() {
     node \
     npm \
     ffmpeg \
-    streamlink \
     sudo \
     bash \
-    gmake \
-    procps
+    gmake
 
   echo ">>> Enabling and starting PostgreSQL..."
   sysrc -f /etc/rc.conf postgresql_enable="YES"
@@ -255,11 +253,11 @@ setup_python_env() {
     env/bin/pip install -r requirements-freebsd.txt || true
   "
 
-  # Install gunicorn and daphne in the virtual environment (like Debian)
-  echo ">>> Installing gunicorn and daphne in venv..."
+  # Install gunicorn, daphne, and streamlink in the virtual environment (like Debian)
+  echo ">>> Installing gunicorn, daphne, and streamlink in venv..."
   su - "$DISPATCH_USER" -c "
     cd '$APP_DIR'
-    env/bin/pip install gunicorn daphne
+    env/bin/pip install gunicorn daphne streamlink
   "
 
   # Link ffmpeg for the venv
