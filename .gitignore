@@ -19,3 +19,4 @@ debugpy*
 uwsgi.sock
 package-lock.json
 models
+build/
