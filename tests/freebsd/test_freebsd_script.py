@@ -590,6 +590,21 @@ class PlaceholderSubstitutionTests(unittest.TestCase):
             f"FIX: Add 'export {missing[0] if missing else 'VAR'}=\"value\"' to rc.d templates"
         )
 
+    def test_celery_broker_url_set(self):
+        """
+        TEST: CELERY_BROKER_URL is set in Celery service scripts.
+
+        WHY: Celery workers need CELERY_BROKER_URL to connect to Redis.
+
+        FIX: Add 'export CELERY_BROKER_URL="redis://localhost:6379/0"' to Celery rc.d scripts.
+        """
+        self.assertIn(
+            'CELERY_BROKER_URL', self.script_content,
+            f"MISSING CELERY_BROKER_URL:\n"
+            f"Celery workers require CELERY_BROKER_URL to connect to Redis.\n"
+            f"FIX: Add 'export CELERY_BROKER_URL=\"redis://localhost:6379/0\"' to Celery rc.d scripts"
+        )
+
 
 class NginxConfigTests(unittest.TestCase):
     """Test Nginx configuration generation for FreeBSD."""
@@ -697,6 +712,7 @@ class DirectoryStructureTests(unittest.TestCase):
             '/data/m3us',
             '/data/epgs',
             '/data/plugins',
+            '/data/db',
         ]
 
         missing = []

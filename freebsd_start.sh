@@ -114,16 +114,11 @@ install_packages() {
     node \
     npm \
     ffmpeg \
+    streamlink \
     sudo \
     bash \
-    gmake
-
-  # Install Gunicorn via pip if not provided by pkg (use configured python)
-  PY_PIP_BIN="${PYTHON_BIN:-python3}"
-  if ! pkg info -e py311-gunicorn >/dev/null 2>&1; then
-    echo ">>> Installing Gunicorn via pip..."
-    "${PY_PIP_BIN}" -m pip install --break-system-packages gunicorn || true
-  fi
+    gmake \
+    procps
 
   echo ">>> Enabling and starting PostgreSQL..."
   sysrc -f /etc/rc.conf postgresql_enable="YES"
@@ -244,7 +239,7 @@ setup_python_env() {
     env/bin/pip install --upgrade pip
   "
 
-  # Create FreeBSD-specific requirements file
+  # Create FreeBSD-specific requirements file (filter out packages installed via pkg)
   echo ">>> Creating FreeBSD-specific requirements.txt..."
   su - "$DISPATCH_USER" -c "
     cd '$APP_DIR'
@@ -258,6 +253,13 @@ setup_python_env() {
     grep -v '^huggingface' | \
     grep -v '^regex ' > requirements-freebsd.txt
     env/bin/pip install -r requirements-freebsd.txt || true
+  "
+
+  # Install gunicorn and daphne in the virtual environment (like Debian)
+  echo ">>> Installing gunicorn and daphne in venv..."
+  su - "$DISPATCH_USER" -c "
+    cd '$APP_DIR'
+    env/bin/pip install gunicorn daphne
   "
 
   # Link ffmpeg for the venv
@@ -290,16 +292,27 @@ create_directories() {
   mkdir -p /data/m3us
   mkdir -p /data/epgs
   mkdir -p /data/plugins
+  mkdir -p /data/db
   mkdir -p /var/run/dispatcharr
 
-  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data
+  # Dispatcharr user owns most of /data
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/logos
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/recordings
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/uploads
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/m3us
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/epgs
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /data/plugins
+  # PostgreSQL owns /data/db
+  chown -R postgres:postgres /data/db
   chown -R "$DISPATCH_USER:$DISPATCH_GROUP" /var/run/dispatcharr
   chmod +x /data 2>/dev/null || true
 
   mkdir -p "$APP_DIR/logo_cache"
   mkdir -p "$APP_DIR/media"
+  mkdir -p "$APP_DIR/static"
   chown -R "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR/logo_cache"
   chown -R "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR/media"
+  chown -R "$DISPATCH_USER:$DISPATCH_GROUP" "$APP_DIR/static"
 }
 
 ##############################################################################
@@ -340,13 +353,6 @@ configure_services() {
 
 . /etc/rc.subr
 
-# Environment variables
-export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
-export POSTGRES_DB="__POSTGRES_DB__"
-export POSTGRES_USER="__POSTGRES_USER__"
-export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
-export POSTGRES_HOST="__POSTGRES_HOST__"
-
 name="dispatcharr"
 rcvar="dispatcharr_enable"
 
@@ -361,23 +367,23 @@ load_rc_config $name
 : ${dispatcharr_timeout:="__TIMEOUT__"}
 
 pidfile="__PID_DIR__/dispatcharr.pid"
-command="${dispatcharr_appdir}/env/bin/gunicorn"
-command_args="
-    --workers=${dispatcharr_workers}
-    --worker-class=gevent
-    --timeout=${dispatcharr_timeout}
-    --bind unix:${dispatcharr_socket}
-    --user ${dispatcharr_user}
-    --group ${dispatcharr_group}
-    --pid ${pidfile}
-    dispatcharr.wsgi:application
-"
+command="/usr/sbin/daemon"
+procname="${dispatcharr_appdir}/env/bin/python"
+command_args="-f -p ${pidfile} -u ${dispatcharr_user} ${dispatcharr_appdir}/env/bin/gunicorn --workers=${dispatcharr_workers} --worker-class=gevent --timeout=${dispatcharr_timeout} --bind unix:${dispatcharr_socket} --chdir ${dispatcharr_appdir} dispatcharr.wsgi:application"
 
 required_files="${dispatcharr_appdir}/manage.py"
 start_precmd="dispatcharr_prestart"
+stop_postcmd="dispatcharr_poststop"
 
 dispatcharr_prestart()
 {
+    # Export environment variables
+    export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+    export POSTGRES_DB="__POSTGRES_DB__"
+    export POSTGRES_USER="__POSTGRES_USER__"
+    export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+    export POSTGRES_HOST="__POSTGRES_HOST__"
+
     mkdir -p $(dirname ${dispatcharr_socket})
     chown ${dispatcharr_user}:${dispatcharr_group} $(dirname ${dispatcharr_socket})
     mkdir -p $(dirname ${pidfile})
@@ -388,8 +394,11 @@ dispatcharr_prestart()
         echo "Waiting for PostgreSQL..."
         sleep 1
     done
+}
 
-    cd ${dispatcharr_appdir}
+dispatcharr_poststop()
+{
+    rm -f ${dispatcharr_socket} 2>/dev/null
 }
 
 run_rc_command "$1"
@@ -405,13 +414,6 @@ EOF
 
 . /etc/rc.subr
 
-# Environment variables
-export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
-export POSTGRES_DB="__POSTGRES_DB__"
-export POSTGRES_USER="__POSTGRES_USER__"
-export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
-export POSTGRES_HOST="__POSTGRES_HOST__"
-
 name="dispatcharr_celery"
 rcvar="dispatcharr_celery_enable"
 
@@ -422,17 +424,25 @@ load_rc_config $name
 : ${dispatcharr_celery_appdir:="__APP_DIR__"}
 
 pidfile="__PID_DIR__/dispatcharr_celery.pid"
-command="${dispatcharr_celery_appdir}/env/bin/celery"
-command_args="-A dispatcharr worker -l info --pidfile=${pidfile}"
-required_files="${dispatcharr_celery_appdir}/dispatcharr/celery.py"
+command="/usr/sbin/daemon"
+procname="${dispatcharr_celery_appdir}/env/bin/python"
+command_args="-f -p ${pidfile} -u ${dispatcharr_celery_user} ${dispatcharr_celery_appdir}/env/bin/celery -A dispatcharr worker -l info --workdir=${dispatcharr_celery_appdir}"
 
+required_files="${dispatcharr_celery_appdir}/manage.py"
 start_precmd="dispatcharr_celery_prestart"
 
 dispatcharr_celery_prestart()
 {
+    # Export environment variables
+    export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+    export POSTGRES_DB="__POSTGRES_DB__"
+    export POSTGRES_USER="__POSTGRES_USER__"
+    export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+    export POSTGRES_HOST="__POSTGRES_HOST__"
+    export CELERY_BROKER_URL="redis://localhost:6379/0"
+
     mkdir -p $(dirname ${pidfile})
     chown ${dispatcharr_celery_user} $(dirname ${pidfile})
-    cd ${dispatcharr_celery_appdir}
 }
 
 run_rc_command "$1"
@@ -448,13 +458,6 @@ EOF
 
 . /etc/rc.subr
 
-# Environment variables
-export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
-export POSTGRES_DB="__POSTGRES_DB__"
-export POSTGRES_USER="__POSTGRES_USER__"
-export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
-export POSTGRES_HOST="__POSTGRES_HOST__"
-
 name="dispatcharr_celerybeat"
 rcvar="dispatcharr_celerybeat_enable"
 
@@ -465,17 +468,25 @@ load_rc_config $name
 : ${dispatcharr_celerybeat_appdir:="__APP_DIR__"}
 
 pidfile="__PID_DIR__/dispatcharr_celerybeat.pid"
-command="${dispatcharr_celerybeat_appdir}/env/bin/celery"
-command_args="-A dispatcharr beat -l info --pidfile=${pidfile}"
-required_files="${dispatcharr_celerybeat_appdir}/dispatcharr/celery.py"
+command="/usr/sbin/daemon"
+procname="${dispatcharr_celerybeat_appdir}/env/bin/python"
+command_args="-f -p ${pidfile} -u ${dispatcharr_celerybeat_user} ${dispatcharr_celerybeat_appdir}/env/bin/celery -A dispatcharr beat -l info --workdir=${dispatcharr_celerybeat_appdir}"
 
+required_files="${dispatcharr_celerybeat_appdir}/manage.py"
 start_precmd="dispatcharr_celerybeat_prestart"
 
 dispatcharr_celerybeat_prestart()
 {
+    # Export environment variables
+    export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+    export POSTGRES_DB="__POSTGRES_DB__"
+    export POSTGRES_USER="__POSTGRES_USER__"
+    export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+    export POSTGRES_HOST="__POSTGRES_HOST__"
+    export CELERY_BROKER_URL="redis://localhost:6379/0"
+
     mkdir -p $(dirname ${pidfile})
     chown ${dispatcharr_celerybeat_user} $(dirname ${pidfile})
-    cd ${dispatcharr_celerybeat_appdir}
 }
 
 run_rc_command "$1"
@@ -491,13 +502,6 @@ EOF
 
 . /etc/rc.subr
 
-# Environment variables
-export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
-export POSTGRES_DB="__POSTGRES_DB__"
-export POSTGRES_USER="__POSTGRES_USER__"
-export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
-export POSTGRES_HOST="__POSTGRES_HOST__"
-
 name="dispatcharr_daphne"
 rcvar="dispatcharr_daphne_enable"
 
@@ -509,14 +513,22 @@ load_rc_config $name
 : ${dispatcharr_daphne_port:="__WEBSOCKET_PORT__"}
 
 pidfile="__PID_DIR__/dispatcharr_daphne.pid"
-command="${dispatcharr_daphne_appdir}/env/bin/daphne"
-command_args="-b 0.0.0.0 -p ${dispatcharr_daphne_port} dispatcharr.asgi:application"
-required_files="${dispatcharr_daphne_appdir}/dispatcharr/asgi.py"
+command="/usr/sbin/daemon"
+procname="${dispatcharr_daphne_appdir}/env/bin/python"
+command_args="-f -p ${pidfile} -u ${dispatcharr_daphne_user} ${dispatcharr_daphne_appdir}/env/bin/daphne -b 0.0.0.0 -p ${dispatcharr_daphne_port} dispatcharr.asgi:application"
 
+required_files="${dispatcharr_daphne_appdir}/dispatcharr/asgi.py"
 start_precmd="dispatcharr_daphne_prestart"
 
 dispatcharr_daphne_prestart()
 {
+    # Export environment variables
+    export DJANGO_SECRET_KEY="__DJANGO_SECRET_KEY__"
+    export POSTGRES_DB="__POSTGRES_DB__"
+    export POSTGRES_USER="__POSTGRES_USER__"
+    export POSTGRES_PASSWORD="__POSTGRES_PASSWORD__"
+    export POSTGRES_HOST="__POSTGRES_HOST__"
+
     mkdir -p $(dirname ${pidfile})
     chown ${dispatcharr_daphne_user} $(dirname ${pidfile})
     cd ${dispatcharr_daphne_appdir}

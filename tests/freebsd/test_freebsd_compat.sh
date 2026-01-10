@@ -446,6 +446,7 @@ test_directories() {
         "/data/m3us"
         "/data/epgs"
         "/data/plugins"
+        "/data/db"
         "/var/run/dispatcharr"
     )
 
@@ -484,6 +485,16 @@ test_environment() {
             log_fix "Add $var= to configure_variables()"
         fi
     done
+
+    # Check for CELERY_BROKER_URL in service scripts (required for Celery)
+    log_test "CELERY_BROKER_URL set in Celery service scripts"
+    if grep -q "CELERY_BROKER_URL" "$FREEBSD_SCRIPT"; then
+        log_pass "CELERY_BROKER_URL is set in service scripts"
+    else
+        log_fail "CELERY_BROKER_URL is not set"
+        log_why "Celery requires CELERY_BROKER_URL to connect to Redis"
+        log_fix "Add 'export CELERY_BROKER_URL=\"redis://localhost:6379/0\"' to Celery rc.d scripts"
+    fi
 }
 
 # Test placeholder substitution
