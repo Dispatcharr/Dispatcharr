@@ -1,0 +1,208 @@
+# FreeBSD Compatibility Tests
+#
+# This workflow runs FreeBSD compatibility tests to ensure upstream changes
+# don't break the FreeBSD installation script.
+#
+# Triggers:
+#   - Push to main/master branches
+#   - Pull requests
+#   - Manual trigger (workflow_dispatch)
+#   - Scheduled daily check against upstream
+#
+name: FreeBSD Compatibility
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'freebsd_start.sh'
+      - 'requirements.txt'
+      - 'tests/freebsd/**'
+      - '.github/workflows/freebsd-compat.yml'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: 'Upstream branch to test against'
+        required: false
+        default: 'main'
+  schedule:
+    # Run daily at 6 AM UTC to catch upstream changes
+    - cron: '0 6 * * *'
+
+jobs:
+  # Job 1: Static compatibility tests (runs on all platforms)
+  static-tests:
+    name: Static Compatibility Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run CI tests
+        run: |
+          chmod +x ./scripts/ci_test.sh
+          ./scripts/ci_test.sh
+
+  # Job 2: Check for upstream changes (scheduled runs only)
+  check-upstream:
+    name: Check Upstream Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      changes_summary: ${{ steps.check.outputs.changes_summary }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/Dispatcharr/Dispatcharr.git || true
+          git fetch upstream main
+
+      - name: Check for relevant changes
+        id: check
+        run: |
+          # Get the merge base
+          MERGE_BASE=$(git merge-base HEAD upstream/main 2>/dev/null || echo "")
+
+          if [ -z "$MERGE_BASE" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "changes_summary=Unable to determine merge base" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check for changes in relevant files
+          CHANGES=$(git diff --name-only $MERGE_BASE upstream/main | grep -E '(requirements\.txt|\.py$|docker/|apps/|core/)' || true)
+
+          if [ -n "$CHANGES" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            SUMMARY=$(echo "$CHANGES" | head -10 | tr '\n' ' ')
+            echo "changes_summary=$SUMMARY" >> $GITHUB_OUTPUT
+            echo "Upstream has relevant changes:"
+            echo "$CHANGES"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "changes_summary=No relevant changes" >> $GITHUB_OUTPUT
+            echo "No relevant upstream changes detected"
+          fi
+
+  # Job 3: Test with upstream merge (when upstream has changes)
+  test-upstream-merge:
+    name: Test Upstream Merge
+    runs-on: ubuntu-latest
+    needs: check-upstream
+    if: needs.check-upstream.outputs.has_changes == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Add upstream and attempt merge
+        id: merge
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git remote add upstream https://github.com/Dispatcharr/Dispatcharr.git || true
+          git fetch upstream main
+
+          # Try to merge upstream
+          if git merge upstream/main --no-commit --no-ff; then
+            echo "merge_success=true" >> $GITHUB_OUTPUT
+            echo "Upstream merge successful"
+          else
+            echo "merge_success=false" >> $GITHUB_OUTPUT
+            echo "Upstream merge has conflicts"
+            git merge --abort || true
+          fi
+
+      - name: Run compatibility tests after merge
+        if: steps.merge.outputs.merge_success == 'true'
+        run: |
+          chmod +x ./scripts/ci_test.sh
+          ./scripts/ci_test.sh
+
+      - name: Report merge conflicts
+        if: steps.merge.outputs.merge_success == 'false'
+        run: |
+          echo "::warning::Upstream merge has conflicts that need manual resolution"
+          echo "Check the FreeBSD-specific files for conflicts with upstream changes"
+
+  # Job 4: Create issue on failure (scheduled runs only)
+  create-issue-on-failure:
+    name: Create Issue on Failure
+    runs-on: ubuntu-latest
+    needs: [static-tests, test-upstream-merge]
+    if: failure() && github.event_name == 'schedule'
+
+    steps:
+      - name: Create GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `⚠️ FreeBSD Compatibility Test Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## FreeBSD Compatibility Test Failure
+
+            The scheduled FreeBSD compatibility tests have failed. This may indicate that upstream changes have broken FreeBSD compatibility.
+
+            ### Action Required
+            1. Review the [failed workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            2. Check what upstream changes may have caused the failure
+            3. Update \`freebsd_start.sh\` to accommodate the changes
+            4. Run the tests locally: \`./scripts/ci_test.sh\`
+
+            ### Workflow Details
+            - **Run ID**: ${context.runId}
+            - **Triggered**: ${context.eventName}
+            - **Date**: ${new Date().toISOString()}
+
+            /cc @${context.actor}
+            `;
+
+            // Check if similar issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'freebsd-compat'
+            });
+
+            const existingIssue = issues.data.find(i => i.title.includes('FreeBSD Compatibility Test Failed'));
+
+            if (!existingIssue) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['freebsd-compat', 'automated']
+              });
+            } else {
+              // Add comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `Another failure detected on ${new Date().toISOString()}. [View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+              });
+            }
