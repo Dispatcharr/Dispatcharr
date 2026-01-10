@@ -1,0 +1,343 @@
+# FreeBSD Release Build
+#
+# Builds a FreeBSD release package containing:
+# - Pre-built frontend assets
+# - Python application code
+# - FreeBSD installation scripts
+# - RC.d service scripts
+# - Configuration templates
+#
+# The package can be installed on FreeBSD using the included install script.
+#
+name: FreeBSD Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.16.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release'
+        type: boolean
+        default: true
+
+env:
+  PROJECT_NAME: dispatcharr
+
+jobs:
+  # Job 1: Build the FreeBSD release package
+  build:
+    name: Build FreeBSD Package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      package_name: ${{ steps.package.outputs.name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            # Extract from version.py
+            VERSION=$(grep -oP "(?<=version = ['\"])[^'\"]*" version.py 2>/dev/null || echo "0.0.0")
+            VERSION="${VERSION}-dev.$(date +%Y%m%d)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci --legacy-peer-deps
+          npm run build
+          echo "Frontend build complete"
+          ls -la dist/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile manage.py
+          find apps core dispatcharr -name "*.py" -exec python -m py_compile {} \;
+          echo "Python syntax validation passed"
+
+      - name: Run FreeBSD compatibility tests
+        run: |
+          chmod +x scripts/ci_test.sh
+          ./scripts/ci_test.sh
+
+      - name: Create release package
+        id: package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_NAME="${{ env.PROJECT_NAME }}-${VERSION}-freebsd"
+          BUILD_DIR="build/${PACKAGE_NAME}"
+
+          echo "Creating package: ${PACKAGE_NAME}"
+          mkdir -p "${BUILD_DIR}"
+
+          # Copy application code
+          cp -r apps core dispatcharr "${BUILD_DIR}/"
+          cp manage.py requirements.txt version.py "${BUILD_DIR}/"
+
+          # Copy pre-built frontend
+          mkdir -p "${BUILD_DIR}/frontend"
+          cp -r frontend/dist "${BUILD_DIR}/frontend/"
+          cp frontend/package.json "${BUILD_DIR}/frontend/"
+
+          # Copy FreeBSD-specific files
+          cp freebsd_start.sh "${BUILD_DIR}/"
+          cp -r scripts "${BUILD_DIR}/"
+          mkdir -p "${BUILD_DIR}/tests/freebsd"
+          cp -r tests/freebsd/* "${BUILD_DIR}/tests/freebsd/"
+
+          # Copy documentation
+          cp README.md LICENSE "${BUILD_DIR}/" 2>/dev/null || true
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md "${BUILD_DIR}/"
+
+          # Create version info file
+          cat > "${BUILD_DIR}/BUILD_INFO" << EOF
+          Package: ${PACKAGE_NAME}
+          Version: ${VERSION}
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Git Commit: ${GITHUB_SHA:-unknown}
+          Git Ref: ${GITHUB_REF:-unknown}
+          Target: FreeBSD 14.x/15.x (amd64)
+          EOF
+
+          # Create installation wrapper
+          cat > "${BUILD_DIR}/install.sh" << 'INSTALL_EOF'
+          #!/bin/sh
+          # Dispatcharr FreeBSD Installation Wrapper
+          #
+          # This script wraps freebsd_start.sh for release package installation.
+          #
+          set -e
+
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+          echo "=========================================="
+          echo "Dispatcharr FreeBSD Installation"
+          echo "=========================================="
+          cat "${SCRIPT_DIR}/BUILD_INFO"
+          echo "=========================================="
+          echo ""
+
+          # Check if running as root
+          if [ "$(id -u)" -ne 0 ]; then
+              echo "Error: This script must be run as root"
+              exit 1
+          fi
+
+          # Check if on FreeBSD
+          if [ "$(uname -s)" != "FreeBSD" ]; then
+              echo "Error: This package is for FreeBSD only"
+              exit 1
+          fi
+
+          # Run the main installation script
+          exec "${SCRIPT_DIR}/freebsd_start.sh" "$@"
+          INSTALL_EOF
+          chmod +x "${BUILD_DIR}/install.sh"
+
+          # Create the tarball
+          cd build
+          tar -czvf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
+
+          # Generate checksums
+          sha256sum "${PACKAGE_NAME}.tar.gz" > "${PACKAGE_NAME}.tar.gz.sha256"
+          md5sum "${PACKAGE_NAME}.tar.gz" > "${PACKAGE_NAME}.tar.gz.md5"
+
+          echo "name=${PACKAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "Package created: ${PACKAGE_NAME}.tar.gz"
+          ls -lh "${PACKAGE_NAME}.tar.gz"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-package
+          path: |
+            build/${{ steps.package.outputs.name }}.tar.gz
+            build/${{ steps.package.outputs.name }}.tar.gz.sha256
+            build/${{ steps.package.outputs.name }}.tar.gz.md5
+          retention-days: 30
+
+  # Job 2: Test in FreeBSD VM (optional but recommended)
+  test:
+    name: Test in FreeBSD VM
+    needs: build
+    runs-on: ubuntu-latest
+    # Only run on tag pushes or when explicitly requested
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: freebsd-package
+          path: ./package
+
+      - name: Test package in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.0"
+          usesh: true
+          prepare: |
+            pkg update -f
+            pkg install -y bash git
+
+          run: |
+            set -e
+            echo "=== FreeBSD Package Test ==="
+            freebsd-version
+
+            # Extract package
+            cd /root
+            tar -xzf /home/runner/work/*/*/package/*.tar.gz
+
+            # Verify package contents
+            PACKAGE_DIR=$(ls -d dispatcharr-* | head -1)
+            echo "Package directory: ${PACKAGE_DIR}"
+
+            cd "${PACKAGE_DIR}"
+
+            # Verify key files exist
+            echo "Checking package contents..."
+            test -f freebsd_start.sh && echo "✓ freebsd_start.sh"
+            test -f install.sh && echo "✓ install.sh"
+            test -f manage.py && echo "✓ manage.py"
+            test -f requirements.txt && echo "✓ requirements.txt"
+            test -d frontend/dist && echo "✓ frontend/dist/"
+            test -d apps && echo "✓ apps/"
+            test -d core && echo "✓ core/"
+
+            # Run compatibility tests
+            echo ""
+            echo "Running compatibility tests..."
+            if [ -f tests/freebsd/test_freebsd_compat.sh ]; then
+              chmod +x tests/freebsd/test_freebsd_compat.sh
+              bash tests/freebsd/test_freebsd_compat.sh
+            fi
+
+            echo ""
+            echo "=== Package test completed successfully ==="
+
+  # Job 3: Create GitHub Release
+  release:
+    name: Create GitHub Release
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'))
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: freebsd-package
+          path: ./release
+
+      - name: Prepare release notes
+        id: notes
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          PACKAGE="${{ needs.build.outputs.package_name }}"
+
+          cat > release_notes.md << EOF
+          ## FreeBSD Release Package
+
+          This release includes a pre-built package for FreeBSD 14.x/15.x (amd64).
+
+          ### Installation
+
+          \`\`\`bash
+          # Download and extract
+          fetch https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${PACKAGE}.tar.gz
+          tar -xzf ${PACKAGE}.tar.gz
+          cd ${PACKAGE}
+
+          # Verify checksum (optional)
+          fetch https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${PACKAGE}.tar.gz.sha256
+          sha256 -c ${PACKAGE}.tar.gz.sha256
+
+          # Install (as root)
+          sudo ./install.sh
+          \`\`\`
+
+          ### Package Contents
+
+          - Pre-built React frontend
+          - Django application code
+          - FreeBSD installation script
+          - RC.d service scripts (auto-generated during install)
+          - Compatibility test suite
+
+          ### Requirements
+
+          - FreeBSD 14.x or 15.x (amd64)
+          - PostgreSQL 15+
+          - Redis
+          - Python 3.11+
+          - Node.js (only if rebuilding frontend)
+
+          ### Checksums
+
+          See \`.sha256\` and \`.md5\` files for verification.
+
+          ---
+          *Built from commit: ${{ github.sha }}*
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ needs.build.outputs.version }}"
+          tag_name: "v${{ needs.build.outputs.version }}"
+          body_path: release_notes.md
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(needs.build.outputs.version, 'dev') || contains(needs.build.outputs.version, 'alpha') || contains(needs.build.outputs.version, 'beta') }}
+          files: |
+            release/${{ needs.build.outputs.package_name }}.tar.gz
+            release/${{ needs.build.outputs.package_name }}.tar.gz.sha256
+            release/${{ needs.build.outputs.package_name }}.tar.gz.md5
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## FreeBSD Release Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** ${{ needs.build.outputs.package_name }}.tar.gz" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ needs.build.outputs.version }})" >> $GITHUB_STEP_SUMMARY
