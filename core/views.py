@@ -1,5 +1,6 @@
 # core/views.py
 import os
+from shlex import split as shlex_split
 import sys
 import subprocess
 import logging
@@ -144,7 +145,7 @@ def stream_view(request, channel_uuid):
         logger.debug("Formatted parameters: %s", parameters)
 
         # Build the final command.
-        cmd = [stream_profile.command] + parameters.split()
+        cmd = [stream_profile.command] + shlex_split(parameters)
         logger.debug("Executing command: %s", cmd)
 
         try:
