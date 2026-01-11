@@ -396,14 +396,37 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel = serializer.save()
 
             # Handle channel profile membership
+            # Semantics:
+            # - Omitted (None): add to ALL profiles (backward compatible default)
+            # - Empty array []: add to NO profiles
+            # - Sentinel [0] or 0: add to ALL profiles (explicit)
+            # - [1,2,...]: add to specified profile IDs only
             channel_profile_ids = request.data.get("channel_profile_ids")
             if channel_profile_ids is not None:
                 # Normalize single ID to array
                 if not isinstance(channel_profile_ids, list):
                     channel_profile_ids = [channel_profile_ids]
 
-            if channel_profile_ids:
-                # Add channel only to the specified profiles
+            # Determine action based on semantics
+            if channel_profile_ids is None:
+                # Omitted -> add to all profiles (backward compatible)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
+                # Empty array -> add to no profiles
+                pass
+            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
+                # Sentinel 0 -> add to all profiles (explicit)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            else:
+                # Specific profile IDs
                 try:
                     channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
                     if len(channel_profiles) != len(channel_profile_ids):
@@ -426,13 +449,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         {"error": f"Error creating profile memberships: {str(e)}"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            else:
-                # Default behavior: add to all profiles
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -791,7 +807,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "channel_profile_ids": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s) to add the channel to. Can be a single ID or array of IDs. If not provided, channel is added to all profiles."
+                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
                 ),
             },
         ),
@@ -884,14 +900,37 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel.streams.add(stream)
 
             # Handle channel profile membership
+            # Semantics:
+            # - Omitted (None): add to ALL profiles (backward compatible default)
+            # - Empty array []: add to NO profiles
+            # - Sentinel [0] or 0: add to ALL profiles (explicit)
+            # - [1,2,...]: add to specified profile IDs only
             channel_profile_ids = request.data.get("channel_profile_ids")
             if channel_profile_ids is not None:
                 # Normalize single ID to array
                 if not isinstance(channel_profile_ids, list):
                     channel_profile_ids = [channel_profile_ids]
 
-            if channel_profile_ids:
-                # Add channel only to the specified profiles
+            # Determine action based on semantics
+            if channel_profile_ids is None:
+                # Omitted -> add to all profiles (backward compatible)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
+                # Empty array -> add to no profiles
+                pass
+            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
+                # Sentinel 0 -> add to all profiles (explicit)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            else:
+                # Specific profile IDs
                 try:
                     channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
                     if len(channel_profiles) != len(channel_profile_ids):
@@ -914,13 +953,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         {"error": f"Error creating profile memberships: {str(e)}"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            else:
-                # Default behavior: add to all profiles
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
 
         # Send WebSocket notification for single channel creation
         from core.utils import send_websocket_update
@@ -953,7 +985,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "channel_profile_ids": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s) to add the channels to. If not provided, channels are added to all profiles."
+                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
                 ),
                 "starting_channel_number": openapi.Schema(
                     type=openapi.TYPE_INTEGER,
