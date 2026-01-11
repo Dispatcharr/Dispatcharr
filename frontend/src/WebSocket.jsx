@@ -756,6 +756,7 @@ export const WebsocketProvider = ({ children }) => {
               try {
                 await API.requeryChannels();
                 await useChannelsStore.getState().fetchChannels();
+                await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {
                 console.error(

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Empty array `[]`: Channels are added to NO profiles
   - Sentinel value `[0]`: Channels are added to ALL profiles (explicit)
   - Specific IDs `[1, 2, ...]`: Channels are added only to the specified profiles
-  This allows API consumers to control profile membership across all channel creation methods without requiring all channels to be added to every profile by default.
+    This allows API consumers to control profile membership across all channel creation methods without requiring all channels to be added to every profile by default.
 - Group retention policy for M3U accounts: Groups now follow the same stale retention logic as streams, using the account's `stale_stream_days` setting. Groups that temporarily disappear from an M3U source are retained for the configured retention period instead of being immediately deleted, preserving user settings and preventing data loss when providers temporarily remove/re-add groups. (Closes #809)
 - Visual stale indicators for streams and groups: Added `is_stale` field to Stream and both `is_stale` and `last_seen` fields to ChannelGroupM3UAccount models to track items in their retention grace period. Stale groups display with orange buttons and a warning tooltip, while stale streams show with a red background color matching the visual treatment of empty channels.
 
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed bulk and manual channel creation not refreshing channel profile memberships in the UI for all connected clients. WebSocket `channels_created` event now calls `fetchChannelProfiles()` to ensure profile membership updates are reflected in real-time for all users without requiring a page refresh.
 - Fixed Channel Profile filter incorrectly applying profile membership filtering even when "Show Disabled" was enabled, preventing all channels from being displayed. Profile filter now only applies when hiding disabled channels. (Fixes #825)
 - Fixed manual channel creation not adding channels to channel profiles. Manually created channels are now added to the selected profile if one is active, or to all profiles if "All" is selected, matching the behavior of channels created from streams.
 - Fixed VOD streams disappearing from stats page during playback by adding `socket-timeout = 600` to production uWSGI config. The missing directive caused uWSGI to use its default 4-second timeout, triggering premature cleanup when clients buffered content. Now matches the existing `http-timeout = 600` value and prevents timeout errors during normal client buffering - Thanks [@patchy8736](https://github.com/patchy8736)
