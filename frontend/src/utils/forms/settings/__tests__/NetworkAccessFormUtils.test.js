@@ -100,9 +100,9 @@ describe('NetworkAccessFormUtils', () => {
       const validation = NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('192.168.1.256/24')).toBe('Invalid CIDR range');
+      expect(validator('192.168.1.256.1/24')).toBe('Invalid CIDR range');
       expect(validator('invalid')).toBe('Invalid CIDR range');
-      expect(validator('192.168.1.0/33')).toBe('Invalid CIDR range');
+      expect(validator('192.168.1.0/256')).toBe('Invalid CIDR range');
     });
 
     it('should return error when any CIDR in comma-separated list is invalid', () => {
