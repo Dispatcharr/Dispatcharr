@@ -263,25 +263,42 @@ const LiveGroupFilter = ({
                 }}
               >
                 {/* Group Enable/Disable Button */}
-                <Button
-                  color={group.enabled ? 'green' : 'gray'}
-                  variant="filled"
-                  onClick={() => toggleGroupEnabled(group.channel_group)}
-                  radius="md"
-                  size="xs"
-                  leftSection={
-                    group.enabled ? (
-                      <CircleCheck size={14} />
-                    ) : (
-                      <CircleX size={14} />
-                    )
+                <Tooltip
+                  label={
+                    group.enabled && group.is_stale
+                      ? 'This group was not seen in the last M3U refresh and will be deleted after the retention period expires'
+                      : ''
                   }
-                  fullWidth
+                  disabled={!group.enabled || !group.is_stale}
+                  multiline
+                  w={220}
                 >
-                  <Text size="xs" truncate>
-                    {group.name}
-                  </Text>
-                </Button>
+                  <Button
+                    color={
+                      group.enabled
+                        ? group.is_stale
+                          ? 'orange'
+                          : 'green'
+                        : 'gray'
+                    }
+                    variant="filled"
+                    onClick={() => toggleGroupEnabled(group.channel_group)}
+                    radius="md"
+                    size="xs"
+                    leftSection={
+                      group.enabled ? (
+                        <CircleCheck size={14} />
+                      ) : (
+                        <CircleX size={14} />
+                      )
+                    }
+                    fullWidth
+                  >
+                    <Text size="xs" truncate>
+                      {group.name}
+                    </Text>
+                  </Button>
+                </Tooltip>
 
                 {/* Auto Sync Controls */}
                 <Stack spacing="xs" style={{ '--stack-gap': '4px' }}>

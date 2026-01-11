@@ -236,12 +236,8 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Add annotation for association counts"""
-        from django.db.models import Count
-        return ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
-        )
+        """Return channel groups with prefetched relations for efficient counting"""
+        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -277,15 +273,20 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="cleanup")
     def cleanup_unused_groups(self, request):
         """Delete all channel groups with no channels or M3U account associations"""
-        from django.db.models import Count
+        from django.db.models import Q, Exists, OuterRef
 
-        # Find groups with no channels and no M3U account associations
+        # Find groups with no channels and no M3U account associations using Exists subqueries
+        from .models import Channel, ChannelGroupM3UAccount
+
+        has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
+        has_accounts = ChannelGroupM3UAccount.objects.filter(channel_group_id=OuterRef('pk'))
+
         unused_groups = ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
+            has_channels=Exists(has_channels),
+            has_accounts=Exists(has_accounts)
         ).filter(
-            channel_count=0,
-            m3u_account_count=0
+            has_channels=False,
+            has_accounts=False
         )
 
         deleted_count = unused_groups.count()
@@ -386,6 +387,56 @@ class ChannelViewSet(viewsets.ModelViewSet):
     ordering_fields = ["channel_number", "name", "channel_group__name"]
     ordering = ["-channel_number"]
 
+    def create(self, request, *args, **kwargs):
+        """Override create to handle channel profile membership"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            channel = serializer.save()
+
+            # Handle channel profile membership
+            channel_profile_ids = request.data.get("channel_profile_ids")
+            if channel_profile_ids is not None:
+                # Normalize single ID to array
+                if not isinstance(channel_profile_ids, list):
+                    channel_profile_ids = [channel_profile_ids]
+
+            if channel_profile_ids:
+                # Add channel only to the specified profiles
+                try:
+                    channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
+                    if len(channel_profiles) != len(channel_profile_ids):
+                        missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
+                        return Response(
+                            {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    ChannelProfileMembership.objects.bulk_create([
+                        ChannelProfileMembership(
+                            channel_profile=profile,
+                            channel=channel,
+                            enabled=True
+                        )
+                        for profile in channel_profiles
+                    ])
+                except Exception as e:
+                    return Response(
+                        {"error": f"Error creating profile memberships: {str(e)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                # Default behavior: add to all profiles
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def get_permissions(self):
         if self.action in [
             "edit_bulk",
@@ -431,10 +482,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if channel_profile_id:
             try:
                 profile_id_int = int(channel_profile_id)
-                filters["channelprofilemembership__channel_profile_id"] = profile_id_int
 
                 if show_disabled_param is None:
+                    # Show only enabled channels: channels that have a membership
+                    # record for this profile with enabled=True
+                    # Default is DISABLED (channels without membership are hidden)
+                    filters["channelprofilemembership__channel_profile_id"] = profile_id_int
                     filters["channelprofilemembership__enabled"] = True
+                # If show_disabled is True, show all channels (no filtering needed)
+
             except (ValueError, TypeError):
                 # Ignore invalid profile id values
                 pass

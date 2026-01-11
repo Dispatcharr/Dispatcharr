@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Group retention policy for M3U accounts: Groups now follow the same stale retention logic as streams, using the account's `stale_stream_days` setting. Groups that temporarily disappear from an M3U source are retained for the configured retention period instead of being immediately deleted, preserving user settings and preventing data loss when providers temporarily remove/re-add groups. (Closes #809)
+- Visual stale indicators for streams and groups: Added `is_stale` field to Stream and both `is_stale` and `last_seen` fields to ChannelGroupM3UAccount models to track items in their retention grace period. Stale groups display with orange buttons and a warning tooltip, while stale streams show with a red background color matching the visual treatment of empty channels.
+
+### Changed
+
+- Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution.
+- VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
+- Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
+- Stats and VOD pages refactored for clearer separation of concerns: extracted Stream/VOD connection cards (StreamConnectionCard, VodConnectionCard, VODCard, SeriesCard), moved page logic into dedicated utils, and lazy-loaded heavy components with ErrorBoundary fallbacks to improve readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+
+### Fixed
+
+- Fixed Channel Profile filter incorrectly applying profile membership filtering even when "Show Disabled" was enabled, preventing all channels from being displayed. Profile filter now only applies when hiding disabled channels. (Fixes #825)
+- Fixed manual channel creation not adding channels to channel profiles. Manually created channels are now added to the selected profile if one is active, or to all profiles if "All" is selected, matching the behavior of channels created from streams.
+- Fixed VOD streams disappearing from stats page during playback by adding `socket-timeout = 600` to production uWSGI config. The missing directive caused uWSGI to use its default 4-second timeout, triggering premature cleanup when clients buffered content. Now matches the existing `http-timeout = 600` value and prevents timeout errors during normal client buffering - Thanks [@patchy8736](https://github.com/patchy8736)
+- Fixed Channels table EPG column showing "Not Assigned" on initial load for users with large EPG datasets. Added `tvgsLoaded` flag to EPG store to track when EPG data has finished loading, ensuring the table waits for EPG data before displaying. EPG cells now show animated skeleton placeholders while loading instead of incorrectly showing "Not Assigned". (Fixes #810)
+- Fixed VOD profile connection count not being decremented when stream connection fails (timeout, 404, etc.), preventing profiles from reaching capacity limits and rejecting valid stream requests
+- Fixed React warning in Channel form by removing invalid `removeTrailingZeros` prop from NumberInput component
+- Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
+- Fixed onboarding message appearing in the Channels Table when filtered results are empty. The onboarding message now only displays when there are no channels created at all, not when channels exist but are filtered out by current filters.
+- Fixed `M3UMovieRelation.get_stream_url()` and `M3UEpisodeRelation.get_stream_url()` to use XC client's `_normalize_url()` method instead of simple `rstrip('/')`. This properly handles malformed M3U account URLs (e.g., containing `/player_api.php` or query parameters) before constructing VOD stream endpoints, matching behavior of live channel URL building. (Closes #722)
+- Fixed bulk_create and bulk_update errors during VOD content refresh by pre-checking object existence with optimized bulk queries (3 queries total instead of N per batch) before creating new objects. This ensures all movie/series objects have primary keys before relation operations, preventing "prohibited to prevent data loss due to unsaved related object" errors. Additionally fixed duplicate key constraint violations by treating TMDB/IMDB ID values of `0` or `'0'` as invalid (some providers use this to indicate "no ID"), converting them to NULL to prevent multiple items from incorrectly sharing the same ID. (Fixes #813)
+
 ## [0.16.0] - 2026-01-04
 
 ### Added

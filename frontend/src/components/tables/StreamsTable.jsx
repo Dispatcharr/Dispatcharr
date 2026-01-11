@@ -885,6 +885,14 @@ const StreamsTable = ({ onReady }) => {
     bodyCellRenderFns: {
       actions: renderBodyCell,
     },
+    getRowStyles: (row) => {
+      if (row.original.is_stale) {
+        return {
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+        };
+      }
+      return {};
+    },
   });
 
   /**
