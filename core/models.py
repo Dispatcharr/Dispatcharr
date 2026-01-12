@@ -1,4 +1,7 @@
 # core/models.py
+
+from shlex import split as shlex_split
+
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
@@ -133,7 +136,7 @@ class StreamProfile(models.Model):
         # Split the command and iterate through each part to apply replacements
         cmd = [self.command] + [
             self._replace_in_part(part, replacements)
-            for part in self.parameters.split()
+            for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
 
         return cmd
