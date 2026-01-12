@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed stream profile parameters not properly handling quoted arguments. Switched from basic `.split()` to `shlex.split()` for parsing command-line parameters, allowing proper handling of multi-word arguments in quotes (e.g., OAuth tokens in HTTP headers like `"--twitch-api-header=Authorization=OAuth token123"`). This ensures external streaming tools like Streamlink and FFmpeg receive correctly formatted arguments when using stream profiles with complex parameters - Thanks [@justinforlenza](https://github.com/justinforlenza) (Fixes #833)
 - Fixed bulk and manual channel creation not refreshing channel profile memberships in the UI for all connected clients. WebSocket `channels_created` event now calls `fetchChannelProfiles()` to ensure profile membership updates are reflected in real-time for all users without requiring a page refresh.
 - Fixed Channel Profile filter incorrectly applying profile membership filtering even when "Show Disabled" was enabled, preventing all channels from being displayed. Profile filter now only applies when hiding disabled channels. (Fixes #825)
 - Fixed manual channel creation not adding channels to channel profiles. Manually created channels are now added to the selected profile if one is active, or to all profiles if "All" is selected, matching the behavior of channels created from streams.
