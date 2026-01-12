@@ -70,6 +70,7 @@ const StreamRowActions = ({
   handleWatchStream,
   selectedChannelIds,
   createChannelFromStream,
+  fetchData,
 }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const channelSelectionStreams = useChannelsTableStore(
@@ -87,6 +88,7 @@ const StreamRowActions = ({
       ],
     });
     await API.requeryChannels();
+    await fetchData();
   };
 
   const onEdit = useCallback(() => {
@@ -545,6 +547,10 @@ const StreamsTable = ({ onReady }) => {
 
       // Clear selection since the task has started
       setSelectedStreamIds([]);
+
+      // Note: This is a background task, so fetchData may not show updated data immediately
+      // The actual update will occur when the WebSocket event fires on task completion
+      await fetchData();
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -714,6 +720,7 @@ const StreamsTable = ({ onReady }) => {
     await API.requeryChannels();
     const fetchLogos = useChannelsStore.getState().fetchLogos;
     fetchLogos();
+    await fetchData();
   };
 
   // Handle confirming the single channel numbering modal
@@ -756,6 +763,7 @@ const StreamsTable = ({ onReady }) => {
       ],
     });
     await API.requeryChannels();
+    await fetchData();
   };
 
   const onRowSelectionChange = (updatedIds) => {
@@ -916,6 +924,7 @@ const StreamsTable = ({ onReady }) => {
               handleWatchStream={handleWatchStream}
               selectedChannelIds={selectedChannelIds}
               createChannelFromStream={createChannelFromStream}
+              fetchData={fetchData}
             />
           );
       }
@@ -927,6 +936,7 @@ const StreamsTable = ({ onReady }) => {
       editStream,
       deleteStream,
       handleWatchStream,
+      fetchData,
     ]
   );
 
