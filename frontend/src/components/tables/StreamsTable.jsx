@@ -215,6 +215,7 @@ const StreamsTable = ({ onReady }) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [streamToDelete, setStreamToDelete] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // const [allRowsSelected, setAllRowsSelected] = useState(false);
 
@@ -590,12 +591,17 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStream = async (id) => {
-    await API.deleteStream(id);
-    fetchData();
-    // Clear the selection for the deleted stream
-    setSelectedStreamIds([]);
-    table.setSelectedTableIds([]);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteStream(id);
+      fetchData();
+      // Clear the selection for the deleted stream
+      setSelectedStreamIds([]);
+      table.setSelectedTableIds([]);
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const deleteStreams = async () => {
@@ -612,12 +618,17 @@ const StreamsTable = ({ onReady }) => {
 
   const executeDeleteStreams = async () => {
     setIsLoading(true);
-    await API.deleteStreams(selectedStreamIds);
-    setIsLoading(false);
-    fetchData();
-    setSelectedStreamIds([]);
-    table.setSelectedTableIds([]);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteStreams(selectedStreamIds);
+      fetchData();
+      setSelectedStreamIds([]);
+      table.setSelectedTableIds([]);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const closeStreamForm = () => {
@@ -1258,6 +1269,7 @@ This action cannot be undone.`}
         cancelLabel="Cancel"
         actionKey={isBulkDelete ? 'delete-streams' : 'delete-stream'}
         onSuppressChange={suppressWarning}
+        loading={deleting}
         size="md"
       />
     </>

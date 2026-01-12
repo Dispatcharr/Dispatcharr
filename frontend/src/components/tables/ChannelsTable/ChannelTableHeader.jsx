@@ -118,6 +118,7 @@ const ChannelTableHeader = ({
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
+  const [deletingProfile, setDeletingProfile] = useState(false);
   const [profileModalState, setProfileModalState] = useState({
     opened: false,
     mode: null,
@@ -157,8 +158,13 @@ const ChannelTableHeader = ({
   };
 
   const executeDeleteProfile = async (id) => {
-    await API.deleteChannelProfile(id);
-    setConfirmDeleteProfileOpen(false);
+    setDeletingProfile(true);
+    try {
+      await API.deleteChannelProfile(id);
+    } finally {
+      setDeletingProfile(false);
+      setConfirmDeleteProfileOpen(false);
+    }
   };
 
   const matchEpg = async () => {
@@ -402,6 +408,7 @@ const ChannelTableHeader = ({
         opened={confirmDeleteProfileOpen}
         onClose={() => setConfirmDeleteProfileOpen(false)}
         onConfirm={() => executeDeleteProfile(profileToDelete?.id)}
+        loading={deletingProfile}
         title="Confirm Profile Deletion"
         message={
           profileToDelete ? (

@@ -20,6 +20,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
   const [saved, setSaved] = useState(false);
   const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
     useState(false);
+  const [saving, setSaving] = useState(false);
   const [netNetworkAccessConfirmCIDRs, setNetNetworkAccessConfirmCIDRs] =
     useState([]);
   const [clientIpAddress, setClientIpAddress] = useState(null);
@@ -31,7 +32,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
   });
 
   useEffect(() => {
-    if(!active) setSaved(false);
+    if (!active) setSaved(false);
   }, [active]);
 
   useEffect(() => {
@@ -74,19 +75,22 @@ const NetworkAccessForm = React.memo(({ active }) => {
 
   const saveNetworkAccess = async () => {
     setSaved(false);
+    setSaving(true);
     try {
       await updateSetting({
         ...settings['network-access'],
         value: JSON.stringify(networkAccessForm.getValues()),
       });
       setSaved(true);
-      setNetworkAccessConfirmOpen(false);
     } catch (e) {
       const errors = {};
       for (const key in e.body.value) {
         errors[key] = `Invalid CIDR(s): ${e.body.value[key]}`;
       }
       networkAccessForm.setErrors(errors);
+    } finally {
+      setSaving(false);
+      setNetworkAccessConfirmOpen(false);
     }
   };
 
@@ -135,6 +139,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
         onClose={() => setNetworkAccessConfirmOpen(false)}
         onConfirm={saveNetworkAccess}
         title={`Confirm Network Access Blocks`}
+        loading={saving}
         message={
           <>
             <Text>

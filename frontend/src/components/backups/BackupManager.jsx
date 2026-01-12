@@ -231,6 +231,7 @@ export default function BackupManager() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [selectedBackup, setSelectedBackup] = useState(null);
   const [restoring, setRestoring] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Read user's preferences from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
@@ -513,6 +514,7 @@ export default function BackupManager() {
   };
 
   const handleDeleteConfirm = async () => {
+    setDeleting(true);
     try {
       await API.deleteBackup(selectedBackup.name);
       notifications.show({
@@ -528,6 +530,7 @@ export default function BackupManager() {
         color: 'red',
       });
     } finally {
+      setDeleting(false);
       setDeleteConfirmOpen(false);
       setSelectedBackup(null);
     }
@@ -968,6 +971,7 @@ export default function BackupManager() {
         cancelLabel="Cancel"
         actionKey="delete-backup"
         onSuppressChange={suppressWarning}
+        loading={deleting}
       />
     </Stack>
   );

@@ -316,6 +316,7 @@ const ChannelsTable = ({ onReady }) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
 
@@ -545,9 +546,14 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const executeDeleteChannel = async (id) => {
-    await API.deleteChannel(id);
-    API.requeryChannels();
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannel(id);
+      API.requeryChannels();
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const deleteChannels = async () => {
@@ -562,12 +568,17 @@ const ChannelsTable = ({ onReady }) => {
 
   const executeDeleteChannels = async () => {
     setIsLoading(true);
-    await API.deleteChannels(table.selectedTableIds);
-    await API.requeryChannels();
-    setSelectedChannelIds([]);
-    table.setSelectedTableIds([]);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannels(table.selectedTableIds);
+      await API.requeryChannels();
+      setSelectedChannelIds([]);
+      table.setSelectedTableIds([]);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const createRecording = (channel) => {
@@ -1498,6 +1509,7 @@ const ChannelsTable = ({ onReady }) => {
             ? executeDeleteChannels()
             : executeDeleteChannel(deleteTarget)
         }
+        loading={deleting}
         title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Channel Deletion`}
         message={
           isBulkDelete ? (

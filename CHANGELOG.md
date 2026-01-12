@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Backup restore loading feedback: Added visual loading indicator to the backup restore confirmation dialog. When clicking "Restore", the button now displays an animated dots loader and becomes disabled, providing clear feedback that the restore operation is in progress.
+- Loading feedback for all confirmation dialogs: Extended visual loading indicators across all confirmation dialogs throughout the application. Delete, cleanup, and bulk operation dialogs now show an animated dots loader and disabled state during async operations, providing consistent user feedback for backups (restore/delete), channels, EPGs, logos, VOD logos, M3U accounts, streams, users, groups, filters, profiles, batch operations, and network access changes.
 - Channel profile edit and duplicate functionality: Users can now rename existing channel profiles and create duplicates with automatic channel membership cloning. Each profile action (edit, duplicate, delete) in the profile dropdown for quick access.
 - ProfileModal component extracted for improved code organization and maintainability of channel profile management operations.
 - Frontend unit tests for pages and utilities: Added comprehensive unit test coverage for frontend components within pages/ and JS files within utils/, along with a GitHub Actions workflow (`frontend-tests.yml`) to automatically run tests on commits and pull requests - Thanks [@nick4810](https://github.com/nick4810)
