@@ -130,6 +130,8 @@ class StreamViewSet(viewsets.ModelViewSet):
     ordering = ["-name"]
 
     def get_permissions(self):
+        if self.action == "duplicate":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
@@ -1728,10 +1730,57 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
         return self.request.user.channel_profiles.all()
 
     def get_permissions(self):
+        if self.action == "duplicate":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    @action(detail=True, methods=["post"], url_path="duplicate", permission_classes=[IsAdmin])
+    def duplicate(self, request, pk=None):
+        requested_name = str(request.data.get("name", "")).strip()
+
+        if not requested_name:
+            return Response(
+                {"detail": "Name is required to duplicate a profile."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if ChannelProfile.objects.filter(name=requested_name).exists():
+            return Response(
+                {"detail": "A channel profile with this name already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_profile = self.get_object()
+
+        with transaction.atomic():
+            new_profile = ChannelProfile.objects.create(name=requested_name)
+
+            source_memberships = ChannelProfileMembership.objects.filter(
+                channel_profile=source_profile
+            )
+            source_enabled_map = {
+                membership.channel_id: membership.enabled
+                for membership in source_memberships
+            }
+
+            new_memberships = list(
+                ChannelProfileMembership.objects.filter(channel_profile=new_profile)
+            )
+            for membership in new_memberships:
+                membership.enabled = source_enabled_map.get(
+                    membership.channel_id, False
+                )
+
+            if new_memberships:
+                ChannelProfileMembership.objects.bulk_update(
+                    new_memberships, ["enabled"]
+                )
+
+        serializer = self.get_serializer(new_profile)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class GetChannelStreamsAPIView(APIView):
@@ -1861,7 +1910,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # Allow unauthenticated playback of recording files (like other streaming endpoints)
-        if getattr(self, 'action', None) == 'file':
+        if self.action == 'file':
             return [AllowAny()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]

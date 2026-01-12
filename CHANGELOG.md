@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Channel profile edit and duplicate functionality: Users can now rename existing channel profiles and create duplicates with automatic channel membership cloning. Each profile action (edit, duplicate, delete) in the profile dropdown for quick access.
+- ProfileModal component extracted for improved code organization and maintainability of channel profile management operations.
 - Frontend unit tests for pages and utilities: Added comprehensive unit test coverage for frontend components within pages/ and JS files within utils/, along with a GitHub Actions workflow (`frontend-tests.yml`) to automatically run tests on commits and pull requests - Thanks [@nick4810](https://github.com/nick4810)
 - Channel Profile membership control for manual channel creation and bulk operations: Extended the existing `channel_profile_ids` parameter from `POST /api/channels/from-stream/` to also support `POST /api/channels/` (manual creation) and bulk creation tasks with the same flexible semantics:
   - Omitted parameter (default): Channels are added to ALL profiles (preserves backward compatibility)

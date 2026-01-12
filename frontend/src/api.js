@@ -2121,6 +2121,24 @@ export default class API {
     }
   }
 
+  static async duplicateChannelProfile(id, name) {
+    try {
+      const response = await request(
+        `${host}/api/channels/profiles/${id}/duplicate/`,
+        {
+          method: 'POST',
+          body: { name },
+        }
+      );
+
+      useChannelsStore.getState().addProfile(response);
+
+      return response;
+    } catch (e) {
+      errorNotification(`Failed to duplicate channel profile ${id}`, e);
+    }
+  }
+
   static async deleteChannelProfile(id) {
     try {
       await request(`${host}/api/channels/profiles/${id}/`, {
