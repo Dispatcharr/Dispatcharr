@@ -72,17 +72,47 @@ def _dump_postgresql(output_file: Path) -> None:
     logger.debug(f"pg_dump output: {result.stderr}")
 
 
+def _clean_postgresql_schema() -> None:
+    """Drop and recreate the public schema to ensure a completely clean restore."""
+    logger.info("[PG_CLEAN] Dropping and recreating public schema...")
+
+    # Commands to drop and recreate schema
+    sql_commands = "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO public;"
+
+    cmd = [
+        "psql",
+        *_get_pg_args(),
+        "-c", sql_commands,
+    ]
+
+    result = subprocess.run(
+        cmd,
+        env=_get_pg_env(),
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(f"[PG_CLEAN] Failed to clean schema: {result.stderr}")
+        raise RuntimeError(f"Failed to clean PostgreSQL schema: {result.stderr}")
+
+    logger.info("[PG_CLEAN] Schema cleaned successfully")
+
+
 def _restore_postgresql(dump_file: Path) -> None:
     """Restore PostgreSQL database using pg_restore."""
     logger.info("[PG_RESTORE] Starting pg_restore...")
     logger.info(f"[PG_RESTORE] Dump file: {dump_file}")
+
+    # Drop and recreate schema to ensure a completely clean restore
+    _clean_postgresql_schema()
 
     pg_args = _get_pg_args()
     logger.info(f"[PG_RESTORE] Connection args: {pg_args}")
 
     cmd = [
         "pg_restore",
-        "--clean",  # Clean (drop) database objects before recreating
+        "--no-owner",  # Skip ownership commands (we already created schema)
         *pg_args,
         "-v",  # Verbose
         str(dump_file),
