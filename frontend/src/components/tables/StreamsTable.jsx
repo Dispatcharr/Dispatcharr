@@ -20,6 +20,9 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   Search,
+  Filter,
+  Square,
+  SquareCheck,
 } from 'lucide-react';
 import {
   TextInput,
@@ -48,7 +51,6 @@ import {
   Modal,
   NumberInput,
   Radio,
-  Checkbox,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
@@ -232,6 +234,7 @@ const StreamsTable = ({ onReady }) => {
     name: '',
     channel_group: '',
     m3u_account: '',
+    unassigned: '',
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -379,6 +382,13 @@ const StreamsTable = ({ onReady }) => {
     setFilters((prev) => ({
       ...prev,
       m3u_account: value ? value : '',
+    }));
+  };
+
+  const toggleUnassignedOnly = () => {
+    setFilters((prev) => ({
+      ...prev,
+      unassigned: prev.unassigned === '1' ? '' : '1',
     }));
   };
 
@@ -1057,6 +1067,29 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <Button size="xs" variant="default">
+                  <Filter size={18} />
+                </Button>
+              </Menu.Target>
+
+              <Menu.Dropdown>
+                <Menu.Item
+                  onClick={toggleUnassignedOnly}
+                  leftSection={
+                    filters.unassigned === '1' ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Only Unassociated</Text>
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
             <Button
               leftSection={<SquarePlus size={18} />}
               variant="light"
