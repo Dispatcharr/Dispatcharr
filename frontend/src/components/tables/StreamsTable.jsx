@@ -856,30 +856,18 @@ const StreamsTable = ({ onReady }) => {
 
       case 'group':
         return (
-          <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <MultiSelect
-              placeholder="Group"
-              searchable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleGroupChange}
-              data={groupOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              clearable
-              style={{ flex: 1, minWidth: 0 }}
-              rightSectionPointerEvents="auto"
-              rightSection={React.createElement(sortingIcon, {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSortingChange('group');
-                },
-                size: 14,
-                style: { cursor: 'pointer' },
-              })}
-            />
-          </Flex>
+          <MultiSelect
+            placeholder="Group"
+            className="table-input-header"
+            variant="unstyled"
+            data={groupOptions}
+            size="xs"
+            searchable
+            clearable
+            onClick={handleSelectClick}
+            onChange={handleGroupChange}
+            style={{ width: '100%' }}
+          />
         );
 
       case 'm3u':
