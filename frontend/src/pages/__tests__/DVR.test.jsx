@@ -12,7 +12,11 @@ import {
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
 import { categorizeRecordings } from '../../utils/pages/DVRUtils.js';
-import { getPosterUrl, getRecordingUrl, getShowVideoUrl } from '../../utils/cards/RecordingCardUtils.js';
+import {
+  getPosterUrl,
+  getRecordingUrl,
+  getShowVideoUrl,
+} from '../../utils/cards/RecordingCardUtils.js';
 
 vi.mock('../../store/channels');
 vi.mock('../../store/settings');
@@ -53,17 +57,28 @@ vi.mock('../../components/cards/RecordingCard', () => ({
       <span>{recording.custom_properties?.Title || 'Recording'}</span>
       <button onClick={() => onOpenDetails(recording)}>Open Details</button>
       {recording.custom_properties?.rule && (
-        <button onClick={() => onOpenRecurring(recording)}>Open Recurring</button>
+        <button onClick={() => onOpenRecurring(recording)}>
+          Open Recurring
+        </button>
       )}
     </div>
   ),
 }));
 
 vi.mock('../../components/forms/RecordingDetailsModal', () => ({
-  default: ({ opened, onClose, recording, onEdit, onWatchLive, onWatchRecording }) =>
+  default: ({
+    opened,
+    onClose,
+    recording,
+    onEdit,
+    onWatchLive,
+    onWatchRecording,
+  }) =>
     opened ? (
       <div data-testid="details-modal">
-        <div data-testid="modal-title">{recording?.custom_properties?.Title}</div>
+        <div data-testid="modal-title">
+          {recording?.custom_properties?.Title}
+        </div>
         <button onClick={onClose}>Close Modal</button>
         <button onClick={onEdit}>Edit</button>
         <button onClick={onWatchLive}>Watch Live</button>
@@ -137,7 +152,7 @@ describe('DVRPage', () => {
 
   const defaultSettingsState = {
     settings: {
-      'system-time-zone': { value: 'America/New_York' },
+      system_settings: { value: { time_zone: 'America/New_York' } },
     },
     environment: {
       env_mode: 'production',
@@ -178,12 +193,10 @@ describe('DVRPage', () => {
     getPosterUrl.mockImplementation((recording) =>
       recording?.id ? `http://poster.url/${recording.id}` : null
     );
-    getRecordingUrl.mockImplementation((custom_properties) =>
-      custom_properties?.recording_url
+    getRecordingUrl.mockImplementation(
+      (custom_properties) => custom_properties?.recording_url
     );
-    getShowVideoUrl.mockImplementation((channel) =>
-      channel?.stream_url
-    );
+    getShowVideoUrl.mockImplementation((channel) => channel?.stream_url);
 
     useChannelsStore.mockImplementation((selector) => {
       return selector ? selector(defaultChannelsState) : defaultChannelsState;
@@ -295,7 +308,9 @@ describe('DVRPage', () => {
         const state = {
           ...defaultChannelsState,
           recordings: [recording],
-          channels: { 1: { id: 1, name: 'Channel 1', stream_url: 'http://stream.url' } },
+          channels: {
+            1: { id: 1, name: 'Channel 1', stream_url: 'http://stream.url' },
+          },
         };
         return selector ? selector(state) : state;
       });
@@ -362,7 +377,7 @@ describe('DVRPage', () => {
         end_time: now.add(1, 'hour').toISOString(),
         custom_properties: {
           Title: 'Recurring Show',
-          rule: { id: 100 }
+          rule: { id: 100 },
         },
       };
 

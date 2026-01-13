@@ -3,8 +3,28 @@ import React, { useEffect, useMemo, useState } from 'react';
 import useLocalStorage from '../../hooks/useLocalStorage.jsx';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
-import { ActionIcon, Badge, Box, Card, Center, Flex, Group, Select, Stack, Text, Tooltip } from '@mantine/core';
-import { Gauge, HardDriveDownload, HardDriveUpload, SquareX, Timer, Users, Video } from 'lucide-react';
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Card,
+  Center,
+  Flex,
+  Group,
+  Select,
+  Stack,
+  Text,
+  Tooltip,
+} from '@mantine/core';
+import {
+  Gauge,
+  HardDriveDownload,
+  HardDriveUpload,
+  SquareX,
+  Timer,
+  Users,
+  Video,
+} from 'lucide-react';
 import { toFriendlyDuration } from '../../utils/dateTimeUtils.js';
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
 import { TableHelper } from '../../helpers/index.jsx';
@@ -87,7 +107,10 @@ const StreamConnectionCard = ({
           // If we have a channel URL, try to find the matching stream
           if (channel.url && streamData.length > 0) {
             // Try to find matching stream based on URL
-            const matchingStream = getMatchingStreamByUrl(streamData, channel.url);
+            const matchingStream = getMatchingStreamByUrl(
+              streamData,
+              channel.url
+            );
 
             if (matchingStream) {
               setActiveStreamId(matchingStream.id.toString());
@@ -178,9 +201,9 @@ const StreamConnectionCard = ({
         console.error('Error checking streams after switch:', error);
       }
     };
-  }
+  };
 
-// Handle stream switching
+  // Handle stream switching
   const handleStreamChange = async (streamId) => {
     try {
       console.log('Switching to stream ID:', streamId);
@@ -333,7 +356,7 @@ const StreamConnectionCard = ({
   });
 
   // Get logo URL from the logos object if available
-  const logoUrl = getLogoUrl(channel.logo_id , logos, previewedStream);
+  const logoUrl = getLogoUrl(channel.logo_id, logos, previewedStream);
 
   useEffect(() => {
     let isMounted = true;
@@ -388,11 +411,11 @@ const StreamConnectionCard = ({
       style={{
         backgroundColor: '#27272A',
       }}
-      color='#fff'
+      color="#fff"
       maw={700}
       w={'100%'}
     >
-      <Stack pos='relative' >
+      <Stack pos="relative">
         <Group justify="space-between">
           <Box
             style={{
@@ -401,7 +424,7 @@ const StreamConnectionCard = ({
             }}
             w={100}
             h={50}
-            display='flex'
+            display="flex"
           >
             <img
               src={logoUrl || logo}
@@ -531,7 +554,7 @@ const StreamConnectionCard = ({
                 variant="light"
                 color={
                   parseFloat(channel.ffmpeg_speed) >=
-                  getBufferingSpeedThreshold(settings['proxy-settings'])
+                  getBufferingSpeedThreshold(settings['proxy_settings'])
                     ? 'green'
                     : 'red'
                 }

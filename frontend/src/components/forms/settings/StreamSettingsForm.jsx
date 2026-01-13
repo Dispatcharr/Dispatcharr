@@ -129,8 +129,11 @@ const StreamSettingsForm = React.memo(({ active }) => {
     const values = form.getValues();
     const changedSettings = getChangedSettings(values, settings);
 
-    const m3uHashKeyChanged =
-      settings['m3u-hash-key']?.value !== values['m3u-hash-key'].join(',');
+    // Check if m3u_hash_key changed from the grouped stream_settings
+    const currentHashKey =
+      settings['stream_settings']?.value?.m3u_hash_key || '';
+    const newHashKey = values['m3u_hash_key']?.join(',') || '';
+    const m3uHashKeyChanged = currentHashKey !== newHashKey;
 
     // If M3U hash key changed, show warning (unless suppressed)
     if (m3uHashKeyChanged && !isWarningSuppressed('rehash-streams')) {
@@ -161,10 +164,10 @@ const StreamSettingsForm = React.memo(({ active }) => {
         )}
         <Select
           searchable
-          {...form.getInputProps('default-user-agent')}
-          id={settings['default-user-agent']?.id || 'default-user-agent'}
-          name={settings['default-user-agent']?.key || 'default-user-agent'}
-          label={settings['default-user-agent']?.name || 'Default User Agent'}
+          {...form.getInputProps('default_user_agent')}
+          id="default_user_agent"
+          name="default_user_agent"
+          label="Default User Agent"
           data={userAgents.map((option) => ({
             value: `${option.id}`,
             label: option.name,
@@ -172,16 +175,10 @@ const StreamSettingsForm = React.memo(({ active }) => {
         />
         <Select
           searchable
-          {...form.getInputProps('default-stream-profile')}
-          id={
-            settings['default-stream-profile']?.id || 'default-stream-profile'
-          }
-          name={
-            settings['default-stream-profile']?.key || 'default-stream-profile'
-          }
-          label={
-            settings['default-stream-profile']?.name || 'Default Stream Profile'
-          }
+          {...form.getInputProps('default_stream_profile')}
+          id="default_stream_profile"
+          name="default_stream_profile"
+          label="Default Stream Profile"
           data={streamProfiles.map((option) => ({
             value: `${option.id}`,
             label: option.name,
@@ -189,10 +186,10 @@ const StreamSettingsForm = React.memo(({ active }) => {
         />
         <Select
           searchable
-          {...form.getInputProps('preferred-region')}
-          id={settings['preferred-region']?.id || 'preferred-region'}
-          name={settings['preferred-region']?.key || 'preferred-region'}
-          label={settings['preferred-region']?.name || 'Preferred Region'}
+          {...form.getInputProps('preferred_region')}
+          id="preferred_region"
+          name="preferred_region"
+          label="Preferred Region"
           data={regionChoices.map((r) => ({
             label: r.label,
             value: `${r.value}`,
@@ -204,19 +201,16 @@ const StreamSettingsForm = React.memo(({ active }) => {
             Auto-Import Mapped Files
           </Text>
           <Switch
-            {...form.getInputProps('auto-import-mapped-files', {
+            {...form.getInputProps('auto_import_mapped_files', {
               type: 'checkbox',
             })}
-            id={
-              settings['auto-import-mapped-files']?.id ||
-              'auto-import-mapped-files'
-            }
+            id="auto_import_mapped_files"
           />
         </Group>
 
         <MultiSelect
-          id="m3u-hash-key"
-          name="m3u-hash-key"
+          id="m3u_hash_key"
+          name="m3u_hash_key"
           label="M3U Hash Key"
           data={[
             {
@@ -240,7 +234,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
               label: 'Group',
             },
           ]}
-          {...form.getInputProps('m3u-hash-key')}
+          {...form.getInputProps('m3u_hash_key')}
         />
 
         {rehashSuccess && (

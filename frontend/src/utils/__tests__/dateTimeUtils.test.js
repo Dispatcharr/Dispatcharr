@@ -256,7 +256,7 @@ describe('dateTimeUtils', () => {
       const setTimeZone = vi.fn();
       useLocalStorage.mockReturnValue(['America/New_York', setTimeZone]);
       useSettingsStore.mockReturnValue({
-        'system-time-zone': { value: 'America/Los_Angeles' }
+        'system_settings': { value: { time_zone: 'America/Los_Angeles' } }
       });
 
       renderHook(() => dateTimeUtils.useUserTimeZone());

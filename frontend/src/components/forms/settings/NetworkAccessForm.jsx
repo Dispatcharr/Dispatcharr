@@ -36,9 +36,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
   }, [active]);
 
   useEffect(() => {
-    const networkAccessSettings = JSON.parse(
-      settings['network-access'].value || '{}'
-    );
+    const networkAccessSettings = settings['network_access']?.value || {};
     networkAccessForm.setValues(
       Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
         acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::/0';
@@ -51,8 +49,8 @@ const NetworkAccessForm = React.memo(({ active }) => {
     setSaved(false);
     setNetworkAccessError(null);
     const check = await checkSetting({
-      ...settings['network-access'],
-      value: JSON.stringify(networkAccessForm.getValues()),
+      ...settings['network_access'],
+      value: networkAccessForm.getValues(), // Send as object
     });
 
     if (check.error && check.message) {
@@ -78,8 +76,8 @@ const NetworkAccessForm = React.memo(({ active }) => {
     setSaving(true);
     try {
       await updateSetting({
-        ...settings['network-access'],
-        value: JSON.stringify(networkAccessForm.getValues()),
+        ...settings['network_access'],
+        value: networkAccessForm.getValues(), // Send as object
       });
       setSaved(true);
     } catch (e) {

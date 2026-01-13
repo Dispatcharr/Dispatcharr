@@ -57,14 +57,14 @@ describe('DvrSettingsFormUtils', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
       expect(result).toEqual({
-        'dvr-tv-template': '',
-        'dvr-movie-template': '',
-        'dvr-tv-fallback-template': '',
-        'dvr-movie-fallback-template': '',
-        'dvr-comskip-enabled': false,
-        'dvr-comskip-custom-path': '',
-        'dvr-pre-offset-minutes': 0,
-        'dvr-post-offset-minutes': 0,
+        'tv_template': '',
+        'movie_template': '',
+        'tv_fallback_template': '',
+        'movie_fallback_template': '',
+        'comskip_enabled': false,
+        'comskip_custom_path': '',
+        'pre_offset_minutes': 0,
+        'post_offset_minutes': 0,
       });
     });
 
@@ -79,14 +79,14 @@ describe('DvrSettingsFormUtils', () => {
     it('should have correct default types', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
-      expect(typeof result['dvr-tv-template']).toBe('string');
-      expect(typeof result['dvr-movie-template']).toBe('string');
-      expect(typeof result['dvr-tv-fallback-template']).toBe('string');
-      expect(typeof result['dvr-movie-fallback-template']).toBe('string');
-      expect(typeof result['dvr-comskip-enabled']).toBe('boolean');
-      expect(typeof result['dvr-comskip-custom-path']).toBe('string');
-      expect(typeof result['dvr-pre-offset-minutes']).toBe('number');
-      expect(typeof result['dvr-post-offset-minutes']).toBe('number');
+      expect(typeof result['tv_template']).toBe('string');
+      expect(typeof result['movie_template']).toBe('string');
+      expect(typeof result['tv_fallback_template']).toBe('string');
+      expect(typeof result['movie_fallback_template']).toBe('string');
+      expect(typeof result['comskip_enabled']).toBe('boolean');
+      expect(typeof result['comskip_custom_path']).toBe('string');
+      expect(typeof result['pre_offset_minutes']).toBe('number');
+      expect(typeof result['post_offset_minutes']).toBe('number');
     });
   });
 });

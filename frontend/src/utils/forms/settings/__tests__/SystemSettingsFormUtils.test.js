@@ -7,15 +7,15 @@ describe('SystemSettingsFormUtils', () => {
       const result = SystemSettingsFormUtils.getSystemSettingsFormInitialValues();
 
       expect(result).toEqual({
-        'max-system-events': 100
+        'max_system_events': 100
       });
     });
 
     it('should return number value for max-system-events', () => {
       const result = SystemSettingsFormUtils.getSystemSettingsFormInitialValues();
 
-      expect(result['max-system-events']).toBe(100);
-      expect(typeof result['max-system-events']).toBe('number');
+      expect(result['max_system_events']).toBe(100);
+      expect(typeof result['max_system_events']).toBe('number');
     });
 
     it('should return a new object each time', () => {
@@ -29,7 +29,7 @@ describe('SystemSettingsFormUtils', () => {
     it('should have max-system-events property', () => {
       const result = SystemSettingsFormUtils.getSystemSettingsFormInitialValues();
 
-      expect(result).toHaveProperty('max-system-events');
+      expect(result).toHaveProperty('max_system_events');
     });
   });
 });

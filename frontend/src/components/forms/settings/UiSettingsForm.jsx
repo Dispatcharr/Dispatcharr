@@ -45,12 +45,11 @@ const UiSettingsForm = React.memo(() => {
 
   useEffect(() => {
     if (settings) {
-      const tzSetting = settings['system-time-zone'];
-      if (tzSetting?.value) {
+      const systemSettings = settings['system_settings'];
+      const tzValue = systemSettings?.value?.time_zone;
+      if (tzValue) {
         timeZoneSyncedRef.current = true;
-        setTimeZone((prev) =>
-          prev === tzSetting.value ? prev : tzSetting.value
-        );
+        setTimeZone((prev) => (prev === tzValue ? prev : tzValue));
       } else if (!timeZoneSyncedRef.current && timeZone) {
         timeZoneSyncedRef.current = true;
         persistTimeZoneSetting(timeZone);

@@ -1,5 +1,5 @@
 export const getSystemSettingsFormInitialValues = () => {
   return {
-    'max-system-events': 100,
+    max_system_events: 100,
   };
 };
