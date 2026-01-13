@@ -1845,6 +1845,30 @@ class BulkUpdateChannelMembershipAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
+        request_body=BulkChannelProfileMembershipSerializer,
+        responses={
+            200: openapi.Response(
+                description="Channels updated successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "status": openapi.Schema(type=openapi.TYPE_STRING, example="success"),
+                        "updated": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of channels updated"),
+                        "created": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of new memberships created"),
+                        "invalid_channels": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                            description="List of channel IDs that don't exist"
+                        ),
+                    },
+                ),
+            ),
+            400: "Invalid request data",
+            404: "Profile not found",
+        },
+    )
     def patch(self, request, profile_id):
         """Bulk enable or disable channels for a specific profile"""
         # Get the channel profile
@@ -1857,21 +1881,67 @@ class BulkUpdateChannelMembershipAPIView(APIView):
             updates = serializer.validated_data["channels"]
             channel_ids = [entry["channel_id"] for entry in updates]
 
-            memberships = ChannelProfileMembership.objects.filter(
+            # Validate that all channels exist
+            existing_channels = set(
+                Channel.objects.filter(id__in=channel_ids).values_list("id", flat=True)
+            )
+            invalid_channels = [cid for cid in channel_ids if cid not in existing_channels]
+
+            if invalid_channels:
+                return Response(
+                    {
+                        "error": "Some channels do not exist",
+                        "invalid_channels": invalid_channels,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Get existing memberships
+            existing_memberships = ChannelProfileMembership.objects.filter(
                 channel_profile=channel_profile, channel_id__in=channel_ids
             )
+            membership_dict = {m.channel_id: m for m in existing_memberships}
 
-            membership_dict = {m.channel.id: m for m in memberships}
+            # Prepare lists for bulk operations
+            memberships_to_update = []
+            memberships_to_create = []
 
             for entry in updates:
                 channel_id = entry["channel_id"]
                 enabled_status = entry["enabled"]
+
                 if channel_id in membership_dict:
+                    # Update existing membership
                     membership_dict[channel_id].enabled = enabled_status
+                    memberships_to_update.append(membership_dict[channel_id])
+                else:
+                    # Create new membership
+                    memberships_to_create.append(
+                        ChannelProfileMembership(
+                            channel_profile=channel_profile,
+                            channel_id=channel_id,
+                            enabled=enabled_status,
+                        )
+                    )
 
-            ChannelProfileMembership.objects.bulk_update(memberships, ["enabled"])
+            # Perform bulk operations
+            with transaction.atomic():
+                if memberships_to_update:
+                    ChannelProfileMembership.objects.bulk_update(
+                        memberships_to_update, ["enabled"]
+                    )
+                if memberships_to_create:
+                    ChannelProfileMembership.objects.bulk_create(memberships_to_create)
 
-            return Response({"status": "success"}, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "status": "success",
+                    "updated": len(memberships_to_update),
+                    "created": len(memberships_to_create),
+                    "invalid_channels": [],
+                },
+                status=status.HTTP_200_OK,
+            )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
