@@ -620,11 +620,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # Single bulk_update query instead of individual saves
             channels_to_update = [channel for channel, _ in validated_updates]
             if channels_to_update:
-                Channel.objects.bulk_update(
-                    channels_to_update,
-                    fields=list(validated_updates[0][1].keys()),
-                    batch_size=100
-                )
+                # Collect all unique field names from all updates
+                all_fields = set()
+                for _, validated_data in validated_updates:
+                    all_fields.update(validated_data.keys())
+
+                # Only call bulk_update if there are fields to update
+                if all_fields:
+                    Channel.objects.bulk_update(
+                        channels_to_update,
+                        fields=list(all_fields),
+                        batch_size=100
+                    )
 
         # Return the updated objects (already in memory)
         serialized_channels = ChannelSerializer(
