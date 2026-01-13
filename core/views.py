@@ -132,7 +132,7 @@ def stream_view(request, channel_uuid):
         stream_profile = channel.stream_profile
         if not stream_profile:
             logger.error("No stream profile set for channel ID=%s, using default", channel.id)
-            stream_profile = StreamProfile.objects.get(id=CoreSettings.objects.get(key="default-stream-profile").value)
+            stream_profile = StreamProfile.objects.get(id=CoreSettings.get_default_stream_profile_id())
 
         logger.debug("Stream profile used: %s", stream_profile.name)
 

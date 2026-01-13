@@ -7,15 +7,14 @@ import {
   toFriendlyDuration,
 } from '../dateTimeUtils.js';
 
-// Parse proxy settings to get buffering_speed
+// Get buffering_speed from proxy settings
 export const getBufferingSpeedThreshold = (proxySetting) => {
   try {
     if (proxySetting?.value) {
-      const proxySettings = JSON.parse(proxySetting.value);
-      return parseFloat(proxySettings.buffering_speed) || 1.0;
+      return parseFloat(proxySetting.value.buffering_speed) || 1.0;
     }
   } catch (error) {
-    console.error('Error parsing proxy settings:', error);
+    console.error('Error getting buffering speed:', error);
   }
   return 1.0; // Default fallback
 };

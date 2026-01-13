@@ -66,7 +66,7 @@ export const useUserTimeZone = () => {
   );
 
   useEffect(() => {
-    const tz = settings?.['system-time-zone']?.value;
+    const tz = settings?.['system_settings']?.value?.time_zone;
     if (tz && tz !== timeZone) {
       setTimeZone(tz);
     }

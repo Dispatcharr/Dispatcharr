@@ -3,7 +3,7 @@ import json
 import ipaddress
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
-from core.models import CoreSettings, NETWORK_ACCESS
+from core.models import CoreSettings, NETWORK_ACCESS_KEY
 
 
 def json_error_response(message, status=400):
@@ -39,7 +39,10 @@ def get_client_ip(request):
 
 
 def network_access_allowed(request, settings_key):
-    network_access = json.loads(CoreSettings.objects.get(key=NETWORK_ACCESS).value)
+    try:
+        network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
+    except CoreSettings.DoesNotExist:
+        network_access = {}
 
     cidrs = (
         network_access[settings_key].split(",")

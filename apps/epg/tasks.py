@@ -286,11 +286,12 @@ def fetch_xmltv(source):
     logger.info(f"Fetching XMLTV data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
-        if default_user_agent_setting and default_user_agent_setting.value:
+        default_user_agent_id = stream_settings.get('default_user_agent')
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")
@@ -1714,12 +1715,13 @@ def fetch_schedules_direct(source):
     logger.info(f"Fetching Schedules Direct data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
+        default_user_agent_id = stream_settings.get('default_user_agent')
 
-        if default_user_agent_setting and default_user_agent_setting.value:
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")
