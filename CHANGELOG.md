@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings architecture refactored to use grouped JSON storage: Migrated from individual CharField settings to grouped JSONField settings for improved performance, maintainability, and type safety. Settings are now organized into logical groups (stream_settings, dvr_settings, backup_settings, system_settings, proxy_settings, network_access) with automatic migration handling. Backend provides helper methods (`get_stream_settings()`, `get_default_user_agent_id()`, etc.) for easy access. Frontend simplified by removing complex key mapping logic and standardizing on underscore-based field names throughout.
 - Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution.
 - VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
 - Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
