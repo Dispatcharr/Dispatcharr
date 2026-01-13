@@ -29,9 +29,14 @@ echo_with_timestamp() {
 
 # --- NumPy version switching for legacy hardware ---
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
-    echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
-    /dispatcharrpy/bin/pip install --no-cache-dir --force-reinstall --no-deps /opt/numpy-*.whl
-    echo_with_timestamp "✅ Legacy NumPy installed"
+    # Check if NumPy was compiled with baseline support
+    if /dispatcharrpy/bin/python -c "import numpy; print(str(numpy.show_config()).lower())" 2>/dev/null | grep -q "baseline"; then
+        echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
+        /dispatcharrpy/bin/pip install --no-cache-dir --force-reinstall --no-deps /opt/numpy-*.whl
+        echo_with_timestamp "✅ Legacy NumPy installed"
+    else
+        echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
+    fi
 fi
 
 # Set PostgreSQL environment variables

@@ -417,8 +417,12 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
 
         # Get max events from settings (default 100)
         try:
-            max_events_setting = CoreSettings.objects.filter(key='max-system-events').first()
-            max_events = int(max_events_setting.value) if max_events_setting else 100
+            from .models import CoreSettings
+            system_settings = CoreSettings.objects.filter(key='system_settings').first()
+            if system_settings and isinstance(system_settings.value, dict):
+                max_events = int(system_settings.value.get('max_system_events', 100))
+            else:
+                max_events = 100
         except Exception:
             max_events = 100
 

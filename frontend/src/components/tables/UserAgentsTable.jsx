@@ -127,7 +127,7 @@ const UserAgentsTable = () => {
 
   const deleteUserAgent = async (ids) => {
     if (Array.isArray(ids)) {
-      if (ids.includes(settings['default-user-agent'].value)) {
+      if (ids.includes(settings.default_user_agent)) {
         notifications.show({
           title: 'Cannot delete default user-agent',
           color: 'red.5',
@@ -137,7 +137,7 @@ const UserAgentsTable = () => {
 
       await API.deleteUserAgents(ids);
     } else {
-      if (ids == settings['default-user-agent'].value) {
+      if (ids == settings.default_user_agent) {
         notifications.show({
           title: 'Cannot delete default user-agent',
           color: 'red.5',

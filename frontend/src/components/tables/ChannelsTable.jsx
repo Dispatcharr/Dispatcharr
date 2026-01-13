@@ -52,6 +52,7 @@ import {
   Select,
   NumberInput,
   Tooltip,
+  Skeleton,
 } from '@mantine/core';
 import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
@@ -228,6 +229,7 @@ const ChannelsTable = ({ onReady }) => {
   // EPG data lookup
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
+  const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
@@ -314,6 +316,7 @@ const ChannelsTable = ({ onReady }) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
 
@@ -431,9 +434,9 @@ const ChannelsTable = ({ onReady }) => {
     });
     setAllRowIds(ids);
 
-    // Signal ready after first successful data fetch
-    // EPG data is already loaded in initData before this component mounts
-    if (!hasSignaledReady.current && onReady) {
+    // Signal ready after first successful data fetch AND EPG data is loaded
+    // This prevents the EPG column from showing "Not Assigned" while EPG data is still loading
+    if (!hasSignaledReady.current && onReady && tvgsLoaded) {
       hasSignaledReady.current = true;
       onReady();
     }
@@ -445,6 +448,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    tvgsLoaded,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -542,9 +546,14 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const executeDeleteChannel = async (id) => {
-    await API.deleteChannel(id);
-    API.requeryChannels();
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannel(id);
+      API.requeryChannels();
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const deleteChannels = async () => {
@@ -559,12 +568,17 @@ const ChannelsTable = ({ onReady }) => {
 
   const executeDeleteChannels = async () => {
     setIsLoading(true);
-    await API.deleteChannels(table.selectedTableIds);
-    await API.requeryChannels();
-    setSelectedChannelIds([]);
-    table.setSelectedTableIds([]);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannels(table.selectedTableIds);
+      await API.requeryChannels();
+      setSelectedChannelIds([]);
+      table.setSelectedTableIds([]);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const createRecording = (channel) => {
@@ -750,6 +764,19 @@ const ChannelsTable = ({ onReady }) => {
     setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
   }, [pagination.pageIndex, pagination.pageSize, totalCount]);
 
+  // Signal ready when EPG data finishes loading (if channels were already fetched)
+  useEffect(() => {
+    if (
+      hasFetchedData.current &&
+      !hasSignaledReady.current &&
+      onReady &&
+      tvgsLoaded
+    ) {
+      hasSignaledReady.current = true;
+      onReady();
+    }
+  }, [tvgsLoaded, onReady]);
+
   const columns = useMemo(
     () => [
       {
@@ -834,6 +861,10 @@ const ChannelsTable = ({ onReady }) => {
           const tooltip = epgObj
             ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${tvgName ? `TVG Name: ${tvgName}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
             : '';
+
+          // If channel has an EPG assignment but tvgsById hasn't loaded yet, show loading
+          const isEpgDataPending = epgDataId && !epgObj && !tvgsLoaded;
+
           return (
             <Box
               style={{
@@ -856,6 +887,12 @@ const ChannelsTable = ({ onReady }) => {
                 </Tooltip>
               ) : epgObj ? (
                 <span>{epgObj.name}</span>
+              ) : isEpgDataPending ? (
+                <Skeleton
+                  height={14}
+                  width={(columnSizing.epg || 200) * 0.7}
+                  style={{ borderRadius: 4 }}
+                />
               ) : (
                 <span style={{ color: '#888' }}>Not Assigned</span>
               )}
@@ -935,7 +972,7 @@ const ChannelsTable = ({ onReady }) => {
     // Note: logos is intentionally excluded - LazyLogo components handle their own logo data
     // from the store, so we don't need to recreate columns when logos load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs, tvgsLoaded]
   );
 
   const renderHeaderCell = (header) => {
@@ -1380,12 +1417,13 @@ const ChannelsTable = ({ onReady }) => {
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 && (
-              <ChannelsTableOnboarding editChannel={editChannel} />
-            )}
+            {channelsTableLength === 0 &&
+              Object.keys(channels).length === 0 && (
+                <ChannelsTableOnboarding editChannel={editChannel} />
+              )}
           </Box>
 
-          {channelsTableLength > 0 && (
+          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
             <Box
               style={{
                 display: 'flex',
@@ -1471,6 +1509,7 @@ const ChannelsTable = ({ onReady }) => {
             ? executeDeleteChannels()
             : executeDeleteChannel(deleteTarget)
         }
+        loading={deleting}
         title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Channel Deletion`}
         message={
           isBulkDelete ? (

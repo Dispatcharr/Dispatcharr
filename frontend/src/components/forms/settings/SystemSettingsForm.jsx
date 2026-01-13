@@ -60,9 +60,9 @@ const SystemSettingsForm = React.memo(({ active }) => {
       <NumberInput
         label="Maximum System Events"
         description="Number of events to retain (minimum: 10, maximum: 1000)"
-        value={form.values['max-system-events'] || 100}
+        value={form.values['max_system_events'] || 100}
         onChange={(value) => {
-          form.setFieldValue('max-system-events', value);
+          form.setFieldValue('max_system_events', value);
         }}
         min={10}
         max={1000}

@@ -3,7 +3,7 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, NETWORK_ACCESS
+from .models import CoreSettings, UserAgent, StreamProfile, NETWORK_ACCESS_KEY
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -40,10 +40,10 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
     def update(self, instance, validated_data):
-        if instance.key == NETWORK_ACCESS:
+        if instance.key == NETWORK_ACCESS_KEY:
             errors = False
             invalid = {}
-            value = json.loads(validated_data.get("value"))
+            value = validated_data.get("value")
             for key, val in value.items():
                 cidrs = val.split(",")
                 for cidr in cidrs:

@@ -130,6 +130,8 @@ class StreamViewSet(viewsets.ModelViewSet):
     ordering = ["-name"]
 
     def get_permissions(self):
+        if self.action == "duplicate":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
@@ -236,12 +238,8 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Add annotation for association counts"""
-        from django.db.models import Count
-        return ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
-        )
+        """Return channel groups with prefetched relations for efficient counting"""
+        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -277,15 +275,20 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="cleanup")
     def cleanup_unused_groups(self, request):
         """Delete all channel groups with no channels or M3U account associations"""
-        from django.db.models import Count
+        from django.db.models import Q, Exists, OuterRef
 
-        # Find groups with no channels and no M3U account associations
+        # Find groups with no channels and no M3U account associations using Exists subqueries
+        from .models import Channel, ChannelGroupM3UAccount
+
+        has_channels = Channel.objects.filter(channel_group_id=OuterRef('pk'))
+        has_accounts = ChannelGroupM3UAccount.objects.filter(channel_group_id=OuterRef('pk'))
+
         unused_groups = ChannelGroup.objects.annotate(
-            channel_count=Count('channels', distinct=True),
-            m3u_account_count=Count('m3u_accounts', distinct=True)
+            has_channels=Exists(has_channels),
+            has_accounts=Exists(has_accounts)
         ).filter(
-            channel_count=0,
-            m3u_account_count=0
+            has_channels=False,
+            has_accounts=False
         )
 
         deleted_count = unused_groups.count()
@@ -386,6 +389,72 @@ class ChannelViewSet(viewsets.ModelViewSet):
     ordering_fields = ["channel_number", "name", "channel_group__name"]
     ordering = ["-channel_number"]
 
+    def create(self, request, *args, **kwargs):
+        """Override create to handle channel profile membership"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            channel = serializer.save()
+
+            # Handle channel profile membership
+            # Semantics:
+            # - Omitted (None): add to ALL profiles (backward compatible default)
+            # - Empty array []: add to NO profiles
+            # - Sentinel [0] or 0: add to ALL profiles (explicit)
+            # - [1,2,...]: add to specified profile IDs only
+            channel_profile_ids = request.data.get("channel_profile_ids")
+            if channel_profile_ids is not None:
+                # Normalize single ID to array
+                if not isinstance(channel_profile_ids, list):
+                    channel_profile_ids = [channel_profile_ids]
+
+            # Determine action based on semantics
+            if channel_profile_ids is None:
+                # Omitted -> add to all profiles (backward compatible)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
+                # Empty array -> add to no profiles
+                pass
+            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
+                # Sentinel 0 -> add to all profiles (explicit)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            else:
+                # Specific profile IDs
+                try:
+                    channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
+                    if len(channel_profiles) != len(channel_profile_ids):
+                        missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
+                        return Response(
+                            {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    ChannelProfileMembership.objects.bulk_create([
+                        ChannelProfileMembership(
+                            channel_profile=profile,
+                            channel=channel,
+                            enabled=True
+                        )
+                        for profile in channel_profiles
+                    ])
+                except Exception as e:
+                    return Response(
+                        {"error": f"Error creating profile memberships: {str(e)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def get_permissions(self):
         if self.action in [
             "edit_bulk",
@@ -431,10 +500,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if channel_profile_id:
             try:
                 profile_id_int = int(channel_profile_id)
-                filters["channelprofilemembership__channel_profile_id"] = profile_id_int
 
                 if show_disabled_param is None:
+                    # Show only enabled channels: channels that have a membership
+                    # record for this profile with enabled=True
+                    # Default is DISABLED (channels without membership are hidden)
+                    filters["channelprofilemembership__channel_profile_id"] = profile_id_int
                     filters["channelprofilemembership__enabled"] = True
+                # If show_disabled is True, show all channels (no filtering needed)
+
             except (ValueError, TypeError):
                 # Ignore invalid profile id values
                 pass
@@ -546,11 +620,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # Single bulk_update query instead of individual saves
             channels_to_update = [channel for channel, _ in validated_updates]
             if channels_to_update:
-                Channel.objects.bulk_update(
-                    channels_to_update,
-                    fields=list(validated_updates[0][1].keys()),
-                    batch_size=100
-                )
+                # Collect all unique field names from all updates
+                all_fields = set()
+                for _, validated_data in validated_updates:
+                    all_fields.update(validated_data.keys())
+
+                # Only call bulk_update if there are fields to update
+                if all_fields:
+                    Channel.objects.bulk_update(
+                        channels_to_update,
+                        fields=list(all_fields),
+                        batch_size=100
+                    )
 
         # Return the updated objects (already in memory)
         serialized_channels = ChannelSerializer(
@@ -735,7 +816,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "channel_profile_ids": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s) to add the channel to. Can be a single ID or array of IDs. If not provided, channel is added to all profiles."
+                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
                 ),
             },
         ),
@@ -828,14 +909,37 @@ class ChannelViewSet(viewsets.ModelViewSet):
             channel.streams.add(stream)
 
             # Handle channel profile membership
+            # Semantics:
+            # - Omitted (None): add to ALL profiles (backward compatible default)
+            # - Empty array []: add to NO profiles
+            # - Sentinel [0] or 0: add to ALL profiles (explicit)
+            # - [1,2,...]: add to specified profile IDs only
             channel_profile_ids = request.data.get("channel_profile_ids")
             if channel_profile_ids is not None:
                 # Normalize single ID to array
                 if not isinstance(channel_profile_ids, list):
                     channel_profile_ids = [channel_profile_ids]
 
-            if channel_profile_ids:
-                # Add channel only to the specified profiles
+            # Determine action based on semantics
+            if channel_profile_ids is None:
+                # Omitted -> add to all profiles (backward compatible)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
+                # Empty array -> add to no profiles
+                pass
+            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
+                # Sentinel 0 -> add to all profiles (explicit)
+                profiles = ChannelProfile.objects.all()
+                ChannelProfileMembership.objects.bulk_create([
+                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                    for profile in profiles
+                ])
+            else:
+                # Specific profile IDs
                 try:
                     channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
                     if len(channel_profiles) != len(channel_profile_ids):
@@ -858,13 +962,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         {"error": f"Error creating profile memberships: {str(e)}"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            else:
-                # Default behavior: add to all profiles
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
 
         # Send WebSocket notification for single channel creation
         from core.utils import send_websocket_update
@@ -897,7 +994,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "channel_profile_ids": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s) to add the channels to. If not provided, channels are added to all profiles."
+                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
                 ),
                 "starting_channel_number": openapi.Schema(
                     type=openapi.TYPE_INTEGER,
@@ -1640,10 +1737,57 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
         return self.request.user.channel_profiles.all()
 
     def get_permissions(self):
+        if self.action == "duplicate":
+            return [IsAdmin()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    @action(detail=True, methods=["post"], url_path="duplicate", permission_classes=[IsAdmin])
+    def duplicate(self, request, pk=None):
+        requested_name = str(request.data.get("name", "")).strip()
+
+        if not requested_name:
+            return Response(
+                {"detail": "Name is required to duplicate a profile."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if ChannelProfile.objects.filter(name=requested_name).exists():
+            return Response(
+                {"detail": "A channel profile with this name already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_profile = self.get_object()
+
+        with transaction.atomic():
+            new_profile = ChannelProfile.objects.create(name=requested_name)
+
+            source_memberships = ChannelProfileMembership.objects.filter(
+                channel_profile=source_profile
+            )
+            source_enabled_map = {
+                membership.channel_id: membership.enabled
+                for membership in source_memberships
+            }
+
+            new_memberships = list(
+                ChannelProfileMembership.objects.filter(channel_profile=new_profile)
+            )
+            for membership in new_memberships:
+                membership.enabled = source_enabled_map.get(
+                    membership.channel_id, False
+                )
+
+            if new_memberships:
+                ChannelProfileMembership.objects.bulk_update(
+                    new_memberships, ["enabled"]
+                )
+
+        serializer = self.get_serializer(new_profile)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class GetChannelStreamsAPIView(APIView):
@@ -1701,6 +1845,30 @@ class BulkUpdateChannelMembershipAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
+        request_body=BulkChannelProfileMembershipSerializer,
+        responses={
+            200: openapi.Response(
+                description="Channels updated successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "status": openapi.Schema(type=openapi.TYPE_STRING, example="success"),
+                        "updated": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of channels updated"),
+                        "created": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of new memberships created"),
+                        "invalid_channels": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                            description="List of channel IDs that don't exist"
+                        ),
+                    },
+                ),
+            ),
+            400: "Invalid request data",
+            404: "Profile not found",
+        },
+    )
     def patch(self, request, profile_id):
         """Bulk enable or disable channels for a specific profile"""
         # Get the channel profile
@@ -1713,21 +1881,67 @@ class BulkUpdateChannelMembershipAPIView(APIView):
             updates = serializer.validated_data["channels"]
             channel_ids = [entry["channel_id"] for entry in updates]
 
-            memberships = ChannelProfileMembership.objects.filter(
+            # Validate that all channels exist
+            existing_channels = set(
+                Channel.objects.filter(id__in=channel_ids).values_list("id", flat=True)
+            )
+            invalid_channels = [cid for cid in channel_ids if cid not in existing_channels]
+
+            if invalid_channels:
+                return Response(
+                    {
+                        "error": "Some channels do not exist",
+                        "invalid_channels": invalid_channels,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Get existing memberships
+            existing_memberships = ChannelProfileMembership.objects.filter(
                 channel_profile=channel_profile, channel_id__in=channel_ids
             )
+            membership_dict = {m.channel_id: m for m in existing_memberships}
 
-            membership_dict = {m.channel.id: m for m in memberships}
+            # Prepare lists for bulk operations
+            memberships_to_update = []
+            memberships_to_create = []
 
             for entry in updates:
                 channel_id = entry["channel_id"]
                 enabled_status = entry["enabled"]
+
                 if channel_id in membership_dict:
+                    # Update existing membership
                     membership_dict[channel_id].enabled = enabled_status
+                    memberships_to_update.append(membership_dict[channel_id])
+                else:
+                    # Create new membership
+                    memberships_to_create.append(
+                        ChannelProfileMembership(
+                            channel_profile=channel_profile,
+                            channel_id=channel_id,
+                            enabled=enabled_status,
+                        )
+                    )
 
-            ChannelProfileMembership.objects.bulk_update(memberships, ["enabled"])
+            # Perform bulk operations
+            with transaction.atomic():
+                if memberships_to_update:
+                    ChannelProfileMembership.objects.bulk_update(
+                        memberships_to_update, ["enabled"]
+                    )
+                if memberships_to_create:
+                    ChannelProfileMembership.objects.bulk_create(memberships_to_create)
 
-            return Response({"status": "success"}, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "status": "success",
+                    "updated": len(memberships_to_update),
+                    "created": len(memberships_to_create),
+                    "invalid_channels": [],
+                },
+                status=status.HTTP_200_OK,
+            )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1773,7 +1987,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         # Allow unauthenticated playback of recording files (like other streaming endpoints)
-        if getattr(self, 'action', None) == 'file':
+        if self.action == 'file':
             return [AllowAny()]
         try:
             return [perm() for perm in permission_classes_by_action[self.action]]

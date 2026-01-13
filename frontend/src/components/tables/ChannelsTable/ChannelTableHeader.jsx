@@ -38,6 +38,7 @@ import AssignChannelNumbersForm from '../../forms/AssignChannelNumbers';
 import GroupManager from '../../forms/GroupManager';
 import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
+import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
 
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
@@ -117,6 +118,12 @@ const ChannelTableHeader = ({
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
+  const [deletingProfile, setDeletingProfile] = useState(false);
+  const [profileModalState, setProfileModalState] = useState({
+    opened: false,
+    mode: null,
+    profileId: null,
+  });
 
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
@@ -126,6 +133,15 @@ const ChannelTableHeader = ({
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
   const closeAssignChannelNumbersModal = () => {
     setAssignNumbersModalOpen(false);
+  };
+
+  const closeProfileModal = () => {
+    setProfileModalState({ opened: false, mode: null, profileId: null });
+  };
+
+  const openProfileModal = (mode, profileId) => {
+    if (!profiles[profileId]) return;
+    setProfileModalState({ opened: true, mode, profileId });
   };
 
   const deleteProfile = async (id) => {
@@ -142,8 +158,13 @@ const ChannelTableHeader = ({
   };
 
   const executeDeleteProfile = async (id) => {
-    await API.deleteChannelProfile(id);
-    setConfirmDeleteProfileOpen(false);
+    setDeletingProfile(true);
+    try {
+      await API.deleteChannelProfile(id);
+    } finally {
+      setDeletingProfile(false);
+      setConfirmDeleteProfileOpen(false);
+    }
   };
 
   const matchEpg = async () => {
@@ -192,27 +213,13 @@ const ChannelTableHeader = ({
     }
   };
 
-  const renderProfileOption = ({ option, checked }) => {
-    return (
-      <Group justify="space-between" style={{ width: '100%' }}>
-        <Box>{option.label}</Box>
-        {option.value != '0' && (
-          <ActionIcon
-            size="xs"
-            variant="transparent"
-            color={theme.tailwind.red[6]}
-            onClick={(e) => {
-              e.stopPropagation();
-              deleteProfile(option.value);
-            }}
-            disabled={authUser.user_level != USER_LEVELS.ADMIN}
-          >
-            <SquareMinus />
-          </ActionIcon>
-        )}
-      </Group>
-    );
-  };
+  const renderModalOption = renderProfileOption(
+    theme,
+    profiles,
+    openProfileModal,
+    deleteProfile,
+    authUser
+  );
 
   const toggleShowDisabled = () => {
     setShowDisabled(!showDisabled);
@@ -234,7 +241,8 @@ const ChannelTableHeader = ({
             label: profile.name,
             value: `${profile.id}`,
           }))}
-          renderOption={renderProfileOption}
+          renderOption={renderModalOption}
+          style={{ minWidth: 190 }}
         />
 
         <Tooltip label="Create Profile">
@@ -373,6 +381,18 @@ const ChannelTableHeader = ({
         </Flex>
       </Box>
 
+      <ProfileModal
+        opened={profileModalState.opened}
+        onClose={closeProfileModal}
+        mode={profileModalState.mode}
+        profile={
+          profileModalState.profileId
+            ? profiles[profileModalState.profileId]
+            : null
+        }
+        onDeleteProfile={deleteProfile}
+      />
+
       <AssignChannelNumbersForm
         channelIds={selectedTableIds}
         isOpen={assignNumbersModalOpen}
@@ -388,6 +408,7 @@ const ChannelTableHeader = ({
         opened={confirmDeleteProfileOpen}
         onClose={() => setConfirmDeleteProfileOpen(false)}
         onConfirm={() => executeDeleteProfile(profileToDelete?.id)}
+        loading={deletingProfile}
         title="Confirm Profile Deletion"
         message={
           profileToDelete ? (

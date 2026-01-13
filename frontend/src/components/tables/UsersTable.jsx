@@ -96,6 +96,7 @@ const UsersTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [userToDelete, setUserToDelete] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState({});
 
   /**
@@ -110,9 +111,14 @@ const UsersTable = () => {
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
-    await API.deleteUser(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteUser(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   }, []);
 
   const editUser = useCallback(async (user = null) => {
@@ -406,6 +412,7 @@ const UsersTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteUser(deleteTarget)}
+        loading={deleting}
         title="Confirm User Deletion"
         message={
           userToDelete ? (

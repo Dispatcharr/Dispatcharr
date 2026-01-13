@@ -402,6 +402,7 @@ const useChannelsStore = create((set, get) => ({
     try {
       set({
         recordings: await api.getRecordings(),
+        isLoading: false,
       });
     } catch (error) {
       console.error('Failed to fetch recordings:', error);
