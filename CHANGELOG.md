@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-01-13
+
 ### Added
 
 - Loading feedback for all confirmation dialogs: Extended visual loading indicators across all confirmation dialogs throughout the application. Delete, cleanup, and bulk operation dialogs now show an animated dots loader and disabled state during async operations, providing consistent user feedback for backups (restore/delete), channels, EPGs, logos, VOD logos, M3U accounts, streams, users, groups, filters, profiles, batch operations, and network access changes.
