@@ -61,6 +61,7 @@ import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
+import { useWebSocket } from '../../WebSocket';
 
 const StreamRowActions = ({
   theme,
@@ -88,7 +89,7 @@ const StreamRowActions = ({
       ],
     });
     await API.requeryChannels();
-    await fetchData();
+    await fetchData({ showLoader: false });
   };
 
   const onEdit = useCallback(() => {
@@ -181,6 +182,7 @@ const StreamRowActions = ({
 const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
+  const [, , websocketEvent] = useWebSocket();
 
   /**
    * useState
@@ -394,8 +396,10 @@ const StreamsTable = ({ onReady }) => {
     }));
   };
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const fetchData = useCallback(async ({ showLoader = true } = {}) => {
+    if (showLoader) {
+      setIsLoading(true);
+    }
 
     // Ensure we have channel groups first (if not already loaded)
     if (!groupsLoaded && Object.keys(channelGroups).length === 0) {
@@ -465,7 +469,9 @@ const StreamsTable = ({ onReady }) => {
       console.error('Error fetching data:', error);
     }
 
-    setIsLoading(false);
+    if (showLoader) {
+      setIsLoading(false);
+    }
   }, [
     pagination,
     sorting,
@@ -550,7 +556,7 @@ const StreamsTable = ({ onReady }) => {
 
       // Note: This is a background task, so fetchData may not show updated data immediately
       // The actual update will occur when the WebSocket event fires on task completion
-      await fetchData();
+      await fetchData({ showLoader: false });
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -610,7 +616,7 @@ const StreamsTable = ({ onReady }) => {
     setDeleting(true);
     try {
       await API.deleteStream(id);
-      fetchData();
+      fetchData({ showLoader: false });
       // Clear the selection for the deleted stream
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
@@ -633,16 +639,14 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStreams = async () => {
-    setIsLoading(true);
     setDeleting(true);
     try {
       await API.deleteStreams(selectedStreamIds);
-      fetchData();
+      fetchData({ showLoader: false });
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
       setDeleting(false);
-      setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
   };
@@ -650,7 +654,7 @@ const StreamsTable = ({ onReady }) => {
   const closeStreamForm = () => {
     setStream(null);
     setModalOpen(false);
-    fetchData();
+    fetchData({ showLoader: false });
   };
 
   // Single channel creation functions
@@ -718,9 +722,9 @@ const StreamsTable = ({ onReady }) => {
       channel_profile_ids: channelProfileIds,
     });
     await API.requeryChannels();
-    const fetchLogos = useChannelsStore.getState().fetchLogos;
-    fetchLogos();
-    await fetchData();
+    // const fetchLogos = useChannelsStore.getState().fetchLogos;
+    // fetchLogos();
+    await fetchData({ showLoader: false });
   };
 
   // Handle confirming the single channel numbering modal
@@ -763,7 +767,7 @@ const StreamsTable = ({ onReady }) => {
       ],
     });
     await API.requeryChannels();
-    await fetchData();
+    await fetchData({ showLoader: false });
   };
 
   const onRowSelectionChange = (updatedIds) => {
@@ -979,6 +983,17 @@ const StreamsTable = ({ onReady }) => {
     // Load data independently, don't wait for logos or other data
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    const eventType = websocketEvent?.data?.type;
+    if (
+      eventType === 'channels_created' ||
+      (eventType === 'bulk_channel_creation_progress' &&
+        websocketEvent?.data?.status === 'completed')
+    ) {
+      fetchData({ showLoader: false });
+    }
+  }, [websocketEvent, fetchData]);
 
   return (
     <>
