@@ -167,6 +167,7 @@ const ChannelStreams = ({ channel, isExpanded }) => {
       streams: newStreamList.map((s) => s.id),
     });
     await API.requeryChannels();
+    await API.requeryStreams();
   };
 
   // Create M3U account map for quick lookup

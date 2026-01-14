@@ -755,6 +755,7 @@ export const WebsocketProvider = ({ children }) => {
               // Refresh the channels table to show new channels
               try {
                 await API.requeryChannels();
+                await API.requeryStreams();
                 await useChannelsStore.getState().fetchChannels();
                 await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');

@@ -46,7 +46,6 @@ import {
   MultiSelect,
   useMantineTheme,
   UnstyledButton,
-  LoadingOverlay,
   Skeleton,
   Modal,
   NumberInput,
@@ -61,7 +60,7 @@ import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
-import { useWebSocket } from '../../WebSocket';
+import useStreamsTableStore from '../../store/streamsTable';
 
 const StreamRowActions = ({
   theme,
@@ -71,7 +70,6 @@ const StreamRowActions = ({
   handleWatchStream,
   selectedChannelIds,
   createChannelFromStream,
-  fetchData,
 }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const channelSelectionStreams = useChannelsTableStore(
@@ -89,7 +87,6 @@ const StreamRowActions = ({
       ],
     });
     await API.requeryChannels();
-    await fetchData({ showLoader: false });
   };
 
   const onEdit = useCallback(() => {
@@ -182,23 +179,18 @@ const StreamRowActions = ({
 const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
-  const [, , websocketEvent] = useWebSocket();
+  const hasFetchedOnce = useRef(false);
 
   /**
    * useState
    */
-  const [allRowIds, setAllRowIds] = useState([]);
   const [stream, setStream] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
   const [initialDataCount, setInitialDataCount] = useState(null);
 
-  const [data, setData] = useState([]); // Holds fetched data
-  const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
-  const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -230,10 +222,6 @@ const StreamsTable = ({ onReady }) => {
     'streams-page-size',
     50
   );
-  const [pagination, setPagination] = useState({
-    pageIndex: 0,
-    pageSize: storedPageSize,
-  });
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
@@ -246,14 +234,11 @@ const StreamsTable = ({ onReady }) => {
   );
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
-    setPagination((prev) => ({
-      ...prev,
+    setPagination({
+      ...pagination,
       pageIndex: 0,
-    }));
+    });
   });
-
-  // Add state to track if stream groups are loaded
-  const [groupsLoaded, setGroupsLoaded] = useState(false);
 
   const navigate = useNavigate();
 
@@ -276,6 +261,20 @@ const StreamsTable = ({ onReady }) => {
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
   const [tableSize, _] = useLocalStorage('table-size', 'default');
+
+  const data = useStreamsTableStore((s) => s.streams);
+  const pageCount = useStreamsTableStore((s) => s.pageCount);
+  const totalCount = useStreamsTableStore((s) => s.totalCount);
+  const allRowIds = useStreamsTableStore((s) => s.allQueryIds);
+  const setAllRowIds = useStreamsTableStore((s) => s.setAllQueryIds);
+  const pagination = useStreamsTableStore((s) => s.pagination);
+  const setPagination = useStreamsTableStore((s) => s.setPagination);
+  const sorting = useStreamsTableStore((s) => s.sorting);
+  const setSorting = useStreamsTableStore((s) => s.setSorting);
+  const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
+  const setSelectedStreamIds = useStreamsTableStore(
+    (s) => s.setSelectedStreamIds
+  );
 
   // Warnings store for "remember choice" functionality
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -401,16 +400,6 @@ const StreamsTable = ({ onReady }) => {
       setIsLoading(true);
     }
 
-    // Ensure we have channel groups first (if not already loaded)
-    if (!groupsLoaded && Object.keys(channelGroups).length === 0) {
-      try {
-        await fetchChannelGroups();
-        setGroupsLoaded(true);
-      } catch (error) {
-        console.error('Error fetching channel groups:', error);
-      }
-    }
-
     const params = new URLSearchParams();
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
@@ -436,29 +425,17 @@ const StreamsTable = ({ onReady }) => {
 
     try {
       const [result, ids, groups] = await Promise.all([
-        API.queryStreams(params),
+        API.queryStreamsTable(params),
         API.getAllStreamIds(params),
         API.getStreamGroups(),
       ]);
 
       setAllRowIds(ids);
-      setData(result.results);
-      setPageCount(Math.ceil(result.count / pagination.pageSize));
       setGroupOptions(groups);
-
-      // Calculate the starting and ending item indexes
-      const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
-      const endItem = Math.min(
-        (pagination.pageIndex + 1) * pagination.pageSize,
-        result.count
-      );
 
       if (initialDataCount === null) {
         setInitialDataCount(result.count);
       }
-
-      // Generate the string
-      setPaginationString(`${startItem} to ${endItem} of ${result.count}`);
 
       // Signal that initial data load is complete
       if (!hasSignaledReady.current && onReady) {
@@ -469,18 +446,11 @@ const StreamsTable = ({ onReady }) => {
       console.error('Error fetching data:', error);
     }
 
+    hasFetchedOnce.current = true;
     if (showLoader) {
       setIsLoading(false);
     }
-  }, [
-    pagination,
-    sorting,
-    debouncedFilters,
-    groupsLoaded,
-    channelGroups,
-    fetchChannelGroups,
-    onReady,
-  ]);
+  }, [pagination, sorting, debouncedFilters, onReady]);
 
   // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
@@ -554,9 +524,7 @@ const StreamsTable = ({ onReady }) => {
       // Clear selection since the task has started
       setSelectedStreamIds([]);
 
-      // Note: This is a background task, so fetchData may not show updated data immediately
-      // The actual update will occur when the WebSocket event fires on task completion
-      await fetchData({ showLoader: false });
+      // Note: This is a background task, so the update happens on WebSocket completion
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -616,7 +584,6 @@ const StreamsTable = ({ onReady }) => {
     setDeleting(true);
     try {
       await API.deleteStream(id);
-      fetchData({ showLoader: false });
       // Clear the selection for the deleted stream
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
@@ -642,7 +609,6 @@ const StreamsTable = ({ onReady }) => {
     setDeleting(true);
     try {
       await API.deleteStreams(selectedStreamIds);
-      fetchData({ showLoader: false });
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
@@ -654,7 +620,7 @@ const StreamsTable = ({ onReady }) => {
   const closeStreamForm = () => {
     setStream(null);
     setModalOpen(false);
-    fetchData({ showLoader: false });
+    API.requeryStreams();
   };
 
   // Single channel creation functions
@@ -724,7 +690,6 @@ const StreamsTable = ({ onReady }) => {
     await API.requeryChannels();
     // const fetchLogos = useChannelsStore.getState().fetchLogos;
     // fetchLogos();
-    await fetchData({ showLoader: false });
   };
 
   // Handle confirming the single channel numbering modal
@@ -767,7 +732,6 @@ const StreamsTable = ({ onReady }) => {
       ],
     });
     await API.requeryChannels();
-    await fetchData({ showLoader: false });
   };
 
   const onRowSelectionChange = (updatedIds) => {
@@ -928,7 +892,6 @@ const StreamsTable = ({ onReady }) => {
               handleWatchStream={handleWatchStream}
               selectedChannelIds={selectedChannelIds}
               createChannelFromStream={createChannelFromStream}
-              fetchData={fetchData}
             />
           );
       }
@@ -940,7 +903,6 @@ const StreamsTable = ({ onReady }) => {
       editStream,
       deleteStream,
       handleWatchStream,
-      fetchData,
     ]
   );
 
@@ -958,6 +920,10 @@ const StreamsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
+    state: {
+      pagination,
+      sorting,
+    },
     headerCellRenderFns: {
       name: renderHeaderCell,
       group: renderHeaderCell,
@@ -985,15 +951,29 @@ const StreamsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
-    const eventType = websocketEvent?.data?.type;
-    if (
-      eventType === 'channels_created' ||
-      (eventType === 'bulk_channel_creation_progress' &&
-        websocketEvent?.data?.status === 'completed')
-    ) {
-      fetchData({ showLoader: false });
+    if (Object.keys(channelGroups).length > 0) {
+      return;
     }
-  }, [websocketEvent, fetchData]);
+
+    const loadGroups = async () => {
+      try {
+        await fetchChannelGroups();
+      } catch (error) {
+        console.error('Error fetching channel groups:', error);
+      }
+    };
+
+    loadGroups();
+  }, [channelGroups, fetchChannelGroups]);
+
+  useEffect(() => {
+    const startItem = pagination.pageIndex * pagination.pageSize + 1;
+    const endItem = Math.min(
+      (pagination.pageIndex + 1) * pagination.pageSize,
+      totalCount
+    );
+    setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
+  }, [pagination.pageIndex, pagination.pageSize, totalCount]);
 
   return (
     <>
@@ -1201,7 +1181,6 @@ const StreamsTable = ({ onReady }) => {
                 borderRadius: 'var(--mantine-radius-default)',
               }}
             >
-              <LoadingOverlay visible={isLoading} />
               <CustomTable table={table} />
             </Box>
 

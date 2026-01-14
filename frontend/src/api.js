@@ -10,6 +10,7 @@ import useStreamProfilesStore from './store/streamProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
+import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 
 // If needed, you can set a base host or keep it empty if relative requests
@@ -380,6 +381,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channel', e);
     }
@@ -394,6 +396,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channels', e);
     }
@@ -447,6 +450,9 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
+        await API.requeryStreams();
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to update channel', e);
@@ -630,6 +636,7 @@ export default class API {
         useChannelsStore.getState().addChannel(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to create channel', e);
@@ -705,6 +712,46 @@ export default class API {
     }
   }
 
+  static async queryStreamsTable(params) {
+    try {
+      API.lastStreamQueryParams = params;
+
+      const response = await request(
+        `${host}/api/channels/streams/?${params.toString()}`
+      );
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
+  static async requeryStreams() {
+    if (!API.lastStreamQueryParams) {
+      return null;
+    }
+
+    try {
+      const [response, ids] = await Promise.all([
+        request(
+          `${host}/api/channels/streams/?${API.lastStreamQueryParams.toString()}`
+        ),
+        API.getAllStreamIds(API.lastStreamQueryParams),
+      ]);
+
+      useStreamsTableStore
+        .getState()
+        .queryStreams(response, API.lastStreamQueryParams);
+      useStreamsTableStore.getState().setAllQueryIds(ids);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
   static async getAllStreamIds(params) {
     try {
       const response = await request(
@@ -738,6 +785,7 @@ export default class API {
         useStreamsStore.getState().addStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to add stream', e);
@@ -756,6 +804,7 @@ export default class API {
         useStreamsStore.getState().updateStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to update stream', e);
@@ -769,6 +818,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete stream', e);
     }
@@ -782,6 +832,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams(ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete streams', e);
     }
