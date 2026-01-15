@@ -14,16 +14,15 @@ describe('StreamConnectionCardUtils', () => {
   describe('getBufferingSpeedThreshold', () => {
     it('should return parsed buffering_speed from proxy settings', () => {
       const proxySetting = {
-        value: JSON.stringify({ buffering_speed: 2.5 })
+        value: { buffering_speed: 2.5 }
       };
       expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)).toBe(2.5);
     });
 
     it('should return 1.0 for invalid JSON', () => {
-      const proxySetting = { value: 'invalid json' };
+      const proxySetting = { value: { buffering_speed: 'invalid' } };
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)).toBe(1.0);
-      expect(consoleSpy).toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+
+### Fixed
+
+- Fixed NumPy baseline detection in Docker entrypoint. Now calls `numpy.show_config()` directly with case-insensitive grep instead of incorrectly wrapping the output.
+- Fixed SettingsUtils frontend tests for new grouped settings architecture. Updated test suite to properly verify grouped JSON settings (stream_settings, dvr_settings, etc.) instead of individual CharField settings, including tests for type conversions, array-to-CSV transformations, and special handling of proxy_settings and network_access.
+
 ## [0.17.0] - 2026-01-13
 
 ### Added
@@ -28,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Settings architecture refactored to use grouped JSON storage: Migrated from individual CharField settings to grouped JSONField settings for improved performance, maintainability, and type safety. Settings are now organized into logical groups (stream_settings, dvr_settings, backup_settings, system_settings, proxy_settings, network_access) with automatic migration handling. Backend provides helper methods (`get_stream_settings()`, `get_default_user_agent_id()`, etc.) for easy access. Frontend simplified by removing complex key mapping logic and standardizing on underscore-based field names throughout.
-- Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution.
+- Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution. (Fixes #805)
 - VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
 - Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
 - Stats and VOD pages refactored for clearer separation of concerns: extracted Stream/VOD connection cards (StreamConnectionCard, VodConnectionCard, VODCard, SeriesCard), moved page logic into dedicated utils, and lazy-loaded heavy components with ErrorBoundary fallbacks to improve readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
