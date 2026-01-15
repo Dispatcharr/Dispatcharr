@@ -50,6 +50,7 @@ import {
   Modal,
   NumberInput,
   Radio,
+  LoadingOverlay,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
@@ -582,6 +583,7 @@ const StreamsTable = ({ onReady }) => {
 
   const executeDeleteStream = async (id) => {
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStream(id);
       // Clear the selection for the deleted stream
@@ -589,6 +591,7 @@ const StreamsTable = ({ onReady }) => {
       table.setSelectedTableIds([]);
     } finally {
       setDeleting(false);
+      setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
   };
@@ -607,20 +610,27 @@ const StreamsTable = ({ onReady }) => {
 
   const executeDeleteStreams = async () => {
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStreams(selectedStreamIds);
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
       setDeleting(false);
+      setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
   };
 
-  const closeStreamForm = () => {
+  const closeStreamForm = async () => {
     setStream(null);
     setModalOpen(false);
-    API.requeryStreams();
+    setIsLoading(true);
+    try {
+      await API.requeryStreams();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Single channel creation functions
@@ -1181,6 +1191,7 @@ const StreamsTable = ({ onReady }) => {
                 borderRadius: 'var(--mantine-radius-default)',
               }}
             >
+              <LoadingOverlay visible={isLoading} />
               <CustomTable table={table} />
             </Box>
 
