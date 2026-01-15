@@ -4,10 +4,9 @@ import { useCallback, useState, useRef, useMemo } from 'react';
 import { flexRender } from '@tanstack/react-table';
 import table from '../../../helpers/table';
 import CustomTableBody from './CustomTableBody';
-import useLocalStorage from '../../../hooks/useLocalStorage';
 
 const CustomTable = ({ table }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
 
   // Get column sizing state for dependency tracking
   const columnSizing = table.getState().columnSizing;
@@ -34,7 +33,6 @@ const CustomTable = ({ table }) => {
         minWidth: `${minTableWidth}px`,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
       }}
     >
       <CustomTableHeader
@@ -47,6 +45,7 @@ const CustomTable = ({ table }) => {
         }
         selectedTableIds={table.selectedTableIds}
         tableCellProps={table.tableCellProps}
+        headerPinned={table.headerPinned}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}

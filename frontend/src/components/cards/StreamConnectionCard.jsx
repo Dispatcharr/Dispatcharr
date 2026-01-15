@@ -71,7 +71,6 @@ const StreamConnectionCard = ({
   // Get Date-format from localStorage
   const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
   const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
-  const [tableSize] = useLocalStorage('table-size', 'default');
 
   // Create a map of M3U account IDs to names for quick lookup
   const m3uAccountsMap = useMemo(() => {
@@ -296,7 +295,7 @@ const StreamConnectionCard = ({
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: 100,
       },
     ],
     []

@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Table header pin toggle: Pin/unpin table headers to keep them visible while scrolling. Toggle available in channel table menu and UI Settings page. Setting persists across sessions and applies to all tables. (Closes #663)
+
 ### Changed
 
+- Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
+
 - Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+- Table preferences architecture refactored: Migrated `table-size` preference from individual `useLocalStorage` calls to centralized `useTablePreferences` hook. All table components now read preferences from the table instance (`table.tableSize`, `table.headerPinned`) instead of calling hooks directly, improving maintainability and providing consistent API across all tables.
 
 ### Fixed
 

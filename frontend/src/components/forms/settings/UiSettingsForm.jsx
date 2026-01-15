@@ -1,24 +1,28 @@
 import useSettingsStore from '../../../store/settings.jsx';
 import useLocalStorage from '../../../hooks/useLocalStorage.jsx';
+import useTablePreferences from '../../../hooks/useTablePreferences.jsx';
 import {
   buildTimeZoneOptions,
   getDefaultTimeZone,
 } from '../../../utils/dateTimeUtils.js';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { showNotification } from '../../../utils/notificationUtils.js';
-import { Select } from '@mantine/core';
+import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
 
-  const [tableSize, setTableSize] = useLocalStorage('table-size', 'default');
   const [timeFormat, setTimeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormat, setDateFormat] = useLocalStorage('date-format', 'mdy');
   const [timeZone, setTimeZone] = useLocalStorage(
     'time-zone',
     getDefaultTimeZone()
   );
+
+  // Use shared table preferences hook
+  const { headerPinned, setHeaderPinned, tableSize, setTableSize } =
+    useTablePreferences();
 
   const timeZoneOptions = useMemo(
     () => buildTimeZoneOptions(timeZone),
@@ -74,11 +78,14 @@ const UiSettingsForm = React.memo(() => {
           persistTimeZoneSetting(value);
         }
         break;
+      case 'header-pinned':
+        setHeaderPinned(value);
+        break;
     }
   };
 
   return (
-    <>
+    <Stack gap="md">
       <Select
         label="Table Size"
         value={tableSize}
@@ -97,6 +104,14 @@ const UiSettingsForm = React.memo(() => {
             label: 'Large',
           },
         ]}
+      />
+      <Switch
+        label="Pin Table Headers"
+        description="Keep table headers visible when scrolling"
+        checked={headerPinned}
+        onChange={(event) =>
+          onUISettingsChange('header-pinned', event.currentTarget.checked)
+        }
       />
       <Select
         label="Time format"
@@ -136,7 +151,7 @@ const UiSettingsForm = React.memo(() => {
         onChange={(val) => onUISettingsChange('time-zone', val)}
         data={timeZoneOptions}
       />
-    </>
+    </Stack>
   );
 });
 
