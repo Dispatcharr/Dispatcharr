@@ -1,96 +1,91 @@
 // Modal.js
-import React, { useEffect } from 'react';
-import { useFormik } from 'formik';
+import React, { useEffect, useMemo } from 'react';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import API from '../../api';
 import useUserAgentsStore from '../../store/userAgents';
 import { Modal, TextInput, Select, Button, Flex } from '@mantine/core';
 
+const schema = Yup.object({
+  name: Yup.string().required('Name is required'),
+  command: Yup.string().required('Command is required'),
+  parameters: Yup.string().required('Parameters are is required'),
+});
+
 const StreamProfile = ({ profile = null, isOpen, onClose }) => {
   const userAgents = useUserAgentsStore((state) => state.userAgents);
 
-  const formik = useFormik({
-    initialValues: {
-      name: '',
-      command: '',
-      parameters: '',
-      is_active: true,
-      user_agent: '',
-    },
-    validationSchema: Yup.object({
-      name: Yup.string().required('Name is required'),
-      command: Yup.string().required('Command is required'),
-      parameters: Yup.string().required('Parameters are is required'),
+  const defaultValues = useMemo(
+    () => ({
+      name: profile?.name || '',
+      command: profile?.command || '',
+      parameters: profile?.parameters || '',
+      is_active: profile?.is_active ?? true,
+      user_agent: profile?.user_agent || '',
     }),
-    onSubmit: async (values, { setSubmitting, resetForm }) => {
-      if (profile?.id) {
-        await API.updateStreamProfile({ id: profile.id, ...values });
-      } else {
-        await API.addStreamProfile(values);
-      }
+    [profile]
+  );
 
-      resetForm();
-      setSubmitting(false);
-      onClose();
-    },
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+    reset,
+    watch,
+  } = useForm({
+    defaultValues,
+    resolver: yupResolver(schema),
   });
 
-  useEffect(() => {
-    if (profile) {
-      formik.setValues({
-        name: profile.name,
-        command: profile.command,
-        parameters: profile.parameters,
-        is_active: profile.is_active,
-        user_agent: profile.user_agent,
-      });
+  const onSubmit = async (values) => {
+    if (profile?.id) {
+      await API.updateStreamProfile({ id: profile.id, ...values });
     } else {
-      formik.resetForm();
+      await API.addStreamProfile(values);
     }
-  }, [profile]);
+
+    reset();
+    onClose();
+  };
+
+  useEffect(() => {
+    reset(defaultValues);
+  }, [defaultValues, reset]);
 
   if (!isOpen) {
     return <></>;
   }
 
+  const userAgentValue = watch('user_agent');
+
   return (
     <Modal opened={isOpen} onClose={onClose} title="Stream Profile">
-      <form onSubmit={formik.handleSubmit}>
+      <form onSubmit={handleSubmit(onSubmit)}>
         <TextInput
-          id="name"
-          name="name"
           label="Name"
-          value={formik.values.name}
-          onChange={formik.handleChange}
-          error={formik.errors.name}
+          {...register('name')}
+          error={errors.name?.message}
           disabled={profile ? profile.locked : false}
         />
         <TextInput
-          id="command"
-          name="command"
           label="Command"
-          value={formik.values.command}
-          onChange={formik.handleChange}
-          error={formik.errors.command}
+          {...register('command')}
+          error={errors.command?.message}
           disabled={profile ? profile.locked : false}
         />
         <TextInput
-          id="parameters"
-          name="parameters"
           label="Parameters"
-          value={formik.values.parameters}
-          onChange={formik.handleChange}
-          error={formik.errors.parameters}
+          {...register('parameters')}
+          error={errors.parameters?.message}
           disabled={profile ? profile.locked : false}
         />
 
         <Select
-          id="user_agent"
-          name="user_agent"
           label="User-Agent"
-          value={formik.values.user_agent}
-          onChange={formik.handleChange}
-          error={formik.errors.user_agent}
+          {...register('user_agent')}
+          value={userAgentValue}
+          error={errors.user_agent?.message}
           data={userAgents.map((ua) => ({
             label: ua.name,
             value: `${ua.id}`,
@@ -102,7 +97,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
             type="submit"
             variant="contained"
             color="primary"
-            disabled={formik.isSubmitting}
+            disabled={isSubmitting}
             size="small"
           >
             Submit

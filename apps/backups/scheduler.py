@@ -9,60 +9,47 @@ logger = logging.getLogger(__name__)
 
 BACKUP_SCHEDULE_TASK_NAME = "backup-scheduled-task"
 
-SETTING_KEYS = {
-    "enabled": "backup_schedule_enabled",
-    "frequency": "backup_schedule_frequency",
-    "time": "backup_schedule_time",
-    "day_of_week": "backup_schedule_day_of_week",
-    "retention_count": "backup_retention_count",
-    "cron_expression": "backup_schedule_cron_expression",
-}
-
 DEFAULTS = {
-    "enabled": True,
-    "frequency": "daily",
-    "time": "03:00",
-    "day_of_week": 0,  # Sunday
+    "schedule_enabled": True,
+    "schedule_frequency": "daily",
+    "schedule_time": "03:00",
+    "schedule_day_of_week": 0,  # Sunday
     "retention_count": 3,
-    "cron_expression": "",
+    "schedule_cron_expression": "",
 }
 
 
-def _get_setting(key: str, default=None):
-    """Get a backup setting from CoreSettings."""
+def _get_backup_settings():
+    """Get all backup settings from CoreSettings grouped JSON."""
     try:
-        setting = CoreSettings.objects.get(key=SETTING_KEYS[key])
-        value = setting.value
-        if key == "enabled":
-            return value.lower() == "true"
-        elif key in ("day_of_week", "retention_count"):
-            return int(value)
-        return value
+        settings_obj = CoreSettings.objects.get(key="backup_settings")
+        return settings_obj.value if isinstance(settings_obj.value, dict) else DEFAULTS.copy()
     except CoreSettings.DoesNotExist:
-        return default if default is not None else DEFAULTS.get(key)
+        return DEFAULTS.copy()
 
 
-def _set_setting(key: str, value) -> None:
-    """Set a backup setting in CoreSettings."""
-    str_value = str(value).lower() if isinstance(value, bool) else str(value)
-    CoreSettings.objects.update_or_create(
-        key=SETTING_KEYS[key],
-        defaults={
-            "name": f"Backup {key.replace('_', ' ').title()}",
-            "value": str_value,
-        },
+def _update_backup_settings(updates: dict) -> None:
+    """Update backup settings in the grouped JSON."""
+    obj, created = CoreSettings.objects.get_or_create(
+        key="backup_settings",
+        defaults={"name": "Backup Settings", "value": DEFAULTS.copy()}
     )
+    current = obj.value if isinstance(obj.value, dict) else {}
+    current.update(updates)
+    obj.value = current
+    obj.save()
 
 
 def get_schedule_settings() -> dict:
     """Get all backup schedule settings."""
+    settings = _get_backup_settings()
     return {
-        "enabled": _get_setting("enabled"),
-        "frequency": _get_setting("frequency"),
-        "time": _get_setting("time"),
-        "day_of_week": _get_setting("day_of_week"),
-        "retention_count": _get_setting("retention_count"),
-        "cron_expression": _get_setting("cron_expression"),
+        "enabled": bool(settings.get("schedule_enabled", DEFAULTS["schedule_enabled"])),
+        "frequency": str(settings.get("schedule_frequency", DEFAULTS["schedule_frequency"])),
+        "time": str(settings.get("schedule_time", DEFAULTS["schedule_time"])),
+        "day_of_week": int(settings.get("schedule_day_of_week", DEFAULTS["schedule_day_of_week"])),
+        "retention_count": int(settings.get("retention_count", DEFAULTS["retention_count"])),
+        "cron_expression": str(settings.get("schedule_cron_expression", DEFAULTS["schedule_cron_expression"])),
     }
 
 
@@ -90,10 +77,22 @@ def update_schedule_settings(data: dict) -> dict:
         if count < 0:
             raise ValueError("retention_count must be >= 0")
 
-    # Update settings
-    for key in ("enabled", "frequency", "time", "day_of_week", "retention_count", "cron_expression"):
-        if key in data:
-            _set_setting(key, data[key])
+    # Update settings with proper key names
+    updates = {}
+    if "enabled" in data:
+        updates["schedule_enabled"] = bool(data["enabled"])
+    if "frequency" in data:
+        updates["schedule_frequency"] = str(data["frequency"])
+    if "time" in data:
+        updates["schedule_time"] = str(data["time"])
+    if "day_of_week" in data:
+        updates["schedule_day_of_week"] = int(data["day_of_week"])
+    if "retention_count" in data:
+        updates["retention_count"] = int(data["retention_count"])
+    if "cron_expression" in data:
+        updates["schedule_cron_expression"] = str(data["cron_expression"])
+
+    _update_backup_settings(updates)
 
     # Sync the periodic task
     _sync_periodic_task()

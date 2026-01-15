@@ -357,12 +357,12 @@ class RedisBackedVODConnection:
 
             logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")
 
-            # Make request
+            # Make request (10s connect, 10s read timeout - keeps lock time reasonable if client disconnects)
             response = self.local_session.get(
                 target_url,
                 headers=headers,
                 stream=True,
-                timeout=(10, 30),
+                timeout=(10, 10),
                 allow_redirects=allow_redirects
             )
             response.raise_for_status()
@@ -712,6 +712,10 @@ class MultiWorkerVODConnectionManager:
         content_name = content_obj.name if hasattr(content_obj, 'name') else str(content_obj)
         client_id = session_id
 
+        # Track whether we incremented profile connections (for cleanup on error)
+        profile_connections_incremented = False
+        redis_connection = None
+
         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed streaming request for {content_type} {content_name}")
 
         try:
@@ -802,6 +806,7 @@ class MultiWorkerVODConnectionManager:
 
                 # Increment profile connections after successful connection creation
                 self._increment_profile_connections(m3u_profile)
+                profile_connections_incremented = True
 
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Created consolidated connection with session metadata")
             else:
@@ -1024,6 +1029,19 @@ class MultiWorkerVODConnectionManager:
 
         except Exception as e:
             logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream_content_with_session: {e}", exc_info=True)
+
+            # Decrement profile connections if we incremented them but failed before streaming started
+            if profile_connections_incremented:
+                logger.info(f"[{client_id}] Connection error occurred after profile increment - decrementing profile connections")
+                self._decrement_profile_connections(m3u_profile.id)
+
+                # Also clean up the Redis connection state since we won't be using it
+                if redis_connection:
+                    try:
+                        redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                    except Exception as cleanup_error:
+                        logger.error(f"[{client_id}] Error during cleanup after connection failure: {cleanup_error}")
+
             return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
     def stream_local_file_with_session(self, session_id, content_obj, file_path, relation,

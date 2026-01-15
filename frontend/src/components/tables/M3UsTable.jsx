@@ -140,6 +140,7 @@ const M3UTable = () => {
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
   const [data, setData] = useState([]);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [deleting, setDeleting] = useState(false);
 
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
@@ -400,9 +401,14 @@ const M3UTable = () => {
 
   const executeDeletePlaylist = async (id) => {
     setIsLoading(true);
-    await API.deletePlaylist(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deletePlaylist(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const toggleActive = async (playlist) => {
@@ -893,6 +899,7 @@ const M3UTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeletePlaylist(deleteTarget)}
+        loading={deleting}
         title="Confirm M3U Account Deletion"
         message={
           playlistToDelete ? (

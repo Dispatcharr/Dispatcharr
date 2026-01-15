@@ -2679,7 +2679,38 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                         )
 
                     # Handle channel profile membership
-                    if profile_ids:
+                    # Semantics:
+                    # - None: add to ALL profiles (backward compatible default)
+                    # - Empty array []: add to NO profiles
+                    # - Sentinel [0] or 0 in array: add to ALL profiles (explicit)
+                    # - [1,2,...]: add to specified profile IDs only
+                    if profile_ids is None:
+                        # Omitted -> add to all profiles (backward compatible)
+                        all_profiles = ChannelProfile.objects.all()
+                        channel_profile_memberships.extend([
+                            ChannelProfileMembership(
+                                channel_profile=profile,
+                                channel=channel,
+                                enabled=True
+                            )
+                            for profile in all_profiles
+                        ])
+                    elif isinstance(profile_ids, list) and len(profile_ids) == 0:
+                        # Empty array -> add to no profiles
+                        pass
+                    elif isinstance(profile_ids, list) and 0 in profile_ids:
+                        # Sentinel 0 -> add to all profiles (explicit)
+                        all_profiles = ChannelProfile.objects.all()
+                        channel_profile_memberships.extend([
+                            ChannelProfileMembership(
+                                channel_profile=profile,
+                                channel=channel,
+                                enabled=True
+                            )
+                            for profile in all_profiles
+                        ])
+                    else:
+                        # Specific profile IDs
                         try:
                             specific_profiles = ChannelProfile.objects.filter(id__in=profile_ids)
                             channel_profile_memberships.extend([
@@ -2695,17 +2726,6 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                                 'channel_id': channel.id,
                                 'error': f'Failed to add to profiles: {str(e)}'
                             })
-                    else:
-                        # Add to all profiles by default
-                        all_profiles = ChannelProfile.objects.all()
-                        channel_profile_memberships.extend([
-                            ChannelProfileMembership(
-                                channel_profile=profile,
-                                channel=channel,
-                                enabled=True
-                            )
-                            for profile in all_profiles
-                        ])
 
                 # Bulk update channels with logos
                 if update:

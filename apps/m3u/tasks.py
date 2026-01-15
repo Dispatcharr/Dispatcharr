@@ -513,7 +513,19 @@ def check_field_lengths(streams_to_create):
 
 
 @shared_task
-def process_groups(account, groups):
+def process_groups(account, groups, scan_start_time=None):
+    """Process groups and update their relationships with the M3U account.
+
+    Args:
+        account: M3UAccount instance
+        groups: Dict of group names to custom properties
+        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
+    """
+    # Use scan_start_time if provided, otherwise current time
+    # This ensures consistency with stream processing and cleanup logic
+    if scan_start_time is None:
+        scan_start_time = timezone.now()
+
     existing_groups = {
         group.name: group
         for group in ChannelGroup.objects.filter(name__in=groups.keys())
@@ -553,24 +565,8 @@ def process_groups(account, groups):
         ).select_related('channel_group')
     }
 
-    # Get ALL existing relationships for this account to identify orphaned ones
-    all_existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account
-        ).select_related('channel_group')
-    }
-
     relations_to_create = []
     relations_to_update = []
-    relations_to_delete = []
-
-    # Find orphaned relationships (groups that no longer exist in the source)
-    current_group_names = set(groups.keys())
-    for group_name, rel in all_existing_relationships.items():
-        if group_name not in current_group_names:
-            relations_to_delete.append(rel)
-            logger.debug(f"Marking relationship for deletion: group '{group_name}' no longer exists in source for account {account.id}")
 
     for group in all_group_objs:
         custom_props = groups.get(group.name, {})
@@ -597,9 +593,15 @@ def process_groups(account, groups):
                     del updated_custom_props["xc_id"]
 
                 existing_rel.custom_properties = updated_custom_props
+                existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
                 logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
             else:
+                # Update last_seen even if xc_id hasn't changed
+                existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
+                relations_to_update.append(existing_rel)
                 logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
         else:
             # Create new relationship - this group is new to this M3U account
@@ -613,6 +615,8 @@ def process_groups(account, groups):
                     m3u_account=account,
                     custom_properties=custom_props,
                     enabled=auto_enable_new_groups_live,
+                    last_seen=scan_start_time,
+                    is_stale=False,
                 )
             )
 
@@ -623,15 +627,38 @@ def process_groups(account, groups):
 
     # Bulk update existing relationships
     if relations_to_update:
-        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties'])
-        logger.info(f"Updated {len(relations_to_update)} existing group relationships with new xc_id values for account {account.id}")
+        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties', 'last_seen', 'is_stale'])
+        logger.info(f"Updated {len(relations_to_update)} existing group relationships for account {account.id}")
 
-    # Delete orphaned relationships
-    if relations_to_delete:
-        ChannelGroupM3UAccount.objects.filter(
-            id__in=[rel.id for rel in relations_to_delete]
-        ).delete()
-        logger.info(f"Deleted {len(relations_to_delete)} orphaned group relationships for account {account.id}: {[rel.channel_group.name for rel in relations_to_delete]}")
+
+def cleanup_stale_group_relationships(account, scan_start_time):
+    """
+    Remove group relationships that haven't been seen since the stale retention period.
+    This follows the same logic as stream cleanup for consistency.
+    """
+    # Calculate cutoff date for stale group relationships
+    stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
+    logger.info(
+        f"Removing group relationships not seen since {stale_cutoff} for M3U account {account.id}"
+    )
+
+    # Find stale relationships
+    stale_relationships = ChannelGroupM3UAccount.objects.filter(
+        m3u_account=account,
+        last_seen__lt=stale_cutoff
+    ).select_related('channel_group')
+
+    relations_to_delete = list(stale_relationships)
+    deleted_count = len(relations_to_delete)
+
+    if deleted_count > 0:
+        logger.info(
+            f"Found {deleted_count} stale group relationships for account {account.id}: "
+            f"{[rel.channel_group.name for rel in relations_to_delete]}"
+        )
+
+        # Delete the stale relationships
+        stale_relationships.delete()
 
         # Check if any of the deleted relationships left groups with no remaining associations
         orphaned_group_ids = []
@@ -656,6 +683,10 @@ def process_groups(account, groups):
             deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
             ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
             logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
+    else:
+        logger.debug(f"No stale group relationships found for account {account.id}")
+
+    return deleted_count
 
 
 def collect_xc_streams(account_id, enabled_groups):
@@ -803,6 +834,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
+                            "is_stale": False,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -838,10 +870,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         setattr(obj, key, value)
                     obj.last_seen = timezone.now()
                     obj.updated_at = timezone.now()  # Update timestamp only for changed streams
+                    obj.is_stale = False
                     streams_to_update.append(obj)
                 else:
                     # Always update last_seen, even if nothing else changed
                     obj.last_seen = timezone.now()
+                    obj.is_stale = False
                     # Don't update updated_at for unchanged streams
                     streams_to_update.append(obj)
 
@@ -852,6 +886,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 stream_props["updated_at"] = (
                     timezone.now()
                 )  # Set initial updated_at for new streams
+                stream_props["is_stale"] = False
                 streams_to_create.append(Stream(**stream_props))
 
         try:
@@ -863,7 +898,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -976,6 +1011,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
+                "is_stale": False,
             }
 
             if stream_hash not in stream_hashes:
@@ -1015,11 +1051,15 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties = stream_props["custom_properties"]
                 obj.updated_at = timezone.now()
 
+            # Always mark as not stale since we saw it in this refresh
+            obj.is_stale = False
+
             streams_to_update.append(obj)
         else:
             # New stream
             stream_props["last_seen"] = timezone.now()
             stream_props["updated_at"] = timezone.now()
+            stream_props["is_stale"] = False
             streams_to_create.append(Stream(**stream_props))
 
     try:
@@ -1031,7 +1071,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
                     batch_size=200
                 )
     except Exception as e:
@@ -1092,7 +1132,15 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
 
 
 @shared_task
-def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
+def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_start_time=None):
+    """Refresh M3U groups for an account.
+
+    Args:
+        account_id: ID of the M3U account
+        use_cache: Whether to use cached M3U file
+        full_refresh: Whether this is part of a full refresh
+        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
+    """
     if not acquire_task_lock("refresh_m3u_account_groups", account_id):
         return f"Task already running for account_id={account_id}.", None
 
@@ -1419,7 +1467,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
 
     send_m3u_update(account_id, "processing_groups", 0)
 
-    process_groups(account, groups)
+    process_groups(account, groups, scan_start_time)
 
     release_task_lock("refresh_m3u_account_groups", account_id)
 
@@ -2526,7 +2574,7 @@ def refresh_single_m3u_account(account_id):
     if not extinf_data:
         try:
             logger.info(f"Calling refresh_m3u_groups for account {account_id}")
-            result = refresh_m3u_groups(account_id, full_refresh=True)
+            result = refresh_m3u_groups(account_id, full_refresh=True, scan_start_time=refresh_start_timestamp)
             logger.trace(f"refresh_m3u_groups result: {result}")
 
             # Check for completely empty result or missing groups
@@ -2806,8 +2854,25 @@ def refresh_single_m3u_account(account_id):
             id=-1
         ).exists()  # This will never find anything but ensures DB sync
 
+        # Mark streams that weren't seen in this refresh as stale (pending deletion)
+        stale_stream_count = Stream.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
+
+        # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
+        stale_group_count = ChannelGroupM3UAccount.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_group_count} group relationships as stale for account {account_id}")
+
         # Now run cleanup
         streams_deleted = cleanup_streams(account_id, refresh_start_timestamp)
+
+        # Cleanup stale group relationships (follows same retention policy as streams)
+        cleanup_stale_group_relationships(account, refresh_start_timestamp)
 
         # Run auto channel sync after successful refresh
         auto_sync_message = ""

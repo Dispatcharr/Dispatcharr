@@ -1,5 +1,6 @@
 # core/views.py
 import os
+from shlex import split as shlex_split
 import sys
 import subprocess
 import logging
@@ -131,7 +132,7 @@ def stream_view(request, channel_uuid):
         stream_profile = channel.stream_profile
         if not stream_profile:
             logger.error("No stream profile set for channel ID=%s, using default", channel.id)
-            stream_profile = StreamProfile.objects.get(id=CoreSettings.objects.get(key="default-stream-profile").value)
+            stream_profile = StreamProfile.objects.get(id=CoreSettings.get_default_stream_profile_id())
 
         logger.debug("Stream profile used: %s", stream_profile.name)
 
@@ -144,7 +145,7 @@ def stream_view(request, channel_uuid):
         logger.debug("Formatted parameters: %s", parameters)
 
         # Build the final command.
-        cmd = [stream_profile.command] + parameters.split()
+        cmd = [stream_profile.command] + shlex_split(parameters)
         logger.debug("Executing command: %s", cmd)
 
         try:

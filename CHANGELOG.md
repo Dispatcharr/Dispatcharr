@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+
+### Fixed
+
+- Fixed NumPy baseline detection in Docker entrypoint. Now calls `numpy.show_config()` directly with case-insensitive grep instead of incorrectly wrapping the output.
+- Fixed SettingsUtils frontend tests for new grouped settings architecture. Updated test suite to properly verify grouped JSON settings (stream_settings, dvr_settings, etc.) instead of individual CharField settings, including tests for type conversions, array-to-CSV transformations, and special handling of proxy_settings and network_access.
+
+## [0.17.0] - 2026-01-13
+
+### Added
+
+- Loading feedback for all confirmation dialogs: Extended visual loading indicators across all confirmation dialogs throughout the application. Delete, cleanup, and bulk operation dialogs now show an animated dots loader and disabled state during async operations, providing consistent user feedback for backups (restore/delete), channels, EPGs, logos, VOD logos, M3U accounts, streams, users, groups, filters, profiles, batch operations, and network access changes.
+- Channel profile edit and duplicate functionality: Users can now rename existing channel profiles and create duplicates with automatic channel membership cloning. Each profile action (edit, duplicate, delete) in the profile dropdown for quick access.
+- ProfileModal component extracted for improved code organization and maintainability of channel profile management operations.
+- Frontend unit tests for pages and utilities: Added comprehensive unit test coverage for frontend components within pages/ and JS files within utils/, along with a GitHub Actions workflow (`frontend-tests.yml`) to automatically run tests on commits and pull requests - Thanks [@nick4810](https://github.com/nick4810)
+- Channel Profile membership control for manual channel creation and bulk operations: Extended the existing `channel_profile_ids` parameter from `POST /api/channels/from-stream/` to also support `POST /api/channels/` (manual creation) and bulk creation tasks with the same flexible semantics:
+  - Omitted parameter (default): Channels are added to ALL profiles (preserves backward compatibility)
+  - Empty array `[]`: Channels are added to NO profiles
+  - Sentinel value `[0]`: Channels are added to ALL profiles (explicit)
+  - Specific IDs `[1, 2, ...]`: Channels are added only to the specified profiles
+    This allows API consumers to control profile membership across all channel creation methods without requiring all channels to be added to every profile by default.
+- Channel profile selection in creation modal: Users can now choose which profiles to add channels to when creating channels from streams (both single and bulk operations). Options include adding to all profiles, no profiles, or specific profiles with mutual exclusivity between special options ("All Profiles", "None") and specific profile selections. Profile selection defaults to the current table filter for intuitive workflow.
+- Group retention policy for M3U accounts: Groups now follow the same stale retention logic as streams, using the account's `stale_stream_days` setting. Groups that temporarily disappear from an M3U source are retained for the configured retention period instead of being immediately deleted, preserving user settings and preventing data loss when providers temporarily remove/re-add groups. (Closes #809)
+- Visual stale indicators for streams and groups: Added `is_stale` field to Stream and both `is_stale` and `last_seen` fields to ChannelGroupM3UAccount models to track items in their retention grace period. Stale groups display with orange buttons and a warning tooltip, while stale streams show with a red background color matching the visual treatment of empty channels.
+
+### Changed
+
+- Settings architecture refactored to use grouped JSON storage: Migrated from individual CharField settings to grouped JSONField settings for improved performance, maintainability, and type safety. Settings are now organized into logical groups (stream_settings, dvr_settings, backup_settings, system_settings, proxy_settings, network_access) with automatic migration handling. Backend provides helper methods (`get_stream_settings()`, `get_default_user_agent_id()`, etc.) for easy access. Frontend simplified by removing complex key mapping logic and standardizing on underscore-based field names throughout.
+- Docker setup enhanced for legacy CPU support: Added `USE_LEGACY_NUMPY` environment variable to enable custom-built NumPy with no CPU baseline, allowing Dispatcharr to run on older CPUs (circa 2009) that lack support for newer baseline CPU features. When set to `true`, the entrypoint script will install the legacy NumPy build instead of the standard distribution. (Fixes #805)
+- VOD upstream read timeout reduced from 30 seconds to 10 seconds to minimize lock hold time when clients disconnect during connection phase
+- Form management refactored across application: Migrated Channel, Stream, M3U Profile, Stream Profile, Logo, and User Agent forms from Formik to React Hook Form (RHF) with Yup validation for improved form handling, better validation feedback, and enhanced code maintainability
+- Stats and VOD pages refactored for clearer separation of concerns: extracted Stream/VOD connection cards (StreamConnectionCard, VodConnectionCard, VODCard, SeriesCard), moved page logic into dedicated utils, and lazy-loaded heavy components with ErrorBoundary fallbacks to improve readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+- Channel creation modal refactored: Extracted and unified channel numbering dialogs from StreamsTable into a dedicated CreateChannelModal component that handles both single and bulk channel creation with cleaner, more maintainable implementation and integrated profile selection controls.
+
+### Fixed
+
+- Fixed bulk channel profile membership update endpoint silently ignoring channels without existing membership records. The endpoint now creates missing memberships automatically (matching single-channel endpoint behavior), validates that all channel IDs exist before processing, and provides detailed response feedback including counts of updated vs. created memberships. Added comprehensive Swagger documentation with request/response schemas.
+- Fixed bulk channel edit endpoint crashing with `ValueError: Field names must be given to bulk_update()` when the first channel in the update list had no actual field changes. The endpoint now collects all unique field names from all channels being updated instead of only looking at the first channel, properly handling cases where different channels update different fields or when some channels have no changes - Thanks [@mdellavo](https://github.com/mdellavo) (Fixes #804)
+- Fixed PostgreSQL backup restore not completely cleaning database before restoration. The restore process now drops and recreates the entire `public` schema before running `pg_restore`, ensuring a truly clean restore that removes all tables, functions, and other objects not present in the backup file. This prevents leftover database objects from persisting when restoring backups from older branches or versions. Added `--no-owner` flag to `pg_restore` to avoid role permission errors when the backup was created by a different PostgreSQL user.
+- Fixed TV Guide loading overlay not disappearing after navigating from DVR page. The `fetchRecordings()` function in the channels store was setting `isLoading: true` on start but never resetting it to `false` on successful completion, causing the Guide page's loading overlay to remain visible indefinitely when accessed after the DVR page.
+- Fixed stream profile parameters not properly handling quoted arguments. Switched from basic `.split()` to `shlex.split()` for parsing command-line parameters, allowing proper handling of multi-word arguments in quotes (e.g., OAuth tokens in HTTP headers like `"--twitch-api-header=Authorization=OAuth token123"`). This ensures external streaming tools like Streamlink and FFmpeg receive correctly formatted arguments when using stream profiles with complex parameters - Thanks [@justinforlenza](https://github.com/justinforlenza) (Fixes #833)
+- Fixed bulk and manual channel creation not refreshing channel profile memberships in the UI for all connected clients. WebSocket `channels_created` event now calls `fetchChannelProfiles()` to ensure profile membership updates are reflected in real-time for all users without requiring a page refresh.
+- Fixed Channel Profile filter incorrectly applying profile membership filtering even when "Show Disabled" was enabled, preventing all channels from being displayed. Profile filter now only applies when hiding disabled channels. (Fixes #825)
+- Fixed manual channel creation not adding channels to channel profiles. Manually created channels are now added to the selected profile if one is active, or to all profiles if "All" is selected, matching the behavior of channels created from streams.
+- Fixed VOD streams disappearing from stats page during playback by adding `socket-timeout = 600` to production uWSGI config. The missing directive caused uWSGI to use its default 4-second timeout, triggering premature cleanup when clients buffered content. Now matches the existing `http-timeout = 600` value and prevents timeout errors during normal client buffering - Thanks [@patchy8736](https://github.com/patchy8736)
+- Fixed Channels table EPG column showing "Not Assigned" on initial load for users with large EPG datasets. Added `tvgsLoaded` flag to EPG store to track when EPG data has finished loading, ensuring the table waits for EPG data before displaying. EPG cells now show animated skeleton placeholders while loading instead of incorrectly showing "Not Assigned". (Fixes #810)
+- Fixed VOD profile connection count not being decremented when stream connection fails (timeout, 404, etc.), preventing profiles from reaching capacity limits and rejecting valid stream requests
+- Fixed React warning in Channel form by removing invalid `removeTrailingZeros` prop from NumberInput component
+- Release workflow Docker tagging: Fixed issue where `latest` and version tags (e.g., `0.16.0`) were creating separate manifests instead of pointing to the same image digest, which caused old `latest` tags to become orphaned/untagged after new releases. Now creates a single multi-arch manifest with both tags, maintaining proper tag relationships and download statistics visibility on GitHub.
+- Fixed onboarding message appearing in the Channels Table when filtered results are empty. The onboarding message now only displays when there are no channels created at all, not when channels exist but are filtered out by current filters.
+- Fixed `M3UMovieRelation.get_stream_url()` and `M3UEpisodeRelation.get_stream_url()` to use XC client's `_normalize_url()` method instead of simple `rstrip('/')`. This properly handles malformed M3U account URLs (e.g., containing `/player_api.php` or query parameters) before constructing VOD stream endpoints, matching behavior of live channel URL building. (Closes #722)
+- Fixed bulk_create and bulk_update errors during VOD content refresh by pre-checking object existence with optimized bulk queries (3 queries total instead of N per batch) before creating new objects. This ensures all movie/series objects have primary keys before relation operations, preventing "prohibited to prevent data loss due to unsaved related object" errors. Additionally fixed duplicate key constraint violations by treating TMDB/IMDB ID values of `0` or `'0'` as invalid (some providers use this to indicate "no ID"), converting them to NULL to prevent multiple items from incorrectly sharing the same ID. (Fixes #813)
+
+## [0.16.0] - 2026-01-04
+
 ### Added
 
 - Media Library app with library management, scanning pipeline, watch progress, and metadata sync

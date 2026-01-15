@@ -74,6 +74,7 @@ export default function VODLogosTable() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [paginationString, setPaginationString] = useState('');
   const [isCleaningUp, setIsCleaningUp] = useState(false);
   const tableRef = React.useRef(null);
@@ -139,6 +140,7 @@ export default function VODLogosTable() {
   }, []);
 
   const handleConfirmDelete = async () => {
+    setDeleting(true);
     try {
       if (deleteTarget.length === 1) {
         await deleteVODLogo(deleteTarget[0]);
@@ -162,6 +164,7 @@ export default function VODLogosTable() {
         color: 'red',
       });
     } finally {
+      setDeleting(false);
       // Always clear selections and close dialog, even on error
       clearSelections();
       setConfirmDeleteOpen(false);
@@ -571,6 +574,7 @@ export default function VODLogosTable() {
           // pass deleteFiles option through
           handleConfirmDelete(deleteFiles);
         }}
+        loading={deleting}
         title={
           deleteTarget && deleteTarget.length > 1
             ? 'Delete Multiple Logos'
@@ -633,6 +637,7 @@ export default function VODLogosTable() {
       <ConfirmationDialog
         opened={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
+        loading={isCleaningUp}
         onConfirm={handleConfirmCleanup}
         title="Cleanup Unused Logos"
         message={

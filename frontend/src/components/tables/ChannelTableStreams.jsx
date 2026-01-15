@@ -105,6 +105,7 @@ const DraggableRow = ({ row, index }) => {
       }}
     >
       {row.getVisibleCells().map((cell) => {
+        const isStale = row.original.is_stale;
         return (
           <Box
             className="td"
@@ -115,6 +116,9 @@ const DraggableRow = ({ row, index }) => {
                 ? cell.column.getSize()
                 : undefined,
               minWidth: 0,
+              ...(isStale && {
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              }),
             }}
           >
             <Flex align="center" style={{ height: '100%' }}>

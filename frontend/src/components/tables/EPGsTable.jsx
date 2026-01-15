@@ -110,6 +110,7 @@ const EPGsTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [epgToDelete, setEpgToDelete] = useState(null);
   const [data, setData] = useState([]);
+  const [deleting, setDeleting] = useState(false);
 
   const epgs = useEPGsStore((s) => s.epgs);
   const refreshProgress = useEPGsStore((s) => s.refreshProgress);
@@ -431,10 +432,13 @@ const EPGsTable = () => {
   };
 
   const executeDeleteEPG = async (id) => {
-    setIsLoading(true);
-    await API.deleteEPG(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteEPG(id);
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const refreshEPG = async (id) => {
@@ -688,6 +692,7 @@ const EPGsTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteEPG(deleteTarget)}
+        loading={deleting}
         title="Confirm EPG Source Deletion"
         message={
           epgToDelete ? (
