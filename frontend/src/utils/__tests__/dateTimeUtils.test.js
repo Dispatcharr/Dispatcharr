@@ -293,6 +293,7 @@ describe('dateTimeUtils', () => {
 
       const converted = result.current.toUserTime(null);
 
+      expect(converted).toBeDefined();
       expect(converted.isValid()).toBe(false);
     });
 

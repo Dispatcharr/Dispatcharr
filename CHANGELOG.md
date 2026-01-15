@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+
 ### Fixed
 
 - Fixed NumPy baseline detection in Docker entrypoint. Now calls `numpy.show_config()` directly with case-insensitive grep instead of incorrectly wrapping the output.
+- Fixed SettingsUtils frontend tests for new grouped settings architecture. Updated test suite to properly verify grouped JSON settings (stream_settings, dvr_settings, etc.) instead of individual CharField settings, including tests for type conversions, array-to-CSV transformations, and special handling of proxy_settings and network_access.
 
 ## [0.17.0] - 2026-01-13
 
