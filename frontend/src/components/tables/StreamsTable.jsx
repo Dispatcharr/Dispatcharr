@@ -68,8 +68,9 @@ const StreamRowActions = ({
   handleWatchStream,
   selectedChannelIds,
   createChannelFromStream,
+  table,
 }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
@@ -268,7 +269,6 @@ const StreamsTable = ({ onReady }) => {
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   // Warnings store for "remember choice" functionality
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -286,7 +286,7 @@ const StreamsTable = ({ onReady }) => {
     () => [
       {
         id: 'actions',
-        size: columnSizing.actions || (tableSize == 'compact' ? 60 : 80),
+        size: columnSizing.actions || 75,
       },
       {
         id: 'select',
@@ -354,7 +354,7 @@ const StreamsTable = ({ onReady }) => {
         ),
       },
     ],
-    [channelGroups, playlists, columnSizing, tableSize]
+    [channelGroups, playlists, columnSizing]
   );
 
   /**

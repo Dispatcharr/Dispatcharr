@@ -9,6 +9,7 @@ const CustomTableHeader = ({
   headerCellRenderFns,
   onSelectAllChange,
   tableCellProps,
+  headerPinned = true,
 }) => {
   const renderHeaderCell = (header) => {
     if (headerCellRenderFns[header.id]) {
@@ -59,15 +60,22 @@ const CustomTableHeader = ({
     return width;
   }, [headerGroups]);
 
+  // Memoize the style object to ensure it updates when headerPinned changes
+  const headerStyle = useMemo(
+    () => ({
+      position: headerPinned ? 'sticky' : 'relative',
+      top: headerPinned ? 0 : 'auto',
+      backgroundColor: '#3E3E45',
+      zIndex: headerPinned ? 10 : 1,
+    }),
+    [headerPinned]
+  );
+
   return (
     <Box
       className="thead"
-      style={{
-        position: 'sticky',
-        top: 0,
-        backgroundColor: '#3E3E45',
-        zIndex: 10,
-      }}
+      style={headerStyle}
+      data-header-pinned={headerPinned ? 'true' : 'false'}
     >
       {getHeaderGroups().map((headerGroup) => (
         <Box

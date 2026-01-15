@@ -114,6 +114,7 @@ const ChannelRowActions = React.memo(
   ({
     theme,
     row,
+    table,
     editChannel,
     deleteChannel,
     handleWatchStream,
@@ -123,7 +124,6 @@ const ChannelRowActions = React.memo(
     // Extract the channel ID once to ensure consistency
     const channelId = row.original.id;
     const channelUuid = row.original.uuid;
-    const [tableSize, _] = useLocalStorage('table-size', 'default');
 
     const authUser = useAuthStore((s) => s.user);
 
@@ -149,6 +149,7 @@ const ChannelRowActions = React.memo(
       createRecording(row.original);
     }, [channelId]);
 
+    const tableSize = table?.tableSize ?? 'default';
     const iconSize =
       tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
 
@@ -272,7 +273,6 @@ const ChannelsTable = ({ onReady }) => {
   // store/settings
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   // store/warnings
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
@@ -429,9 +429,10 @@ const ChannelsTable = ({ onReady }) => {
     setIsLoading(false);
     hasFetchedData.current = true;
 
-    setTablePrefs({
+    setTablePrefs((prev) => ({
+      ...prev,
       pageSize: pagination.pageSize,
-    });
+    }));
     setAllRowIds(ids);
 
     // Signal ready after first successful data fetch AND EPG data is loaded
@@ -949,13 +950,14 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: 100,
         enableResizing: false,
         header: '',
-        cell: ({ row }) => (
+        cell: ({ row, table }) => (
           <ChannelRowActions
             theme={theme}
             row={row}
+            table={table}
             editChannel={editChannel}
             deleteChannel={deleteChannel}
             handleWatchStream={handleWatchStream}
