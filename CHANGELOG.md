@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Table header pin toggle: Pin/unpin table headers to keep them visible while scrolling. Toggle available in channel table menu and UI Settings page. Setting persists across sessions and applies to all tables. (Closes #663)
+- Cascading filters for streams table: Improved filter usability with hierarchical M3U and Group dropdowns. M3U acts as the parent filter showing only active/enabled accounts, while Group options dynamically update to display only groups available in the selected M3U(s). Only enabled M3U's are displayed. (Closes #647)
 
 ### Changed
 

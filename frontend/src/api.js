@@ -727,6 +727,18 @@ export default class API {
     }
   }
 
+  static async getStreamFilterOptions(params) {
+    try {
+      const response = await request(
+        `${host}/api/channels/streams/filter-options/?${params.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve filter options', e);
+    }
+  }
+
   static async addStream(values) {
     try {
       const response = await request(`${host}/api/channels/streams/`, {
