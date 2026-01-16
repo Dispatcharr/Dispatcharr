@@ -555,10 +555,17 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if movie.logo != new_logo:
-                    movie._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if movie.logo != new_logo:
+                        movie._logo_to_update = new_logo
+                        logo_updated = True
+                elif movie.logo:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                    movie._logo_to_update = None
                     logo_updated = True
             elif (not logo_url or len(logo_url) > 500) and movie.logo:
                 # Clear logo if no logo URL provided or URL is too long
@@ -662,6 +669,8 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                 for movie in movies_to_update:
                     if hasattr(movie, '_logo_to_update'):
                         movie.logo = movie._logo_to_update
+                        # Validate logo reference exists before saving
+                        validate_logo_reference(movie, "Movie")
                         movie.save(update_fields=['logo'])
 
             # Update relations to reference the correct movie objects (with PKs)
@@ -905,10 +914,17 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if series.logo != new_logo:
-                    series._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if series.logo != new_logo:
+                        series._logo_to_update = new_logo
+                        logo_updated = True
+                elif series.logo:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                    series._logo_to_update = None
                     logo_updated = True
             elif (not logo_url or len(logo_url) > 500) and series.logo:
                 # Clear logo if no logo URL provided or URL is too long
@@ -1012,6 +1028,8 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                 for series in series_to_update:
                     if hasattr(series, '_logo_to_update'):
                         series.logo = series._logo_to_update
+                        # Validate logo reference exists before saving
+                        validate_logo_reference(series, "Series")
                         series.save(update_fields=['logo'])
 
             # Update relations to reference the correct series objects (with PKs)
