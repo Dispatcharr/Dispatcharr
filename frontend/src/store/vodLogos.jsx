@@ -116,6 +116,21 @@ const useVODLogosStore = create((set) => ({
     }
   },
 
+  getUnusedLogosCount: async () => {
+    try {
+      const response = await api.getVODLogos({
+        used: 'false',
+        page_size: 1, // Fetch only 1 item to minimize data transfer
+      });
+
+      // Return the count from the paginated response
+      return response.count || 0;
+    } catch (error) {
+      console.error('Failed to fetch unused logos count:', error);
+      throw error;
+    }
+  },
+
   clearVODLogos: () => {
     set({
       vodLogos: {},

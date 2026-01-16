@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed VOD logo cleanup button count: The "Cleanup Unused" button now displays the total count of all unused logos across all pages instead of only counting unused logos on the current page.
 - Fixed VOD refresh failures when logos are deleted: Changed logo comparisons to use `logo_id` (raw FK integer) instead of `logo` (related object) to avoid Django's lazy loading, which triggers a database fetch that fails if the referenced logo no longer exists. Also improved orphaned logo detection to properly clear stale references when logo URLs exist but logos are missing from the database.
 - Fixed channel profile filtering to properly restrict content based on assigned channel profiles for all non-admin users (user_level < 10) instead of only streamers (user_level == 0). This corrects the XtreamCodes API endpoints (`get_live_categories` and `get_live_streams`) along with M3U and EPG generation, ensuring standard users (level 1) are properly restricted by their assigned channel profiles. Previously, "Standard" users with channel profiles assigned would see all channels instead of only those in their assigned profiles.
 - Fixed NumPy baseline detection in Docker entrypoint. Now calls `numpy.show_config()` directly with case-insensitive grep instead of incorrectly wrapping the output.
