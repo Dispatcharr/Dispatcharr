@@ -118,7 +118,23 @@ table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Tab
 
 .custom-multiselect .mantine-MultiSelect-input {
   min-height: 30px;
-  /* Set a minimum height */
   max-height: 30px;
-  /* Set max height */
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+
+.custom-multiselect .mantine-MultiSelect-pillsList {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.custom-multiselect .mantine-MultiSelect-pill {
+  max-width: 100px;
+  flex-shrink: 0;
+}
+
+.custom-multiselect .mantine-MultiSelect-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

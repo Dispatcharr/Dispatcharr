@@ -80,7 +80,7 @@ export const useTimeHelpers = () => {
 
   const toUserTime = useCallback(
     (value) => {
-      if (!value) return dayjs.invalid();
+      if (!value) return dayjs(null);
       try {
         return initializeTime(value).tz(timeZone);
       } catch (error) {

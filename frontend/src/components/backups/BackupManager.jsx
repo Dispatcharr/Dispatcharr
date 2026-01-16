@@ -236,7 +236,6 @@ export default function BackupManager() {
   // Read user's preferences from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const [tableSize] = useLocalStorage('table-size', 'default');
   const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
   const is12Hour = timeFormat === '12h';
 
@@ -309,10 +308,10 @@ export default function BackupManager() {
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize === 'compact' ? 75 : 100,
+        size: 100,
       },
     ],
-    [tableSize]
+    []
   );
 
   const renderHeaderCell = (header) => {

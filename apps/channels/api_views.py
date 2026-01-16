@@ -96,7 +96,7 @@ class StreamFilter(django_filters.FilterSet):
     channel_group_name = OrInFilter(
         field_name="channel_group__name", lookup_expr="icontains"
     )
-    m3u_account = django_filters.NumberFilter(field_name="m3u_account__id")
+    m3u_account = django_filters.BaseInFilter(field_name="m3u_account__id")
     m3u_account_name = django_filters.CharFilter(
         field_name="m3u_account__name", lookup_expr="icontains"
     )
@@ -193,6 +193,73 @@ class StreamViewSet(viewsets.ModelViewSet):
 
         # Return the response with the list of unique group names
         return Response(list(group_names))
+
+    @action(detail=False, methods=["get"], url_path="filter-options")
+    def get_filter_options(self, request, *args, **kwargs):
+        """
+        Get available filter options based on current filter state.
+        Uses a hierarchical approach: M3U is the parent filter, Group filters based on M3U.
+        """
+        # For group options: we need to bypass the channel_group custom queryset filtering
+        # Store original request params
+        original_params = request.query_params
+
+        # Create modified params without channel_group for getting group options
+        params_without_group = request.GET.copy()
+        params_without_group.pop('channel_group', None)
+        params_without_group.pop('channel_group_name', None)
+
+        # Temporarily modify request to exclude channel_group
+        request._request.GET = params_without_group
+        base_queryset_for_groups = self.get_queryset()
+
+        # Apply filterset (which will apply M3U filters)
+        group_filterset = self.filterset_class(
+            params_without_group,
+            queryset=base_queryset_for_groups
+        )
+        group_queryset = group_filterset.qs
+
+        group_names = (
+            group_queryset.exclude(channel_group__isnull=True)
+            .order_by("channel_group__name")
+            .values_list("channel_group__name", flat=True)
+            .distinct()
+        )
+
+        # For M3U options: show ALL M3Us (don't filter by anything except name search)
+        params_for_m3u = request.GET.copy()
+        params_for_m3u.pop('m3u_account', None)
+        params_for_m3u.pop('channel_group', None)
+        params_for_m3u.pop('channel_group_name', None)
+
+        # Temporarily modify request to exclude filters for M3U options
+        request._request.GET = params_for_m3u
+        base_queryset_for_m3u = self.get_queryset()
+
+        m3u_filterset = self.filterset_class(
+            params_for_m3u,
+            queryset=base_queryset_for_m3u
+        )
+        m3u_queryset = m3u_filterset.qs
+
+        m3u_accounts = (
+            m3u_queryset.exclude(m3u_account__isnull=True)
+            .order_by("m3u_account__name")
+            .values("m3u_account__id", "m3u_account__name")
+            .distinct()
+        )
+
+        # Restore original params
+        request._request.GET = original_params
+
+        return Response({
+            "groups": list(group_names),
+            "m3u_accounts": [
+                {"id": m3u["m3u_account__id"], "name": m3u["m3u_account__name"]}
+                for m3u in m3u_accounts
+            ]
+        })
 
     @swagger_auto_schema(
         method="post",
