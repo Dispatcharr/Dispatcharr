@@ -16,11 +16,11 @@ describe('UiSettingsFormUtils', () => {
     it('should update existing setting when id is present', async () => {
       const tzValue = 'America/New_York';
       const settings = {
-        'system-time-zone': {
+        'system_settings': {
           id: 123,
-          key: 'system-time-zone',
-          name: 'System Time Zone',
-          value: 'UTC'
+          key: 'system_settings',
+          name: 'System Settings',
+          value: { time_zone: 'UTC' }
         }
       };
 
@@ -29,9 +29,9 @@ describe('UiSettingsFormUtils', () => {
       expect(SettingsUtils.updateSetting).toHaveBeenCalledTimes(1);
       expect(SettingsUtils.updateSetting).toHaveBeenCalledWith({
         id: 123,
-        key: 'system-time-zone',
-        name: 'System Time Zone',
-        value: 'America/New_York'
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: 'America/New_York' }
       });
       expect(SettingsUtils.createSetting).not.toHaveBeenCalled();
     });
@@ -39,10 +39,10 @@ describe('UiSettingsFormUtils', () => {
     it('should create new setting when existing setting has no id', async () => {
       const tzValue = 'Europe/London';
       const settings = {
-        'system-time-zone': {
-          key: 'system-time-zone',
-          name: 'System Time Zone',
-          value: 'UTC'
+        'system_settings': {
+          key: 'system_settings',
+          name: 'System Settings',
+          value: { time_zone: 'UTC' }
         }
       };
 
@@ -50,14 +50,14 @@ describe('UiSettingsFormUtils', () => {
 
       expect(SettingsUtils.createSetting).toHaveBeenCalledTimes(1);
       expect(SettingsUtils.createSetting).toHaveBeenCalledWith({
-        key: 'system-time-zone',
-        name: 'System Time Zone',
-        value: 'Europe/London'
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: 'Europe/London' }
       });
       expect(SettingsUtils.updateSetting).not.toHaveBeenCalled();
     });
 
-    it('should create new setting when system-time-zone does not exist', async () => {
+    it('should create new setting when system_settings does not exist', async () => {
       const tzValue = 'Asia/Tokyo';
       const settings = {};
 
@@ -65,26 +65,26 @@ describe('UiSettingsFormUtils', () => {
 
       expect(SettingsUtils.createSetting).toHaveBeenCalledTimes(1);
       expect(SettingsUtils.createSetting).toHaveBeenCalledWith({
-        key: 'system-time-zone',
-        name: 'System Time Zone',
-        value: 'Asia/Tokyo'
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: 'Asia/Tokyo' }
       });
       expect(SettingsUtils.updateSetting).not.toHaveBeenCalled();
     });
 
-    it('should create new setting when system-time-zone is null', async () => {
+    it('should create new setting when system_settings is null', async () => {
       const tzValue = 'Pacific/Auckland';
       const settings = {
-        'system-time-zone': null
+        'system_settings': null
       };
 
       await UiSettingsFormUtils.saveTimeZoneSetting(tzValue, settings);
 
       expect(SettingsUtils.createSetting).toHaveBeenCalledTimes(1);
       expect(SettingsUtils.createSetting).toHaveBeenCalledWith({
-        key: 'system-time-zone',
-        name: 'System Time Zone',
-        value: 'Pacific/Auckland'
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: 'Pacific/Auckland' }
       });
       expect(SettingsUtils.updateSetting).not.toHaveBeenCalled();
     });
@@ -92,10 +92,10 @@ describe('UiSettingsFormUtils', () => {
     it('should create new setting when id is undefined', async () => {
       const tzValue = 'America/Los_Angeles';
       const settings = {
-        'system-time-zone': {
+        'system_settings': {
           id: undefined,
-          key: 'system-time-zone',
-          value: 'UTC'
+          key: 'system_settings',
+          value: { time_zone: 'UTC' }
         }
       };
 
@@ -108,11 +108,11 @@ describe('UiSettingsFormUtils', () => {
     it('should preserve existing properties when updating', async () => {
       const tzValue = 'UTC';
       const settings = {
-        'system-time-zone': {
+        'system_settings': {
           id: 456,
-          key: 'system-time-zone',
-          name: 'System Time Zone',
-          value: 'America/New_York',
+          key: 'system_settings',
+          name: 'System Settings',
+          value: { time_zone: 'America/New_York', some_other_setting: 'value' },
           extraProp: 'should be preserved'
         }
       };
@@ -121,9 +121,9 @@ describe('UiSettingsFormUtils', () => {
 
       expect(SettingsUtils.updateSetting).toHaveBeenCalledWith({
         id: 456,
-        key: 'system-time-zone',
-        name: 'System Time Zone',
-        value: 'UTC',
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: 'UTC', some_other_setting: 'value' },
         extraProp: 'should be preserved'
       });
     });
@@ -131,8 +131,11 @@ describe('UiSettingsFormUtils', () => {
     it('should handle empty string timezone value', async () => {
       const tzValue = '';
       const settings = {
-        'system-time-zone': {
-          id: 789
+        'system_settings': {
+          id: 789,
+          key: 'system_settings',
+          name: 'System Settings',
+          value: { time_zone: 'America/New_York' }
         }
       };
 
@@ -140,7 +143,9 @@ describe('UiSettingsFormUtils', () => {
 
       expect(SettingsUtils.updateSetting).toHaveBeenCalledWith({
         id: 789,
-        value: ''
+        key: 'system_settings',
+        name: 'System Settings',
+        value: { time_zone: '' }
       });
     });
   });

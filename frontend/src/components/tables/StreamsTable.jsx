@@ -71,8 +71,9 @@ const StreamRowActions = ({
   handleWatchStream,
   selectedChannelIds,
   createChannelFromStream,
+  table,
 }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
@@ -188,6 +189,7 @@ const StreamsTable = ({ onReady }) => {
   const [stream, setStream] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
+  const [m3uOptions, setM3uOptions] = useState([]);
   const [initialDataCount, setInitialDataCount] = useState(null);
 
   const [paginationString, setPaginationString] = useState('');
@@ -261,7 +263,6 @@ const StreamsTable = ({ onReady }) => {
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   const data = useStreamsTableStore((s) => s.streams);
   const pageCount = useStreamsTableStore((s) => s.pageCount);
@@ -293,7 +294,7 @@ const StreamsTable = ({ onReady }) => {
     () => [
       {
         id: 'actions',
-        size: columnSizing.actions || (tableSize == 'compact' ? 60 : 80),
+        size: columnSizing.actions || 75,
       },
       {
         id: 'select',
@@ -361,7 +362,7 @@ const StreamsTable = ({ onReady }) => {
         ),
       },
     ],
-    [channelGroups, playlists, columnSizing, tableSize]
+    [channelGroups, playlists, columnSizing]
   );
 
   /**
@@ -378,14 +379,14 @@ const StreamsTable = ({ onReady }) => {
   const handleGroupChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      channel_group: value ? value : '',
+      channel_group: value && value.length > 0 ? value.join(',') : '',
     }));
   };
 
   const handleM3UChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      m3u_account: value ? value : '',
+      m3u_account: value && value.length > 0 ? value.join(',') : '',
     }));
   };
 
@@ -425,14 +426,22 @@ const StreamsTable = ({ onReady }) => {
     });
 
     try {
-      const [result, ids, groups] = await Promise.all([
+      const [result, ids, filterOptions] = await Promise.all([
         API.queryStreamsTable(params),
         API.getAllStreamIds(params),
-        API.getStreamGroups(),
+        API.getStreamFilterOptions(params),
       ]);
 
       setAllRowIds(ids);
-      setGroupOptions(groups);
+
+      // Set filtered options based on current filters
+      setGroupOptions(filterOptions.groups);
+      setM3uOptions(
+        filterOptions.m3u_accounts.map((m3u) => ({
+          label: m3u.name,
+          value: `${m3u.id}`,
+        }))
+      );
 
       if (initialDataCount === null) {
         setInitialDataCount(result.count);
@@ -840,26 +849,67 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
         );
 
-      case 'group':
+      case 'group': {
+        const selectedGroups = filters.channel_group
+          ? filters.channel_group.split(',').filter(Boolean)
+          : [];
         return (
           <MultiSelect
             placeholder="Group"
-            className="table-input-header"
-            variant="unstyled"
-            data={groupOptions}
-            size="xs"
             searchable
-            clearable
+            size="xs"
+            nothingFoundMessage="No options"
             onClick={handleSelectClick}
             onChange={handleGroupChange}
+            value={selectedGroups}
+            data={groupOptions}
+            variant="unstyled"
+            className="table-input-header custom-multiselect"
+            clearable
+            valueComponent={({ value }) => {
+              const index = selectedGroups.indexOf(value);
+              if (index === 0) {
+                return (
+                  <Flex gap={4} align="center">
+                    <Text
+                      size="xs"
+                      style={{
+                        padding: '2px 6px',
+                        backgroundColor: 'var(--mantine-color-dark-4)',
+                        borderRadius: '4px',
+                      }}
+                    >
+                      {value}
+                    </Text>
+                    {selectedGroups.length > 1 && (
+                      <Text
+                        size="xs"
+                        style={{
+                          padding: '2px 6px',
+                          backgroundColor: 'var(--mantine-color-dark-4)',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        +{selectedGroups.length - 1}
+                      </Text>
+                    )}
+                  </Flex>
+                );
+              }
+              return null;
+            }}
             style={{ width: '100%' }}
           />
         );
+      }
 
-      case 'm3u':
+      case 'm3u': {
+        const selectedM3Us = filters.m3u_account
+          ? filters.m3u_account.split(',').filter(Boolean)
+          : [];
         return (
           <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <Select
+            <MultiSelect
               placeholder="M3U"
               searchable
               clearable
@@ -867,12 +917,45 @@ const StreamsTable = ({ onReady }) => {
               nothingFoundMessage="No options"
               onClick={handleSelectClick}
               onChange={handleM3UChange}
-              data={playlists.map((playlist) => ({
-                label: playlist.name,
-                value: `${playlist.id}`,
-              }))}
+              value={selectedM3Us}
+              data={m3uOptions}
               variant="unstyled"
-              className="table-input-header"
+              className="table-input-header custom-multiselect"
+              valueComponent={({ value }) => {
+                const index = selectedM3Us.indexOf(value);
+                if (index === 0) {
+                  const label =
+                    m3uOptions.find((opt) => opt.value === value)?.label ||
+                    value;
+                  return (
+                    <Flex gap={4} align="center">
+                      <Text
+                        size="xs"
+                        style={{
+                          padding: '2px 6px',
+                          backgroundColor: 'var(--mantine-color-dark-4)',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {label}
+                      </Text>
+                      {selectedM3Us.length > 1 && (
+                        <Text
+                          size="xs"
+                          style={{
+                            padding: '2px 6px',
+                            backgroundColor: 'var(--mantine-color-dark-4)',
+                            borderRadius: '4px',
+                          }}
+                        >
+                          +{selectedM3Us.length - 1}
+                        </Text>
+                      )}
+                    </Flex>
+                  );
+                }
+                return null;
+              }}
               style={{ flex: 1, minWidth: 0 }}
               rightSectionPointerEvents="auto"
               rightSection={React.createElement(sortingIcon, {
@@ -886,6 +969,7 @@ const StreamsTable = ({ onReady }) => {
             />
           </Flex>
         );
+      }
     }
   };
 
@@ -984,6 +1068,38 @@ const StreamsTable = ({ onReady }) => {
     );
     setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
   }, [pagination.pageIndex, pagination.pageSize, totalCount]);
+
+  // Clear dependent filters if selected values are no longer in filtered options
+  useEffect(() => {
+    // Clear group filter if the selected groups are no longer available
+    if (filters.channel_group) {
+      const selectedGroups = filters.channel_group.split(',').filter(Boolean);
+      const stillValid = selectedGroups.filter((group) =>
+        groupOptions.includes(group)
+      );
+
+      if (stillValid.length !== selectedGroups.length) {
+        setFilters((prev) => ({
+          ...prev,
+          channel_group: stillValid.join(','),
+        }));
+      }
+    }
+
+    // Clear M3U filter if the selected M3Us are no longer available
+    if (filters.m3u_account) {
+      const selectedIds = filters.m3u_account.split(',').filter(Boolean);
+      const availableIds = m3uOptions.map((opt) => opt.value);
+      const stillValid = selectedIds.filter((id) => availableIds.includes(id));
+
+      if (stillValid.length !== selectedIds.length) {
+        setFilters((prev) => ({
+          ...prev,
+          m3u_account: stillValid.join(','),
+        }));
+      }
+    }
+  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
 
   return (
     <>

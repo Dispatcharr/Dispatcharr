@@ -28,6 +28,8 @@ import {
   Filter,
   Square,
   SquareCheck,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
@@ -105,6 +107,7 @@ const ChannelTableHeader = ({
   editChannel,
   deleteChannels,
   selectedTableIds,
+  table,
   showDisabled,
   setShowDisabled,
   showOnlyStreamlessChannels,
@@ -131,6 +134,9 @@ const ChannelTableHeader = ({
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+
+  const headerPinned = table?.headerPinned ?? false;
+  const setHeaderPinned = table?.setHeaderPinned || (() => {});
   const closeAssignChannelNumbersModal = () => {
     setAssignNumbersModalOpen(false);
   };
@@ -227,6 +233,10 @@ const ChannelTableHeader = ({
 
   const toggleShowOnlyStreamlessChannels = () => {
     setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels);
+  };
+
+  const toggleHeaderPinned = () => {
+    setHeaderPinned(!headerPinned);
   };
 
   return (
@@ -346,6 +356,19 @@ const ChannelTableHeader = ({
             </Menu.Target>
 
             <Menu.Dropdown>
+              <Menu.Item
+                leftSection={
+                  headerPinned ? <Pin size={18} /> : <PinOff size={18} />
+                }
+                onClick={toggleHeaderPinned}
+              >
+                <Text size="xs">
+                  {headerPinned ? 'Unpin Headers' : 'Pin Headers'}
+                </Text>
+              </Menu.Item>
+
+              <Menu.Divider />
+
               <Menu.Item
                 leftSection={<ArrowDown01 size={18} />}
                 disabled={
