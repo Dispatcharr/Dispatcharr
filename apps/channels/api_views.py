@@ -8,6 +8,7 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
+from django.db.models import Count
 from django.db.models import Q
 import os, json, requests, logging
 from urllib.parse import unquote
@@ -148,7 +149,8 @@ class StreamViewSet(viewsets.ModelViewSet):
 
         unassigned = self.request.query_params.get("unassigned")
         if unassigned == "1":
-            qs = qs.filter(channels__isnull=True)
+            # Use annotation with Count for better performance on large datasets
+            qs = qs.annotate(channel_count=Count('channels')).filter(channel_count=0)
 
         channel_group = self.request.query_params.get("channel_group")
         if channel_group:

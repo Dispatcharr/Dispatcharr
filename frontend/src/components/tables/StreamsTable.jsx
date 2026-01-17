@@ -397,70 +397,73 @@ const StreamsTable = ({ onReady }) => {
     }));
   };
 
-  const fetchData = useCallback(async ({ showLoader = true } = {}) => {
-    if (showLoader) {
-      setIsLoading(true);
-    }
-
-    const params = new URLSearchParams();
-    params.append('page', pagination.pageIndex + 1);
-    params.append('page_size', pagination.pageSize);
-
-    // Apply sorting
-    if (sorting.length > 0) {
-      const columnId = sorting[0].id;
-      // Map frontend column IDs to backend field names
-      const fieldMapping = {
-        name: 'name',
-        group: 'channel_group__name',
-        m3u: 'm3u_account__name',
-      };
-      const sortField = fieldMapping[columnId] || columnId;
-      const sortDirection = sorting[0].desc ? '-' : '';
-      params.append('ordering', `${sortDirection}${sortField}`);
-    }
-
-    // Apply debounced filters
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (value) params.append(key, value);
-    });
-
-    try {
-      const [result, ids, filterOptions] = await Promise.all([
-        API.queryStreamsTable(params),
-        API.getAllStreamIds(params),
-        API.getStreamFilterOptions(params),
-      ]);
-
-      setAllRowIds(ids);
-
-      // Set filtered options based on current filters
-      setGroupOptions(filterOptions.groups);
-      setM3uOptions(
-        filterOptions.m3u_accounts.map((m3u) => ({
-          label: m3u.name,
-          value: `${m3u.id}`,
-        }))
-      );
-
-      if (initialDataCount === null) {
-        setInitialDataCount(result.count);
+  const fetchData = useCallback(
+    async ({ showLoader = true } = {}) => {
+      if (showLoader) {
+        setIsLoading(true);
       }
 
-      // Signal that initial data load is complete
-      if (!hasSignaledReady.current && onReady) {
-        hasSignaledReady.current = true;
-        onReady();
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    }
+      const params = new URLSearchParams();
+      params.append('page', pagination.pageIndex + 1);
+      params.append('page_size', pagination.pageSize);
 
-    hasFetchedOnce.current = true;
-    if (showLoader) {
-      setIsLoading(false);
-    }
-  }, [pagination, sorting, debouncedFilters, onReady]);
+      // Apply sorting
+      if (sorting.length > 0) {
+        const columnId = sorting[0].id;
+        // Map frontend column IDs to backend field names
+        const fieldMapping = {
+          name: 'name',
+          group: 'channel_group__name',
+          m3u: 'm3u_account__name',
+        };
+        const sortField = fieldMapping[columnId] || columnId;
+        const sortDirection = sorting[0].desc ? '-' : '';
+        params.append('ordering', `${sortDirection}${sortField}`);
+      }
+
+      // Apply debounced filters
+      Object.entries(debouncedFilters).forEach(([key, value]) => {
+        if (value) params.append(key, value);
+      });
+
+      try {
+        const [result, ids, filterOptions] = await Promise.all([
+          API.queryStreamsTable(params),
+          API.getAllStreamIds(params),
+          API.getStreamFilterOptions(params),
+        ]);
+
+        setAllRowIds(ids);
+
+        // Set filtered options based on current filters
+        setGroupOptions(filterOptions.groups);
+        setM3uOptions(
+          filterOptions.m3u_accounts.map((m3u) => ({
+            label: m3u.name,
+            value: `${m3u.id}`,
+          }))
+        );
+
+        if (initialDataCount === null) {
+          setInitialDataCount(result.count);
+        }
+
+        // Signal that initial data load is complete
+        if (!hasSignaledReady.current && onReady) {
+          hasSignaledReady.current = true;
+          onReady();
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      }
+
+      hasFetchedOnce.current = true;
+      if (showLoader) {
+        setIsLoading(false);
+      }
+    },
+    [pagination, sorting, debouncedFilters, onReady]
+  );
 
   // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
