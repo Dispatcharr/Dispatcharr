@@ -585,6 +585,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
+            # Hide adult content if user preference is set
+            custom_props = self.request.user.custom_properties or {}
+            if custom_props.get('hide_adult_content', False):
+                filters["is_adult"] = False
 
         if filters:
             qs = qs.filter(**filters)
@@ -947,6 +951,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "tvg_id": stream.tvg_id,
             "tvc_guide_stationid": tvc_guide_stationid,
             "streams": [stream_id],
+            "is_adult": stream.is_adult,
         }
 
         # Only add channel_group_id if the stream has a channel group

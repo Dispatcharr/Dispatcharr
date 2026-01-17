@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mature content filtering support:
+  - Added `is_adult` boolean field to both Stream and Channel models with database indexing for efficient filtering and sorting
+  - Automatically populated during M3U/XC refresh operations by extracting `is_adult` value from provider data
+  - Type-safe conversion supporting both integer (0/1) and string ("0"/"1") formats from different providers
+  - UI controls in channel edit form (Switch with tooltip) and bulk edit form (Select dropdown) for easy management
+  - XtreamCodes API support with proper integer formatting (0/1) in live stream responses
+  - Automatic propagation from streams to channels during both single and bulk channel creation operations
+  - Included in serializers for full API support
+  - User-level content filtering: Non-admin users can opt to hide mature content channels across all interfaces (web UI, M3U playlists, EPG data, XtreamCodes API) via "Hide Mature Content" toggle in user settings (stored in custom_properties, admin users always see all content)
 - Table header pin toggle: Pin/unpin table headers to keep them visible while scrolling. Toggle available in channel table menu and UI Settings page. Setting persists across sessions and applies to all tables. (Closes #663)
 - Cascading filters for streams table: Improved filter usability with hierarchical M3U and Group dropdowns. M3U acts as the parent filter showing only active/enabled accounts, while Group options dynamically update to display only groups available in the selected M3U(s). Only enabled M3U's are displayed. (Closes #647)
 

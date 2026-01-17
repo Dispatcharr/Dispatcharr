@@ -134,7 +134,11 @@ def generate_m3u(request, profile_name=None, user=None):
             # If user has ALL profiles or NO profiles, give unrestricted access
             if user_profile_count == 0:
                 # No profile filtering - user sees all channels based on user_level
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                filters = {"user_level__lte": user.user_level}
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
+                channels = Channel.objects.filter(**filters).order_by("channel_number")
             else:
                 # User has specific limited profiles assigned
                 filters = {
@@ -142,6 +146,9 @@ def generate_m3u(request, profile_name=None, user=None):
                     "user_level__lte": user.user_level,
                     "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                 }
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
                 channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
         else:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -1264,7 +1271,11 @@ def generate_epg(request, profile_name=None, user=None):
                 # If user has ALL profiles or NO profiles, give unrestricted access
                 if user_profile_count == 0:
                     # No profile filtering - user sees all channels based on user_level
-                    channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                    filters = {"user_level__lte": user.user_level}
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
+                    channels = Channel.objects.filter(**filters).order_by("channel_number")
                 else:
                     # User has specific limited profiles assigned
                     filters = {
@@ -1272,6 +1283,9 @@ def generate_epg(request, profile_name=None, user=None):
                         "user_level__lte": user.user_level,
                         "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                     }
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
                     channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
                 channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -2125,6 +2139,9 @@ def xc_get_live_streams(request, user, category_id=None):
             filters = {"user_level__lte": user.user_level}
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).order_by("channel_number")
         else:
             # User has specific limited profiles assigned
@@ -2135,6 +2152,9 @@ def xc_get_live_streams(request, user, category_id=None):
             }
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
     else:
         if not category_id:
@@ -2189,7 +2209,7 @@ def xc_get_live_streams(request, user, category_id=None):
                 ),
                 "epg_channel_id": str(channel_num_int),
                 "added": int(channel.created_at.timestamp()),
-                "is_adult": 0,
+                "is_adult": int(channel.is_adult),
                 "category_id": str(channel.channel_group.id),
                 "category_ids": [channel.channel_group.id],
                 "custom_sid": None,
@@ -2214,10 +2234,14 @@ def xc_get_epg(request, user, short=False):
         # If user has ALL profiles or NO profiles, give unrestricted access
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
-            channel = Channel.objects.filter(
-                id=channel_id,
-                user_level__lte=user.user_level
-            ).first()
+            filters = {
+                "id": channel_id,
+                "user_level__lte": user.user_level
+            }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2226,6 +2250,9 @@ def xc_get_epg(request, user, short=False):
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channel = Channel.objects.filter(**filters).distinct().first()
 
         if not channel:

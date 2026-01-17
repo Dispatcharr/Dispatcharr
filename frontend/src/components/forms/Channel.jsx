@@ -18,12 +18,10 @@ import {
   Button,
   Modal,
   TextInput,
-  NativeSelect,
   Text,
   Group,
   ActionIcon,
   Center,
-  Grid,
   Flex,
   Select,
   Divider,
@@ -33,8 +31,8 @@ import {
   ScrollArea,
   Tooltip,
   NumberInput,
-  Image,
   UnstyledButton,
+  Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
@@ -318,6 +316,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       epg_data_id: channel?.epg_data_id ?? '',
       logo_id: channel?.logo_id ? `${channel.logo_id}` : '',
       user_level: `${channel?.user_level ?? '0'}`,
+      is_adult: channel?.is_adult ?? false,
     }),
     [channel, channelGroups]
   );
@@ -811,6 +810,18 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
               >
                 Upload or Create Logo
               </Button>
+              <Tooltip label="Mark as mature/adult content (18+)" withArrow>
+                <Box>
+                  <Switch
+                    label="Mature Content"
+                    checked={watch('is_adult')}
+                    onChange={(event) =>
+                      setValue('is_adult', event.currentTarget.checked)
+                    }
+                    size="md"
+                  />
+                </Box>
+              </Tooltip>
             </Stack>
 
             <Divider size="sm" orientation="vertical" />

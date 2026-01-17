@@ -2585,6 +2585,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                         "name": name,
                         "tvc_guide_stationid": tvc_guide_stationid,
                         "tvg_id": stream.tvg_id,
+                        "is_adult": stream.is_adult,
                     }
 
                     # Only add channel_group_id if the stream has a channel group
