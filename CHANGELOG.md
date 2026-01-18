@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Unassociated streams filter: Added "Only Unassociated" filter option to streams table for quickly finding streams not assigned to any channels - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes) (Closes #667)
 - Mature content filtering support:
   - Added `is_adult` boolean field to both Stream and Channel models with database indexing for efficient filtering and sorting
   - Automatically populated during M3U/XC refresh operations by extracting `is_adult` value from provider data
@@ -25,10 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
 - Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
-- Table preferences architecture refactored: Migrated `table-size` preference from individual `useLocalStorage` calls to centralized `useTablePreferences` hook. All table components now read preferences from the table instance (`table.tableSize`, `table.headerPinned`) instead of calling hooks directly, improving maintainability and providing consistent API across all tables.
+- Table preferences architecture refactored: Migrated `table-size` preference from individual `useLocalStorage` calls to centralized `useTablePreferences` hook. All table components now read preferences from the table instance (`table.tableSize`, `.g maintainability and providing consistent API across all tables.
+- Optimized unassociated streams filter performance: Replaced inefficient reverse foreign key NULL check (`channels__isnull=True`) with Count annotation approach, reducing query time from 4-5 seconds to under 500ms for large datasets (75k+ streams)
 
 ### Fixed
 
+- Fixed streams table column header overflow: Implemented fixed-height column headers (30px max-height) with pill-style filter display showing first selection plus count (e.g., "Sport +3"). Prevents header expansion when multiple filters are selected, maintaining compact table layout. (Fixes #613)
 - Fixed VOD logo cleanup button count: The "Cleanup Unused" button now displays the total count of all unused logos across all pages instead of only counting unused logos on the current page.
 - Fixed VOD refresh failures when logos are deleted: Changed logo comparisons to use `logo_id` (raw FK integer) instead of `logo` (related object) to avoid Django's lazy loading, which triggers a database fetch that fails if the referenced logo no longer exists. Also improved orphaned logo detection to properly clear stale references when logo URLs exist but logos are missing from the database.
 - Fixed channel profile filtering to properly restrict content based on assigned channel profiles for all non-admin users (user_level < 10) instead of only streamers (user_level == 0). This corrects the XtreamCodes API endpoints (`get_live_categories` and `get_live_streams`) along with M3U and EPG generation, ensuring standard users (level 1) are properly restricted by their assigned channel profiles. Previously, "Standard" users with channel profiles assigned would see all channels instead of only those in their assigned profiles.
