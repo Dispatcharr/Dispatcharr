@@ -440,13 +440,23 @@ const StreamsTable = ({ onReady }) => {
         setAllRowIds(ids);
 
         // Set filtered options based on current filters
-        setGroupOptions(filterOptions.groups);
-        setM3uOptions(
-          filterOptions.m3u_accounts.map((m3u) => ({
-            label: m3u.name,
-            value: `${m3u.id}`,
-          }))
-        );
+        // Ensure groupOptions is always an array of valid strings
+        if (filterOptions && typeof filterOptions === 'object') {
+          setGroupOptions(
+            (filterOptions.groups || [])
+              .filter((group) => group != null && group !== '')
+              .map((group) => String(group))
+          );
+          // Ensure m3uOptions is always an array of valid objects
+          setM3uOptions(
+            (filterOptions.m3u_accounts || [])
+              .filter((m3u) => m3u && m3u.id != null && m3u.name)
+              .map((m3u) => ({
+                label: String(m3u.name),
+                value: String(m3u.id),
+              }))
+          );
+        }
 
         if (initialDataCount === null) {
           setInitialDataCount(result.count);

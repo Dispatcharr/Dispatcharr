@@ -783,6 +783,8 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve filter options', e);
+      // Return safe defaults to prevent crashes during container startup
+      return { groups: [], m3u_accounts: [] };
     }
   }
 
