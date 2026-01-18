@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Unassociated streams filter: Added "Only Unassociated" filter option to streams table for quickly finding streams not assigned to any channels - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes) (Closes #667)
+- Client-side logo caching: Added `Cache-Control` and `Last-Modified` headers to logo responses, enabling browsers to cache logos locally for 4 hours (local files) and respecting upstream cache headers (remote logos). This reduces network traffic and nginx load while providing faster page loads through browser-level caching that complements the existing nginx server-side cache - Thanks [@DawtCom](https://github.com/DawtCom)
 - Mature content filtering support:
   - Added `is_adult` boolean field to both Stream and Channel models with database indexing for efficient filtering and sorting
   - Automatically populated during M3U/XC refresh operations by extracting `is_adult` value from provider data
