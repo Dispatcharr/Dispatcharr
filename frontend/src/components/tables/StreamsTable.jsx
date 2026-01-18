@@ -20,6 +20,9 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   Search,
+  Filter,
+  Square,
+  SquareCheck,
 } from 'lucide-react';
 import {
   TextInput,
@@ -43,12 +46,11 @@ import {
   MultiSelect,
   useMantineTheme,
   UnstyledButton,
-  LoadingOverlay,
   Skeleton,
   Modal,
   NumberInput,
   Radio,
-  Checkbox,
+  LoadingOverlay,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
@@ -59,6 +61,7 @@ import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
+import useStreamsTableStore from '../../store/streamsTable';
 
 const StreamRowActions = ({
   theme,
@@ -178,23 +181,21 @@ const StreamRowActions = ({
 const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
+  const hasFetchedOnce = useRef(false);
+  const hasFetchedPlaylists = useRef(false);
+  const hasFetchedChannelGroups = useRef(false);
 
   /**
    * useState
    */
-  const [allRowIds, setAllRowIds] = useState([]);
   const [stream, setStream] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
   const [m3uOptions, setM3uOptions] = useState([]);
   const [initialDataCount, setInitialDataCount] = useState(null);
 
-  const [data, setData] = useState([]); // Holds fetched data
-  const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
-  const [selectedStreamIds, setSelectedStreamIds] = useState([]);
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -226,14 +227,11 @@ const StreamsTable = ({ onReady }) => {
     'streams-page-size',
     50
   );
-  const [pagination, setPagination] = useState({
-    pageIndex: 0,
-    pageSize: storedPageSize,
-  });
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
     m3u_account: '',
+    unassigned: '',
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -241,14 +239,11 @@ const StreamsTable = ({ onReady }) => {
   );
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
-    setPagination((prev) => ({
-      ...prev,
+    setPagination({
+      ...pagination,
       pageIndex: 0,
-    }));
+    });
   });
-
-  // Add state to track if stream groups are loaded
-  const [groupsLoaded, setGroupsLoaded] = useState(false);
 
   const navigate = useNavigate();
 
@@ -256,6 +251,8 @@ const StreamsTable = ({ onReady }) => {
    * Stores
    */
   const playlists = usePlaylistsStore((s) => s.playlists);
+  const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
+  const playlistsLoading = usePlaylistsStore((s) => s.isLoading);
 
   // Get direct access to channel groups without depending on other data
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
@@ -270,6 +267,20 @@ const StreamsTable = ({ onReady }) => {
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
+
+  const data = useStreamsTableStore((s) => s.streams);
+  const pageCount = useStreamsTableStore((s) => s.pageCount);
+  const totalCount = useStreamsTableStore((s) => s.totalCount);
+  const allRowIds = useStreamsTableStore((s) => s.allQueryIds);
+  const setAllRowIds = useStreamsTableStore((s) => s.setAllQueryIds);
+  const pagination = useStreamsTableStore((s) => s.pagination);
+  const setPagination = useStreamsTableStore((s) => s.setPagination);
+  const sorting = useStreamsTableStore((s) => s.sorting);
+  const setSorting = useStreamsTableStore((s) => s.setSorting);
+  const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
+  const setSelectedStreamIds = useStreamsTableStore(
+    (s) => s.setSelectedStreamIds
+  );
 
   // Warnings store for "remember choice" functionality
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -383,95 +394,80 @@ const StreamsTable = ({ onReady }) => {
     }));
   };
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const toggleUnassignedOnly = () => {
+    setFilters((prev) => ({
+      ...prev,
+      unassigned: prev.unassigned === '1' ? '' : '1',
+    }));
+  };
 
-    // Ensure we have channel groups first (if not already loaded)
-    if (!groupsLoaded && Object.keys(channelGroups).length === 0) {
+  const fetchData = useCallback(
+    async ({ showLoader = true } = {}) => {
+      if (showLoader) {
+        setIsLoading(true);
+      }
+
+      const params = new URLSearchParams();
+      params.append('page', pagination.pageIndex + 1);
+      params.append('page_size', pagination.pageSize);
+
+      // Apply sorting
+      if (sorting.length > 0) {
+        const columnId = sorting[0].id;
+        // Map frontend column IDs to backend field names
+        const fieldMapping = {
+          name: 'name',
+          group: 'channel_group__name',
+          m3u: 'm3u_account__name',
+        };
+        const sortField = fieldMapping[columnId] || columnId;
+        const sortDirection = sorting[0].desc ? '-' : '';
+        params.append('ordering', `${sortDirection}${sortField}`);
+      }
+
+      // Apply debounced filters
+      Object.entries(debouncedFilters).forEach(([key, value]) => {
+        if (value) params.append(key, value);
+      });
+
       try {
-        await fetchChannelGroups();
-        setGroupsLoaded(true);
+        const [result, ids, filterOptions] = await Promise.all([
+          API.queryStreamsTable(params),
+          API.getAllStreamIds(params),
+          API.getStreamFilterOptions(params),
+        ]);
+
+        setAllRowIds(ids);
+
+        // Set filtered options based on current filters
+        setGroupOptions(filterOptions.groups);
+        setM3uOptions(
+          filterOptions.m3u_accounts.map((m3u) => ({
+            label: m3u.name,
+            value: `${m3u.id}`,
+          }))
+        );
+
+        if (initialDataCount === null) {
+          setInitialDataCount(result.count);
+        }
+
+        // Signal that initial data load is complete
+        if (!hasSignaledReady.current && onReady) {
+          hasSignaledReady.current = true;
+          onReady();
+        }
       } catch (error) {
-        console.error('Error fetching channel groups:', error);
-      }
-    }
-
-    const params = new URLSearchParams();
-    params.append('page', pagination.pageIndex + 1);
-    params.append('page_size', pagination.pageSize);
-
-    // Apply sorting
-    if (sorting.length > 0) {
-      const columnId = sorting[0].id;
-      // Map frontend column IDs to backend field names
-      const fieldMapping = {
-        name: 'name',
-        group: 'channel_group__name',
-        m3u: 'm3u_account__name',
-      };
-      const sortField = fieldMapping[columnId] || columnId;
-      const sortDirection = sorting[0].desc ? '-' : '';
-      params.append('ordering', `${sortDirection}${sortField}`);
-    }
-
-    // Apply debounced filters
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (value) params.append(key, value);
-    });
-
-    try {
-      const [result, ids, filterOptions] = await Promise.all([
-        API.queryStreams(params),
-        API.getAllStreamIds(params),
-        API.getStreamFilterOptions(params),
-      ]);
-
-      setAllRowIds(ids);
-      setData(result.results);
-      setPageCount(Math.ceil(result.count / pagination.pageSize));
-
-      // Set filtered options based on current filters
-      setGroupOptions(filterOptions.groups);
-      setM3uOptions(
-        filterOptions.m3u_accounts.map((m3u) => ({
-          label: m3u.name,
-          value: `${m3u.id}`,
-        }))
-      );
-
-      // Calculate the starting and ending item indexes
-      const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
-      const endItem = Math.min(
-        (pagination.pageIndex + 1) * pagination.pageSize,
-        result.count
-      );
-
-      if (initialDataCount === null) {
-        setInitialDataCount(result.count);
+        console.error('Error fetching data:', error);
       }
 
-      // Generate the string
-      setPaginationString(`${startItem} to ${endItem} of ${result.count}`);
-
-      // Signal that initial data load is complete
-      if (!hasSignaledReady.current && onReady) {
-        hasSignaledReady.current = true;
-        onReady();
+      hasFetchedOnce.current = true;
+      if (showLoader) {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    }
-
-    setIsLoading(false);
-  }, [
-    pagination,
-    sorting,
-    debouncedFilters,
-    groupsLoaded,
-    channelGroups,
-    fetchChannelGroups,
-    onReady,
-  ]);
+    },
+    [pagination, sorting, debouncedFilters, onReady]
+  );
 
   // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
@@ -544,6 +540,8 @@ const StreamsTable = ({ onReady }) => {
 
       // Clear selection since the task has started
       setSelectedStreamIds([]);
+
+      // Note: This is a background task, so the update happens on WebSocket completion
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -601,14 +599,15 @@ const StreamsTable = ({ onReady }) => {
 
   const executeDeleteStream = async (id) => {
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStream(id);
-      fetchData();
       // Clear the selection for the deleted stream
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
       setDeleting(false);
+      setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
   };
@@ -626,11 +625,10 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStreams = async () => {
-    setIsLoading(true);
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStreams(selectedStreamIds);
-      fetchData();
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
@@ -640,10 +638,15 @@ const StreamsTable = ({ onReady }) => {
     }
   };
 
-  const closeStreamForm = () => {
+  const closeStreamForm = async () => {
     setStream(null);
     setModalOpen(false);
-    fetchData();
+    setIsLoading(true);
+    try {
+      await API.requeryStreams();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Single channel creation functions
@@ -711,8 +714,8 @@ const StreamsTable = ({ onReady }) => {
       channel_profile_ids: channelProfileIds,
     });
     await API.requeryChannels();
-    const fetchLogos = useChannelsStore.getState().fetchLogos;
-    fetchLogos();
+    // const fetchLogos = useChannelsStore.getState().fetchLogos;
+    // fetchLogos();
   };
 
   // Handle confirming the single channel numbering modal
@@ -858,24 +861,34 @@ const StreamsTable = ({ onReady }) => {
           ? filters.channel_group.split(',').filter(Boolean)
           : [];
         return (
-          <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <MultiSelect
-              placeholder="Group"
-              searchable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleGroupChange}
-              value={selectedGroups}
-              data={groupOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              clearable
-              valueComponent={({ value }) => {
-                const index = selectedGroups.indexOf(value);
-                if (index === 0) {
-                  return (
-                    <Flex gap={4} align="center">
+          <MultiSelect
+            placeholder="Group"
+            searchable
+            size="xs"
+            nothingFoundMessage="No options"
+            onClick={handleSelectClick}
+            onChange={handleGroupChange}
+            value={selectedGroups}
+            data={groupOptions}
+            variant="unstyled"
+            className="table-input-header custom-multiselect"
+            clearable
+            valueComponent={({ value }) => {
+              const index = selectedGroups.indexOf(value);
+              if (index === 0) {
+                return (
+                  <Flex gap={4} align="center">
+                    <Text
+                      size="xs"
+                      style={{
+                        padding: '2px 6px',
+                        backgroundColor: 'var(--mantine-color-dark-4)',
+                        borderRadius: '4px',
+                      }}
+                    >
+                      {value}
+                    </Text>
+                    {selectedGroups.length > 1 && (
                       <Text
                         size="xs"
                         style={{
@@ -884,37 +897,16 @@ const StreamsTable = ({ onReady }) => {
                           borderRadius: '4px',
                         }}
                       >
-                        {value}
+                        +{selectedGroups.length - 1}
                       </Text>
-                      {selectedGroups.length > 1 && (
-                        <Text
-                          size="xs"
-                          style={{
-                            padding: '2px 6px',
-                            backgroundColor: 'var(--mantine-color-dark-4)',
-                            borderRadius: '4px',
-                          }}
-                        >
-                          +{selectedGroups.length - 1}
-                        </Text>
-                      )}
-                    </Flex>
-                  );
-                }
-                return null;
-              }}
-              style={{ flex: 1, minWidth: 0 }}
-              rightSectionPointerEvents="auto"
-              rightSection={React.createElement(sortingIcon, {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSortingChange('group');
-                },
-                size: 14,
-                style: { cursor: 'pointer' },
-              })}
-            />
-          </Flex>
+                    )}
+                  </Flex>
+                );
+              }
+              return null;
+            }}
+            style={{ width: '100%' }}
+          />
         );
       }
 
@@ -1029,6 +1021,10 @@ const StreamsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
+    state: {
+      pagination,
+      sorting,
+    },
     headerCellRenderFns: {
       name: renderHeaderCell,
       group: renderHeaderCell,
@@ -1054,6 +1050,56 @@ const StreamsTable = ({ onReady }) => {
     // Load data independently, don't wait for logos or other data
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (
+      Object.keys(channelGroups).length > 0 ||
+      hasFetchedChannelGroups.current
+    ) {
+      return;
+    }
+
+    const loadGroups = async () => {
+      hasFetchedChannelGroups.current = true;
+      try {
+        await fetchChannelGroups();
+      } catch (error) {
+        console.error('Error fetching channel groups:', error);
+      }
+    };
+
+    loadGroups();
+  }, [channelGroups, fetchChannelGroups]);
+
+  useEffect(() => {
+    if (
+      playlists.length > 0 ||
+      hasFetchedPlaylists.current ||
+      playlistsLoading
+    ) {
+      return;
+    }
+
+    const loadPlaylists = async () => {
+      hasFetchedPlaylists.current = true;
+      try {
+        await fetchPlaylists();
+      } catch (error) {
+        console.error('Error fetching playlists:', error);
+      }
+    };
+
+    loadPlaylists();
+  }, [playlists, fetchPlaylists, playlistsLoading]);
+
+  useEffect(() => {
+    const startItem = pagination.pageIndex * pagination.pageSize + 1;
+    const endItem = Math.min(
+      (pagination.pageIndex + 1) * pagination.pageSize,
+      totalCount
+    );
+    setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
+  }, [pagination.pageIndex, pagination.pageSize, totalCount]);
 
   // Clear dependent filters if selected values are no longer in filtered options
   useEffect(() => {
@@ -1172,6 +1218,29 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <Button size="xs" variant="default">
+                  <Filter size={18} />
+                </Button>
+              </Menu.Target>
+
+              <Menu.Dropdown>
+                <Menu.Item
+                  onClick={toggleUnassignedOnly}
+                  leftSection={
+                    filters.unassigned === '1' ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Only Unassociated</Text>
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
             <Button
               leftSection={<SquarePlus size={18} />}
               variant="light"
