@@ -332,6 +332,13 @@ class ChannelSerializer(serializers.ModelSerializer):
             "channel_number", Channel.get_next_available_channel_number()
         )
         validated_data["channel_number"] = channel_number
+
+        # Auto-assign Default Group if no channel_group is specified
+        if "channel_group" not in validated_data or validated_data.get("channel_group") is None:
+            from apps.channels.models import ChannelGroup
+            default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
+            validated_data["channel_group"] = default_group
+
         channel = Channel.objects.create(**validated_data)
 
         # Add streams in the specified order

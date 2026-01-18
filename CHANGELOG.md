@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed XtreamCodes API crash when channels have NULL channel_group: The `player_api.php` endpoint (`xc_get_live_streams`) now gracefully handles channels without an assigned channel_group by dynamically looking up and assigning them to "Default Group" instead of crashing with AttributeError. Additionally, the Channel serializer now auto-assigns new channels to "Default Group" when `channel_group_id` is omitted during creation, preventing future NULL channel_group issues.
 - Fixed streams table column header overflow: Implemented fixed-height column headers (30px max-height) with pill-style filter display showing first selection plus count (e.g., "Sport +3"). Prevents header expansion when multiple filters are selected, maintaining compact table layout. (Fixes #613)
 - Fixed VOD logo cleanup button count: The "Cleanup Unused" button now displays the total count of all unused logos across all pages instead of only counting unused logos on the current page.
 - Fixed VOD refresh failures when logos are deleted: Changed logo comparisons to use `logo_id` (raw FK integer) instead of `logo` (related object) to avoid Django's lazy loading, which triggers a database fetch that fails if the referenced logo no longer exists. Also improved orphaned logo detection to properly clear stale references when logo URLs exist but logos are missing from the database.
