@@ -182,6 +182,8 @@ const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
   const hasFetchedOnce = useRef(false);
+  const hasFetchedPlaylists = useRef(false);
+  const hasFetchedChannelGroups = useRef(false);
 
   /**
    * useState
@@ -249,6 +251,8 @@ const StreamsTable = ({ onReady }) => {
    * Stores
    */
   const playlists = usePlaylistsStore((s) => s.playlists);
+  const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
+  const playlistsLoading = usePlaylistsStore((s) => s.isLoading);
 
   // Get direct access to channel groups without depending on other data
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
@@ -1048,11 +1052,15 @@ const StreamsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
-    if (Object.keys(channelGroups).length > 0) {
+    if (
+      Object.keys(channelGroups).length > 0 ||
+      hasFetchedChannelGroups.current
+    ) {
       return;
     }
 
     const loadGroups = async () => {
+      hasFetchedChannelGroups.current = true;
       try {
         await fetchChannelGroups();
       } catch (error) {
@@ -1062,6 +1070,27 @@ const StreamsTable = ({ onReady }) => {
 
     loadGroups();
   }, [channelGroups, fetchChannelGroups]);
+
+  useEffect(() => {
+    if (
+      playlists.length > 0 ||
+      hasFetchedPlaylists.current ||
+      playlistsLoading
+    ) {
+      return;
+    }
+
+    const loadPlaylists = async () => {
+      hasFetchedPlaylists.current = true;
+      try {
+        await fetchPlaylists();
+      } catch (error) {
+        console.error('Error fetching playlists:', error);
+      }
+    };
+
+    loadPlaylists();
+  }, [playlists, fetchPlaylists, playlistsLoading]);
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1;
