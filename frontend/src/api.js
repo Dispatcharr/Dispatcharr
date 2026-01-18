@@ -715,6 +715,7 @@ export default class API {
   static async queryStreamsTable(params) {
     try {
       API.lastStreamQueryParams = params;
+      useStreamsTableStore.getState().setLastQueryParams(params);
 
       const response = await request(
         `${host}/api/channels/streams/?${params.toString()}`
@@ -729,21 +730,24 @@ export default class API {
   }
 
   static async requeryStreams() {
-    if (!API.lastStreamQueryParams) {
+    const params =
+      useStreamsTableStore.getState().lastQueryParams ||
+      API.lastStreamQueryParams;
+    if (!params) {
       return null;
     }
 
     try {
       const [response, ids] = await Promise.all([
         request(
-          `${host}/api/channels/streams/?${API.lastStreamQueryParams.toString()}`
+          `${host}/api/channels/streams/?${params.toString()}`
         ),
-        API.getAllStreamIds(API.lastStreamQueryParams),
+        API.getAllStreamIds(params),
       ]);
 
       useStreamsTableStore
         .getState()
-        .queryStreams(response, API.lastStreamQueryParams);
+        .queryStreams(response, params);
       useStreamsTableStore.getState().setAllQueryIds(ids);
 
       return response;

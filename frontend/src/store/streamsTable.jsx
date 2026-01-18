@@ -12,6 +12,7 @@ const useStreamsTableStore = create((set) => ({
   },
   selectedStreamIds: [],
   allQueryIds: [],
+  lastQueryParams: null,
 
   queryStreams: ({ results, count }, params) => {
     set(() => ({
@@ -42,6 +43,12 @@ const useStreamsTableStore = create((set) => ({
   setSorting: (sorting) => {
     set(() => ({
       sorting,
+    }));
+  },
+
+  setLastQueryParams: (lastQueryParams) => {
+    set(() => ({
+      lastQueryParams,
     }));
   },
 }));
