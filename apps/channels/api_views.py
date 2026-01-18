@@ -10,7 +10,8 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 from django.db.models import Count
 from django.db.models import Q
-import os, json, requests, logging
+import os, json, requests, logging, mimetypes
+from django.utils.http import http_date
 from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
@@ -1727,11 +1728,10 @@ class LogoViewSet(viewsets.ModelViewSet):
         """Streams the logo file, whether it's local or remote."""
         logo = self.get_object()
         logo_url = logo.url
-
         if logo_url.startswith("/data"):  # Local file
             if not os.path.exists(logo_url):
                 raise Http404("Image not found")
-
+            stat = os.stat(logo_url)
             # Get proper mime type (first item of the tuple)
             content_type, _ = mimetypes.guess_type(logo_url)
             if not content_type:
@@ -1741,6 +1741,8 @@ class LogoViewSet(viewsets.ModelViewSet):
             response = StreamingHttpResponse(
                 open(logo_url, "rb"), content_type=content_type
             )
+            response["Cache-Control"] = "public, max-age=14400"  # Cache in browser for 4 hours
+            response["Last-Modified"] = http_date(stat.st_mtime)
             response["Content-Disposition"] = 'inline; filename="{}"'.format(
                 os.path.basename(logo_url)
             )
@@ -1780,6 +1782,10 @@ class LogoViewSet(viewsets.ModelViewSet):
                         remote_response.iter_content(chunk_size=8192),
                         content_type=content_type,
                     )
+                    if(remote_response.headers.get("Cache-Control")):
+                        response["Cache-Control"] = remote_response.headers.get("Cache-Control")
+                    if(remote_response.headers.get("Last-Modified")):
+                        response["Last-Modified"] = remote_response.headers.get("Last-Modified")
                     response["Content-Disposition"] = 'inline; filename="{}"'.format(
                         os.path.basename(logo_url)
                     )
