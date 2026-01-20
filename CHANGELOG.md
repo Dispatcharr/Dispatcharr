@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stats page enhancements: Added "Now Playing" program information for active streams with smart polling that only fetches EPG data when programs are about to change (not on every stats refresh). Features include:
   - Currently playing program title displayed with live broadcast indicator (green Radio icon)
   - Expandable program descriptions via chevron button
+  - Progress bar showing elapsed and remaining time for currently playing programs
   - Efficient POST-based API endpoint (`/api/epg/current-programs/`) supporting batch channel queries or fetching all channels
   - Smart scheduling that fetches new program data 5 seconds after current program ends
   - Only polls when active channel list changes, not on stats refresh
