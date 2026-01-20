@@ -279,9 +279,9 @@ describe('VodConnectionCardUtils', () => {
       dateTimeUtils.format.mockReturnValue('01/15/2024 14:30:00');
 
       const connection = { connected_at: 1705329000 };
-      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY');
+      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY, HH:mm:ss');
 
-      expect(dateTimeUtils.format).toHaveBeenCalledWith(1705329000000, 'MM/DD/YYYY HH:mm:ss');
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(1705329000000, 'MM/DD/YYYY, HH:mm:ss');
       expect(result).toBe('01/15/2024 14:30:00');
     });
 
@@ -289,15 +289,15 @@ describe('VodConnectionCardUtils', () => {
       dateTimeUtils.format.mockReturnValue('01/15/2024 13:00:00');
 
       const connection = { client_id: 'vod_1705323600000_abc' };
-      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY');
+      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY, HH:mm:ss');
 
-      expect(dateTimeUtils.format).toHaveBeenCalledWith(1705323600000, 'MM/DD/YYYY HH:mm:ss');
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(1705323600000, 'MM/DD/YYYY, HH:mm:ss');
       expect(result).toBe('01/15/2024 13:00:00');
     });
 
     it('should return Unknown when no timestamp data available', () => {
       const connection = {};
-      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY');
+      const result = VodConnectionCardUtils.calculateConnectionStartTime(connection, 'MM/DD/YYYY, HH:mm:ss');
 
       expect(result).toBe('Unknown');
     });
