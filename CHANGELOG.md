@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Updated streamlink from 8.1.0 to 8.1.2 to fix YouTube live stream playback issues and improve Pluto TV ad detection
+- Updated streamlink from 8.1.0 to 8.1.2 to fix YouTube live stream playback issues and improve Pluto TV ad detection (Fixes #869)
 - Fixed date/time formatting across all tables to respect user's UI preferences (time format and date format) set in Settings page:
   - Stream connection card "Connected" column
   - VOD connection card "Connection Start Time" column
