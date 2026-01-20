@@ -140,6 +140,26 @@ EOF
 fi
 
 ensure_utf8_encoding() {
+    # First check if the database exists
+    if ! su - postgres -c "psql -p ${POSTGRES_PORT} -tAc \"SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB';\"" | grep -q 1; then
+        echo "Database $POSTGRES_DB does not exist yet, creating it..."
+        su - postgres -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}"
+        # Create user if not exists
+        su - postgres -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB}" <<EOF
+DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$POSTGRES_USER') THEN
+        CREATE ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';
+    END IF;
+END
+\$\$;
+EOF
+        su postgres -c "$PG_BINDIR/psql -p ${POSTGRES_PORT} -c \"ALTER DATABASE ${POSTGRES_DB} OWNER TO $POSTGRES_USER;\""
+        su postgres -c "$PG_BINDIR/psql -p ${POSTGRES_PORT} -c \"GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO $POSTGRES_USER;\""
+        echo "Database $POSTGRES_DB created with UTF8 encoding."
+        return
+    fi
+
     # Check encoding of existing database
     CURRENT_ENCODING=$(su - postgres -c "psql -p ${POSTGRES_PORT} -tAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = '$POSTGRES_DB';\"" | tr -d ' ')
     if [ "$CURRENT_ENCODING" != "UTF8" ]; then

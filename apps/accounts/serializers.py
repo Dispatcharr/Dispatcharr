@@ -38,6 +38,7 @@ class UserSerializer(serializers.ModelSerializer):
             "user_level",
             "password",
             "channel_profiles",
+            "stream_profile",
             "custom_properties",
             "avatar_config",
             "is_active",

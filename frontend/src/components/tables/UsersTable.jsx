@@ -2,6 +2,7 @@ import React, { useMemo, useCallback, useState } from 'react';
 import API from '../../api';
 import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
+import useStreamProfilesStore from '../../store/streamProfiles';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
@@ -76,6 +77,7 @@ const UsersTable = () => {
    * STORES
    */
   const users = useUsersStore((s) => s.users);
+  const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -221,6 +223,16 @@ const UsersTable = () => {
         },
       },
       {
+        header: 'Stream Profile',
+        accessorKey: 'stream_profile',
+        size: 130,
+        cell: ({ getValue }) => {
+          const profileId = getValue();
+          const profile = streamProfiles.find((p) => p.id === profileId);
+          return <Text size="sm">{profile?.name || 'Default'}</Text>;
+        },
+      },
+      {
         header: 'XC Password',
         accessorKey: 'custom_properties',
         size: 125,
@@ -279,6 +291,7 @@ const UsersTable = () => {
       togglePasswordVisibility,
       fullDateFormat,
       fullDateTimeFormat,
+      streamProfiles,
     ]
   );
 
@@ -318,6 +331,7 @@ const UsersTable = () => {
       user_level: renderHeaderCell,
       last_login: renderHeaderCell,
       date_joined: renderHeaderCell,
+      stream_profile: renderHeaderCell,
       custom_properties: renderHeaderCell,
     },
   });

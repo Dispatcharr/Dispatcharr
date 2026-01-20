@@ -52,6 +52,9 @@ def stream_ts(request, channel_id):
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
     channel = get_stream_object(channel_id)
 
+    # Extract user context if available (set by stream_xc for XC API requests)
+    dispatcharr_user = getattr(request, 'dispatcharr_user', None)
+
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
 
@@ -166,7 +169,7 @@ def stream_ts(request, channel_id):
             while should_retry and time.time() - wait_start_time < retry_timeout:
                 attempt += 1
                 stream_url, stream_user_agent, transcode, profile_value = (
-                    generate_stream_url(channel_id)
+                    generate_stream_url(channel_id, user=dispatcharr_user)
                 )
 
                 if stream_url is not None:
@@ -211,7 +214,7 @@ def stream_ts(request, channel_id):
                     f"[{client_id}] Making final attempt {attempt} at timeout boundary"
                 )
                 stream_url, stream_user_agent, transcode, profile_value = (
-                    generate_stream_url(channel_id)
+                    generate_stream_url(channel_id, user=dispatcharr_user)
                 )
                 if stream_url is not None:
                     logger.info(
@@ -553,6 +556,8 @@ def stream_xc(request, username, password, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
+    # Attach user to request for stream profile resolution
+    request._request.dispatcharr_user = user
     return stream_ts(request._request, str(channel.uuid))
 
 

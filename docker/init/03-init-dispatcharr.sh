@@ -37,6 +37,20 @@ if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
 fi
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
+# Configure uWSGI port for nginx proxy
+if ! [[ "$UWSGI_PORT" =~ ^[0-9]+$ ]]; then
+    echo "⚠️  Warning: UWSGI_PORT is not a valid integer, using default port 5656"
+    UWSGI_PORT=5656
+fi
+sed -i "s/UWSGI_PORT/${UWSGI_PORT}/g" /etc/nginx/sites-enabled/default
+
+# Configure Daphne websocket port for nginx proxy
+if ! [[ "$DAPHNE_PORT" =~ ^[0-9]+$ ]]; then
+    echo "⚠️  Warning: DAPHNE_PORT is not a valid integer, using default port 8001"
+    DAPHNE_PORT=8001
+fi
+sed -i "s/DAPHNE_PORT/${DAPHNE_PORT}/g" /etc/nginx/sites-enabled/default
+
 # Configure nginx based on IPv6 availability
 if ip -6 addr show | grep -q "inet6"; then
     echo "✅ IPv6 is available, enabling IPv6 in nginx"

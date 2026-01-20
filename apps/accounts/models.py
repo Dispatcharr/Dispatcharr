@@ -1,6 +1,7 @@
 # apps/accounts/models.py
 from django.db import models
 from django.contrib.auth.models import AbstractUser, Permission
+from core.models import StreamProfile
 
 
 class User(AbstractUser):
@@ -22,6 +23,13 @@ class User(AbstractUser):
     )
     user_level = models.IntegerField(default=UserLevel.STREAMER)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
+    stream_profile = models.ForeignKey(
+        StreamProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="users",
+    )
 
     def __str__(self):
         return self.username

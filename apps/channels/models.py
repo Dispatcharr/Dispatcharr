@@ -355,15 +355,25 @@ class Channel(models.Model):
             n += 1
         return n
 
-    # @TODO: honor stream's stream profile
-    def get_stream_profile(self):
-        stream_profile = self.stream_profile
-        if not stream_profile:
-            stream_profile = StreamProfile.objects.get(
-                id=CoreSettings.get_default_stream_profile_id()
-            )
+    def get_stream_profile(self, user=None):
+        """
+        Get the stream profile using resolution hierarchy:
+        1. User's stream_profile (if provided and set) - Highest priority
+        2. Channel's stream_profile (if set)
+        3. System default from CoreSettings
+        """
+        # User preference takes priority
+        if user and hasattr(user, 'stream_profile') and user.stream_profile:
+            return user.stream_profile
 
-        return stream_profile
+        # Then channel-level
+        if self.stream_profile:
+            return self.stream_profile
+
+        # System default
+        return StreamProfile.objects.get(
+            id=CoreSettings.get_default_stream_profile_id()
+        )
 
     def get_stream(self):
         """

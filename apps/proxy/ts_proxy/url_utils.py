@@ -24,12 +24,13 @@ def get_stream_object(id: str):
         logger.info(f"Fetching stream hash {id}")
         return get_object_or_404(Stream, stream_hash=id)
 
-def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]:
+def generate_stream_url(channel_id: str, user=None) -> Tuple[str, str, bool, Optional[int]]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
 
     Args:
         channel_id: The UUID of the channel or stream hash
+        user: Optional user object for user-specific stream profile resolution
 
     Returns:
         Tuple[str, str, bool, Optional[int]]: (stream_url, user_agent, transcode_flag, profile_id)
@@ -98,10 +99,18 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             # Get stream URL with the selected profile's URL transformation
             stream_url = transform_url(stream.url, selected_profile.search_pattern, selected_profile.replace_pattern)
 
-            # Check if the stream has its own stream_profile set, otherwise use default
-            if stream.stream_profile:
+            # Check stream profile with user preference taking priority
+            stream_profile = None
+
+            # User preference takes priority
+            if user and hasattr(user, 'stream_profile') and user.stream_profile:
+                stream_profile = user.stream_profile
+                logger.debug(f"Using user's stream profile: {stream_profile.name}")
+            # Then stream's own profile
+            elif stream.stream_profile:
                 stream_profile = stream.stream_profile
                 logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
+            # Fall back to default
             else:
                 stream_profile = StreamProfile.objects.get(
                     id=CoreSettings.get_default_stream_profile_id()
@@ -153,7 +162,7 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
         stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
         # Check if transcoding is needed
-        stream_profile = channel.get_stream_profile()
+        stream_profile = channel.get_stream_profile(user=user)
         if stream_profile.is_proxy() or stream_profile is None:
             transcode = False
         else:

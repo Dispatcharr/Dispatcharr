@@ -19,11 +19,13 @@ import {
 import { RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
+import useStreamProfilesStore from '../../store/streamProfiles';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
+  const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
@@ -42,6 +44,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       xc_password: '',
       channel_profiles: [],
       hide_adult_content: false,
+      stream_profile: '',
     },
 
     validate: (values) => ({
@@ -95,6 +98,9 @@ const User = ({ user = null, isOpen, onClose }) => {
       values.channel_profiles = [];
     }
 
+    // Convert stream_profile to integer or null
+    values.stream_profile = values.stream_profile ? parseInt(values.stream_profile, 10) : null;
+
     if (!user && values.user_level == USER_LEVELS.STREAMER) {
       // Generate random password - they can't log in, but user can't be created without a password
       values.password = Math.random().toString(36).slice(2);
@@ -134,6 +140,7 @@ const User = ({ user = null, isOpen, onClose }) => {
             : ['0'],
         xc_password: customProps.xc_password || '',
         hide_adult_content: customProps.hide_adult_content || false,
+        stream_profile: user.stream_profile ? `${user.stream_profile}` : '',
       });
 
       if (customProps.xc_password) {
@@ -268,6 +275,23 @@ const User = ({ user = null, isOpen, onClose }) => {
                   />
                 </Tooltip>
               </Box>
+            )}
+
+            {showPermissions && (
+              <Select
+                label="Stream Profile"
+                description="User's default streaming profile"
+                placeholder="System Default"
+                clearable
+                data={streamProfiles
+                  .filter((p) => p.is_active)
+                  .map((p) => ({
+                    label: p.name,
+                    value: `${p.id}`,
+                  }))}
+                {...form.getInputProps('stream_profile')}
+                key={form.key('stream_profile')}
+              />
             )}
           </Stack>
         </Group>

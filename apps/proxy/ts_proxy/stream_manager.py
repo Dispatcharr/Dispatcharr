@@ -463,10 +463,10 @@ class StreamManager:
                 self._close_connection()
 
             channel = get_stream_object(self.channel_id)
+            from core.models import StreamProfile
 
             # Use FFmpeg specifically for HLS streams
             if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
-                from core.models import StreamProfile
                 try:
                     stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
                     logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
@@ -475,7 +475,25 @@ class StreamManager:
                     stream_profile = channel.get_stream_profile()
                     logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
             else:
-                stream_profile = channel.get_stream_profile()
+                # Try to get stream profile from Redis metadata (set during channel initialization with user context)
+                stream_profile = None
+                try:
+                    from .server import ProxyServer
+                    proxy_server = ProxyServer.get_instance()
+                    if proxy_server.redis_client:
+                        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+                        stream_profile_id = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_PROFILE)
+                        if stream_profile_id:
+                            stream_profile_id = int(stream_profile_id.decode('utf-8') if isinstance(stream_profile_id, bytes) else stream_profile_id)
+                            stream_profile = StreamProfile.objects.get(id=stream_profile_id)
+                            logger.debug(f"Using stream profile from Redis metadata: {stream_profile.name} for channel: {self.channel_id}")
+                except Exception as e:
+                    logger.debug(f"Could not get stream profile from Redis metadata: {e}")
+
+                # Fall back to channel's default profile
+                if not stream_profile:
+                    stream_profile = channel.get_stream_profile()
+                    logger.debug(f"Using channel's default stream profile: {stream_profile.name} for channel: {self.channel_id}")
 
             # Build and start transcode command
             self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
