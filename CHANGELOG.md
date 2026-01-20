@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated react-router from 7.11.0 to 7.12.0 to address two security vulnerabilities:
+  - **High**: Open Redirect XSS vulnerability in Action/Server Action Request Processing ([GHSA-h5cw-625j-3rxh](https://github.com/advisories/GHSA-h5cw-625j-3rxh), [GHSA-2w69-qvjg-hvjx](https://github.com/advisories/GHSA-2w69-qvjg-hvjx))
+  - **Moderate**: SSR XSS vulnerability in ScrollRestoration component ([GHSA-8v8x-cx79-35w7](https://github.com/advisories/GHSA-8v8x-cx79-35w7))
+- Updated react-router-dom from 7.11.0 to 7.12.0 (dependency of react-router)
+
 ### Added
 
 - Unassociated streams filter: Added "Only Unassociated" filter option to streams table for quickly finding streams not assigned to any channels - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes) (Closes #667)
