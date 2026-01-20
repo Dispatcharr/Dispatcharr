@@ -872,48 +872,20 @@ const StreamsTable = ({ onReady }) => {
           ? filters.channel_group.split(',').filter(Boolean)
           : [];
         return (
-          <Box style={{ width: '100%', position: 'relative' }}>
-            {selectedGroups.length > 0 && (
-              <Tooltip 
-                label={
-                  <div>
-                    {selectedGroups.slice(0, 10).map((group, idx) => (
-                      <div key={idx}>{group}</div>
-                    ))}
-                    {selectedGroups.length > 10 && (
-                      <div style={{ marginTop: '4px', fontStyle: 'italic' }}>
-                        +{selectedGroups.length - 10} more
-                      </div>
-                    )}
-                  </div>
-                }
-                position="top" 
-                withArrow
-              >
-                <Flex gap={4} style={{ position: 'absolute', top: 4, left: 4, right: 30, zIndex: 1, pointerEvents: 'auto', overflow: 'hidden' }}>
-                  <Pill size="xs" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{selectedGroups[0]}</Pill>
-                  {selectedGroups.length > 1 && (
-                    <Pill size="xs" style={{ flexShrink: 0 }}>+{selectedGroups.length - 1}</Pill>
-                  )}
-                </Flex>
-              </Tooltip>
-            )}
-            <MultiSelect
-              placeholder="Group"
-              searchable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleGroupChange}
-              value={selectedGroups}
-              data={groupOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              clearable
-              styles={{ pill: { display: 'none' } }}
-              style={{ width: '100%' }}
-            />
-          </Box>
+          <MultiSelect
+            placeholder="Group"
+            searchable
+            size="xs"
+            nothingFoundMessage="No options"
+            onClick={handleSelectClick}
+            onChange={handleGroupChange}
+            value={selectedGroups}
+            data={groupOptions}
+            variant="unstyled"
+            className="table-input-header custom-multiselect"
+            clearable
+            style={{ width: '100%' }}
+          />
         );
       }
 
@@ -921,64 +893,31 @@ const StreamsTable = ({ onReady }) => {
         const selectedM3Us = filters.m3u_account
           ? filters.m3u_account.split(',').filter(Boolean)
           : [];
-        const firstLabel = selectedM3Us.length > 0 
-          ? (m3uOptions.find((opt) => opt.value === selectedM3Us[0])?.label || selectedM3Us[0])
-          : null;
         return (
           <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <Box style={{ flex: 1, minWidth: 0, position: 'relative' }}>
-              {selectedM3Us.length > 0 && (
-                <Tooltip 
-                  label={
-                    <div>
-                      {selectedM3Us.slice(0, 10).map((val, idx) => (
-                        <div key={idx}>
-                          {m3uOptions.find((opt) => opt.value === val)?.label || val}
-                        </div>
-                      ))}
-                      {selectedM3Us.length > 10 && (
-                        <div style={{ marginTop: '4px', fontStyle: 'italic' }}>
-                          +{selectedM3Us.length - 10} more
-                        </div>
-                      )}
-                    </div>
-                  }
-                  position="top" 
-                  withArrow
-                >
-                  <Flex gap={4} style={{ position: 'absolute', top: 4, left: 4, right: 30, zIndex: 1, pointerEvents: 'auto', overflow: 'hidden' }}>
-                    <Pill size="xs" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{firstLabel}</Pill>
-                    {selectedM3Us.length > 1 && (
-                      <Pill size="xs" style={{ flexShrink: 0 }}>+{selectedM3Us.length - 1}</Pill>
-                    )}
-                  </Flex>
-                </Tooltip>
-              )}
-              <MultiSelect
-                placeholder="M3U"
-                searchable
-                clearable
-                size="xs"
-                nothingFoundMessage="No options"
-                onClick={handleSelectClick}
-                onChange={handleM3UChange}
-                value={selectedM3Us}
-                data={m3uOptions}
-                variant="unstyled"
-                className="table-input-header custom-multiselect"
-                styles={{ pill: { display: 'none' } }}
-                style={{ width: '100%' }}
-                rightSectionPointerEvents="auto"
-                rightSection={React.createElement(sortingIcon, {
-                  onClick: (e) => {
-                    e.stopPropagation();
-                    onSortingChange('m3u');
-                  },
-                  size: 14,
-                  style: { cursor: 'pointer' },
-                })}
-              />
-            </Box>
+            <MultiSelect
+              placeholder="M3U"
+              searchable
+              clearable
+              size="xs"
+              nothingFoundMessage="No options"
+              onClick={handleSelectClick}
+              onChange={handleM3UChange}
+              value={selectedM3Us}
+              data={m3uOptions}
+              variant="unstyled"
+              className="table-input-header custom-multiselect"
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('m3u');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
+            />
           </Flex>
         );
       }

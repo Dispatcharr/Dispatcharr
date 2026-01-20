@@ -1000,6 +1000,13 @@ const ChannelsTable = ({ onReady }) => {
             clearable
             onClick={stopPropagation}
             onChange={handleEPGChange}
+            value={
+              Array.isArray(filters.epg)
+                ? filters.epg
+                : filters.epg
+                  ? filters.epg.split(',').filter(Boolean)
+                  : []
+            }
             style={{ width: '100%' }}
           />
         );
@@ -1058,6 +1065,13 @@ const ChannelsTable = ({ onReady }) => {
             clearable
             onClick={stopPropagation}
             onChange={handleGroupChange}
+            value={
+              Array.isArray(filters.channel_group)
+                ? filters.channel_group
+                : filters.channel_group
+                  ? filters.channel_group.split(',').filter(Boolean)
+                  : []
+            }
             style={{ width: '100%' }}
           />
         );
