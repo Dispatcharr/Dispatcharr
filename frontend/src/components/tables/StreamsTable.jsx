@@ -51,6 +51,7 @@ import {
   NumberInput,
   Radio,
   LoadingOverlay,
+  Pill,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
@@ -871,52 +872,48 @@ const StreamsTable = ({ onReady }) => {
           ? filters.channel_group.split(',').filter(Boolean)
           : [];
         return (
-          <MultiSelect
-            placeholder="Group"
-            searchable
-            size="xs"
-            nothingFoundMessage="No options"
-            onClick={handleSelectClick}
-            onChange={handleGroupChange}
-            value={selectedGroups}
-            data={groupOptions}
-            variant="unstyled"
-            className="table-input-header custom-multiselect"
-            clearable
-            valueComponent={({ value }) => {
-              const index = selectedGroups.indexOf(value);
-              if (index === 0) {
-                return (
-                  <Flex gap={4} align="center">
-                    <Text
-                      size="xs"
-                      style={{
-                        padding: '2px 6px',
-                        backgroundColor: 'var(--mantine-color-dark-4)',
-                        borderRadius: '4px',
-                      }}
-                    >
-                      {value}
-                    </Text>
-                    {selectedGroups.length > 1 && (
-                      <Text
-                        size="xs"
-                        style={{
-                          padding: '2px 6px',
-                          backgroundColor: 'var(--mantine-color-dark-4)',
-                          borderRadius: '4px',
-                        }}
-                      >
-                        +{selectedGroups.length - 1}
-                      </Text>
+          <Box style={{ width: '100%', position: 'relative' }}>
+            {selectedGroups.length > 0 && (
+              <Tooltip 
+                label={
+                  <div>
+                    {selectedGroups.slice(0, 10).map((group, idx) => (
+                      <div key={idx}>{group}</div>
+                    ))}
+                    {selectedGroups.length > 10 && (
+                      <div style={{ marginTop: '4px', fontStyle: 'italic' }}>
+                        +{selectedGroups.length - 10} more
+                      </div>
                     )}
-                  </Flex>
-                );
-              }
-              return null;
-            }}
-            style={{ width: '100%' }}
-          />
+                  </div>
+                }
+                position="top" 
+                withArrow
+              >
+                <Flex gap={4} style={{ position: 'absolute', top: 4, left: 4, right: 30, zIndex: 1, pointerEvents: 'auto', overflow: 'hidden' }}>
+                  <Pill size="xs" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{selectedGroups[0]}</Pill>
+                  {selectedGroups.length > 1 && (
+                    <Pill size="xs" style={{ flexShrink: 0 }}>+{selectedGroups.length - 1}</Pill>
+                  )}
+                </Flex>
+              </Tooltip>
+            )}
+            <MultiSelect
+              placeholder="Group"
+              searchable
+              size="xs"
+              nothingFoundMessage="No options"
+              onClick={handleSelectClick}
+              onChange={handleGroupChange}
+              value={selectedGroups}
+              data={groupOptions}
+              variant="unstyled"
+              className="table-input-header custom-multiselect"
+              clearable
+              styles={{ pill: { display: 'none' } }}
+              style={{ width: '100%' }}
+            />
+          </Box>
         );
       }
 
@@ -924,66 +921,64 @@ const StreamsTable = ({ onReady }) => {
         const selectedM3Us = filters.m3u_account
           ? filters.m3u_account.split(',').filter(Boolean)
           : [];
+        const firstLabel = selectedM3Us.length > 0 
+          ? (m3uOptions.find((opt) => opt.value === selectedM3Us[0])?.label || selectedM3Us[0])
+          : null;
         return (
           <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <MultiSelect
-              placeholder="M3U"
-              searchable
-              clearable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleM3UChange}
-              value={selectedM3Us}
-              data={m3uOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              valueComponent={({ value }) => {
-                const index = selectedM3Us.indexOf(value);
-                if (index === 0) {
-                  const label =
-                    m3uOptions.find((opt) => opt.value === value)?.label ||
-                    value;
-                  return (
-                    <Flex gap={4} align="center">
-                      <Text
-                        size="xs"
-                        style={{
-                          padding: '2px 6px',
-                          backgroundColor: 'var(--mantine-color-dark-4)',
-                          borderRadius: '4px',
-                        }}
-                      >
-                        {label}
-                      </Text>
-                      {selectedM3Us.length > 1 && (
-                        <Text
-                          size="xs"
-                          style={{
-                            padding: '2px 6px',
-                            backgroundColor: 'var(--mantine-color-dark-4)',
-                            borderRadius: '4px',
-                          }}
-                        >
-                          +{selectedM3Us.length - 1}
-                        </Text>
+            <Box style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+              {selectedM3Us.length > 0 && (
+                <Tooltip 
+                  label={
+                    <div>
+                      {selectedM3Us.slice(0, 10).map((val, idx) => (
+                        <div key={idx}>
+                          {m3uOptions.find((opt) => opt.value === val)?.label || val}
+                        </div>
+                      ))}
+                      {selectedM3Us.length > 10 && (
+                        <div style={{ marginTop: '4px', fontStyle: 'italic' }}>
+                          +{selectedM3Us.length - 10} more
+                        </div>
                       )}
-                    </Flex>
-                  );
-                }
-                return null;
-              }}
-              style={{ flex: 1, minWidth: 0 }}
-              rightSectionPointerEvents="auto"
-              rightSection={React.createElement(sortingIcon, {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSortingChange('m3u');
-                },
-                size: 14,
-                style: { cursor: 'pointer' },
-              })}
-            />
+                    </div>
+                  }
+                  position="top" 
+                  withArrow
+                >
+                  <Flex gap={4} style={{ position: 'absolute', top: 4, left: 4, right: 30, zIndex: 1, pointerEvents: 'auto', overflow: 'hidden' }}>
+                    <Pill size="xs" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{firstLabel}</Pill>
+                    {selectedM3Us.length > 1 && (
+                      <Pill size="xs" style={{ flexShrink: 0 }}>+{selectedM3Us.length - 1}</Pill>
+                    )}
+                  </Flex>
+                </Tooltip>
+              )}
+              <MultiSelect
+                placeholder="M3U"
+                searchable
+                clearable
+                size="xs"
+                nothingFoundMessage="No options"
+                onClick={handleSelectClick}
+                onChange={handleM3UChange}
+                value={selectedM3Us}
+                data={m3uOptions}
+                variant="unstyled"
+                className="table-input-header custom-multiselect"
+                styles={{ pill: { display: 'none' } }}
+                style={{ width: '100%' }}
+                rightSectionPointerEvents="auto"
+                rightSection={React.createElement(sortingIcon, {
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    onSortingChange('m3u');
+                  },
+                  size: 14,
+                  style: { cursor: 'pointer' },
+                })}
+              />
+            </Box>
           </Flex>
         );
       }
