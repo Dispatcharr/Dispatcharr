@@ -417,3 +417,89 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+
+# ─────────────────────────────
+# 6) Current Programs API
+# ─────────────────────────────
+class CurrentProgramsAPIView(APIView):
+    """
+    Lightweight endpoint that returns currently playing programs for specified channel IDs.
+    Accepts POST with JSON body containing channel_ids array, or null/empty to fetch all channels.
+    """
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @swagger_auto_schema(
+        operation_description="Get currently playing programs for specified channels or all channels",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'channel_ids': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                    description="Array of channel IDs. If null or omitted, returns all channels with current programs.",
+                    nullable=True,
+                )
+            },
+        ),
+        responses={200: openapi.Response('Current programs', ProgramDataSerializer(many=True))},
+    )
+    def post(self, request, format=None):
+        # Get channel IDs from request body
+        channel_ids = request.data.get('channel_ids', None)
+
+        # Import Channel model
+        from apps.channels.models import Channel
+
+        # Build query for channels with EPG data
+        query = Channel.objects.filter(epg_data__isnull=False)
+
+        # Filter by specific channel IDs if provided
+        if channel_ids is not None:
+            if not isinstance(channel_ids, list):
+                return Response(
+                    {"error": "channel_ids must be an array of integers or null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                channel_ids = [int(id) for id in channel_ids]
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "channel_ids must contain valid integers"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            query = query.filter(id__in=channel_ids)
+
+        # Get channels with EPG data
+        channels = query.select_related('epg_data')
+
+        # Get current time
+        now = timezone.now()
+
+        # Build list of current programs
+        current_programs = []
+
+        for channel in channels:
+            # Query for current program
+            program = ProgramData.objects.filter(
+                epg=channel.epg_data,
+                start_time__lte=now,
+                end_time__gt=now
+            ).first()
+
+            if program:
+                # Serialize program and add channel_id for easy mapping
+                program_data = ProgramDataSerializer(program).data
+                program_data['channel_id'] = channel.id
+                current_programs.append(program_data)
+
+        return Response(current_programs, status=status.HTTP_200_OK)
+

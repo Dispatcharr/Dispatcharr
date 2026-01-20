@@ -1101,6 +1101,23 @@ export default class API {
     }
   }
 
+  static async getCurrentPrograms(channelIds = null) {
+    try {
+      const response = await request(
+        `${host}/api/epg/current-programs/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve current programs', e);
+      return [];
+    }
+  }
+
   // Notice there's a duplicated "refreshPlaylist" method above;
   // you might want to rename or remove one if it's not needed.
 

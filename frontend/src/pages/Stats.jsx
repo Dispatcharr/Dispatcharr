@@ -1,5 +1,20 @@
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Button, Group, LoadingOverlay, NumberInput, Text, Title, } from '@mantine/core';
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Box,
+  Button,
+  Group,
+  LoadingOverlay,
+  NumberInput,
+  Text,
+  Title,
+} from '@mantine/core';
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
 import useStreamProfilesStore from '../store/streamProfiles';
@@ -10,22 +25,27 @@ import {
   fetchActiveChannelStats,
   getClientStats,
   getCombinedConnections,
+  getCurrentPrograms,
   getStatsByChannelId,
   getVODStats,
   stopChannel,
   stopClient,
   stopVODClient,
 } from '../utils/pages/StatsUtils.js';
-const VodConnectionCard = React.lazy(() =>
-  import('../components/cards/VodConnectionCard.jsx'));
-const StreamConnectionCard = React.lazy(() =>
-  import('../components/cards/StreamConnectionCard.jsx'));
+const VodConnectionCard = React.lazy(
+  () => import('../components/cards/VodConnectionCard.jsx')
+);
+const StreamConnectionCard = React.lazy(
+  () => import('../components/cards/StreamConnectionCard.jsx')
+);
 
 const Connections = ({
   combinedConnections,
   clients,
   channelsByUUID,
+  channels,
   handleStopVODClient,
+  currentPrograms,
 }) => {
   const logos = useLogosStore((s) => s.logos);
 
@@ -55,6 +75,8 @@ const Connections = ({
                 stopChannel={stopChannel}
                 logos={logos}
                 channelsByUUID={channelsByUUID}
+                channels={channels}
+                currentProgram={currentPrograms[connection.data.channel_id]}
               />
             );
           } else if (connection.type === 'vod') {
@@ -84,6 +106,20 @@ const StatsPage = () => {
   const [vodConnections, setVodConnections] = useState([]);
   const [channelHistory, setChannelHistory] = useState({});
   const [isPollingActive, setIsPollingActive] = useState(false);
+  const [currentPrograms, setCurrentPrograms] = useState({});
+
+  // Use refs to hold latest values without triggering effects
+  const channelHistoryRef = useRef(channelHistory);
+  const channelsByUUIDRef = useRef(channelsByUUID);
+
+  // Update refs when values change
+  useEffect(() => {
+    channelHistoryRef.current = channelHistory;
+  }, [channelHistory]);
+
+  useEffect(() => {
+    channelsByUUIDRef.current = channelsByUUID;
+  }, [channelsByUUID]);
 
   // Use localStorage for stats refresh interval (in seconds)
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useLocalStorage(
@@ -191,7 +227,13 @@ const StatsPage = () => {
     // Use functional update to access previous state without dependency
     setChannelHistory((prevChannelHistory) => {
       // Create a completely new object based only on current channel stats
-      const stats = getStatsByChannelId(channelStats, prevChannelHistory, channelsByUUID, channels, streamProfiles);
+      const stats = getStatsByChannelId(
+        channelStats,
+        prevChannelHistory,
+        channelsByUUID,
+        channels,
+        streamProfiles
+      );
 
       console.log('Processed active channels:', stats);
 
@@ -201,6 +243,64 @@ const StatsPage = () => {
       return stats; // Return only currently active channels
     });
   }, [channelStats, channels, channelsByUUID, streamProfiles]);
+
+  // Track which channel IDs are active (only changes when channels start/stop, not on stats updates)
+  const activeChannelIds = useMemo(() => {
+    return Object.keys(channelHistory).sort().join(',');
+  }, [channelHistory]);
+
+  // Smart polling for current programs - only fetch when active channels change
+  useEffect(() => {
+    // Skip if no active channels
+    if (!activeChannelIds) {
+      setCurrentPrograms({});
+      return;
+    }
+
+    let timer = null;
+
+    const fetchPrograms = async () => {
+      // Use refs to get latest values without adding dependencies
+      const programs = await getCurrentPrograms(
+        channelHistoryRef.current,
+        channelsByUUIDRef.current
+      );
+      setCurrentPrograms(programs);
+
+      // Schedule next fetch based on nearest program end time
+      if (programs && Object.keys(programs).length > 0) {
+        const now = new Date();
+        let nearestEndTime = null;
+
+        Object.values(programs).forEach((program) => {
+          if (program && program.end_time) {
+            const endTime = new Date(program.end_time);
+            if (
+              endTime > now &&
+              (!nearestEndTime || endTime < nearestEndTime)
+            ) {
+              nearestEndTime = endTime;
+            }
+          }
+        });
+
+        if (nearestEndTime) {
+          const timeUntilChange = nearestEndTime.getTime() - now.getTime();
+          const fetchDelay = Math.max(timeUntilChange + 5000, 0);
+
+          timer = setTimeout(fetchPrograms, fetchDelay);
+        }
+      }
+    };
+
+    // Initial fetch
+    fetchPrograms();
+
+    // Cleanup timer on unmount or when active channels change
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeChannelIds]); // Only depend on activeChannelIds
 
   // Combine active streams and VOD connections into a single mixed list
   const combinedConnections = useMemo(() => {
@@ -216,11 +316,12 @@ const StatsPage = () => {
               <Title order={3}>Active Connections</Title>
               <Group align="center">
                 <Text size="sm" c="dimmed">
-                  {channelHistoryLength} {
-                    channelHistoryLength !== 1 ? 'streams' : 'stream'
-                  } • {vodConnectionsCount} {
-                    vodConnectionsCount !== 1 ? 'VOD connections' : 'VOD connection'
-                  }
+                  {channelHistoryLength}{' '}
+                  {channelHistoryLength !== 1 ? 'streams' : 'stream'} •{' '}
+                  {vodConnectionsCount}{' '}
+                  {vodConnectionsCount !== 1
+                    ? 'VOD connections'
+                    : 'VOD connection'}
                 </Text>
                 <Group align="center" gap="xs">
                   <Text size="sm">Refresh Interval (seconds):</Text>
@@ -273,7 +374,9 @@ const StatsPage = () => {
               combinedConnections={combinedConnections}
               clients={clients}
               channelsByUUID={channelsByUUID}
+              channels={channels}
               handleStopVODClient={handleStopVODClient}
+              currentPrograms={currentPrograms}
             />
           </Box>
         </Box>

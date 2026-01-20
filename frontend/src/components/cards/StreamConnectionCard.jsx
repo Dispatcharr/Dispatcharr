@@ -15,11 +15,16 @@ import {
   Stack,
   Text,
   Tooltip,
+  useMantineTheme,
 } from '@mantine/core';
 import {
+  ChevronDown,
+  ChevronRight,
+  CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  Radio,
   SquareX,
   Timer,
   Users,
@@ -48,6 +53,7 @@ import {
   getStreamsByIds,
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
+import useVideoStore from '../../store/useVideoStore';
 
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
@@ -57,6 +63,8 @@ const StreamConnectionCard = ({
   stopChannel,
   logos,
   channelsByUUID,
+  channels,
+  currentProgram,
 }) => {
   const location = useLocation();
   const [availableStreams, setAvailableStreams] = useState([]);
@@ -65,11 +73,18 @@ const StreamConnectionCard = ({
   const [currentM3UProfile, setCurrentM3UProfile] = useState(null); // Add state for current M3U profile
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
+  const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+
+  const theme = useMantineTheme();
 
   // Get M3U account data from the playlists store
   const m3uAccounts = usePlaylistsStore((s) => s.playlists);
-  // Get settings for speed threshold
+  // Get settings for speed threshold and environment mode
   const settings = useSettingsStore((s) => s.settings);
+  const env_mode =
+    useSettingsStore((s) => s.environment?.env_mode) || 'production';
+  // Get video preview function
+  const showVideo = useVideoStore((s) => s.showVideo);
 
   // Get user's date/time format preferences
   const { fullDateTimeFormat } = useDateTimeFormat();
@@ -393,6 +408,23 @@ const StreamConnectionCard = ({
   // Create select options for available streams
   const streamOptions = getStreamOptions(availableStreams, m3uAccountsMap);
 
+  // Handle preview channel button click
+  const handlePreviewChannel = () => {
+    const channelDbId = channelsByUUID[channel.channel_id];
+    if (!channelDbId) return;
+
+    const actualChannel = channels[channelDbId];
+    if (!actualChannel?.uuid) return;
+
+    const uri = `/proxy/ts/stream/${actualChannel.uuid}`;
+    let url = `${window.location.protocol}//${window.location.host}${uri}`;
+    if (env_mode === 'dev') {
+      url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+    }
+
+    showVideo(url);
+  };
+
   if (location.pathname !== '/stats') {
     return <></>;
   }
@@ -462,9 +494,7 @@ const StreamConnectionCard = ({
         </Group>
 
         <Flex justify="space-between" align="center">
-          <Group>
-            <Text fw={500}>{channelName}</Text>
-          </Group>
+          <Text fw={500}>{channelName}</Text>
 
           <Tooltip label="Active Stream Profile">
             <Group gap={5}>
@@ -474,8 +504,32 @@ const StreamConnectionCard = ({
           </Tooltip>
         </Flex>
 
-        {/* Display M3U profile information */}
-        <Flex justify="flex-end" align="center" mt={-8}>
+        {/* Display M3U profile and current program */}
+        <Flex justify="space-between" align="center" mt={-8}>
+          {currentProgram ? (
+            <Group gap={5}>
+              <Radio size="14" style={{ color: '#22c55e' }} />
+              <Text size="xs" fw={500} c="green.5">
+                Now Playing:
+              </Text>
+              <Text size="xs" c="dimmed">
+                {currentProgram.title}
+              </Text>
+              <ActionIcon
+                size="xs"
+                variant="subtle"
+                onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
+              >
+                {isProgramDescExpanded ? (
+                  <ChevronDown size="14" />
+                ) : (
+                  <ChevronRight size="14" />
+                )}
+              </ActionIcon>
+            </Group>
+          ) : (
+            <Box />
+          )}
           <Group gap={5}>
             <HardDriveUpload size="18" />
             <Tooltip label="Current M3U Profile">
@@ -484,22 +538,53 @@ const StreamConnectionCard = ({
           </Group>
         </Flex>
 
-        {/* Add stream selection dropdown */}
+        {/* Expandable program description */}
+        {currentProgram &&
+          isProgramDescExpanded &&
+          currentProgram.description && (
+            <Box mt={4} ml={24}>
+              <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
+                {currentProgram.description}
+              </Text>
+            </Box>
+          )}
+
+        {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (
-          <Tooltip label="Switch to another stream source">
-            <Select
-              size="xs"
-              label="Active Stream"
-              placeholder={
-                isLoadingStreams ? 'Loading streams...' : 'Select stream'
-              }
-              data={streamOptions}
-              value={activeStreamId || channel.stream_id?.toString() || null}
-              onChange={handleStreamChange}
-              disabled={isLoadingStreams}
-              mt={8}
-            />
-          </Tooltip>
+          <Box mt={8}>
+            <Group align="flex-end" gap="xs">
+              <Box style={{ flex: 1 }}>
+                <Tooltip label="Switch to another stream source">
+                  <Select
+                    size="xs"
+                    label="Active Stream"
+                    placeholder={
+                      isLoadingStreams ? 'Loading streams...' : 'Select stream'
+                    }
+                    data={streamOptions}
+                    value={
+                      activeStreamId || channel.stream_id?.toString() || null
+                    }
+                    onChange={handleStreamChange}
+                    disabled={isLoadingStreams}
+                  />
+                </Tooltip>
+              </Box>
+              {channel.name && (
+                <Tooltip label="Preview Channel">
+                  <ActionIcon
+                    size="md"
+                    variant="transparent"
+                    color={theme.tailwind.green[5]}
+                    onClick={handlePreviewChannel}
+                    style={{ marginBottom: 1 }}
+                  >
+                    <CirclePlay size="20" />
+                  </ActionIcon>
+                </Tooltip>
+              )}
+            </Group>
+          </Box>
         )}
 
         {/* Add stream information badges */}
