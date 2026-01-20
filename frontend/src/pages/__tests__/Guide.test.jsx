@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import {
-  render,
-  screen,
-  waitFor,
-  fireEvent,
-} from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import dayjs from 'dayjs';
 import Guide from '../Guide';
 import useChannelsStore from '../../store/channels';
@@ -82,8 +77,22 @@ vi.mock('@mantine/core', async () => {
         {children}
       </div>
     ),
-    Button: ({ children, onClick, leftSection, variant, size, color, disabled }) => (
-      <button onClick={onClick} disabled={disabled} data-variant={variant} data-size={size} data-color={color}>
+    Button: ({
+      children,
+      onClick,
+      leftSection,
+      variant,
+      size,
+      color,
+      disabled,
+    }) => (
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        data-variant={variant}
+        data-size={size}
+        data-color={color}
+      >
         {leftSection}
         {children}
       </button>
@@ -91,7 +100,12 @@ vi.mock('@mantine/core', async () => {
     TextInput: ({ value, onChange, placeholder, icon, rightSection }) => (
       <div>
         {icon}
-        <input type="text" value={value} onChange={onChange} placeholder={placeholder} />
+        <input
+          type="text"
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+        />
         {rightSection}
       </div>
     ),
@@ -111,7 +125,12 @@ vi.mock('@mantine/core', async () => {
       </select>
     ),
     ActionIcon: ({ children, onClick, variant, size, color }) => (
-      <button onClick={onClick} data-variant={variant} data-size={size} data-color={color}>
+      <button
+        onClick={onClick}
+        data-variant={variant}
+        data-size={size}
+        data-color={color}
+      >
         {children}
       </button>
     ),
@@ -122,21 +141,23 @@ vi.mock('@mantine/core', async () => {
 vi.mock('react-window', () => ({
   VariableSizeList: ({ children, itemData, itemCount }) => (
     <div data-testid="variable-size-list">
-      {Array.from({ length: Math.min(itemCount, 5) }, (_, i) =>
+      {Array.from({ length: Math.min(itemCount, 5) }, (_, i) => (
         <div key={i}>
           {children({
             index: i,
             style: {},
-            data: itemData.filteredChannels[i]
+            data: itemData.filteredChannels[i],
           })}
         </div>
-      )}
+      ))}
     </div>
   ),
 }));
 
 vi.mock('../../components/GuideRow', () => ({
-  default: ({ data }) => <div data-testid="guide-row">GuideRow for {data?.name}</div>,
+  default: ({ data }) => (
+    <div data-testid="guide-row">GuideRow for {data?.name}</div>
+  ),
 }));
 vi.mock('../../components/HourTimeline', () => ({
   default: ({ hourTimeline }) => (
@@ -184,7 +205,9 @@ vi.mock('../guideUtils', async () => {
   };
 });
 vi.mock('../../utils/cards/RecordingCardUtils.js', async () => {
-  const actual = await vi.importActual('../../utils/cards/RecordingCardUtils.js');
+  const actual = await vi.importActual(
+    '../../utils/cards/RecordingCardUtils.js'
+  );
   return {
     ...actual,
     getShowVideoUrl: vi.fn(),
@@ -262,7 +285,9 @@ describe('Guide', () => {
     });
 
     useEPGsStore.mockImplementation((selector) =>
-      selector ? selector({ tvgsById: {}, epgs: {} }) : { tvgsById: {}, epgs: {} }
+      selector
+        ? selector({ tvgsById: {}, epgs: {} })
+        : { tvgsById: {}, epgs: {} }
     );
 
     useSettingsStore.mockReturnValue('production');
@@ -274,13 +299,18 @@ describe('Guide', () => {
       if (format?.includes('dddd')) return 'Monday, 01/15/2024 • 12:00 PM';
       return '12:00 PM';
     });
-    dateTimeUtils.initializeTime.mockImplementation(date => date || now);
+    dateTimeUtils.initializeTime.mockImplementation((date) => date || now);
     dateTimeUtils.startOfDay.mockReturnValue(now.startOf('day'));
     dateTimeUtils.add.mockImplementation((date, amount, unit) =>
       dayjs(date).add(amount, unit)
     );
-    dateTimeUtils.convertToMs.mockImplementation(date => dayjs(date).valueOf());
-    dateTimeUtils.useDateTimeFormat.mockReturnValue(['12h', 'MM/DD/YYYY']);
+    dateTimeUtils.convertToMs.mockImplementation((date) =>
+      dayjs(date).valueOf()
+    );
+    dateTimeUtils.useDateTimeFormat.mockReturnValue({
+      timeFormat: '12h',
+      dateFormat: 'MM/DD/YYYY',
+    });
 
     guideUtils.fetchPrograms.mockResolvedValue([
       {
@@ -300,8 +330,8 @@ describe('Guide', () => {
     ]);
 
     guideUtils.fetchRules.mockResolvedValue([]);
-    guideUtils.filterGuideChannels.mockImplementation(
-      (channels) => Object.values(channels)
+    guideUtils.filterGuideChannels.mockImplementation((channels) =>
+      Object.values(channels)
     );
     guideUtils.createRecording.mockResolvedValue(undefined);
     guideUtils.createSeriesRule.mockResolvedValue(undefined);
@@ -348,7 +378,9 @@ describe('Guide', () => {
       render(<Guide />);
 
       // await waitFor(() => {
-        expect(screen.getByText('No channels match your filters')).toBeInTheDocument();
+      expect(
+        screen.getByText('No channels match your filters')
+      ).toBeInTheDocument();
       // });
     });
 
@@ -356,7 +388,7 @@ describe('Guide', () => {
       render(<Guide />);
 
       // await waitFor(() => {
-        expect(screen.getByText(/2 channels/)).toBeInTheDocument();
+      expect(screen.getByText(/2 channels/)).toBeInTheDocument();
       // });
     });
   });
@@ -394,7 +426,8 @@ describe('Guide', () => {
       const user = userEvent.setup({ delay: null });
       render(<Guide />);
 
-      const searchInput = await screen.findByPlaceholderText('Search channels...');
+      const searchInput =
+        await screen.findByPlaceholderText('Search channels...');
       await user.type(searchInput, 'News');
 
       await waitFor(() => {
@@ -457,7 +490,8 @@ describe('Guide', () => {
       render(<Guide />);
 
       // Set some filters
-      const searchInput = await screen.findByPlaceholderText('Search channels...');
+      const searchInput =
+        await screen.findByPlaceholderText('Search channels...');
       await user.type(searchInput, 'Test');
 
       // Clear them
@@ -479,7 +513,9 @@ describe('Guide', () => {
       await user.click(rulesButton);
 
       await waitFor(() => {
-        expect(screen.getByTestId('series-recording-modal')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('series-recording-modal')
+        ).toBeInTheDocument();
       });
 
       vi.useFakeTimers();
@@ -538,7 +574,12 @@ describe('Guide', () => {
   describe('Error Handling', () => {
     it('shows notification when no channels are available', async () => {
       useChannelsStore.mockImplementation((selector) => {
-        const state = { channels: {}, recordings: [], channelGroups: {}, profiles: {} };
+        const state = {
+          channels: {},
+          recordings: [],
+          channelGroups: {},
+          profiles: {},
+        };
         return selector ? selector(state) : state;
       });
 

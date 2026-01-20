@@ -25,7 +25,10 @@ import {
   Users,
   Video,
 } from 'lucide-react';
-import { toFriendlyDuration } from '../../utils/dateTimeUtils.js';
+import {
+  toFriendlyDuration,
+  useDateTimeFormat,
+} from '../../utils/dateTimeUtils.js';
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
 import { TableHelper } from '../../helpers/index.jsx';
 import logo from '../../images/logo.png';
@@ -68,9 +71,8 @@ const StreamConnectionCard = ({
   // Get settings for speed threshold
   const settings = useSettingsStore((s) => s.settings);
 
-  // Get Date-format from localStorage
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
+  // Get user's date/time format preferences
+  const { fullDateTimeFormat } = useDateTimeFormat();
 
   // Create a map of M3U account IDs to names for quick lookup
   const m3uAccountsMap = useMemo(() => {
@@ -258,7 +260,7 @@ const StreamConnectionCard = ({
       {
         id: 'connected',
         header: 'Connected',
-        accessorFn: connectedAccessor(dateFormat),
+        accessorFn: connectedAccessor(fullDateTimeFormat),
         cell: ({ cell }) => (
           <Tooltip
             label={
@@ -298,7 +300,7 @@ const StreamConnectionCard = ({
         size: 100,
       },
     ],
-    []
+    [fullDateTimeFormat]
   );
 
   const channelClientsTable = useTable({

@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed date/time formatting across all tables to respect user's UI preferences (time format and date format) set in Settings page:
+  - Stream connection card "Connected" column
+  - VOD connection card "Connection Start Time" column
+  - M3U table "Updated" column
+  - EPG table "Updated" column
+  - Users table "Last Login" and "Date Joined" columns
+  - All components now use centralized `format()` helper from dateTimeUtils for consistency
+- Removed unused imports from table components for cleaner code
 - Fixed build-dev.sh script stability: Resolved Dockerfile and build context paths to be relative to script location for reliable execution from any working directory, added proper --platform argument handling with array-safe quoting, and corrected push behavior to honor -p flag with accurate messaging. Improved formatting and quoting throughout to prevent word-splitting issues - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes)
 - Fixed TypeError on streams table load after container restart: Added robust data validation and type coercion to handle malformed filter options during container startup. The streams table MultiSelect components now safely convert group names to strings and filter out null/undefined values, preventing "right-hand side of 'in' should be an object, got number" errors when the backend hasn't fully initialized. API error handling returns safe defaults.
 - Fixed XtreamCodes API crash when channels have NULL channel_group: The `player_api.php` endpoint (`xc_get_live_streams`) now gracefully handles channels without an assigned channel_group by dynamically looking up and assigning them to "Default Group" instead of crashing with AttributeError. Additionally, the Channel serializer now auto-assigns new channels to "Default Group" when `channel_group_id` is omitted during creation, preventing future NULL channel_group issues.

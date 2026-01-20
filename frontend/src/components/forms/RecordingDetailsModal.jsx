@@ -1,7 +1,20 @@
 import useChannelsStore from '../../store/channels.jsx';
-import { useDateTimeFormat, useTimeHelpers } from '../../utils/dateTimeUtils.js';
+import {
+  useDateTimeFormat,
+  useTimeHelpers,
+} from '../../utils/dateTimeUtils.js';
 import React from 'react';
-import { Badge, Button, Card, Flex, Group, Image, Modal, Stack, Text, } from '@mantine/core';
+import {
+  Badge,
+  Button,
+  Card,
+  Flex,
+  Group,
+  Image,
+  Modal,
+  Stack,
+  Text,
+} from '@mantine/core';
 import useVideoStore from '../../store/useVideoStore.jsx';
 import { notifications } from '@mantine/notifications';
 import {
@@ -19,22 +32,23 @@ import {
 } from '../../utils/forms/RecordingDetailsModalUtils.js';
 
 const RecordingDetailsModal = ({
-                                        opened,
-                                        onClose,
-                                        recording,
-                                        channel,
-                                        posterUrl,
-                                        onWatchLive,
-                                        onWatchRecording,
-                                        env_mode,
-                                        onEdit,
-                                      }) => {
+  opened,
+  onClose,
+  recording,
+  channel,
+  posterUrl,
+  onWatchLive,
+  onWatchRecording,
+  env_mode,
+  onEdit,
+}) => {
   const allRecordings = useChannelsStore((s) => s.recordings);
   const channelMap = useChannelsStore((s) => s.channels);
   const { toUserTime, userNow } = useTimeHelpers();
   const [childOpen, setChildOpen] = React.useState(false);
   const [childRec, setChildRec] = React.useState(null);
-  const [timeformat, dateformat] = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+    useDateTimeFormat();
 
   const safeRecording = recording || {};
   const customProps = safeRecording.custom_properties || {};
@@ -61,7 +75,13 @@ const RecordingDetailsModal = ({
     safeRecording._group_count && safeRecording._group_count > 1
   );
   const upcomingEpisodes = React.useMemo(() => {
-    return getUpcomingEpisodes(isSeriesGroup, allRecordings, program, toUserTime, userNow);
+    return getUpcomingEpisodes(
+      isSeriesGroup,
+      allRecordings,
+      program,
+      toUserTime,
+      userNow
+    );
   }, [
     allRecordings,
     isSeriesGroup,
@@ -79,31 +99,32 @@ const RecordingDetailsModal = ({
 
     if (now.isAfter(s) && now.isBefore(e)) {
       if (!channelMap[rec.channel]) return;
-      useVideoStore.getState().showVideo(getShowVideoUrl(channelMap[rec.channel], env_mode), 'live');
+      useVideoStore
+        .getState()
+        .showVideo(getShowVideoUrl(channelMap[rec.channel], env_mode), 'live');
     }
-  }
+  };
 
   const handleOnWatchRecording = () => {
-    let fileUrl = getRecordingUrl(childRec.custom_properties, env_mode)
+    let fileUrl = getRecordingUrl(childRec.custom_properties, env_mode);
     if (!fileUrl) return;
 
     useVideoStore.getState().showVideo(fileUrl, 'vod', {
-      name:
-        childRec.custom_properties?.program?.title || 'Recording',
+      name: childRec.custom_properties?.program?.title || 'Recording',
       logo: {
         url: getPosterUrl(
           childRec.custom_properties?.poster_logo_id,
           undefined,
           channelMap[childRec.channel]?.logo?.cache_url
-        )
+        ),
       },
     });
-  }
+  };
 
   const handleRunComskip = async (e) => {
     e.stopPropagation?.();
     try {
-      await runComSkip(recording)
+      await runComSkip(recording);
       notifications.show({
         title: 'Removing commercials',
         message: 'Queued comskip for this recording',
@@ -113,7 +134,7 @@ const RecordingDetailsModal = ({
     } catch (error) {
       console.error('Failed to run comskip', error);
     }
-  }
+  };
 
   if (!recording) return null;
 
@@ -147,7 +168,7 @@ const RecordingDetailsModal = ({
     const handleOnMainCardClick = () => {
       setChildRec(rec);
       setChildOpen(true);
-    }
+    };
     return (
       <Card
         withBorder
@@ -183,7 +204,8 @@ const RecordingDetailsModal = ({
               )}
             </Group>
             <Text size="xs">
-              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
+              {end.format(timeformat)}
             </Text>
           </Stack>
           <Group gap={6}>
@@ -197,142 +219,153 @@ const RecordingDetailsModal = ({
   };
 
   const WatchLive = () => {
-    return <Button
-      size="xs"
-      variant="light"
-      onClick={(e) => {
-        e.stopPropagation?.();
-        onWatchLive();
-      }}
-    >
-      Watch Live
-    </Button>;
-  }
+    return (
+      <Button
+        size="xs"
+        variant="light"
+        onClick={(e) => {
+          e.stopPropagation?.();
+          onWatchLive();
+        }}
+      >
+        Watch Live
+      </Button>
+    );
+  };
 
   const WatchRecording = () => {
-    return <Button
-      size="xs"
-      variant="default"
-      onClick={(e) => {
-        e.stopPropagation?.();
-        onWatchRecording();
-      }}
-      disabled={!canWatchRecording}
-    >
-      Watch
-    </Button>;
-  }
+    return (
+      <Button
+        size="xs"
+        variant="default"
+        onClick={(e) => {
+          e.stopPropagation?.();
+          onWatchRecording();
+        }}
+        disabled={!canWatchRecording}
+      >
+        Watch
+      </Button>
+    );
+  };
 
   const Edit = () => {
-    return <Button
-      size="xs"
-      variant="light"
-      color="blue"
-      onClick={(e) => {
-        e.stopPropagation?.();
-        onEdit(recording);
-      }}
-    >
-      Edit
-    </Button>;
-  }
+    return (
+      <Button
+        size="xs"
+        variant="light"
+        color="blue"
+        onClick={(e) => {
+          e.stopPropagation?.();
+          onEdit(recording);
+        }}
+      >
+        Edit
+      </Button>
+    );
+  };
 
   const Series = () => {
-    return <Stack gap={10}>
-      {upcomingEpisodes.length === 0 && (
-        <Text size="sm" c="dimmed">
-          No upcoming episodes found
-        </Text>
-      )}
-      {upcomingEpisodes.map((ep) => (
-        <EpisodeRow key={`ep-${ep.id}`} rec={ep} />
-      ))}
-      {childOpen && childRec && (
-        <RecordingDetailsModal
-          opened={childOpen}
-          onClose={() => setChildOpen(false)}
-          recording={childRec}
-          channel={channelMap[childRec.channel]}
-          posterUrl={getPosterUrl(
-            childRec.custom_properties?.poster_logo_id,
-            childRec.custom_properties,
-            channelMap[childRec.channel]?.logo?.cache_url
-          )}
-          env_mode={env_mode}
-          onWatchLive={handleOnWatchLive}
-          onWatchRecording={handleOnWatchRecording}
-        />
-      )}
-    </Stack>;
-  }
-
-  const Movie = () => {
-    return <Flex gap="lg" align="flex-start">
-      <Image
-        src={posterUrl}
-        w={180}
-        h={240}
-        fit="contain"
-        radius="sm"
-        alt={recordingName}
-        fallbackSrc="/logo.png"
-      />
-      <Stack gap={8} style={{ flex: 1 }}>
-        <Group justify="space-between" align="center">
-          <Text c="dimmed" size="sm">
-            {channel ? `${channel.channel_number} • ${channel.name}` : '—'}
-          </Text>
-          <Group gap={8}>
-            {onWatchLive && <WatchLive />}
-            {onWatchRecording && <WatchRecording />}
-            {onEdit && start.isAfter(userNow()) && <Edit />}
-            {customProps.status === 'completed' &&
-              (!customProps?.comskip ||
-                customProps?.comskip?.status !== 'completed') && (
-                <Button
-                  size="xs"
-                  variant="light"
-                  color="teal"
-                  onClick={handleRunComskip}
-                >
-                  Remove commercials
-                </Button>
-              )}
-          </Group>
-        </Group>
-        <Text size="sm">
-          {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
-        </Text>
-        {rating && (
-          <Group gap={8}>
-            <Badge color="yellow" title={ratingSystem}>
-              {rating}
-            </Badge>
-          </Group>
-        )}
-        {description && (
-          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-            {description}
+    return (
+      <Stack gap={10}>
+        {upcomingEpisodes.length === 0 && (
+          <Text size="sm" c="dimmed">
+            No upcoming episodes found
           </Text>
         )}
-        {statRows.length > 0 && (
-          <Stack gap={4} pt={6}>
-            <Text fw={600} size="sm">
-              Stream Stats
-            </Text>
-            {statRows.map(([k, v]) => (
-              <Group key={k} justify="space-between">
-                <Text size="xs" c="dimmed">
-                  {k}
-                </Text>
-                <Text size="xs">{v}</Text>
-              </Group>
-            ))}
-          </Stack>
+        {upcomingEpisodes.map((ep) => (
+          <EpisodeRow key={`ep-${ep.id}`} rec={ep} />
+        ))}
+        {childOpen && childRec && (
+          <RecordingDetailsModal
+            opened={childOpen}
+            onClose={() => setChildOpen(false)}
+            recording={childRec}
+            channel={channelMap[childRec.channel]}
+            posterUrl={getPosterUrl(
+              childRec.custom_properties?.poster_logo_id,
+              childRec.custom_properties,
+              channelMap[childRec.channel]?.logo?.cache_url
+            )}
+            env_mode={env_mode}
+            onWatchLive={handleOnWatchLive}
+            onWatchRecording={handleOnWatchRecording}
+          />
         )}
       </Stack>
-    </Flex>;
-  }
+    );
+  };
+
+  const Movie = () => {
+    return (
+      <Flex gap="lg" align="flex-start">
+        <Image
+          src={posterUrl}
+          w={180}
+          h={240}
+          fit="contain"
+          radius="sm"
+          alt={recordingName}
+          fallbackSrc="/logo.png"
+        />
+        <Stack gap={8} style={{ flex: 1 }}>
+          <Group justify="space-between" align="center">
+            <Text c="dimmed" size="sm">
+              {channel ? `${channel.channel_number} • ${channel.name}` : '—'}
+            </Text>
+            <Group gap={8}>
+              {onWatchLive && <WatchLive />}
+              {onWatchRecording && <WatchRecording />}
+              {onEdit && start.isAfter(userNow()) && <Edit />}
+              {customProps.status === 'completed' &&
+                (!customProps?.comskip ||
+                  customProps?.comskip?.status !== 'completed') && (
+                  <Button
+                    size="xs"
+                    variant="light"
+                    color="teal"
+                    onClick={handleRunComskip}
+                  >
+                    Remove commercials
+                  </Button>
+                )}
+            </Group>
+          </Group>
+          <Text size="sm">
+            {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
+            {end.format(timeformat)}
+          </Text>
+          {rating && (
+            <Group gap={8}>
+              <Badge color="yellow" title={ratingSystem}>
+                {rating}
+              </Badge>
+            </Group>
+          )}
+          {description && (
+            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+              {description}
+            </Text>
+          )}
+          {statRows.length > 0 && (
+            <Stack gap={4} pt={6}>
+              <Text fw={600} size="sm">
+                Stream Stats
+              </Text>
+              {statRows.map(([k, v]) => (
+                <Group key={k} justify="space-between">
+                  <Text size="xs" c="dimmed">
+                    {k}
+                  </Text>
+                  <Text size="xs">{v}</Text>
+                </Group>
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </Flex>
+    );
+  };
 
   return (
     <Modal
