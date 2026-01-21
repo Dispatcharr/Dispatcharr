@@ -7,10 +7,8 @@ services:
     volumes:
       - ./data:/data
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - db
+      - redis
     environment:
       - DISPATCHARR_ENV=modular
       - POSTGRES_HOST=db
@@ -52,12 +50,9 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_celery
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      web:
-        condition: service_started
+      - db
+      - redis
+      - web
     volumes:
       - ./data:/data
     extra_hosts:
