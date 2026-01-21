@@ -117,7 +117,7 @@ const StreamRowActions = ({
 
   return (
     <>
-      <Tooltip label="Add to Channel">
+      <Tooltip label="Add to Channel" openDelay={500}>
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.blue[6]}
@@ -136,7 +136,7 @@ const StreamRowActions = ({
         </ActionIcon>
       </Tooltip>
 
-      <Tooltip label="Create New Channel">
+      <Tooltip label="Create New Channel" openDelay={500}>
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.green[5]}
@@ -1115,58 +1115,73 @@ const StreamsTable = ({ onReady }) => {
           gap={6}
         >
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? 'light'
-                  : 'default'
-              }
-              size="xs"
-              onClick={addStreamsToChannel}
-              p={5}
-              color={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? theme.tailwind.green[5]
-                  : undefined
-              }
-              style={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? {
-                      borderWidth: '1px',
-                      borderColor: theme.tailwind.green[5],
-                      color: 'white',
-                    }
-                  : undefined
-              }
-              disabled={
-                !(
+            <Tooltip
+              label="Add selected stream(s) to the selected channel"
+              openDelay={500}
+            >
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant={
                   selectedStreamIds.length > 0 &&
                   selectedChannelIds.length === 1
-                )
-              }
-            >
-              Add Streams to Channel
-            </Button>
+                    ? 'light'
+                    : 'default'
+                }
+                size="xs"
+                onClick={addStreamsToChannel}
+                p={5}
+                color={
+                  selectedStreamIds.length > 0 &&
+                  selectedChannelIds.length === 1
+                    ? theme.tailwind.green[5]
+                    : undefined
+                }
+                style={
+                  selectedStreamIds.length > 0 &&
+                  selectedChannelIds.length === 1
+                    ? {
+                        borderWidth: '1px',
+                        borderColor: theme.tailwind.green[5],
+                        color: 'white',
+                      }
+                    : undefined
+                }
+                disabled={
+                  !(
+                    selectedStreamIds.length > 0 &&
+                    selectedChannelIds.length === 1
+                  )
+                }
+              >
+                Add to Channel
+              </Button>
+            </Tooltip>
 
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant="default"
-              size="xs"
-              onClick={createChannelsFromStreams}
-              p={5}
-              disabled={selectedStreamIds.length == 0}
+            <Tooltip
+              label={`Create channels from ${selectedStreamIds.length} stream(s)`}
+              openDelay={500}
             >
-              {`Create Channels (${selectedStreamIds.length})`}
-            </Button>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant="default"
+                size="xs"
+                onClick={createChannelsFromStreams}
+                p={5}
+                disabled={selectedStreamIds.length == 0}
+              >
+                {`Create Channels (${selectedStreamIds.length})`}
+              </Button>
+            </Tooltip>
           </Flex>
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
             <Menu shadow="md" width={200}>
               <Menu.Target>
-                <Button size="xs" variant="default">
-                  <Filter size={18} />
-                </Button>
+                <Tooltip label="Filters" openDelay={500}>
+                  <Button size="xs" variant="default">
+                    <Filter size={18} />
+                  </Button>
+                </Tooltip>
               </Menu.Target>
 
               <Menu.Dropdown>
@@ -1185,31 +1200,35 @@ const StreamsTable = ({ onReady }) => {
               </Menu.Dropdown>
             </Menu>
 
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant="light"
-              size="xs"
-              onClick={() => editStream()}
-              p={5}
-              color={theme.tailwind.green[5]}
-              style={{
-                borderWidth: '1px',
-                borderColor: theme.tailwind.green[5],
-                color: 'white',
-              }}
-            >
-              Create Stream
-            </Button>
+            <Tooltip label="Create a new custom stream" openDelay={500}>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant="light"
+                size="xs"
+                onClick={() => editStream()}
+                p={5}
+                color={theme.tailwind.green[5]}
+                style={{
+                  borderWidth: '1px',
+                  borderColor: theme.tailwind.green[5],
+                  color: 'white',
+                }}
+              >
+                Create Stream
+              </Button>
+            </Tooltip>
 
-            <Button
-              leftSection={<SquareMinus size={18} />}
-              variant="default"
-              size="xs"
-              onClick={deleteStreams}
-              disabled={selectedStreamIds.length == 0}
-            >
-              Remove
-            </Button>
+            <Tooltip label="Delete selected stream(s)" openDelay={500}>
+              <Button
+                leftSection={<SquareMinus size={18} />}
+                variant="default"
+                size="xs"
+                onClick={deleteStreams}
+                disabled={selectedStreamIds.length == 0}
+              >
+                Delete
+              </Button>
+            </Tooltip>
           </Flex>
         </Flex>
 

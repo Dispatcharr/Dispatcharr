@@ -38,10 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - User-level content filtering: Non-admin users can opt to hide mature content channels across all interfaces (web UI, M3U playlists, EPG data, XtreamCodes API) via "Hide Mature Content" toggle in user settings (stored in custom_properties, admin users always see all content)
 - Table header pin toggle: Pin/unpin table headers to keep them visible while scrolling. Toggle available in channel table menu and UI Settings page. Setting persists across sessions and applies to all tables. (Closes #663)
 - Cascading filters for streams table: Improved filter usability with hierarchical M3U and Group dropdowns. M3U acts as the parent filter showing only active/enabled accounts, while Group options dynamically update to display only groups available in the selected M3U(s). Only enabled M3U's are displayed. (Closes #647)
+- Streams table UI: Added descriptive tooltips to top-toolbar buttons (Add to Channel, Create Channels, Filters, Create Stream, Delete) and to row action icons (Add to Channel, Create New Channel). Tooltips now use a 500ms open delay for consistent behavior with existing table header tooltips.
 
 ### Changed
 
 - Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
+- Streams table button labels: Renamed "Remove" to "Delete" and "Add Stream to Channel" to "Add to Channel" for clarity and consistency with other UI terminology.
 - Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
 - Table preferences architecture refactored: Migrated `table-size` preference from individual `useLocalStorage` calls to centralized `useTablePreferences` hook. All table components now read preferences from the table instance (`table.tableSize`, `.g maintainability and providing consistent API across all tables.
 - Optimized unassociated streams filter performance: Replaced inefficient reverse foreign key NULL check (`channels__isnull=True`) with Count annotation approach, reducing query time from 4-5 seconds to under 500ms for large datasets (75k+ streams)
