@@ -19,4 +19,11 @@ done
 # Start Celery
 echo 'Migrations complete, starting Celery...'
 celery -A dispatcharr beat -l info &
-nice -n ${CELERY_NICE_LEVEL:-5} celery -A dispatcharr worker -l info --autoscale=6,1
+
+# Default to nice level 5 (lower priority) - safe for unprivileged containers
+# Negative values require SYS_NICE capability
+NICE_LEVEL="${CELERY_NICE_LEVEL:-5}"
+if [ "$NICE_LEVEL" -lt 0 ] 2>/dev/null; then
+    echo "Warning: CELERY_NICE_LEVEL=$NICE_LEVEL is negative, requires SYS_NICE capability"
+fi
+nice -n "$NICE_LEVEL" celery -A dispatcharr worker -l info --autoscale=6,1
