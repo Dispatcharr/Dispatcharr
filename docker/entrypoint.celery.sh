@@ -7,11 +7,11 @@ source /dispatcharrpy/bin/activate
 # Wait for Django secret key
 echo 'Waiting for Django secret key...'
 while [ ! -f /data/jwt ]; do sleep 1; done
-export DJANGO_SECRET_KEY=$(cat /data/jwt)
+export DJANGO_SECRET_KEY="$(tr -d '\r\n' < /data/jwt)"
 
-# Wait for migrations to complete
+# Wait for migrations to complete (check that NO unapplied migrations remain)
 echo 'Waiting for migrations to complete...'
-until python manage.py showmigrations 2>&1 | grep -q '\[X\]'; do
+until ! python manage.py showmigrations 2>&1 | grep -q '\[ \]'; do
     echo 'Migrations not ready yet, waiting...'
     sleep 2
 done

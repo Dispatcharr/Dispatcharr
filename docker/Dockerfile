@@ -30,10 +30,12 @@ WORKDIR /app
 COPY . /app
 # Copy nginx configuration
 COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
-# Verify entrypoint scripts exist, fix line endings, and make them executable
-RUN ls -la /app/docker/entrypoint*.sh && \
-    sed -i 's/\r$//' /app/docker/entrypoint.sh /app/docker/entrypoint.celery.sh /app/docker/entrypoint.aio.sh && \
-    chmod +x /app/docker/entrypoint.sh /app/docker/entrypoint.celery.sh /app/docker/entrypoint.aio.sh
+# Fix line endings and make entrypoint scripts executable
+RUN for f in /app/docker/entrypoint*.sh; do \
+        if [ -f "$f" ]; then \
+            sed -i 's/\r$//' "$f" && chmod +x "$f"; \
+        fi; \
+    done
 # Clean out existing frontend folder
 RUN rm -rf /app/frontend
 # Copy built frontend assets

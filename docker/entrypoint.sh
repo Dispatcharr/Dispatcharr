@@ -66,7 +66,7 @@ PY
   mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
   umask $old_umask
 fi
-export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
+export DJANGO_SECRET_KEY="$(tr -d '\r\n' < "$SECRET_FILE")"
 
 # Process priority configuration
 # UWSGI_NICE_LEVEL: Absolute nice value for uWSGI/streaming (default: 0 = normal priority)
@@ -174,9 +174,20 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     pids+=("$postgres_pid")
 else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
-    # Wait for external PostgreSQL to be ready
+    # Wait for external PostgreSQL to be ready using Python (no pg_isready needed)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    until python3 -c "
+import socket
+import sys
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(('${POSTGRES_HOST}', ${POSTGRES_PORT}))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
