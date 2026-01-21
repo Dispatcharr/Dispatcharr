@@ -271,6 +271,14 @@ const StreamConnectionCard = ({
       {
         header: 'IP Address',
         accessorKey: 'ip_address',
+        size: 150,
+        cell: ({ cell }) => (
+          <Tooltip label={cell.getValue()}>
+            <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+              {cell.getValue()}
+            </Text>
+          </Tooltip>
+        ),
       },
       // Updated Connected column with tooltip
       {
