@@ -48,8 +48,42 @@ export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 export REDIS_HOST=${REDIS_HOST:-localhost}
+export REDIS_PORT=${REDIS_PORT:-6379}
 export REDIS_DB=${REDIS_DB:-0}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
+
+# Determine if using external services
+# Auto-detect based on host settings, but allow explicit override via environment variables
+if [ -z "$EXTERNAL_POSTGRES" ]; then
+    if [ "$POSTGRES_HOST" != "localhost" ] && [ "$POSTGRES_HOST" != "127.0.0.1" ]; then
+        EXTERNAL_POSTGRES="true"
+    else
+        EXTERNAL_POSTGRES="false"
+    fi
+fi
+export EXTERNAL_POSTGRES
+
+if [ -z "$EXTERNAL_REDIS" ]; then
+    if [ "$REDIS_HOST" != "localhost" ] && [ "$REDIS_HOST" != "127.0.0.1" ]; then
+        EXTERNAL_REDIS="true"
+    else
+        EXTERNAL_REDIS="false"
+    fi
+fi
+export EXTERNAL_REDIS
+
+# Log service configuration
+if [ "$EXTERNAL_POSTGRES" = "true" ]; then
+    echo "🗄️  PostgreSQL: external (${POSTGRES_HOST}:${POSTGRES_PORT})"
+else
+    echo "🗄️  PostgreSQL: internal"
+fi
+if [ "$EXTERNAL_REDIS" = "true" ]; then
+    echo "📮 Redis: external (${REDIS_HOST}:${REDIS_PORT})"
+else
+    echo "📮 Redis: internal"
+fi
+
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
 export SECRET_FILE="/data/jwt"
@@ -115,9 +149,10 @@ if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
         PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
         POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
+        REDIS_HOST REDIS_PORT REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
         CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+        EXTERNAL_POSTGRES EXTERNAL_REDIS
     )
 
     # Process each variable for both profile.d and environment
@@ -150,26 +185,40 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
-echo "Setting up PostgreSQL..."
-. /app/docker/init/02-postgres.sh
+
+if [ "$EXTERNAL_POSTGRES" = "true" ]; then
+    echo "📡 Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+    echo "⏳ Waiting for external PostgreSQL to be ready..."
+    until pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
+        sleep 2
+    done
+    echo "✅ External PostgreSQL is ready"
+else
+    echo "Setting up PostgreSQL..."
+    . /app/docker/init/02-postgres.sh
+fi
+
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
 
-# Start PostgreSQL
-echo "Starting Postgres..."
-su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
-# Wait for PostgreSQL to be ready
-until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
-    echo_with_timestamp "Waiting for PostgreSQL to be ready..."
-    sleep 1
-done
-postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
-echo "✅ Postgres started with PID $postgres_pid"
-pids+=("$postgres_pid")
+if [ "$EXTERNAL_POSTGRES" != "true" ]; then
+    # Start internal PostgreSQL
+    echo "Starting Postgres..."
+    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    # Wait for PostgreSQL to be ready
+    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL to be ready..."
+        sleep 1
+    done
+    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    echo "✅ Postgres started with PID $postgres_pid"
+    pids+=("$postgres_pid")
 
-# Ensure database encoding is UTF8
-. /app/docker/init/02-postgres.sh
-ensure_utf8_encoding
+    # Ensure database encoding is UTF8
+    . /app/docker/init/02-postgres.sh
+    ensure_utf8_encoding
+fi
 
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh
@@ -200,6 +249,15 @@ elif [ "$DISPATCHARR_DEBUG" = "true" ]; then
 else
     echo "🚀 Starting uwsgi in production mode..."
     uwsgi_file="/app/docker/uwsgi.ini"
+fi
+
+# If using external Redis, remove the internal redis-server daemon from uwsgi config
+if [ "$EXTERNAL_REDIS" = "true" ]; then
+    echo "📡 Using external Redis at ${REDIS_HOST}:${REDIS_PORT:-6379}"
+    # Create a modified uwsgi config without the redis-server daemon
+    uwsgi_file_modified="/tmp/uwsgi_modified.ini"
+    sed '/attach-daemon = redis-server/d' "$uwsgi_file" > "$uwsgi_file_modified"
+    uwsgi_file="$uwsgi_file_modified"
 fi
 
 # Set base uwsgi args
