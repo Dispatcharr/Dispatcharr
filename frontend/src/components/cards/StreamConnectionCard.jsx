@@ -494,9 +494,8 @@ const StreamConnectionCard = ({
           </Group>
         </Group>
 
-        <Flex justify="space-between" align="center">
-          <Text fw={500}>{channelName}</Text>
-
+        {/* Stream Profile on right */}
+        <Flex justify="flex-end" align="center" mt={-8}>
           <Tooltip label="Active Stream Profile">
             <Group gap={5}>
               <Video size="18" />
@@ -505,32 +504,10 @@ const StreamConnectionCard = ({
           </Tooltip>
         </Flex>
 
-        {/* Display M3U profile and current program */}
+        {/* Channel Name on left, M3U Profile on right */}
         <Flex justify="space-between" align="center" mt={-8}>
-          {currentProgram ? (
-            <Group gap={5}>
-              <Radio size="14" style={{ color: '#22c55e' }} />
-              <Text size="xs" fw={500} c="green.5">
-                Now Playing:
-              </Text>
-              <Text size="xs" c="dimmed">
-                {currentProgram.title}
-              </Text>
-              <ActionIcon
-                size="xs"
-                variant="subtle"
-                onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
-              >
-                {isProgramDescExpanded ? (
-                  <ChevronDown size="14" />
-                ) : (
-                  <ChevronRight size="14" />
-                )}
-              </ActionIcon>
-            </Group>
-          ) : (
-            <Box />
-          )}
+          <Text fw={500}>{channelName}</Text>
+
           <Group gap={5}>
             <HardDriveUpload size="18" />
             <Tooltip label="Current M3U Profile">
@@ -538,6 +515,30 @@ const StreamConnectionCard = ({
             </Tooltip>
           </Group>
         </Flex>
+
+        {/* Display current program on its own line */}
+        {currentProgram && (
+          <Group gap={5} mt={-4}>
+            <Radio size="14" style={{ color: '#22c55e' }} />
+            <Text size="xs" fw={500} c="green.5">
+              Now Playing:
+            </Text>
+            <Text size="xs" c="dimmed">
+              {currentProgram.title}
+            </Text>
+            <ActionIcon
+              size="xs"
+              variant="subtle"
+              onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
+            >
+              {isProgramDescExpanded ? (
+                <ChevronDown size="14" />
+              ) : (
+                <ChevronRight size="14" />
+              )}
+            </ActionIcon>
+          </Group>
+        )}
 
         {/* Expandable program description */}
         {currentProgram &&
