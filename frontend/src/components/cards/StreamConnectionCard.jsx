@@ -526,7 +526,7 @@ const StreamConnectionCard = ({
             <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
               Now Playing:
             </Text>
-            <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
+            <Text size="xs" c="dimmed" truncate>
               {currentProgram.title}
             </Text>
             <ActionIcon
