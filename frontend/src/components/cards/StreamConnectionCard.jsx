@@ -450,14 +450,14 @@ const StreamConnectionCard = ({
       w={'100%'}
     >
       <Stack pos="relative">
-        <Group justify="space-between">
+        <Group justify="space-between" align="flex-start">
           <Box
             style={{
               alignItems: 'center',
               justifyContent: 'center',
             }}
-            w={100}
-            h={50}
+            w={140}
+            h={70}
             display="flex"
           >
             <img
@@ -471,7 +471,7 @@ const StreamConnectionCard = ({
             />
           </Box>
 
-          <Group>
+          <Group mt={10}>
             <Box>
               <Tooltip label={getStartDate(uptime)}>
                 <Center>
@@ -494,42 +494,46 @@ const StreamConnectionCard = ({
           </Group>
         </Group>
 
-        {/* Stream Profile on right */}
-        <Flex justify="flex-end" align="center" mt={-8}>
+        {/* Stream Profile on right - absolutely positioned */}
+        <Box pos="absolute" top={65} right={16} style={{ zIndex: 1 }}>
           <Tooltip label="Active Stream Profile">
             <Group gap={5}>
               <Video size="18" />
               {streamProfileName}
             </Group>
           </Tooltip>
-        </Flex>
+        </Box>
 
-        {/* Channel Name on left, M3U Profile on right */}
-        <Flex justify="space-between" align="center" mt={-8}>
-          <Text fw={500}>{channelName}</Text>
-
+        {/* M3U Profile on right - absolutely positioned */}
+        <Box pos="absolute" top={95} right={16} style={{ zIndex: 1 }}>
           <Group gap={5}>
             <HardDriveUpload size="18" />
             <Tooltip label="Current M3U Profile">
               <Text size="xs">{m3uProfileName}</Text>
             </Tooltip>
           </Group>
-        </Flex>
+        </Box>
+
+        {/* Channel Name on left */}
+        <Box mt={4}>
+          <Text fw={500}>{channelName}</Text>
+        </Box>
 
         {/* Display current program on its own line */}
         {currentProgram && (
-          <Group gap={5} mt={-4}>
-            <Radio size="14" style={{ color: '#22c55e' }} />
-            <Text size="xs" fw={500} c="green.5">
+          <Group gap={5} mt={-9} wrap="nowrap">
+            <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
+            <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
               Now Playing:
             </Text>
-            <Text size="xs" c="dimmed">
+            <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
               {currentProgram.title}
             </Text>
             <ActionIcon
               size="xs"
               variant="subtle"
               onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
+              style={{ flexShrink: 0 }}
             >
               {isProgramDescExpanded ? (
                 <ChevronDown size="14" />
@@ -603,7 +607,7 @@ const StreamConnectionCard = ({
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (
-          <Box mt={8}>
+          <Box mt={-10}>
             <Group align="flex-end" gap="xs">
               <Box style={{ flex: 1 }}>
                 <Tooltip label="Switch to another stream source">
@@ -640,7 +644,7 @@ const StreamConnectionCard = ({
         )}
 
         {/* Add stream information badges */}
-        <Group gap="xs" mt="xs">
+        <Group gap="xs" mt="5">
           {channel.resolution && (
             <Tooltip label="Video resolution">
               <Badge size="sm" variant="light" color="red">
