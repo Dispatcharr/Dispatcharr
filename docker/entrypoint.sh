@@ -150,26 +150,43 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
-echo "Setting up PostgreSQL..."
-. /app/docker/init/02-postgres.sh
+
+# Initialize PostgreSQL if NOT in modular mode (using external database)
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    echo "Setting up PostgreSQL..."
+    . /app/docker/init/02-postgres.sh
+fi
+
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
 
-# Start PostgreSQL
-echo "Starting Postgres..."
-su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
-# Wait for PostgreSQL to be ready
-until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
-    echo_with_timestamp "Waiting for PostgreSQL to be ready..."
-    sleep 1
-done
-postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
-echo "✅ Postgres started with PID $postgres_pid"
-pids+=("$postgres_pid")
+# Start PostgreSQL if NOT in modular mode (using external database)
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    echo "Starting Postgres..."
+    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    # Wait for PostgreSQL to be ready
+    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL to be ready..."
+        sleep 1
+    done
+    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    echo "✅ Postgres started with PID $postgres_pid"
+    pids+=("$postgres_pid")
+else
+    echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+    # Wait for external PostgreSQL to be ready
+    echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
+    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
+        sleep 1
+    done
+    echo "✅ External PostgreSQL is ready"
+fi
 
-# Ensure database encoding is UTF8
-. /app/docker/init/02-postgres.sh
-ensure_utf8_encoding
+# Ensure database encoding is UTF8 (only for internal database)
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    ensure_utf8_encoding
+fi
 
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh
@@ -197,6 +214,9 @@ if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
 elif [ "$DISPATCHARR_DEBUG" = "true" ]; then
     echo "🚀 Starting uwsgi in debug mode..."
     uwsgi_file="/app/docker/uwsgi.debug.ini"
+elif [ "$DISPATCHARR_ENV" = "modular" ]; then
+    echo "🚀 Starting uwsgi in modular mode..."
+    uwsgi_file="/app/docker/uwsgi.modular.ini"
 else
     echo "🚀 Starting uwsgi in production mode..."
     uwsgi_file="/app/docker/uwsgi.ini"
