@@ -232,7 +232,8 @@ const StreamsTable = ({ onReady }) => {
     name: '',
     channel_group: '',
     m3u_account: '',
-    unassigned: '',
+    unassigned: false,
+    hide_stale: false,
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -398,7 +399,14 @@ const StreamsTable = ({ onReady }) => {
   const toggleUnassignedOnly = () => {
     setFilters((prev) => ({
       ...prev,
-      unassigned: prev.unassigned === '1' ? '' : '1',
+      unassigned: !prev.unassigned,
+    }));
+  };
+
+  const toggleHideStale = () => {
+    setFilters((prev) => ({
+      ...prev,
+      hide_stale: !prev.hide_stale,
     }));
   };
 
@@ -426,9 +434,13 @@ const StreamsTable = ({ onReady }) => {
         params.append('ordering', `${sortDirection}${sortField}`);
       }
 
-      // Apply debounced filters
+      // Apply debounced filters; send boolean filters as 'true' when set
       Object.entries(debouncedFilters).forEach(([key, value]) => {
-        if (value) params.append(key, value);
+        if (typeof value === 'boolean') {
+          if (value) params.append(key, 'true');
+        } else if (value !== null && value !== undefined && value !== '') {
+          params.append(key, String(value));
+        }
       });
 
       try {
@@ -1188,7 +1200,7 @@ const StreamsTable = ({ onReady }) => {
                 <Menu.Item
                   onClick={toggleUnassignedOnly}
                   leftSection={
-                    filters.unassigned === '1' ? (
+                    filters.unassigned === true ? (
                       <SquareCheck size={18} />
                     ) : (
                       <Square size={18} />
@@ -1196,6 +1208,18 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Only Unassociated</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={toggleHideStale}
+                  leftSection={
+                    filters.hide_stale === true ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Hide Stale</Text>
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>

@@ -149,7 +149,7 @@ class StreamViewSet(viewsets.ModelViewSet):
             qs = qs.filter(channels__id=assigned)
 
         unassigned = self.request.query_params.get("unassigned")
-        if unassigned == "1":
+        if unassigned and str(unassigned).lower() in ("1", "true", "yes", "on"):
             # Use annotation with Count for better performance on large datasets
             qs = qs.annotate(channel_count=Count('channels')).filter(channel_count=0)
 
@@ -157,6 +157,11 @@ class StreamViewSet(viewsets.ModelViewSet):
         if channel_group:
             group_names = channel_group.split(",")
             qs = qs.filter(channel_group__name__in=group_names)
+
+        # Allow client to hide stale streams (streams marked as is_stale=True)
+        hide_stale = self.request.query_params.get("hide_stale")
+        if hide_stale and str(hide_stale).lower() in ("1", "true", "yes", "on"):
+            qs = qs.filter(is_stale=False)
 
         return qs
 
