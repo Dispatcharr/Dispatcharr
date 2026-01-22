@@ -109,6 +109,8 @@ const ChannelTableHeader = ({
   setShowDisabled,
   showOnlyStreamlessChannels,
   setShowOnlyStreamlessChannels,
+  pagination,
+  setPagination,
 }) => {
   const theme = useMantineTheme();
 
@@ -226,6 +228,7 @@ const ChannelTableHeader = ({
   };
 
   const toggleShowOnlyStreamlessChannels = () => {
+    setPagination({ ...pagination, pageIndex: 0 });
     setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels);
   };
 

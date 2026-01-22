@@ -1413,6 +1413,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            pagination={pagination}
+            setPagination={setPagination}
           />
 
           {/* Table or ghost empty state inside Paper */}
