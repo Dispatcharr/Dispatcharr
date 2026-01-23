@@ -421,25 +421,32 @@ const ChannelsTable = ({ onReady }) => {
       }
     });
 
-    const [results, ids] = await Promise.all([
-      await API.queryChannels(params),
-      await API.getAllChannelIds(params),
-    ]);
+    try {
+      const [results, ids] = await Promise.all([
+        await API.queryChannels(params),
+        await API.getAllChannelIds(params),
+      ]);
 
-    setIsLoading(false);
-    hasFetchedData.current = true;
+      setIsLoading(false);
+      hasFetchedData.current = true;
 
-    setTablePrefs((prev) => ({
-      ...prev,
-      pageSize: pagination.pageSize,
-    }));
-    setAllRowIds(ids);
+      setTablePrefs((prev) => ({
+        ...prev,
+        pageSize: pagination.pageSize,
+      }));
+      setAllRowIds(ids);
 
-    // Signal ready after first successful data fetch AND EPG data is loaded
-    // This prevents the EPG column from showing "Not Assigned" while EPG data is still loading
-    if (!hasSignaledReady.current && onReady && tvgsLoaded) {
-      hasSignaledReady.current = true;
-      onReady();
+      // Signal ready after first successful data fetch AND EPG data is loaded
+      // This prevents the EPG column from showing "Not Assigned" while EPG data is still loading
+      if (!hasSignaledReady.current && onReady && tvgsLoaded) {
+        hasSignaledReady.current = true;
+        onReady();
+      }
+    } catch (error) {
+      setIsLoading(false);
+      // API layer handles "Invalid page" errors by resetting and retrying
+      // Just re-throw to show notification for actual errors
+      throw error;
     }
   }, [
     pagination,

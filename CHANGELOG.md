@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Channels table pagination error handling: Fixed "Invalid page" error notifications that appeared when filters reduced the result set while on a page beyond the new total. The API layer now automatically detects invalid page errors, resets pagination to page 1, and retries the request transparently. (Fixes #864)
 - Fixed long IP addresses overlapping adjacent columns in stream connection card by adding truncation with tooltips displaying the full address. (Fixes #712)
 - Fixed nginx startup failure due to group name mismatch in non-container deployments - Thanks [@s0len](https://github.com/s0len) (Fixes #877)
 - Updated streamlink from 8.1.0 to 8.1.2 to fix YouTube live stream playback issues and improve Pluto TV ad detection (Fixes #869)

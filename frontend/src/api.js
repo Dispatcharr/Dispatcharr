@@ -198,6 +198,31 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(params);
+          newParams.set('page', '1');
+
+          const response = await request(
+            `${host}/api/channels/channels/?${newParams.toString()}`
+          );
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
@@ -218,6 +243,39 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(API.lastQueryParams);
+          newParams.set('page', '1');
+          API.lastQueryParams = newParams;
+
+          const [response, ids] = await Promise.all([
+            request(
+              `${host}/api/channels/channels/?${newParams.toString()}`
+            ),
+            API.getAllChannelIds(newParams),
+          ]);
+
+          useChannelsTableStore
+            .getState()
+            .queryChannels(response, newParams);
+          useChannelsTableStore.getState().setAllQueryIds(ids);
+
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
