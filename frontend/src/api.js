@@ -568,6 +568,24 @@ export default class API {
     }
   }
 
+  static async reorderChannel(channelId, insertAfterId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/reorder/`,
+        {
+          method: 'POST',
+          body: {
+            insert_after_id: insertAfterId,
+          },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder channel', e);
+    }
+  }
+
   static async setChannelEPG(channelId, epgDataId) {
     try {
       const response = await request(

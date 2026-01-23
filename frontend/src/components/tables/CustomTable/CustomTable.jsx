@@ -1,8 +1,6 @@
 import { Box, Flex } from '@mantine/core';
 import CustomTableHeader from './CustomTableHeader';
 import { useCallback, useState, useRef, useMemo } from 'react';
-import { flexRender } from '@tanstack/react-table';
-import table from '../../../helpers/table';
 import CustomTableBody from './CustomTableBody';
 
 const CustomTable = ({ table }) => {
@@ -46,6 +44,7 @@ const CustomTable = ({ table }) => {
         selectedTableIds={table.selectedTableIds}
         tableCellProps={table.tableCellProps}
         headerPinned={table.headerPinned}
+        enableDragDrop={table.enableDragDrop}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
@@ -54,9 +53,10 @@ const CustomTable = ({ table }) => {
         expandedRowRenderer={table.expandedRowRenderer}
         renderBodyCell={table.renderBodyCell}
         getExpandedRowHeight={table.getExpandedRowHeight}
-        getRowStyles={table.getRowStyles} // Pass the getRowStyles function
+        getRowStyles={table.getRowStyles}
         tableBodyProps={table.tableBodyProps}
         tableCellProps={table.tableCellProps}
+        enableDragDrop={table.enableDragDrop}
       />
     </Box>
   );

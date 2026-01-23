@@ -5,6 +5,17 @@ import React, {
   useCallback,
   useRef,
 } from 'react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
@@ -61,9 +72,18 @@ import ChannelTableStreams from './ChannelTableStreams';
 import LazyLogo from '../LazyLogo';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import useEPGsStore from '../../store/epgs';
+import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
 import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
+import {
+  EditableTextCell,
+  EditableNumberCell,
+  EditableGroupCell,
+  EditableEPGCell,
+  EditableLogoCell,
+} from './ChannelsTable/EditableCell';
+import { DraggableRow } from './ChannelsTable/DraggableRow';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
@@ -231,6 +251,10 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
+
+  // Get channel logos for logo selection
+  const { logos: channelLogos, ensureLogosLoaded } = useChannelLogoSelection();
+
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
@@ -258,6 +282,7 @@ const ChannelsTable = ({ onReady }) => {
   const setChannelStreams = useChannelsTableStore((s) => s.setChannelStreams);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
 
   // store/channels
   const channels = useChannelsStore((s) => s.channels);
@@ -319,6 +344,15 @@ const ChannelsTable = ({ onReady }) => {
   const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
+
+  // Drag-and-drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px movement before dragging starts
+      },
+    })
+  );
 
   // Column sizing state for resizable columns
   // Store in localStorage but with empty object as default
@@ -746,6 +780,47 @@ const ChannelsTable = ({ onReady }) => {
     }
   };
 
+  const handleDragEnd = async (event) => {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    const activeIndex = rows.findIndex((row) => row.id === active.id);
+    const overIndex = rows.findIndex((row) => row.id === over.id);
+
+    if (activeIndex === -1 || overIndex === -1) {
+      return;
+    }
+
+    const activeChannel = rows[activeIndex].original;
+    const overChannel = rows[overIndex].original;
+
+    try {
+      // Optimistically update the local state
+      const reorderedData = [...data];
+      const [movedItem] = reorderedData.splice(activeIndex, 1);
+      reorderedData.splice(overIndex, 0, movedItem);
+      useChannelsTableStore.setState({ channels: reorderedData });
+
+      // Call backend to reorder
+      await API.reorderChannel(
+        activeChannel.id,
+        overIndex > activeIndex
+          ? overChannel.id
+          : rows[overIndex - 1]?.original.id || null
+      );
+
+      // Refetch to get updated channel numbers
+      await API.requeryChannels();
+    } catch (error) {
+      // Revert on error
+      console.error('Failed to reorder channel:', error);
+      await API.requeryChannels();
+    }
+  };
+
   /**
    * useEffect
    */
@@ -817,22 +892,7 @@ const ChannelsTable = ({ onReady }) => {
         size: columnSizing.channel_number || 40,
         minSize: 30,
         maxSize: 100,
-        cell: ({ getValue }) => {
-          const value = getValue();
-          // Format as integer if no decimal component
-          const formattedValue =
-            value !== null && value !== undefined
-              ? value === Math.floor(value)
-                ? Math.floor(value)
-                : value
-              : '';
-
-          return (
-            <Flex justify="flex-end" style={{ width: '100%' }}>
-              {formattedValue}
-            </Flex>
-          );
-        },
+        cell: (props) => <EditableNumberCell {...props} />,
       },
       {
         id: 'name',
@@ -840,73 +900,20 @@ const ChannelsTable = ({ onReady }) => {
         size: columnSizing.name || 200,
         minSize: 100,
         grow: true,
-        cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
-        ),
+        cell: (props) => <EditableTextCell {...props} />,
       },
       {
         id: 'epg',
         header: 'EPG',
         accessorKey: 'epg_data_id',
-        cell: ({ getValue }) => {
-          const epgDataId = getValue();
-          const epgObj = epgDataId ? tvgsById[epgDataId] : null;
-          const tvgName = epgObj?.name;
-          const tvgId = epgObj?.tvg_id;
-          const epgName =
-            epgObj && epgObj.epg_source
-              ? epgs[epgObj.epg_source]?.name || epgObj.epg_source
-              : null;
-
-          const tooltip = epgObj
-            ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${tvgName ? `TVG Name: ${tvgName}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
-            : '';
-
-          // If channel has an EPG assignment but tvgsById hasn't loaded yet, show loading
-          const isEpgDataPending = epgDataId && !epgObj && !tvgsLoaded;
-
-          return (
-            <Box
-              style={{
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {epgObj && epgName ? (
-                <Tooltip
-                  label={
-                    <span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>
-                  }
-                  withArrow
-                  position="top"
-                >
-                  <span>
-                    {epgObj.epg_source} - {tvgId}
-                  </span>
-                </Tooltip>
-              ) : epgObj ? (
-                <span>{epgObj.name}</span>
-              ) : isEpgDataPending ? (
-                <Skeleton
-                  height={14}
-                  width={(columnSizing.epg || 200) * 0.7}
-                  style={{ borderRadius: 4 }}
-                />
-              ) : (
-                <span style={{ color: '#888' }}>Not Assigned</span>
-              )}
-            </Box>
-          );
-        },
+        cell: (props) => (
+          <EditableEPGCell
+            {...props}
+            tvgsById={tvgsById}
+            epgs={epgs}
+            tvgsLoaded={tvgsLoaded}
+          />
+        ),
         size: columnSizing.epg || 200,
         minSize: 80,
       },
@@ -916,16 +923,8 @@ const ChannelsTable = ({ onReady }) => {
           channelGroups[row.channel_group_id]
             ? channelGroups[row.channel_group_id].name
             : '',
-        cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
+        cell: (props) => (
+          <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
         size: columnSizing.channel_group || 175,
         minSize: 100,
@@ -941,19 +940,21 @@ const ChannelsTable = ({ onReady }) => {
         maxSize: 120,
         enableResizing: false,
         header: '',
-        cell: ({ getValue }) => {
-          const logoId = getValue();
-
-          return (
-            <Center style={{ width: '100%' }}>
-              <LazyLogo
-                logoId={logoId}
-                alt="logo"
-                style={{ maxHeight: 18, maxWidth: 55 }}
-              />
-            </Center>
-          );
-        },
+        cell: (props) => (
+          <Box
+            onClick={() => {
+              // Ensure logos are loaded when user tries to edit
+              ensureLogosLoaded();
+            }}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <EditableLogoCell
+              {...props}
+              channelLogos={channelLogos}
+              LazyLogo={LazyLogo}
+            />
+          </Box>
+        ),
       },
       {
         id: 'actions',
@@ -1099,6 +1100,7 @@ const ChannelsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
+    enableDragDrop: true,
     onRowSelectionChange: onRowSelectionChange,
     state: {
       pagination,
@@ -1463,7 +1465,18 @@ const ChannelsTable = ({ onReady }) => {
                   borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
-                <CustomTable table={table} />
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={rows.map((row) => row.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <CustomTable table={table} />
+                  </SortableContext>
+                </DndContext>
               </Box>
 
               <Box

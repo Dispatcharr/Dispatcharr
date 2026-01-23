@@ -2,6 +2,7 @@ import { Box, Center, Checkbox, Flex } from '@mantine/core';
 import { flexRender } from '@tanstack/react-table';
 import { useCallback, useMemo } from 'react';
 import MultiSelectHeaderWrapper from './MultiSelectHeaderWrapper';
+import useChannelsTableStore from '../../../store/channelsTable';
 
 const CustomTableHeader = ({
   getHeaderGroups,
@@ -11,7 +12,10 @@ const CustomTableHeader = ({
   onSelectAllChange,
   tableCellProps,
   headerPinned = true,
+  enableDragDrop = false,
 }) => {
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const shouldEnableDrag = enableDragDrop && isUnlocked;
   const renderHeaderCell = (header) => {
     let content;
 
@@ -95,6 +99,7 @@ const CustomTableHeader = ({
             display: 'flex',
             width: '100%',
             minWidth: '100%', // Force full width
+            paddingLeft: shouldEnableDrag ? 28 : 0,
           }}
         >
           {headerGroup.headers.map((header) => {
