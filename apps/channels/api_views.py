@@ -1277,8 +1277,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="reorder")
     def reorder(self, request, pk=None):
         """
-        Reorder a channel by moving it near a target position.
-        Finds the first available channel number without unnecessarily shifting other channels.
+        Reorder a channel by moving it after another channel (or to the start if insert_after_id is null).
+        Shifts other channels as needed to maintain contiguous ordering.
         """
         channel = self.get_object()
         insert_after_id = request.data.get("insert_after_id")
@@ -1286,39 +1286,51 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             if insert_after_id is None:
-                # Move to the beginning - find first available number starting from 1
-                new_channel_number = 1
-                # Check if 1 is taken, find first gap
-                occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
-                while new_channel_number in occupied:
-                    new_channel_number += 1
+                # Move to the beginning (channel_number = 1)
+                target_number = 0
+                desired_number = 1
             else:
                 try:
                     target_channel = Channel.objects.get(id=insert_after_id)
                     target_number = target_channel.channel_number or 0
-                    desired_position = int(target_number) + 1
-
-                    # Get all occupied channel numbers (excluding the channel being moved)
-                    occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
-
-                    # Find the first available number at or after the desired position
-                    new_channel_number = desired_position
-                    while new_channel_number in occupied:
-                        new_channel_number += 1
-
+                    desired_number = int(target_number) + 1
                 except Channel.DoesNotExist:
                     return Response(
                         {"error": "Target channel not found"},
                         status=status.HTTP_404_NOT_FOUND,
                     )
 
-            # Update the dragged channel's number
-            channel.channel_number = new_channel_number
+            if desired_number == old_channel_number:
+                # No change needed
+                return Response(
+                    {
+                        "message": f"Channel {channel.name} already at position {desired_number}",
+                        "channel": self.get_serializer(channel).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # Find the first available channel number at or after desired_number
+            occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
+            probe = desired_number
+            while probe in occupied:
+                probe += 1
+            gap_number = probe
+
+            # Shift up all channels from desired_number to gap_number-1 (inclusive)
+            # This prevents duplicates and ensures contiguous numbering
+            if gap_number > desired_number:
+                # Shift up in ascending order to avoid collisions
+                for n in range(gap_number - 1, desired_number - 1, -1):
+                    Channel.objects.filter(channel_number=n).update(channel_number=n + 1)
+
+            # Set the moved channel's number
+            channel.channel_number = desired_number
             channel.save(update_fields=['channel_number'])
 
         return Response(
             {
-                "message": f"Channel {channel.name} moved to position {new_channel_number}",
+                "message": f"Channel {channel.name} moved to position {desired_number}",
                 "channel": self.get_serializer(channel).data,
             },
             status=status.HTTP_200_OK,
