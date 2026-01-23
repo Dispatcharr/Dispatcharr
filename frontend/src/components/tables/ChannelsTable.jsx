@@ -401,6 +401,12 @@ const ChannelsTable = ({ onReady }) => {
   if (hasUnlinkedChannels) {
     epgOptions.unshift('No EPG');
   }
+  // Map for MultiSelect: value 'null' for 'No EPG', label for display
+  const epgSelectOptions = epgOptions.map((opt) =>
+    opt === 'No EPG'
+      ? { value: 'null', label: 'No EPG' }
+      : { value: opt, label: opt }
+  );
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
@@ -515,9 +521,9 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const handleEPGChange = (value) => {
-    // Convert "No EPG" to null for natural filtering
+    // Map 'null' (string) back to 'null' for backend, but keep UI label correct
     const processedValue = value
-      ? value.map((v) => (v === 'No EPG' ? null : v))
+      ? value.map((v) => (v === 'null' ? 'null' : v))
       : '';
     setFilters((prev) => ({
       ...prev,
@@ -1001,7 +1007,7 @@ const ChannelsTable = ({ onReady }) => {
           <MultiSelect
             placeholder="EPG"
             variant="unstyled"
-            data={epgOptions}
+            data={epgSelectOptions}
             className="table-input-header"
             size="xs"
             searchable
