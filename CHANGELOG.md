@@ -18,11 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Editable Channel Table Mode:
   - Added a robust inline editing mode for the channels table, allowing users to quickly edit channel fields (name, number, group, EPG, logo) directly in the table without opening a modal.
-  - EPG and logo columns now support searchable dropdowns with instant filtering and keyboard navigation for fast assignment.
-  - Drag-and-drop reordering of channels enabled when unlocked, with persistent order updates.
-  - Group column now uses a searchable dropdown for quick group assignment, matching the UX of EPG and logo selectors.
-  - All editable cells provide clear focus, hover, and disabled states for improved accessibility and usability.
-  - Table unlock/edit mode toggle with clear visual cues and safe-guarded save logic to prevent accidental edits.
+  - EPG and logo columns support searchable dropdowns with instant filtering and keyboard navigation for fast assignment.
+  - Drag-and-drop reordering of channels enabled when unlocked, with persistent order updates. (Closes #333)
+  - Group column uses a searchable dropdown for quick group assignment, matching the UX of EPG and logo selectors.
   - All changes are saved via API with optimistic UI updates and error handling.
 - Stats page enhancements: Added "Now Playing" program information for active streams with smart polling that only fetches EPG data when programs are about to change (not on every stats refresh). Features include:
   - Currently playing program title displayed with live broadcast indicator (green Radio icon)
