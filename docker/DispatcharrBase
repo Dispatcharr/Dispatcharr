@@ -3,6 +3,8 @@ FROM lscr.io/linuxserver/ffmpeg:latest
 ENV DEBIAN_FRONTEND=noninteractive
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
 # --- Install Python 3.13 and build dependencies ---
 # Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
@@ -18,24 +20,27 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     vlc-bin vlc-plugin-base \
     build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build
 
-# --- Create Python virtual environment ---
-RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pip
+# --- Install UV ---
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# --- Install Python dependencies ---
-COPY requirements.txt /tmp/requirements.txt
-RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm /tmp/requirements.txt
+# --- Create Python virtual environment and install dependencies ---
+WORKDIR /tmp/build
+COPY pyproject.toml /tmp/build/
+RUN uv venv $VIRTUAL_ENV --python 3.13 && \
+    uv sync --python $VIRTUAL_ENV/bin/python --no-cache --no-install-project --no-dev && \
+    rm -rf /tmp/build
+WORKDIR /
 
 # --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
-RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir build && \
+RUN uv pip install --python $VIRTUAL_ENV/bin/python --no-cache build && \
     cd /tmp && \
-    $VIRTUAL_ENV/bin/pip download --no-binary numpy --no-deps numpy && \
+    uv pip download --python $VIRTUAL_ENV/bin/python --no-binary numpy --no-deps numpy && \
     tar -xzf numpy-*.tar.gz && \
     cd numpy-*/ && \
     $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
     mv dist/*.whl /opt/ && \
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz && \
-    $VIRTUAL_ENV/bin/pip uninstall -y build
+    uv pip uninstall --python $VIRTUAL_ENV/bin/python build
 
 # --- Clean up build dependencies to reduce image size ---
 RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev libpcre3-dev python3.13-dev ninja-build && \
