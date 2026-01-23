@@ -8,7 +8,7 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, F
 from django.db.models import Q
 import os, json, requests, logging, mimetypes
 from django.utils.http import http_date
@@ -1250,6 +1250,79 @@ class ChannelViewSet(viewsets.ModelViewSet):
             )
         except Exception as e:
             return Response({"error": str(e)}, status=400)
+
+    @swagger_auto_schema(
+        method="post",
+        operation_description=(
+            "Reorder a channel by moving it after another channel (or to the start if insert_after_id is null). "
+            "The channel will receive the next whole number after the target channel, and all subsequent "
+            "channels will be renumbered accordingly."
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                "insert_after_id": openapi.Schema(
+                    type=openapi.TYPE_INTEGER,
+                    description="ID of the channel to insert after. Use null to move to the beginning.",
+                    nullable=True,
+                ),
+            },
+        ),
+        responses={
+            200: "Channel reordered successfully",
+            404: "Channel not found",
+            400: "Invalid request",
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="reorder")
+    def reorder(self, request, pk=None):
+        """
+        Reorder a channel by moving it near a target position.
+        Finds the first available channel number without unnecessarily shifting other channels.
+        """
+        channel = self.get_object()
+        insert_after_id = request.data.get("insert_after_id")
+        old_channel_number = channel.channel_number
+
+        with transaction.atomic():
+            if insert_after_id is None:
+                # Move to the beginning - find first available number starting from 1
+                new_channel_number = 1
+                # Check if 1 is taken, find first gap
+                occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
+                while new_channel_number in occupied:
+                    new_channel_number += 1
+            else:
+                try:
+                    target_channel = Channel.objects.get(id=insert_after_id)
+                    target_number = target_channel.channel_number or 0
+                    desired_position = int(target_number) + 1
+
+                    # Get all occupied channel numbers (excluding the channel being moved)
+                    occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
+
+                    # Find the first available number at or after the desired position
+                    new_channel_number = desired_position
+                    while new_channel_number in occupied:
+                        new_channel_number += 1
+
+                except Channel.DoesNotExist:
+                    return Response(
+                        {"error": "Target channel not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+            # Update the dragged channel's number
+            channel.channel_number = new_channel_number
+            channel.save(update_fields=['channel_number'])
+
+        return Response(
+            {
+                "message": f"Channel {channel.name} moved to position {new_channel_number}",
+                "channel": self.get_serializer(channel).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @swagger_auto_schema(
         method="post",
