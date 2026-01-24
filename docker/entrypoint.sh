@@ -151,11 +151,9 @@ fi
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
 
-# Initialize PostgreSQL if NOT in modular mode (using external database)
-if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
-    echo "Setting up PostgreSQL..."
-    . /app/docker/init/02-postgres.sh
-fi
+# Initialize PostgreSQL (script handles modular vs internal mode internally)
+echo "Setting up PostgreSQL..."
+. /app/docker/init/02-postgres.sh
 
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
@@ -194,10 +192,8 @@ except Exception:
     echo "✅ External PostgreSQL is ready"
 fi
 
-# Ensure database encoding is UTF8 (only for internal database)
-if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
-    ensure_utf8_encoding
-fi
+# Ensure database encoding is UTF8 (handles both internal and external databases)
+ensure_utf8_encoding
 
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh

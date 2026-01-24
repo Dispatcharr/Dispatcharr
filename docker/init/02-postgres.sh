@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# Skip internal PostgreSQL setup in modular mode (using external database)
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+
 # Temporary migration from postgres in /data to $POSTGRES_DIR. Can likely remove
 # some time in the future.
 if [ -e "/data/postgresql.conf" ]; then
@@ -139,27 +143,51 @@ EOF
     done
 fi
 
+fi  # End of DISPATCHARR_ENV != modular check
+
 ensure_utf8_encoding() {
     # Check encoding of existing database
-    CURRENT_ENCODING=$(su - postgres -c "psql -p ${POSTGRES_PORT} -tAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = '$POSTGRES_DB';\"" | tr -d ' ')
+    # Supports both internal (Unix socket) and external (TCP) PostgreSQL
+    echo "Checking database encoding..."
+
+    if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
+        # External database: use TCP connection with password
+        CURRENT_ENCODING=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();" 2>/dev/null | tr -d ' ')
+    else
+        # Internal database: use Unix socket as postgres user
+        CURRENT_ENCODING=$(su - postgres -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB} -tAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();\"" | tr -d ' ')
+    fi
+
     if [ "$CURRENT_ENCODING" != "UTF8" ]; then
         echo "Database $POSTGRES_DB encoding is $CURRENT_ENCODING, converting to UTF8..."
         DUMP_FILE="/tmp/${POSTGRES_DB}_utf8_dump_$(date +%s).sql"
-        # Dump database (include permissions and ownership)
-        su - postgres -c "pg_dump -p ${POSTGRES_PORT} $POSTGRES_DB > $DUMP_FILE"
-        # Drop and recreate database with UTF8 encoding using template0
-        su - postgres -c "dropdb -p ${POSTGRES_PORT} $POSTGRES_DB"
-        # Recreate database with UTF8 encoding
-        su - postgres -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 --template=template0 ${POSTGRES_DB}"
 
-
-        # Restore data
-        su - postgres -c "psql -p ${POSTGRES_PORT} -d $POSTGRES_DB < $DUMP_FILE"
-        #configure_db
-
+        if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
+            # External database: use TCP connection with password
+            # Dump database (include permissions and ownership)
+            PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" "$POSTGRES_DB" > "$DUMP_FILE" || { echo "Dump failed"; return 1; }
+            # Drop and recreate database with UTF8 encoding using template0
+            PGPASSWORD="$POSTGRES_PASSWORD" dropdb -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" "$POSTGRES_DB" || { echo "Drop failed"; return 1; }
+            # Recreate database with UTF8 encoding
+            PGPASSWORD="$POSTGRES_PASSWORD" createdb -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" --encoding=UTF8 --template=template0 "$POSTGRES_DB" || { echo "Create failed"; return 1; }
+            # Restore data
+            PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$DUMP_FILE" || { echo "Restore failed"; return 1; }
+        else
+            # Internal database: use Unix socket as postgres user
+            # Dump database (include permissions and ownership)
+            su - postgres -c "pg_dump -p ${POSTGRES_PORT} ${POSTGRES_DB}" > "$DUMP_FILE" || { echo "Dump failed"; return 1; }
+            # Drop and recreate database with UTF8 encoding using template0
+            su - postgres -c "dropdb -p ${POSTGRES_PORT} ${POSTGRES_DB}" || { echo "Drop failed"; return 1; }
+            # Recreate database with UTF8 encoding and correct owner
+            su - postgres -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 --template=template0 --owner=${POSTGRES_USER} ${POSTGRES_DB}" || { echo "Create failed"; return 1; }
+            # Restore data
+            cat "$DUMP_FILE" | su - postgres -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB}" || { echo "Restore failed"; return 1; }
+        fi
 
         rm -f "$DUMP_FILE"
-        echo "Database $POSTGRES_DB converted to UTF8 and permissions set."
+        echo "✅ Database $POSTGRES_DB converted to UTF8."
+    else
+        echo "✅ Database encoding is UTF8"
     fi
 }
 
