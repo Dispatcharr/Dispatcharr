@@ -1310,23 +1310,27 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_200_OK,
                 )
 
-            # Find the first available channel number at or after desired_number
-            occupied = set(Channel.objects.exclude(id=channel.id).values_list('channel_number', flat=True))
-            probe = desired_number
-            while probe in occupied:
-                probe += 1
-            gap_number = probe
-
-            # Shift up all channels from desired_number to gap_number-1 (inclusive)
-            # This prevents duplicates and ensures contiguous numbering
-            if gap_number > desired_number:
-                # Shift up in ascending order to avoid collisions
-                for n in range(gap_number - 1, desired_number - 1, -1):
-                    Channel.objects.filter(channel_number=n).update(channel_number=n + 1)
-
-            # Set the moved channel's number
-            channel.channel_number = desired_number
-            channel.save(update_fields=['channel_number'])
+            if desired_number < old_channel_number:
+                # Moving up: increment all channels between desired_number and old_channel_number-1
+                Channel.objects.filter(
+                    channel_number__gte=desired_number,
+                    channel_number__lt=old_channel_number
+                ).update(channel_number=F('channel_number') + 1)
+                channel.channel_number = desired_number
+                channel.save(update_fields=['channel_number'])
+            elif desired_number > old_channel_number:
+                # Moving down: shift down channels between old+1 and desired-1, then set to desired-1
+                if desired_number > old_channel_number + 1:
+                    Channel.objects.filter(
+                        channel_number__gt=old_channel_number,
+                        channel_number__lt=desired_number
+                    ).update(channel_number=F('channel_number') - 1)
+                channel.channel_number = desired_number - 1
+                channel.save(update_fields=['channel_number'])
+            else:
+                # No move or same position
+                channel.channel_number = desired_number
+                channel.save(update_fields=['channel_number'])
 
         return Response(
             {
