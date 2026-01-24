@@ -48,6 +48,7 @@ export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 export REDIS_HOST=${REDIS_HOST:-localhost}
+export REDIS_PORT=${REDIS_PORT:-6379}
 export REDIS_DB=${REDIS_DB:-0}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
@@ -115,7 +116,7 @@ if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
         PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
         POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
+        REDIS_HOST REDIS_PORT REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
         CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     )
@@ -190,6 +191,28 @@ except Exception:
         sleep 1
     done
     echo "✅ External PostgreSQL is ready"
+fi
+
+# Wait for Redis to be ready (modular mode uses external Redis)
+if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
+    echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
+    echo_with_timestamp "Waiting for external Redis to be ready..."
+    until python3 -c "
+import socket
+import sys
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(('${REDIS_HOST}', ${REDIS_PORT}))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; do
+        echo_with_timestamp "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
+        sleep 1
+    done
+    echo "✅ External Redis is ready"
 fi
 
 # Ensure database encoding is UTF8 (handles both internal and external databases)

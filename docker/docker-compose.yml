@@ -12,11 +12,12 @@ services:
     environment:
       - DISPATCHARR_ENV=modular
       - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
       - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_PORT=6379
       - DISPATCHARR_LOG_LEVEL=info
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
@@ -60,11 +61,12 @@ services:
     environment:
       - DISPATCHARR_ENV=modular
       - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
       - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_PORT=6379
       - DISPATCHARR_LOG_LEVEL=info
       #- CELERY_NICE_LEVEL=5  #Celery/EPG/Background tasks (default:5, low priority; Range: -20 to 19)
       - DJANGO_SETTINGS_MODULE=dispatcharr.settings
