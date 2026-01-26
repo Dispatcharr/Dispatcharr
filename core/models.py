@@ -155,6 +155,7 @@ BACKUP_SETTINGS_KEY = "backup_settings"
 PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
+EPG_SETTINGS_KEY = "epg_settings"
 
 
 class CoreSettings(models.Model):
@@ -226,6 +227,28 @@ class CoreSettings(models.Model):
     @classmethod
     def get_auto_import_mapped_files(cls):
         return cls.get_stream_settings().get("auto_import_mapped_files")
+
+    # EPG Settings
+    @classmethod
+    def get_epg_settings(cls):
+        """Get all EPG-related settings."""
+        return cls._get_group(EPG_SETTINGS_KEY, {
+            "epg_match_ignore_prefixes": [],
+            "epg_match_ignore_suffixes": [],
+            "epg_match_ignore_custom": [],
+        })
+
+    @classmethod
+    def get_epg_match_ignore_prefixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_prefixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_suffixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_suffixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_custom(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_custom", [])
 
     # DVR Settings
     @classmethod
