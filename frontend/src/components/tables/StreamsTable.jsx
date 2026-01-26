@@ -197,6 +197,7 @@ const StreamsTable = ({ onReady }) => {
 
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -412,6 +413,9 @@ const StreamsTable = ({ onReady }) => {
 
   const fetchData = useCallback(
     async ({ showLoader = true } = {}) => {
+      // Increment fetch version to track this specific fetch request
+      const currentFetchVersion = ++fetchVersionRef.current;
+
       if (showLoader) {
         setIsLoading(true);
       }
@@ -450,6 +454,11 @@ const StreamsTable = ({ onReady }) => {
           API.getStreamFilterOptions(params),
         ]);
 
+        // Skip state updates if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
+
         setAllRowIds(ids);
 
         // Set filtered options based on current filters
@@ -481,7 +490,16 @@ const StreamsTable = ({ onReady }) => {
           onReady();
         }
       } catch (error) {
+        // Skip logging if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
         console.error('Error fetching data:', error);
+      }
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
       }
 
       hasFetchedOnce.current = true;

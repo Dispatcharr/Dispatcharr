@@ -344,6 +344,7 @@ const ChannelsTable = ({ onReady }) => {
   const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -423,6 +424,9 @@ const ChannelsTable = ({ onReady }) => {
    * Functions
    */
   const fetchData = useCallback(async () => {
+    // Increment fetch version to track this specific fetch request
+    const currentFetchVersion = ++fetchVersionRef.current;
+
     setIsLoading(true);
 
     const params = new URLSearchParams();
@@ -447,7 +451,7 @@ const ChannelsTable = ({ onReady }) => {
     }
 
     // Apply debounced filters
-    Object.entries(filters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
       if (value) {
         if (Array.isArray(value)) {
           // Convert null values to "null" string for URL parameter
@@ -467,6 +471,11 @@ const ChannelsTable = ({ onReady }) => {
         await API.getAllChannelIds(params),
       ]);
 
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
+
       setIsLoading(false);
       hasFetchedData.current = true;
 
@@ -483,6 +492,10 @@ const ChannelsTable = ({ onReady }) => {
         onReady();
       }
     } catch (error) {
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
       setIsLoading(false);
       // API layer handles "Invalid page" errors by resetting and retrying
       // Just re-throw to show notification for actual errors
@@ -492,11 +505,9 @@ const ChannelsTable = ({ onReady }) => {
     pagination,
     sorting,
     debouncedFilters,
-    onReady,
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
-    tvgsLoaded,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -987,8 +998,9 @@ const ChannelsTable = ({ onReady }) => {
     // the actual sizes through its own state after initialization.
     // Note: logos is intentionally excluded - LazyLogo components handle their own logo data
     // from the store, so we don't need to recreate columns when logos load.
+    // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme, tvgsById, epgs, tvgsLoaded]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
   );
 
   const renderHeaderCell = (header) => {
