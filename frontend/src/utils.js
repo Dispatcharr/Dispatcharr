@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 export default {
   Limiter: (n, list) => {
@@ -40,13 +40,25 @@ export default {
 // Custom debounce hook
 export function useDebounce(value, delay = 500, callback = null) {
   const [debouncedValue, setDebouncedValue] = useState(value);
+  const isFirstRender = useRef(true);
+  const previousValueRef = useRef(JSON.stringify(value));
 
   useEffect(() => {
+    const currentValueStr = JSON.stringify(value);
+
+    // Skip if value hasn't actually changed (prevents unnecessary state updates)
+    if (previousValueRef.current === currentValueStr) {
+      return;
+    }
+
     const handler = setTimeout(() => {
       setDebouncedValue(value);
-      if (callback) {
+      // Only fire callback if not the first render
+      if (callback && !isFirstRender.current) {
         callback();
       }
+      isFirstRender.current = false;
+      previousValueRef.current = currentValueStr;
     }, delay);
 
     return () => clearTimeout(handler); // Cleanup timeout on unmount or value change

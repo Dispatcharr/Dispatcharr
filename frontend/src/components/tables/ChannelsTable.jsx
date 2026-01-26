@@ -463,8 +463,8 @@ const ChannelsTable = ({ onReady }) => {
 
     try {
       const [results, ids] = await Promise.all([
-        await API.queryChannels(params),
-        await API.getAllChannelIds(params),
+        API.queryChannels(params),
+        API.getAllChannelIds(params),
       ]);
 
       setIsLoading(false);
