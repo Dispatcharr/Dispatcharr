@@ -345,6 +345,8 @@ const ChannelsTable = ({ onReady }) => {
 
   const hasFetchedData = useRef(false);
   const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
+  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
+  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -424,11 +426,7 @@ const ChannelsTable = ({ onReady }) => {
    * Functions
    */
   const fetchData = useCallback(async () => {
-    // Increment fetch version to track this specific fetch request
-    const currentFetchVersion = ++fetchVersionRef.current;
-
-    setIsLoading(true);
-
+    // Build params first to check for duplicates
     const params = new URLSearchParams();
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
@@ -465,11 +463,30 @@ const ChannelsTable = ({ onReady }) => {
       }
     });
 
+    const paramsString = params.toString();
+
+    // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
+    if (
+      fetchInProgressRef.current &&
+      lastFetchParamsRef.current === paramsString
+    ) {
+      return;
+    }
+
+    // Increment fetch version to track this specific fetch request
+    const currentFetchVersion = ++fetchVersionRef.current;
+    lastFetchParamsRef.current = paramsString;
+    fetchInProgressRef.current = true;
+
+    setIsLoading(true);
+
     try {
       const [results, ids] = await Promise.all([
         API.queryChannels(params),
         API.getAllChannelIds(params),
       ]);
+
+      fetchInProgressRef.current = false;
 
       // Skip state updates if a newer fetch has been initiated
       if (currentFetchVersion !== fetchVersionRef.current) {
@@ -492,6 +509,8 @@ const ChannelsTable = ({ onReady }) => {
         onReady();
       }
     } catch (error) {
+      fetchInProgressRef.current = false;
+
       // Skip state updates if a newer fetch has been initiated
       if (currentFetchVersion !== fetchVersionRef.current) {
         return;
