@@ -13,6 +13,7 @@ import {
 } from '@mantine/core';
 import API from '../../api';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import logo from '../../assets/logo.png';
 
 function SuperuserForm() {
@@ -22,15 +23,14 @@ function SuperuserForm() {
     email: '',
   });
   const [error, setError] = useState('');
-  const [version, setVersion] = useState(null);
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+  const fetchVersion = useSettingsStore((s) => s.fetchVersion);
+  const storedVersion = useSettingsStore((s) => s.version);
 
   useEffect(() => {
-    // Fetch version info
-    API.getVersion().then((data) => {
-      setVersion(data?.version);
-    });
-  }, []);
+    // Fetch version info using the settings store (will skip if already loaded)
+    fetchVersion();
+  }, [fetchVersion]);
 
   const handleChange = (e) => {
     setFormData((prev) => ({
@@ -120,7 +120,7 @@ function SuperuserForm() {
           </Stack>
         </form>
 
-        {version && (
+        {storedVersion.version && (
           <Text
             size="xs"
             color="dimmed"
@@ -130,7 +130,7 @@ function SuperuserForm() {
               right: 30,
             }}
           >
-            v{version}
+            v{storedVersion.version}
           </Text>
         )}
       </Paper>
