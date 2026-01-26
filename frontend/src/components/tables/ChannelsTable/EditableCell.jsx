@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useRef,
   useMemo,
+  memo,
 } from 'react';
 import {
   Box,
@@ -16,33 +17,88 @@ import {
 } from '@mantine/core';
 import API from '../../../api';
 import useChannelsTableStore from '../../../store/channelsTable';
+import useLogosStore from '../../../store/logos';
+
+// Lightweight wrapper that only renders full editable cell when unlocked
+// This prevents 250+ heavy component instances when table is locked
+const EditableCellWrapper = memo(
+  ({ children, getValue, isUnlocked, renderLocked }) => {
+    if (!isUnlocked) {
+      // Render lightweight locked view
+      return renderLocked ? (
+        renderLocked(getValue())
+      ) : (
+        <Box
+          style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            padding: '0 4px',
+          }}
+        >
+          {getValue() ?? ''}
+        </Box>
+      );
+    }
+    // Only render heavy component when unlocked
+    return children;
+  }
+);
 
 // Editable text cell
 export const EditableTextCell = ({ row, column, getValue }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const [isFocused, setIsFocused] = useState(false);
+
+  // When locked or not focused, show simple display
+  if (!isUnlocked || !isFocused) {
+    return (
+      <Box
+        onClick={() => isUnlocked && setIsFocused(true)}
+        style={{
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          cursor: isUnlocked ? 'text' : 'default',
+          padding: '0 4px',
+        }}
+      >
+        {getValue() ?? ''}
+      </Box>
+    );
+  }
+
+  // Only mount heavy component when actually editing
+  return (
+    <EditableTextCellInner
+      row={row}
+      column={column}
+      getValue={getValue}
+      onBlur={() => setIsFocused(false)}
+    />
+  );
+};
+
+// Inner component with all the editing logic - only rendered when focused
+const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
   const initialValue = getValue() || '';
   const [value, setValue] = useState(initialValue);
-  const [isFocused, setIsFocused] = useState(false);
   const previousValue = useRef(initialValue);
   const isMounted = useRef(false);
   const debounceTimer = useRef(null);
 
   useEffect(() => {
     const currentValue = getValue() || '';
-    if (!isFocused && currentValue !== previousValue.current) {
+    if (currentValue !== previousValue.current) {
       setValue(currentValue);
       previousValue.current = currentValue;
     }
-  }, [getValue, isFocused]);
+  }, [getValue]);
 
   const saveValue = useCallback(
     async (newValue) => {
-      // Don't save if not mounted, not unlocked, or value hasn't changed
-      if (
-        !isMounted.current ||
-        !isUnlocked ||
-        newValue === previousValue.current
-      ) {
+      // Don't save if not mounted or value hasn't changed
+      if (!isMounted.current || newValue === previousValue.current) {
         return;
       }
 
@@ -62,7 +118,7 @@ export const EditableTextCell = ({ row, column, getValue }) => {
         setValue(previousValue.current || '');
       }
     },
-    [row.original.id, column.id, isUnlocked]
+    [row.original.id, column.id]
   );
 
   useEffect(() => {
@@ -77,7 +133,6 @@ export const EditableTextCell = ({ row, column, getValue }) => {
   }, []);
 
   const handleChange = (e) => {
-    if (!isUnlocked) return;
     const newValue = e.currentTarget.value;
     setValue(newValue);
 
@@ -93,39 +148,9 @@ export const EditableTextCell = ({ row, column, getValue }) => {
   };
 
   const handleBlur = () => {
-    setIsFocused(false);
-    if (isUnlocked) {
-      saveValue(value);
-    }
+    saveValue(value);
+    onBlur();
   };
-
-  const handleClick = () => {
-    if (isUnlocked) {
-      setIsFocused(true);
-    }
-  };
-
-  if (!isUnlocked || !isFocused) {
-    return (
-      <Box
-        onClick={handleClick}
-        style={{
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          cursor: isUnlocked ? 'text' : 'default',
-          padding: '0 4px',
-          ...(isUnlocked && {
-            '&:hover': {
-              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-            },
-          }),
-        }}
-      >
-        {value}
-      </Box>
-    );
-  }
 
   return (
     <TextInput
@@ -154,28 +179,62 @@ export const EditableTextCell = ({ row, column, getValue }) => {
 // Editable number cell
 export const EditableNumberCell = ({ row, column, getValue }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const [isFocused, setIsFocused] = useState(false);
+
+  const value = getValue();
+  const formattedValue =
+    value !== null && value !== undefined
+      ? value === Math.floor(value)
+        ? Math.floor(value)
+        : value
+      : '';
+
+  // When locked or not focused, show simple display
+  if (!isUnlocked || !isFocused) {
+    return (
+      <Box
+        onClick={() => isUnlocked && setIsFocused(true)}
+        style={{
+          textAlign: 'right',
+          width: '100%',
+          cursor: isUnlocked ? 'text' : 'default',
+          padding: '0 4px',
+        }}
+      >
+        {formattedValue}
+      </Box>
+    );
+  }
+
+  return (
+    <EditableNumberCellInner
+      row={row}
+      column={column}
+      getValue={getValue}
+      onBlur={() => setIsFocused(false)}
+    />
+  );
+};
+
+// Inner component with all the editing logic - only rendered when focused
+const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
   const initialValue = getValue();
   const [value, setValue] = useState(initialValue);
-  const [isFocused, setIsFocused] = useState(false);
   const previousValue = useRef(initialValue);
   const isMounted = useRef(false);
 
   useEffect(() => {
     const currentValue = getValue();
-    if (!isFocused && currentValue !== previousValue.current) {
+    if (currentValue !== previousValue.current) {
       setValue(currentValue);
       previousValue.current = currentValue;
     }
-  }, [getValue, isFocused]);
+  }, [getValue]);
 
   const saveValue = useCallback(
     async (newValue) => {
-      // Don't save if not mounted, not unlocked, or value hasn't changed
-      if (
-        !isMounted.current ||
-        !isUnlocked ||
-        newValue === previousValue.current
-      ) {
+      // Don't save if not mounted or value hasn't changed
+      if (!isMounted.current || newValue === previousValue.current) {
         return;
       }
 
@@ -203,8 +262,7 @@ export const EditableNumberCell = ({ row, column, getValue }) => {
           // If channel_number was changed, refetch to reorder the table
           if (column.id === 'channel_number') {
             await API.requeryChannels();
-            // Exit edit mode after resorting to avoid confusion
-            setIsFocused(false);
+            onBlur();
           }
         }
       } catch (error) {
@@ -212,7 +270,7 @@ export const EditableNumberCell = ({ row, column, getValue }) => {
         setValue(previousValue.current);
       }
     },
-    [row.original.id, column.id, isUnlocked]
+    [row.original.id, column.id, onBlur]
   );
 
   useEffect(() => {
@@ -223,50 +281,13 @@ export const EditableNumberCell = ({ row, column, getValue }) => {
   }, []);
 
   const handleChange = (newValue) => {
-    if (!isUnlocked) return;
     setValue(newValue);
   };
 
   const handleBlur = () => {
-    setIsFocused(false);
-    if (isUnlocked) {
-      saveValue(value);
-    }
+    saveValue(value);
+    onBlur();
   };
-
-  const handleClick = () => {
-    if (isUnlocked) {
-      setIsFocused(true);
-    }
-  };
-
-  const formattedValue =
-    value !== null && value !== undefined
-      ? value === Math.floor(value)
-        ? Math.floor(value)
-        : value
-      : '';
-
-  if (!isUnlocked || !isFocused) {
-    return (
-      <Box
-        onClick={handleClick}
-        style={{
-          textAlign: 'right',
-          width: '100%',
-          cursor: isUnlocked ? 'text' : 'default',
-          padding: '0 4px',
-          ...(isUnlocked && {
-            '&:hover': {
-              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-            },
-          }),
-        }}
-      >
-        {formattedValue}
-      </Box>
-    );
-  }
 
   return (
     <NumberInput
@@ -291,21 +312,56 @@ export const EditableNumberCell = ({ row, column, getValue }) => {
 };
 
 // Editable select cell for groups
-export const EditableGroupCell = ({ row, getValue, channelGroups }) => {
+export const EditableGroupCell = ({ row, channelGroups }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const [isFocused, setIsFocused] = useState(false);
   const groupId = row.original.channel_group_id;
   const groupName = channelGroups[groupId]?.name || '';
+
+  // Show simple display when locked OR when unlocked but not focused
+  if (!isUnlocked || !isFocused) {
+    return (
+      <Box
+        onClick={() => isUnlocked && setIsFocused(true)}
+        style={{
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          padding: '0 4px',
+          cursor: isUnlocked ? 'pointer' : 'default',
+        }}
+      >
+        {groupName}
+      </Box>
+    );
+  }
+
+  return (
+    <EditableGroupCellInner
+      row={row}
+      channelGroups={channelGroups}
+      groupName={groupName}
+      groupId={groupId}
+      onBlur={() => setIsFocused(false)}
+    />
+  );
+};
+
+// Inner component with all the editing logic - only rendered when focused
+const EditableGroupCellInner = ({
+  row,
+  channelGroups,
+  groupName,
+  groupId,
+  onBlur,
+}) => {
   const previousGroupId = useRef(groupId);
-  const [isFocused, setIsFocused] = useState(false);
   const [searchValue, setSearchValue] = useState('');
 
   const saveValue = useCallback(
     async (newGroupId) => {
-      // Don't save if not unlocked or value hasn't changed
-      if (
-        !isUnlocked ||
-        String(newGroupId) === String(previousGroupId.current)
-      ) {
+      // Don't save if value hasn't changed
+      if (String(newGroupId) === String(previousGroupId.current)) {
         return;
       }
 
@@ -324,18 +380,12 @@ export const EditableGroupCell = ({ row, getValue, channelGroups }) => {
         console.error('Failed to update channel group:', error);
       }
     },
-    [row.original.id, isUnlocked]
+    [row.original.id]
   );
-
-  const handleClick = () => {
-    if (isUnlocked) {
-      setIsFocused(true);
-    }
-  };
 
   const handleChange = (newGroupId) => {
     saveValue(newGroupId);
-    setIsFocused(false);
+    onBlur();
     setSearchValue('');
   };
 
@@ -344,33 +394,11 @@ export const EditableGroupCell = ({ row, getValue, channelGroups }) => {
     label: group.name,
   }));
 
-  if (!isUnlocked || !isFocused) {
-    return (
-      <Box
-        onClick={handleClick}
-        style={{
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          cursor: isUnlocked ? 'pointer' : 'default',
-          padding: '0 4px',
-          ...(isUnlocked && {
-            '&:hover': {
-              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-            },
-          }),
-        }}
-      >
-        {groupName}
-      </Box>
-    );
-  }
-
   return (
     <Select
       value={null}
       onChange={handleChange}
-      onBlur={() => setIsFocused(false)}
+      onBlur={onBlur}
       data={groupOptions}
       size="xs"
       variant="unstyled"
@@ -401,12 +429,10 @@ export const EditableEPGCell = ({
   tvgsLoaded,
 }) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
-  const epgDataId = getValue();
-  const previousEpgDataId = useRef(epgDataId);
   const [isFocused, setIsFocused] = useState(false);
-  const [searchValue, setSearchValue] = useState('');
+  const epgDataId = getValue();
 
-  // Format display text
+  // Format display text - needed for both locked and unlocked states
   const epgObj = epgDataId ? tvgsById[epgDataId] : null;
   const tvgId = epgObj?.tvg_id;
   const epgName =
@@ -423,13 +449,90 @@ export const EditableEPGCell = ({
   // Show skeleton while EPG data is loading (only if channel has an EPG assignment)
   const isEpgDataPending = epgDataId && !epgObj && !tvgsLoaded;
 
+  // Build tooltip content
+  const tooltip = epgObj
+    ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${epgObj.name ? `TVG Name: ${epgObj.name}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
+    : '';
+
+  // Show simple display when locked OR when unlocked but not focused
+  if (!isUnlocked || !isFocused) {
+    // If loading EPG data, show skeleton
+    if (isEpgDataPending) {
+      return (
+        <Box
+          onClick={() => isUnlocked && setIsFocused(true)}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 4px',
+            cursor: isUnlocked ? 'pointer' : 'default',
+          }}
+        >
+          <Skeleton
+            height={18}
+            width="70%"
+            visible={true}
+            animate={true}
+            style={{ borderRadius: 4 }}
+          />
+        </Box>
+      );
+    }
+    return (
+      <Tooltip
+        label={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}
+        withArrow
+        position="top"
+        disabled={!epgObj}
+        openDelay={500}
+      >
+        <Box
+          onClick={() => isUnlocked && setIsFocused(true)}
+          style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            padding: '0 4px',
+            cursor: isUnlocked ? 'pointer' : 'default',
+          }}
+        >
+          {displayText}
+        </Box>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <EditableEPGCellInner
+      row={row}
+      tvgsById={tvgsById}
+      epgs={epgs}
+      epgDataId={epgDataId}
+      epgObj={epgObj}
+      displayText={displayText}
+      onBlur={() => setIsFocused(false)}
+    />
+  );
+};
+
+// Inner component with all the editing logic - only rendered when focused
+const EditableEPGCellInner = ({
+  row,
+  tvgsById,
+  epgs,
+  epgDataId,
+  displayText,
+  onBlur,
+}) => {
+  const previousEpgDataId = useRef(epgDataId);
+  const [searchValue, setSearchValue] = useState('');
+
   const saveValue = useCallback(
     async (newEpgDataId) => {
-      // Don't save if not unlocked or value hasn't changed
-      if (
-        !isUnlocked ||
-        String(newEpgDataId) === String(previousEpgDataId.current)
-      ) {
+      // Don't save if value hasn't changed
+      if (String(newEpgDataId) === String(previousEpgDataId.current)) {
         return;
       }
 
@@ -449,20 +552,13 @@ export const EditableEPGCell = ({
         console.error('Failed to update EPG:', error);
       }
     },
-    [row.original.id, isUnlocked]
+    [row.original.id]
   );
-
-  const handleClick = () => {
-    if (isUnlocked) {
-      setSearchValue(''); // Start with empty search
-      setIsFocused(true);
-    }
-  };
 
   const handleChange = (newEpgDataId) => {
     saveValue(newEpgDataId);
     setSearchValue('');
-    setIsFocused(false);
+    onBlur();
   };
 
   // Build EPG options
@@ -514,69 +610,11 @@ export const EditableEPGCell = ({
     return options;
   }, [tvgsById, epgs]);
 
-  // Build tooltip content
-  const tooltip = epgObj
-    ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${epgObj.name ? `TVG Name: ${epgObj.name}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
-    : '';
-
-  if (!isUnlocked || !isFocused) {
-    // If loading EPG data, show skeleton
-    if (isEpgDataPending) {
-      return (
-        <Box
-          style={{
-            width: '100%',
-            height: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            padding: '0 4px',
-          }}
-        >
-          <Skeleton
-            height={18}
-            width="70%"
-            visible={true}
-            animate={true}
-            style={{ borderRadius: 4 }}
-          />
-        </Box>
-      );
-    }
-    // Otherwise, show the normal EPG assignment cell
-    return (
-      <Tooltip
-        label={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}
-        withArrow
-        position="top"
-        disabled={!epgObj}
-        openDelay={500}
-      >
-        <Box
-          onClick={handleClick}
-          style={{
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            cursor: isUnlocked ? 'pointer' : 'default',
-            padding: '0 4px',
-            ...(isUnlocked && {
-              '&:hover': {
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-              },
-            }),
-          }}
-        >
-          {displayText}
-        </Box>
-      </Tooltip>
-    );
-  }
-
   return (
     <Select
       value={null}
       onChange={handleChange}
-      onBlur={() => setIsFocused(false)}
+      onBlur={onBlur}
       data={epgOptions}
       size="xs"
       variant="unstyled"
@@ -599,17 +637,69 @@ export const EditableEPGCell = ({
 };
 
 // Editable cell for Logo selection
-export const EditableLogoCell = ({ row, getValue, channelLogos, LazyLogo }) => {
+export const EditableLogoCell = ({
+  row,
+  getValue,
+  LazyLogo,
+  ensureLogosLoaded,
+}) => {
   const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
-  const logoId = getValue();
-  const previousLogoId = useRef(logoId);
   const [isFocused, setIsFocused] = useState(false);
+  const logoId = getValue();
+
+  const handleClick = () => {
+    if (isUnlocked) {
+      // Ensure logos are loaded when user tries to edit
+      ensureLogosLoaded?.();
+      setIsFocused(true);
+    }
+  };
+
+  // Show simple display when locked OR when unlocked but not focused
+  if (!isUnlocked || !isFocused) {
+    return (
+      <Box
+        onClick={handleClick}
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: isUnlocked ? 'pointer' : 'default',
+        }}
+      >
+        {LazyLogo && (
+          <LazyLogo
+            logoId={logoId}
+            alt="logo"
+            style={{ maxHeight: 18, maxWidth: 55 }}
+          />
+        )}
+      </Box>
+    );
+  }
+
+  return (
+    <EditableLogoCellInner
+      row={row}
+      logoId={logoId}
+      onBlur={() => setIsFocused(false)}
+    />
+  );
+};
+
+// Inner component with all the editing logic - only rendered when focused
+const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
+  // Subscribe directly to the logos store so we get updates when logos load
+  const channelLogos = useLogosStore((s) => s.channelLogos);
+  const previousLogoId = useRef(logoId);
   const [searchValue, setSearchValue] = useState('');
 
   const saveValue = useCallback(
     async (newLogoId) => {
-      // Don't save if not unlocked or value hasn't changed
-      if (!isUnlocked || String(newLogoId) === String(previousLogoId.current)) {
+      // Don't save if value hasn't changed
+      if (String(newLogoId) === String(previousLogoId.current)) {
         return;
       }
 
@@ -628,20 +718,13 @@ export const EditableLogoCell = ({ row, getValue, channelLogos, LazyLogo }) => {
         console.error('Failed to update logo:', error);
       }
     },
-    [row.original.id, isUnlocked]
+    [row.original.id]
   );
-
-  const handleClick = () => {
-    if (isUnlocked) {
-      setSearchValue('');
-      setIsFocused(true);
-    }
-  };
 
   const handleChange = (newLogoId) => {
     saveValue(newLogoId);
     setSearchValue('');
-    setIsFocused(false);
+    onBlur();
   };
 
   // Build logo options with logo data
@@ -706,36 +789,6 @@ export const EditableLogoCell = ({ row, getValue, channelLogos, LazyLogo }) => {
     );
   };
 
-  if (!isUnlocked || !isFocused) {
-    // When not editing, show the logo image
-    return (
-      <Box
-        onClick={handleClick}
-        style={{
-          cursor: isUnlocked ? 'pointer' : 'default',
-          width: '100%',
-          height: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          ...(isUnlocked && {
-            '&:hover': {
-              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-            },
-          }),
-        }}
-      >
-        {LazyLogo && (
-          <LazyLogo
-            logoId={logoId}
-            alt="logo"
-            style={{ maxHeight: 18, maxWidth: 55 }}
-          />
-        )}
-      </Box>
-    );
-  }
-
   return (
     <Box
       style={{
@@ -748,7 +801,7 @@ export const EditableLogoCell = ({ row, getValue, channelLogos, LazyLogo }) => {
       <Select
         value={null}
         onChange={handleChange}
-        onBlur={() => setIsFocused(false)}
+        onBlur={onBlur}
         data={logoOptions}
         size="xs"
         variant="unstyled"

@@ -56,9 +56,10 @@ const useAuthStore = create((set, get) => ({
       // Ensure settings are loaded first
       await useSettingsStore.getState().fetchSettings();
 
-      // Only after settings are loaded, fetch the essential data
+      // Fetch essential data needed for initial render
+      // Note: fetchChannels() is intentionally NOT awaited here - it's slow (~3s)
+      // and only needed for delete modal details. It loads in background after UI renders.
       await Promise.all([
-        useChannelsStore.getState().fetchChannels(),
         useChannelsStore.getState().fetchChannelGroups(),
         useChannelsStore.getState().fetchChannelProfiles(),
         usePlaylistsStore.getState().fetchPlaylists(),
@@ -72,13 +73,16 @@ const useAuthStore = create((set, get) => ({
         await Promise.all([useUsersStore.getState().fetchUsers()]);
       }
 
-      // Only set isAuthenticated and isInitialized AFTER all data is loaded
+      // Only set isAuthenticated and isInitialized AFTER essential data is loaded
       // This prevents routes from rendering before data is ready
       set({
         isAuthenticated: true,
         isInitialized: true,
         isInitializing: false,
       });
+
+      // Load channels data in background (not blocking) - needed for delete modal details
+      useChannelsStore.getState().fetchChannels();
 
       // Note: Logos are loaded after the Channels page tables finish loading
       // This is handled by the tables themselves signaling completion

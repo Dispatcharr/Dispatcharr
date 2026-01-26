@@ -253,7 +253,7 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
 
   // Get channel logos for logo selection
-  const { logos: channelLogos, ensureLogosLoaded } = useChannelLogoSelection();
+  const { ensureLogosLoaded } = useChannelLogoSelection();
 
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -977,19 +977,11 @@ const ChannelsTable = ({ onReady }) => {
         enableResizing: false,
         header: '',
         cell: (props) => (
-          <Box
-            onClick={() => {
-              // Ensure logos are loaded when user tries to edit
-              ensureLogosLoaded();
-            }}
-            style={{ width: '100%', height: '100%' }}
-          >
-            <EditableLogoCell
-              {...props}
-              channelLogos={channelLogos}
-              LazyLogo={LazyLogo}
-            />
-          </Box>
+          <EditableLogoCell
+            {...props}
+            LazyLogo={LazyLogo}
+            ensureLogosLoaded={ensureLogosLoaded}
+          />
         ),
       },
       {
