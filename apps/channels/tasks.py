@@ -161,7 +161,7 @@ def normalize_name(name: str) -> str:
         suffixes = settings.get("epg_match_ignore_suffixes", [])
         custom_strings = settings.get("epg_match_ignore_custom", [])
 
-        # Ensure we have lists (defensive)
+        # Ensure we have lists
         if not isinstance(prefixes, list):
             prefixes = []
         if not isinstance(suffixes, list):
