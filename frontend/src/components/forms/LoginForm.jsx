@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
-import API from '../../api';
+import useSettingsStore from '../../store/settings';
 import {
   Paper,
   Title,
@@ -25,13 +25,14 @@ const LoginForm = () => {
   const logout = useAuthStore((s) => s.logout);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const initData = useAuthStore((s) => s.initData);
+  const fetchVersion = useSettingsStore((s) => s.fetchVersion);
+  const storedVersion = useSettingsStore((s) => s.version);
 
   const navigate = useNavigate(); // Hook to navigate to other routes
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
-  const [version, setVersion] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Simple base64 encoding/decoding for localStorage
@@ -55,11 +56,9 @@ const LoginForm = () => {
   };
 
   useEffect(() => {
-    // Fetch version info
-    API.getVersion().then((data) => {
-      setVersion(data?.version);
-    });
-  }, []);
+    // Fetch version info using the settings store (will skip if already loaded)
+    fetchVersion();
+  }, [fetchVersion]);
 
   useEffect(() => {
     // Load saved username if it exists
@@ -234,8 +233,8 @@ const LoginForm = () => {
                     lineHeight: '1.2',
                   }}
                 >
-                  ⚠ Password will be stored locally without encryption. Only
-                  use on trusted devices.
+                  ⚠ Password will be stored locally without encryption. Only use
+                  on trusted devices.
                 </Text>
               )}
             </div>
@@ -252,7 +251,7 @@ const LoginForm = () => {
           </Stack>
         </form>
 
-        {version && (
+        {storedVersion.version && (
           <Text
             size="xs"
             color="dimmed"
@@ -262,7 +261,7 @@ const LoginForm = () => {
               right: 30,
             }}
           >
-            v{version}
+            v{storedVersion.version}
           </Text>
         )}
       </Paper>

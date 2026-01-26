@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Data loading and initialization refactor: Major performance improvement reducing initial page load time by eliminating duplicate API requests caused by race conditions between authentication flow and route rendering:
+  - Fixed authentication race condition where `isAuthenticated` was set before data loading completed, causing routes to render and tables to mount prematurely
+  - Added `isInitialized` flag to delay route rendering until after all initialization data is loaded via `initData()`
+  - Consolidated version and environment settings fetching into centralized settings store with caching to prevent redundant calls
+  - Implemented stale fetch prevention in ChannelsTable and StreamsTable using fetch version tracking to ignore outdated responses
+  - Fixed filter handling in tables to use `debouncedFilters` consistently, preventing unnecessary refetches
+  - Added initialization guards using refs to prevent double-execution of auth and superuser checks during React StrictMode's intentional double-rendering in development
+  - Removed duplicate version/environment fetch calls from Sidebar, LoginForm, and SuperuserForm by using centralized store
 - Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
 - Streams table button labels: Renamed "Remove" to "Delete" and "Add Stream to Channel" to "Add to Channel" for clarity and consistency with other UI terminology.
 - Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
