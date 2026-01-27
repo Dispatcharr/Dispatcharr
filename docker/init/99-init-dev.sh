@@ -14,7 +14,7 @@ then
 fi
 
 # Install frontend dependencies
-cd /app/frontend && npm install
+su - $POSTGRES_USER -c "cd /app/frontend && npm install"
 # Install pip dependencies
 cd /app && pip install -r requirements.txt
 

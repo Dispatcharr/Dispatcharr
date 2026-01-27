@@ -1,0 +1,10 @@
+ # the following entry would be updated and added to your .ssh/config file
+ # manual login would look like this:
+ # ssh -i .\.ssh\yourkey-ed25519.pem -p 2222 DEV_VS_CODE
+  Host DEV_VS_CODE
+    HostName YOUR_CONTAINERS_HOST_IP_HERE
+	StrictHostKeyChecking no
+	UserKnownHostsFile /dev/null
+    IdentityFile ~/.ssh/yourkey-ed25519.pem
+    Port 2222
+    User dispatch

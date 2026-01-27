@@ -1,0 +1,41 @@
+# Define base image build arguments (must be before any FROM)
+
+ARG REPO_OWNER=dispatcharr
+ARG REPO_NAME=dispatcharr
+ARG BASE_TAG=base
+# --- Final image based on the dynamic base ---
+FROM ghcr.io/${REPO_OWNER}/${REPO_NAME}:${BASE_TAG} AS final
+ENV VIRTUAL_ENV=/dispatcharrpy
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+WORKDIR /app
+
+# Install OpenSSH server
+RUN apt-get update && \
+    apt-get install -y openssh-server git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir /var/run/sshd
+
+# Configure SSH
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM yes/UsePAM no/' /etc/ssh/sshd_config
+
+WORKDIR /app/frontend   
+
+# Copy SSH setup script
+COPY ./docker/setup-ssh.sh /app/docker/setup-ssh.sh
+RUN chmod +x /app/docker/setup-ssh.sh
+
+# Copy nginx configuration
+COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
+
+# Expose SSH port
+EXPOSE 22
+
+# Copy SSH-enabled entrypoint
+COPY ./docker/entrypoint-ssh.sh /app/docker/entrypoint-ssh.sh
+RUN chmod +x /app/docker/entrypoint-ssh.sh
+
+ENTRYPOINT ["/app/docker/entrypoint-ssh.sh"]

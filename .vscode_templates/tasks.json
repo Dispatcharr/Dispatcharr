@@ -1,0 +1,92 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "View Application Logs",
+      "type": "shell",
+      "command": "docker",
+      "args": ["logs", "-f", "dispatcharr_dev_vscode"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "."
+        }
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Docker Compose Up",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "-f","docker-compose.dev.vscode.yml", "up"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "."
+        }
+      },
+      "options": {
+        "cwd": "${workspaceFolder}/docker"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Docker Compose Down",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "-f","docker-compose.dev.vscode.yml", "down"],
+      "group": "build",
+      "isBackground": true,
+      "options": {
+        "cwd": "${workspaceFolder}/docker"
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "View Process Output",
+      "type": "shell",
+      "command": "bash",
+      "args": ["-c", "ps aux | grep -E 'uwsgi|celery|nginx|django' | grep -v grep"],
+      "group": "build",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "new"
+      }
+    }
+  ]
+}

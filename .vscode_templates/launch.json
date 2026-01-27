@@ -1,0 +1,84 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+        {
+            "name": "Node.js: Attach to Container",
+            "type": "node", 
+            "request": "attach",
+            "port": 9229,
+            "address": "localhost",
+            "sourceMaps": true,
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "restart": true,
+            "stopOnEntry": false,
+            "sourceMapPathOverrides": {
+                "file:///app/frontend/*": "${workspaceFolder}/frontend/*",
+                "/app/frontend/*": "${workspaceFolder}/frontend/*"
+            },
+            "outFiles": [
+                "${workspaceFolder}/frontend/**/*.js",
+                "${workspaceFolder}/frontend/**/*.mjs",
+                "${workspaceFolder}/frontend/**/*.jsx"
+            ],
+            "resolveSourceMapLocations": [
+                "**",
+                "!**/node_modules/**",
+                "${workspaceFolder}/frontend/node_modules/.vite-temp/**"
+            ],
+            "smartStep": true,
+            "trace": false
+        },
+        {
+            "name": "Launch Chrome Debug",
+            "request": "launch",
+            "type": "chrome",
+            "url": "http://192.168.1.200:5173",
+            "webRoot": "${workspaceFolder}/frontend/src",
+            "sourceMaps": true,
+            "sourceMapPathOverrides": {
+                "webpack:///./~/*": "${webRoot}/node_modules/*",
+                "webpack:///./*": "${webRoot}/*",
+                "webpack:///src/*": "${webRoot}/*",
+                "webpack:///./src/*": "${webRoot}/*"
+            },
+            "skipFiles": [
+                "<node_internals>/**",
+                "**/node_modules/**"
+            ]
+        },
+        {
+            "name": "Python: Remote Attach (Container)",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                "localRoot": "${workspaceFolder}",
+                "remoteRoot": "/app"
+                }
+            ],
+            "justMyCode": true,
+            "django": true,
+            "showReturnValue": true,
+            "redirectOutput": true,
+            "logToFile": true,
+            "debugStdLib": false
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Full Stack Debug",
+            "configurations": [
+                "Python: Remote Attach (Container)",
+                "Node.js: Attach to Container",
+                "Launch Chrome Debug"
+            ],
+            "stopAll": true
+        }
+    ]
+}
