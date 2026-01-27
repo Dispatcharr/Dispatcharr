@@ -2,7 +2,7 @@
  # manual login would look like this:
  # ssh -i .\.ssh\yourkey-ed25519.pem -p 2222 DEV_VS_CODE
   Host DEV_VS_CODE
-    HostName 192.168.1.50
+    HostName YOUR_CONTAINERS_HOST_IP_HERE
 	StrictHostKeyChecking no
 	UserKnownHostsFile /dev/null
     IdentityFile ~/.ssh/yourkey-ed25519.pem
