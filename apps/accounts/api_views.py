@@ -4,9 +4,9 @@ from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
-from rest_framework import viewsets, status
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from rest_framework import viewsets, status, serializers
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 import json
 from .permissions import IsAdmin, Authenticated
 from dispatcharr.utils import network_access_allowed
@@ -147,19 +147,15 @@ class AuthViewSet(viewsets.ViewSet):
             return [IsAuthenticated()]
         return []
 
-    @swagger_auto_schema(
-        operation_description="Authenticate and log in a user",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["username", "password"],
-            properties={
-                "username": openapi.Schema(type=openapi.TYPE_STRING),
-                "password": openapi.Schema(
-                    type=openapi.TYPE_STRING, format=openapi.FORMAT_PASSWORD
-                ),
+    @extend_schema(
+        description="Authenticate and log in a user",
+        request=inline_serializer(
+            name="LoginRequest",
+            fields={
+                "username": serializers.CharField(),
+                "password": serializers.CharField(),
             },
         ),
-        responses={200: "Login successful", 400: "Invalid credentials"},
     )
     def login(self, request):
         """Logs in a user and returns user details"""
@@ -209,9 +205,8 @@ class AuthViewSet(viewsets.ViewSet):
         )
         return Response({"error": "Invalid credentials"}, status=400)
 
-    @swagger_auto_schema(
-        operation_description="Log out the current user",
-        responses={200: "Logout successful"},
+    @extend_schema(
+        description="Log out the current user",
     )
     def logout(self, request):
         """Logs out the authenticated user"""
@@ -245,32 +240,31 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return [IsAdmin()]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve a list of users",
+    @extend_schema(
+        description="Retrieve a list of users",
         responses={200: UserSerializer(many=True)},
     )
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Retrieve a specific user by ID")
+    @extend_schema(description="Retrieve a specific user by ID")
     def retrieve(self, request, *args, **kwargs):
         return super().retrieve(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Create a new user")
+    @extend_schema(description="Create a new user")
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Update a user")
+    @extend_schema(description="Update a user")
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Delete a user")
+    @extend_schema(description="Delete a user")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
 
-    @swagger_auto_schema(
-        method="get",
-        operation_description="Get active user information",
+    @extend_schema(
+        description="Get active user information",
     )
     @action(detail=False, methods=["get"], url_path="me")
     def me(self, request):
@@ -287,34 +281,33 @@ class GroupViewSet(viewsets.ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [Authenticated]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve a list of groups",
+    @extend_schema(
+        description="Retrieve a list of groups",
         responses={200: GroupSerializer(many=True)},
     )
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Retrieve a specific group by ID")
+    @extend_schema(description="Retrieve a specific group by ID")
     def retrieve(self, request, *args, **kwargs):
         return super().retrieve(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Create a new group")
+    @extend_schema(description="Create a new group")
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Update a group")
+    @extend_schema(description="Update a group")
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Delete a group")
+    @extend_schema(description="Delete a group")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
 
 
 # 🔹 4) Permissions List API
-@swagger_auto_schema(
-    method="get",
-    operation_description="Retrieve a list of all permissions",
+@extend_schema(
+    description="Retrieve a list of all permissions",
     responses={200: PermissionSerializer(many=True)},
 )
 @api_view(["GET"])

@@ -9,8 +9,8 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes, action
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 from .models import (
     UserAgent,
     StreamProfile,
@@ -241,10 +241,8 @@ class ProxySettingsViewSet(viewsets.ViewSet):
 
 
 
-@swagger_auto_schema(
-    method="get",
-    operation_description="Endpoint for environment details",
-    responses={200: "Environment variables"},
+@extend_schema(
+    description="Endpoint for environment details",
 )
 @api_view(["GET"])
 @permission_classes([Authenticated])
@@ -314,10 +312,8 @@ def environment(request):
     )
 
 
-@swagger_auto_schema(
-    method="get",
-    operation_description="Get application version information",
-    responses={200: "Version information"},
+@extend_schema(
+    description="Get application version information",
 )
 
 @api_view(["GET"])
@@ -333,10 +329,8 @@ def version(request):
     )
 
 
-@swagger_auto_schema(
-    method="post",
-    operation_description="Trigger rehashing of all streams",
-    responses={200: "Rehash task started"},
+@extend_schema(
+    description="Trigger rehashing of all streams",
 )
 @api_view(["POST"])
 @permission_classes([Authenticated])
@@ -383,9 +377,8 @@ class TimezoneListView(APIView):
     def get_permissions(self):
         return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Get list of all supported timezones",
-        responses={200: openapi.Response('List of timezones with grouping by region')}
+    @extend_schema(
+        description="Get list of all supported timezones",
     )
     def get(self, request):
         import pytz
