@@ -1,7 +1,10 @@
 import useChannelsStore from '../../store/channels.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useVideoStore from '../../store/useVideoStore.jsx';
-import { useDateTimeFormat, useTimeHelpers } from '../../utils/dateTimeUtils.js';
+import {
+  useDateTimeFormat,
+  useTimeHelpers,
+} from '../../utils/dateTimeUtils.js';
 import { notifications } from '@mantine/notifications';
 import React from 'react';
 import {
@@ -39,7 +42,8 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const showVideo = useVideoStore((s) => s.showVideo);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const [timeformat, dateformat] = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+    useDateTimeFormat();
 
   const channel = channels?.[recording.channel];
 
@@ -52,7 +56,11 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
 
   // Poster or channel logo
   const posterUrl = getPosterUrl(
-    customProps.poster_logo_id, customProps, channel?.logo?.cache_url, env_mode);
+    customProps.poster_logo_id,
+    customProps,
+    channel?.logo?.cache_url,
+    env_mode
+  );
 
   const start = toUserTime(recording.start_time);
   const end = toUserTime(recording.end_time);
@@ -161,44 +169,49 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
     } else {
       onOpenDetails?.(recording);
     }
-  }
+  };
 
   const WatchLive = () => {
-    return <Button
-      size="xs"
-      variant="light"
-      onClick={(e) => {
-        e.stopPropagation();
-        handleWatchLive();
-      }}
-    >
-      Watch Live
-    </Button>;
-  }
-
-  const WatchRecording = () => {
-    return <Tooltip
-      label={
-        customProps.file_url || customProps.output_file_url
-          ? 'Watch recording'
-          : 'Recording playback not available yet'
-      }
-    >
+    return (
       <Button
         size="xs"
-        variant="default"
+        variant="light"
         onClick={(e) => {
           e.stopPropagation();
-          handleWatchRecording();
+          handleWatchLive();
         }}
-        disabled={
-          customProps.status === 'recording' || !(customProps.file_url || customProps.output_file_url)
+      >
+        Watch Live
+      </Button>
+    );
+  };
+
+  const WatchRecording = () => {
+    return (
+      <Tooltip
+        label={
+          customProps.file_url || customProps.output_file_url
+            ? 'Watch recording'
+            : 'Recording playback not available yet'
         }
       >
-        Watch
-      </Button>
-    </Tooltip>;
-  }
+        <Button
+          size="xs"
+          variant="default"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleWatchRecording();
+          }}
+          disabled={
+            customProps.status === 'recording' ||
+            !(customProps.file_url || customProps.output_file_url)
+          }
+        >
+          Watch
+        </Button>
+      </Tooltip>
+    );
+  };
 
   const MainCard = (
     <Card
@@ -310,7 +323,8 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
               {isSeriesGroup ? 'Next recording' : 'Time'}
             </Text>
             <Text size="sm">
-              {start.format(`${dateformat}, YYYY ${timeformat}`)} – {end.format(timeformat)}
+              {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
+              {end.format(timeformat)}
             </Text>
           </Group>
 

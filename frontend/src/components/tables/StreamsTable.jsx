@@ -20,6 +20,9 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   Search,
+  Filter,
+  Square,
+  SquareCheck,
 } from 'lucide-react';
 import {
   TextInput,
@@ -43,12 +46,12 @@ import {
   MultiSelect,
   useMantineTheme,
   UnstyledButton,
-  LoadingOverlay,
   Skeleton,
   Modal,
   NumberInput,
   Radio,
-  Checkbox,
+  LoadingOverlay,
+  Pill,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
@@ -59,6 +62,7 @@ import { CustomTable, useTable } from './CustomTable';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import ConfirmationDialog from '../ConfirmationDialog';
 import CreateChannelModal from '../modals/CreateChannelModal';
+import useStreamsTableStore from '../../store/streamsTable';
 
 const StreamRowActions = ({
   theme,
@@ -68,8 +72,9 @@ const StreamRowActions = ({
   handleWatchStream,
   selectedChannelIds,
   createChannelFromStream,
+  table,
 }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
   const channelSelectionStreams = useChannelsTableStore(
     (state) =>
       state.channels.find((chan) => chan.id === selectedChannelIds[0])?.streams
@@ -112,7 +117,7 @@ const StreamRowActions = ({
 
   return (
     <>
-      <Tooltip label="Add to Channel">
+      <Tooltip label="Add to Channel" openDelay={500}>
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.blue[6]}
@@ -131,7 +136,7 @@ const StreamRowActions = ({
         </ActionIcon>
       </Tooltip>
 
-      <Tooltip label="Create New Channel">
+      <Tooltip label="Create New Channel" openDelay={500}>
         <ActionIcon
           size={iconSize}
           color={theme.tailwind.green[5]}
@@ -177,22 +182,24 @@ const StreamRowActions = ({
 const StreamsTable = ({ onReady }) => {
   const theme = useMantineTheme();
   const hasSignaledReady = useRef(false);
+  const hasFetchedOnce = useRef(false);
+  const hasFetchedPlaylists = useRef(false);
+  const hasFetchedChannelGroups = useRef(false);
 
   /**
    * useState
    */
-  const [allRowIds, setAllRowIds] = useState([]);
   const [stream, setStream] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [groupOptions, setGroupOptions] = useState([]);
+  const [m3uOptions, setM3uOptions] = useState([]);
   const [initialDataCount, setInitialDataCount] = useState(null);
 
-  const [data, setData] = useState([]); // Holds fetched data
-  const [pageCount, setPageCount] = useState(0);
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
-  const [selectedStreamIds, setSelectedStreamIds] = useState([]);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
+  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
+  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -224,14 +231,12 @@ const StreamsTable = ({ onReady }) => {
     'streams-page-size',
     50
   );
-  const [pagination, setPagination] = useState({
-    pageIndex: 0,
-    pageSize: storedPageSize,
-  });
   const [filters, setFilters] = useState({
     name: '',
     channel_group: '',
     m3u_account: '',
+    unassigned: false,
+    hide_stale: false,
   });
   const [columnSizing, setColumnSizing] = useLocalStorage(
     'streams-table-column-sizing',
@@ -239,14 +244,11 @@ const StreamsTable = ({ onReady }) => {
   );
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
-    setPagination((prev) => ({
-      ...prev,
+    setPagination({
+      ...pagination,
       pageIndex: 0,
-    }));
+    });
   });
-
-  // Add state to track if stream groups are loaded
-  const [groupsLoaded, setGroupsLoaded] = useState(false);
 
   const navigate = useNavigate();
 
@@ -254,6 +256,8 @@ const StreamsTable = ({ onReady }) => {
    * Stores
    */
   const playlists = usePlaylistsStore((s) => s.playlists);
+  const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
+  const playlistsLoading = usePlaylistsStore((s) => s.isLoading);
 
   // Get direct access to channel groups without depending on other data
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
@@ -268,7 +272,20 @@ const StreamsTable = ({ onReady }) => {
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+
+  const data = useStreamsTableStore((s) => s.streams);
+  const pageCount = useStreamsTableStore((s) => s.pageCount);
+  const totalCount = useStreamsTableStore((s) => s.totalCount);
+  const allRowIds = useStreamsTableStore((s) => s.allQueryIds);
+  const setAllRowIds = useStreamsTableStore((s) => s.setAllQueryIds);
+  const pagination = useStreamsTableStore((s) => s.pagination);
+  const setPagination = useStreamsTableStore((s) => s.setPagination);
+  const sorting = useStreamsTableStore((s) => s.sorting);
+  const setSorting = useStreamsTableStore((s) => s.setSorting);
+  const selectedStreamIds = useStreamsTableStore((s) => s.selectedStreamIds);
+  const setSelectedStreamIds = useStreamsTableStore(
+    (s) => s.setSelectedStreamIds
+  );
 
   // Warnings store for "remember choice" functionality
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -286,7 +303,7 @@ const StreamsTable = ({ onReady }) => {
     () => [
       {
         id: 'actions',
-        size: columnSizing.actions || (tableSize == 'compact' ? 60 : 80),
+        size: columnSizing.actions || 75,
       },
       {
         id: 'select',
@@ -354,7 +371,7 @@ const StreamsTable = ({ onReady }) => {
         ),
       },
     ],
-    [channelGroups, playlists, columnSizing, tableSize]
+    [channelGroups, playlists, columnSizing]
   );
 
   /**
@@ -371,98 +388,145 @@ const StreamsTable = ({ onReady }) => {
   const handleGroupChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      channel_group: value ? value : '',
+      channel_group: value && value.length > 0 ? value.join(',') : '',
     }));
   };
 
   const handleM3UChange = (value) => {
     setFilters((prev) => ({
       ...prev,
-      m3u_account: value ? value : '',
+      m3u_account: value && value.length > 0 ? value.join(',') : '',
     }));
   };
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const toggleUnassignedOnly = () => {
+    setFilters((prev) => ({
+      ...prev,
+      unassigned: !prev.unassigned,
+    }));
+  };
 
-    // Ensure we have channel groups first (if not already loaded)
-    if (!groupsLoaded && Object.keys(channelGroups).length === 0) {
+  const toggleHideStale = () => {
+    setFilters((prev) => ({
+      ...prev,
+      hide_stale: !prev.hide_stale,
+    }));
+  };
+
+  const fetchData = useCallback(
+    async ({ showLoader = true } = {}) => {
+      const params = new URLSearchParams();
+      params.append('page', pagination.pageIndex + 1);
+      params.append('page_size', pagination.pageSize);
+
+      // Apply sorting
+      if (sorting.length > 0) {
+        const columnId = sorting[0].id;
+        // Map frontend column IDs to backend field names
+        const fieldMapping = {
+          name: 'name',
+          group: 'channel_group__name',
+          m3u: 'm3u_account__name',
+        };
+        const sortField = fieldMapping[columnId] || columnId;
+        const sortDirection = sorting[0].desc ? '-' : '';
+        params.append('ordering', `${sortDirection}${sortField}`);
+      }
+
+      // Apply debounced filters; send boolean filters as 'true' when set
+      Object.entries(debouncedFilters).forEach(([key, value]) => {
+        if (typeof value === 'boolean') {
+          if (value) params.append(key, 'true');
+        } else if (value !== null && value !== undefined && value !== '') {
+          params.append(key, String(value));
+        }
+      });
+
+      const paramsString = params.toString();
+
+      // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
+      if (
+        fetchInProgressRef.current &&
+        lastFetchParamsRef.current === paramsString
+      ) {
+        return;
+      }
+
+      // Increment fetch version to track this specific fetch request
+      const currentFetchVersion = ++fetchVersionRef.current;
+      lastFetchParamsRef.current = paramsString;
+      fetchInProgressRef.current = true;
+
+      if (showLoader) {
+        setIsLoading(true);
+      }
+
       try {
-        await fetchChannelGroups();
-        setGroupsLoaded(true);
+        const [result, ids, filterOptions] = await Promise.all([
+          API.queryStreamsTable(params),
+          API.getAllStreamIds(params),
+          API.getStreamFilterOptions(params),
+        ]);
+
+        fetchInProgressRef.current = false;
+
+        // Skip state updates if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
+
+        setAllRowIds(ids);
+
+        // Set filtered options based on current filters
+        // Ensure groupOptions is always an array of valid strings
+        if (filterOptions && typeof filterOptions === 'object') {
+          setGroupOptions(
+            (filterOptions.groups || [])
+              .filter((group) => group != null && group !== '')
+              .map((group) => String(group))
+          );
+          // Ensure m3uOptions is always an array of valid objects
+          setM3uOptions(
+            (filterOptions.m3u_accounts || [])
+              .filter((m3u) => m3u && m3u.id != null && m3u.name)
+              .map((m3u) => ({
+                label: String(m3u.name),
+                value: String(m3u.id),
+              }))
+          );
+        }
+
+        if (initialDataCount === null) {
+          setInitialDataCount(result.count);
+        }
+
+        // Signal that initial data load is complete
+        if (!hasSignaledReady.current && onReady) {
+          hasSignaledReady.current = true;
+          onReady();
+        }
       } catch (error) {
-        console.error('Error fetching channel groups:', error);
-      }
-    }
+        fetchInProgressRef.current = false;
 
-    const params = new URLSearchParams();
-    params.append('page', pagination.pageIndex + 1);
-    params.append('page_size', pagination.pageSize);
-
-    // Apply sorting
-    if (sorting.length > 0) {
-      const columnId = sorting[0].id;
-      // Map frontend column IDs to backend field names
-      const fieldMapping = {
-        name: 'name',
-        group: 'channel_group__name',
-        m3u: 'm3u_account__name',
-      };
-      const sortField = fieldMapping[columnId] || columnId;
-      const sortDirection = sorting[0].desc ? '-' : '';
-      params.append('ordering', `${sortDirection}${sortField}`);
-    }
-
-    // Apply debounced filters
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
-      if (value) params.append(key, value);
-    });
-
-    try {
-      const [result, ids, groups] = await Promise.all([
-        API.queryStreams(params),
-        API.getAllStreamIds(params),
-        API.getStreamGroups(),
-      ]);
-
-      setAllRowIds(ids);
-      setData(result.results);
-      setPageCount(Math.ceil(result.count / pagination.pageSize));
-      setGroupOptions(groups);
-
-      // Calculate the starting and ending item indexes
-      const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
-      const endItem = Math.min(
-        (pagination.pageIndex + 1) * pagination.pageSize,
-        result.count
-      );
-
-      if (initialDataCount === null) {
-        setInitialDataCount(result.count);
+        // Skip logging if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
+        console.error('Error fetching data:', error);
       }
 
-      // Generate the string
-      setPaginationString(`${startItem} to ${endItem} of ${result.count}`);
-
-      // Signal that initial data load is complete
-      if (!hasSignaledReady.current && onReady) {
-        hasSignaledReady.current = true;
-        onReady();
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
       }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    }
 
-    setIsLoading(false);
-  }, [
-    pagination,
-    sorting,
-    debouncedFilters,
-    groupsLoaded,
-    channelGroups,
-    fetchChannelGroups,
-    onReady,
-  ]);
+      hasFetchedOnce.current = true;
+      if (showLoader) {
+        setIsLoading(false);
+      }
+    },
+    [pagination, sorting, debouncedFilters, onReady]
+  );
 
   // Bulk creation: create channels from selected streams asynchronously
   const createChannelsFromStreams = async () => {
@@ -535,6 +599,8 @@ const StreamsTable = ({ onReady }) => {
 
       // Clear selection since the task has started
       setSelectedStreamIds([]);
+
+      // Note: This is a background task, so the update happens on WebSocket completion
     } catch (error) {
       console.error('Error starting bulk channel creation:', error);
       // Error notifications will be handled by WebSocket
@@ -592,14 +658,15 @@ const StreamsTable = ({ onReady }) => {
 
   const executeDeleteStream = async (id) => {
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStream(id);
-      fetchData();
       // Clear the selection for the deleted stream
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
       setDeleting(false);
+      setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
   };
@@ -617,11 +684,10 @@ const StreamsTable = ({ onReady }) => {
   };
 
   const executeDeleteStreams = async () => {
-    setIsLoading(true);
     setDeleting(true);
+    setIsLoading(true);
     try {
       await API.deleteStreams(selectedStreamIds);
-      fetchData();
       setSelectedStreamIds([]);
       table.setSelectedTableIds([]);
     } finally {
@@ -631,10 +697,15 @@ const StreamsTable = ({ onReady }) => {
     }
   };
 
-  const closeStreamForm = () => {
+  const closeStreamForm = async () => {
     setStream(null);
     setModalOpen(false);
-    fetchData();
+    setIsLoading(true);
+    try {
+      await API.requeryStreams();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Single channel creation functions
@@ -702,8 +773,8 @@ const StreamsTable = ({ onReady }) => {
       channel_profile_ids: channelProfileIds,
     });
     await API.requeryChannels();
-    const fetchLogos = useChannelsStore.getState().fetchLogos;
-    fetchLogos();
+    // const fetchLogos = useChannelsStore.getState().fetchLogos;
+    // fetchLogos();
   };
 
   // Handle confirming the single channel numbering modal
@@ -844,38 +915,35 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
         );
 
-      case 'group':
+      case 'group': {
+        const selectedGroups = filters.channel_group
+          ? filters.channel_group.split(',').filter(Boolean)
+          : [];
+        return (
+          <MultiSelect
+            placeholder="Group"
+            searchable
+            size="xs"
+            nothingFoundMessage="No options"
+            onClick={handleSelectClick}
+            onChange={handleGroupChange}
+            value={selectedGroups}
+            data={groupOptions}
+            variant="unstyled"
+            className="table-input-header custom-multiselect"
+            clearable
+            style={{ width: '100%' }}
+          />
+        );
+      }
+
+      case 'm3u': {
+        const selectedM3Us = filters.m3u_account
+          ? filters.m3u_account.split(',').filter(Boolean)
+          : [];
         return (
           <Flex align="center" style={{ width: '100%', flex: 1 }}>
             <MultiSelect
-              placeholder="Group"
-              searchable
-              size="xs"
-              nothingFoundMessage="No options"
-              onClick={handleSelectClick}
-              onChange={handleGroupChange}
-              data={groupOptions}
-              variant="unstyled"
-              className="table-input-header custom-multiselect"
-              clearable
-              style={{ flex: 1, minWidth: 0 }}
-              rightSectionPointerEvents="auto"
-              rightSection={React.createElement(sortingIcon, {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSortingChange('group');
-                },
-                size: 14,
-                style: { cursor: 'pointer' },
-              })}
-            />
-          </Flex>
-        );
-
-      case 'm3u':
-        return (
-          <Flex align="center" style={{ width: '100%', flex: 1 }}>
-            <Select
               placeholder="M3U"
               searchable
               clearable
@@ -883,12 +951,10 @@ const StreamsTable = ({ onReady }) => {
               nothingFoundMessage="No options"
               onClick={handleSelectClick}
               onChange={handleM3UChange}
-              data={playlists.map((playlist) => ({
-                label: playlist.name,
-                value: `${playlist.id}`,
-              }))}
+              value={selectedM3Us}
+              data={m3uOptions}
               variant="unstyled"
-              className="table-input-header"
+              className="table-input-header custom-multiselect"
               style={{ flex: 1, minWidth: 0 }}
               rightSectionPointerEvents="auto"
               rightSection={React.createElement(sortingIcon, {
@@ -902,6 +968,7 @@ const StreamsTable = ({ onReady }) => {
             />
           </Flex>
         );
+      }
     }
   };
 
@@ -946,6 +1013,10 @@ const StreamsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
+    state: {
+      pagination,
+      sorting,
+    },
     headerCellRenderFns: {
       name: renderHeaderCell,
       group: renderHeaderCell,
@@ -971,6 +1042,88 @@ const StreamsTable = ({ onReady }) => {
     // Load data independently, don't wait for logos or other data
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (
+      Object.keys(channelGroups).length > 0 ||
+      hasFetchedChannelGroups.current
+    ) {
+      return;
+    }
+
+    const loadGroups = async () => {
+      hasFetchedChannelGroups.current = true;
+      try {
+        await fetchChannelGroups();
+      } catch (error) {
+        console.error('Error fetching channel groups:', error);
+      }
+    };
+
+    loadGroups();
+  }, [channelGroups, fetchChannelGroups]);
+
+  useEffect(() => {
+    if (
+      playlists.length > 0 ||
+      hasFetchedPlaylists.current ||
+      playlistsLoading
+    ) {
+      return;
+    }
+
+    const loadPlaylists = async () => {
+      hasFetchedPlaylists.current = true;
+      try {
+        await fetchPlaylists();
+      } catch (error) {
+        console.error('Error fetching playlists:', error);
+      }
+    };
+
+    loadPlaylists();
+  }, [playlists, fetchPlaylists, playlistsLoading]);
+
+  useEffect(() => {
+    const startItem = pagination.pageIndex * pagination.pageSize + 1;
+    const endItem = Math.min(
+      (pagination.pageIndex + 1) * pagination.pageSize,
+      totalCount
+    );
+    setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
+  }, [pagination.pageIndex, pagination.pageSize, totalCount]);
+
+  // Clear dependent filters if selected values are no longer in filtered options
+  useEffect(() => {
+    // Clear group filter if the selected groups are no longer available
+    if (filters.channel_group) {
+      const selectedGroups = filters.channel_group.split(',').filter(Boolean);
+      const stillValid = selectedGroups.filter((group) =>
+        groupOptions.includes(group)
+      );
+
+      if (stillValid.length !== selectedGroups.length) {
+        setFilters((prev) => ({
+          ...prev,
+          channel_group: stillValid.join(','),
+        }));
+      }
+    }
+
+    // Clear M3U filter if the selected M3Us are no longer available
+    if (filters.m3u_account) {
+      const selectedIds = filters.m3u_account.split(',').filter(Boolean);
+      const availableIds = m3uOptions.map((opt) => opt.value);
+      const stillValid = selectedIds.filter((id) => availableIds.includes(id));
+
+      if (stillValid.length !== selectedIds.length) {
+        setFilters((prev) => ({
+          ...prev,
+          m3u_account: stillValid.join(','),
+        }));
+      }
+    }
+  }, [groupOptions, m3uOptions, filters.channel_group, filters.m3u_account]);
 
   return (
     <>
@@ -1010,78 +1163,132 @@ const StreamsTable = ({ onReady }) => {
           gap={6}
         >
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? 'light'
-                  : 'default'
-              }
-              size="xs"
-              onClick={addStreamsToChannel}
-              p={5}
-              color={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? theme.tailwind.green[5]
-                  : undefined
-              }
-              style={
-                selectedStreamIds.length > 0 && selectedChannelIds.length === 1
-                  ? {
-                      borderWidth: '1px',
-                      borderColor: theme.tailwind.green[5],
-                      color: 'white',
-                    }
-                  : undefined
-              }
-              disabled={
-                !(
+            <Tooltip
+              label="Add selected stream(s) to the selected channel"
+              openDelay={500}
+            >
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant={
                   selectedStreamIds.length > 0 &&
                   selectedChannelIds.length === 1
-                )
-              }
-            >
-              Add Streams to Channel
-            </Button>
+                    ? 'light'
+                    : 'default'
+                }
+                size="xs"
+                onClick={addStreamsToChannel}
+                p={5}
+                color={
+                  selectedStreamIds.length > 0 &&
+                  selectedChannelIds.length === 1
+                    ? theme.tailwind.green[5]
+                    : undefined
+                }
+                style={
+                  selectedStreamIds.length > 0 &&
+                  selectedChannelIds.length === 1
+                    ? {
+                        borderWidth: '1px',
+                        borderColor: theme.tailwind.green[5],
+                        color: 'white',
+                      }
+                    : undefined
+                }
+                disabled={
+                  !(
+                    selectedStreamIds.length > 0 &&
+                    selectedChannelIds.length === 1
+                  )
+                }
+              >
+                Add to Channel
+              </Button>
+            </Tooltip>
 
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant="default"
-              size="xs"
-              onClick={createChannelsFromStreams}
-              p={5}
-              disabled={selectedStreamIds.length == 0}
+            <Tooltip
+              label={`Create channels from ${selectedStreamIds.length} stream(s)`}
+              openDelay={500}
             >
-              {`Create Channels (${selectedStreamIds.length})`}
-            </Button>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant="default"
+                size="xs"
+                onClick={createChannelsFromStreams}
+                p={5}
+                disabled={selectedStreamIds.length == 0}
+              >
+                {`Create Channels (${selectedStreamIds.length})`}
+              </Button>
+            </Tooltip>
           </Flex>
 
           <Flex gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
-            <Button
-              leftSection={<SquarePlus size={18} />}
-              variant="light"
-              size="xs"
-              onClick={() => editStream()}
-              p={5}
-              color={theme.tailwind.green[5]}
-              style={{
-                borderWidth: '1px',
-                borderColor: theme.tailwind.green[5],
-                color: 'white',
-              }}
-            >
-              Create Stream
-            </Button>
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <Tooltip label="Filters" openDelay={500}>
+                  <Button size="xs" variant="default">
+                    <Filter size={18} />
+                  </Button>
+                </Tooltip>
+              </Menu.Target>
 
-            <Button
-              leftSection={<SquareMinus size={18} />}
-              variant="default"
-              size="xs"
-              onClick={deleteStreams}
-              disabled={selectedStreamIds.length == 0}
-            >
-              Remove
-            </Button>
+              <Menu.Dropdown>
+                <Menu.Item
+                  onClick={toggleUnassignedOnly}
+                  leftSection={
+                    filters.unassigned === true ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Only Unassociated</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={toggleHideStale}
+                  leftSection={
+                    filters.hide_stale === true ? (
+                      <SquareCheck size={18} />
+                    ) : (
+                      <Square size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Hide Stale</Text>
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
+            <Tooltip label="Create a new custom stream" openDelay={500}>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant="light"
+                size="xs"
+                onClick={() => editStream()}
+                p={5}
+                color={theme.tailwind.green[5]}
+                style={{
+                  borderWidth: '1px',
+                  borderColor: theme.tailwind.green[5],
+                  color: 'white',
+                }}
+              >
+                Create Stream
+              </Button>
+            </Tooltip>
+
+            <Tooltip label="Delete selected stream(s)" openDelay={500}>
+              <Button
+                leftSection={<SquareMinus size={18} />}
+                variant="default"
+                size="xs"
+                onClick={deleteStreams}
+                disabled={selectedStreamIds.length == 0}
+              >
+                Delete
+              </Button>
+            </Tooltip>
           </Flex>
         </Flex>
 

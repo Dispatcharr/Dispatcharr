@@ -10,6 +10,7 @@ import useStreamProfilesStore from './store/streamProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
+import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 
 // If needed, you can set a base host or keep it empty if relative requests
@@ -197,6 +198,31 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(params);
+          newParams.set('page', '1');
+
+          const response = await request(
+            `${host}/api/channels/channels/?${newParams.toString()}`
+          );
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
@@ -217,6 +243,39 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(API.lastQueryParams);
+          newParams.set('page', '1');
+          API.lastQueryParams = newParams;
+
+          const [response, ids] = await Promise.all([
+            request(
+              `${host}/api/channels/channels/?${newParams.toString()}`
+            ),
+            API.getAllChannelIds(newParams),
+          ]);
+
+          useChannelsTableStore
+            .getState()
+            .queryChannels(response, newParams);
+          useChannelsTableStore.getState().setAllQueryIds(ids);
+
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
@@ -380,6 +439,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channel', e);
     }
@@ -394,6 +454,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channels', e);
     }
@@ -447,6 +508,9 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
+        await API.requeryStreams();
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to update channel', e);
@@ -501,6 +565,24 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  static async reorderChannel(channelId, insertAfterId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/reorder/`,
+        {
+          method: 'POST',
+          body: {
+            insert_after_id: insertAfterId,
+          },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder channel', e);
     }
   }
 
@@ -630,6 +712,7 @@ export default class API {
         useChannelsStore.getState().addChannel(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to create channel', e);
@@ -705,6 +788,50 @@ export default class API {
     }
   }
 
+  static async queryStreamsTable(params) {
+    try {
+      API.lastStreamQueryParams = params;
+      useStreamsTableStore.getState().setLastQueryParams(params);
+
+      const response = await request(
+        `${host}/api/channels/streams/?${params.toString()}`
+      );
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
+  static async requeryStreams() {
+    const params =
+      useStreamsTableStore.getState().lastQueryParams ||
+      API.lastStreamQueryParams;
+    if (!params) {
+      return null;
+    }
+
+    try {
+      const [response, ids] = await Promise.all([
+        request(
+          `${host}/api/channels/streams/?${params.toString()}`
+        ),
+        API.getAllStreamIds(params),
+      ]);
+
+      useStreamsTableStore
+        .getState()
+        .queryStreams(response, params);
+      useStreamsTableStore.getState().setAllQueryIds(ids);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
   static async getAllStreamIds(params) {
     try {
       const response = await request(
@@ -727,6 +854,20 @@ export default class API {
     }
   }
 
+  static async getStreamFilterOptions(params) {
+    try {
+      const response = await request(
+        `${host}/api/channels/streams/filter-options/?${params.toString()}`
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve filter options', e);
+      // Return safe defaults to prevent crashes during container startup
+      return { groups: [], m3u_accounts: [] };
+    }
+  }
+
   static async addStream(values) {
     try {
       const response = await request(`${host}/api/channels/streams/`, {
@@ -738,6 +879,7 @@ export default class API {
         useStreamsStore.getState().addStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to add stream', e);
@@ -756,6 +898,7 @@ export default class API {
         useStreamsStore.getState().updateStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to update stream', e);
@@ -769,6 +912,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete stream', e);
     }
@@ -782,6 +926,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams(ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete streams', e);
     }
@@ -1029,6 +1174,23 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPG data', e);
+    }
+  }
+
+  static async getCurrentPrograms(channelIds = null) {
+    try {
+      const response = await request(
+        `${host}/api/epg/current-programs/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve current programs', e);
+      return [];
     }
   }
 

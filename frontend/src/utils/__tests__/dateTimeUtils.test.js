@@ -336,7 +336,8 @@ describe('dateTimeUtils', () => {
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
-      expect(result.current).toEqual(['h:mma', 'MMM D']);
+      expect(result.current.timeFormat).toBe('h:mma');
+      expect(result.current.dateFormat).toBe('MMM D');
     });
 
     it('should return 24h format when set', () => {
@@ -344,7 +345,7 @@ describe('dateTimeUtils', () => {
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
-      expect(result.current[0]).toBe('HH:mm');
+      expect(result.current.timeFormat).toBe('HH:mm');
     });
 
     it('should return dmy date format when set', () => {
@@ -352,7 +353,7 @@ describe('dateTimeUtils', () => {
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
-      expect(result.current[1]).toBe('D MMM');
+      expect(result.current.dateFormat).toBe('D MMM');
     });
   });
 

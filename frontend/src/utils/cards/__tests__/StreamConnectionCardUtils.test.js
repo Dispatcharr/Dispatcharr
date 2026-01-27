@@ -167,11 +167,11 @@ describe('StreamConnectionCardUtils', () => {
       dateTimeUtils.subtract.mockReturnValue(mockConnectedTime);
       dateTimeUtils.format.mockReturnValue('01/01/2024 10:00:00');
 
-      const accessor = StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
+      const accessor = StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY, HH:mm:ss');
       const result = accessor({ connected_since: 7200 });
 
       expect(dateTimeUtils.subtract).toHaveBeenCalledWith(mockNow, 7200, 'second');
-      expect(dateTimeUtils.format).toHaveBeenCalledWith(mockConnectedTime, 'MM/DD/YYYY HH:mm:ss');
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(mockConnectedTime, 'MM/DD/YYYY, HH:mm:ss');
       expect(result).toBe('01/01/2024 10:00:00');
     });
 
