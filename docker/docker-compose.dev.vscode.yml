@@ -2,7 +2,7 @@ services:
   dispatcharr:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.ssh
     container_name: dispatcharr_dev_vscode
     ports:
       - 5656:5656
