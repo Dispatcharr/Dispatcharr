@@ -69,7 +69,7 @@ Typical workflow:
 4. Connect using:
    Remote-SSH: Connect to Host
 
-5. Ensure debugpy is installed on the remote host
+5. Ensure debugpy extension is installed on in VSCode after connecting to the remote host
 
 ---
 
@@ -91,8 +91,7 @@ Tasks: Run Task -> Docker Compose Up
 
 ## Celery Worker
 
-- Not started automatically
-- Launch manually from the Debug configuration dropdown
+- Starts internally in the docker container
 
 ---
 
