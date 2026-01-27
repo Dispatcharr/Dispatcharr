@@ -77,7 +77,7 @@ Typical workflow:
 
 1. Open the repository root folder in VS Code
 2. Open the Run and Debug panel
-3. Start Docker using one of the following:
+3. Start Docker using one of the following (Note: first time takes a while to install dependencies):
 
 Command line:
 docker compose -f docker-compose.dev.vscode.yml up
