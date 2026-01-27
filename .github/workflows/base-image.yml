@@ -6,13 +6,13 @@ on:
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
-      - 'requirements.txt'
+      - 'pyproject.toml'
   pull_request:
     branches: [main, dev]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
-      - 'requirements.txt'
+      - 'pyproject.toml'
   workflow_dispatch: # Allow manual triggering
 
 permissions:

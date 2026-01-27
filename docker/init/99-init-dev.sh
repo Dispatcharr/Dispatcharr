@@ -15,11 +15,11 @@ fi
 
 # Install frontend dependencies
 cd /app/frontend && npm install
-# Install pip dependencies
-cd /app && pip install -r requirements.txt
+# Install Python dependencies using UV
+cd /app && uv sync --python $VIRTUAL_ENV/bin/python --no-install-project --no-dev
 
 # Install debugpy for remote debugging
 if [ "$DISPATCHARR_DEBUG" = "true" ]; then
     echo "=== setting up debugpy ==="
-    pip install debugpy
+    uv pip install --python $VIRTUAL_ENV/bin/python debugpy
 fi
