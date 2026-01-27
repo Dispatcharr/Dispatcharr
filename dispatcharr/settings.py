@@ -32,7 +32,7 @@ INSTALLED_APPS = [
     "apps.vod.apps.VODConfig",
     "core",
     "daphne",
-    "drf_yasg",
+    "drf_spectacular",
     "channels",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -151,7 +151,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 REST_FRAMEWORK = {
-    "DEFAULT_SCHEMA_CLASS": "rest_framework.schemas.coreapi.AutoSchema",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
@@ -162,10 +162,22 @@ REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
 }
 
-SWAGGER_SETTINGS = {
-    "SECURITY_DEFINITIONS": {
-        "Bearer": {"type": "apiKey", "name": "Authorization", "in": "header"}
-    }
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Dispatcharr API",
+    "DESCRIPTION": "API documentation for Dispatcharr",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SECURITY": [{"BearerAuth": []}],
+    "COMPONENTS": {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "Enter your JWT access token. The 'Bearer ' prefix is added automatically.",
+            }
+        }
+    },
 }
 
 LANGUAGE_CODE = "en-us"

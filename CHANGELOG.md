@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
+  - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
+  - Modern OpenAPI 3.0 specification compliance
+  - Better auto-generation of request/response schemas
+  - Improved documentation accuracy with serializer introspection
+
 ## [0.18.1] - 2026-01-27
 
 ### Fixed
