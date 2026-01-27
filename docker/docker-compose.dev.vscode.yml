@@ -1,0 +1,56 @@
+services:
+  dispatcharr:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: dispatcharr_dev_vscode
+    ports:
+      - 5656:5656
+      - 9191:9191
+      - 8001:8001
+      - 2222:22
+      - 5678:5678  # Python debugpy
+      - 9229:9229  # Node.js debug port
+      - 5173:5173  # Vite dev server
+    volumes:
+      - ../:/app
+      - ./data:/data
+    env_file:
+      - ../.vscode/.env.development  # Load env file directly into container
+    environment:
+      - USING_ENV_FILE=USE_ENV_FILE_INSTEAD
+      # Legacy CPU Support (Optional)
+      # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
+      # that lack support for newer baseline CPU features
+      #- USE_LEGACY_NUMPY=true
+      # Process Priority Configuration (Optional)
+      # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
+      # Negative values require cap_add: SYS_NICE (uncomment below)
+      #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
+      #- CELERY_NICE_LEVEL=5   # Celery/EPG/Background tasks (default: 5, low priority)
+    #
+    # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
+    #cap_add:
+    #  - SYS_NICE
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    volumes:
+      - dispatcharr_dev_pgadmin:/var/lib/pgadmin
+    ports:
+      - 8082:80
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=dispatcharr:dispatcharr:6379:0
+      - TRUST_PROXY=true
+      - ADDRESS=0.0.0.0
+    ports:
+      - 8085:8081
+
+volumes:
+  dispatcharr_dev_pgadmin:
