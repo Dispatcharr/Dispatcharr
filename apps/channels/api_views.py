@@ -2454,7 +2454,18 @@ class SeriesRulesAPIView(APIView):
                     type=openapi.TYPE_OBJECT,
                     properties={
                         'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                        'rules': openapi.Schema(type=openapi.TYPE_ARRAY, description='Updated list of all rules'),
+                        'rules': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'tvg_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'mode': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                },
+                            ),
+                            description='Updated list of all rules'
+                        ),
                     },
                 ),
             ),
@@ -2506,7 +2517,18 @@ class DeleteSeriesRuleAPIView(APIView):
                     type=openapi.TYPE_OBJECT,
                     properties={
                         'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                        'rules': openapi.Schema(type=openapi.TYPE_ARRAY, description='Updated list of all rules'),
+                        'rules': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'tvg_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'mode': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                },
+                            ),
+                            description='Updated list of all rules'
+                        ),
                     },
                 ),
             ),
