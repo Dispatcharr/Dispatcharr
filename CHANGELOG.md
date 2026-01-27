@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.0] - 2026-01-27
 
+## [0.18.0] - 2026-01-27
+
 ### Security
 
 - Updated react-router from 7.11.0 to 7.12.0 to address two security vulnerabilities:
