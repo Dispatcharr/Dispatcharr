@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Better auto-generation of request/response schemas
   - Improved documentation accuracy with serializer introspection
 
+### Fixed
+
+- Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
+
 ## [0.18.1] - 2026-01-27
 
 ### Fixed

@@ -17,9 +17,6 @@ urlpatterns = [
     path("swagger", RedirectView.as_view(url="/api/swagger/", permanent=True)),
     path("redoc/", RedirectView.as_view(url="/api/redoc/", permanent=True)),
     path("redoc", RedirectView.as_view(url="/api/redoc/", permanent=True)),
-    # Admin
-    path("admin", RedirectView.as_view(url="/admin/", permanent=True)),
-    path("admin/", admin.site.urls),
     # Outputs
     path("output", RedirectView.as_view(url="/output/", permanent=True)),
     path("output/", include(("apps.output.urls", "output"), namespace="output")),
@@ -55,6 +52,9 @@ urlpatterns = [
         xc_series_stream,
         name="xc_series_stream",
     ),
+    # Admin
+    path("admin", RedirectView.as_view(url="/admin/", permanent=True)),
+    path("admin/", admin.site.urls),
 
     # VOD proxy is now handled by the main proxy URLs above
     # Catch-all routes should always be last
