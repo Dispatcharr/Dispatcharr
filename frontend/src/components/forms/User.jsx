@@ -12,8 +12,9 @@ import {
   Stack,
   MultiSelect,
   ActionIcon,
+  NumberInput,
 } from '@mantine/core';
-import { RotateCcwKey, X } from 'lucide-react';
+import { RotateCcwKey } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
@@ -209,26 +210,23 @@ const User = ({ user = null, isOpen, onClose }) => {
               key={form.key('last_name')}
             />
 
-            <Group align="flex-end">
-              <TextInput
-                label="XC Password"
-                description="Clear to disable XC API"
-                {...form.getInputProps('xc_password')}
-                key={form.key('xc_password')}
-                style={{ flex: 1 }}
-                rightSectionWidth={30}
-                rightSection={
-                  <ActionIcon
-                    variant="transparent"
-                    size="sm"
-                    color="white"
-                    onClick={generateXCPassword}
-                  >
-                    <RotateCcwKey />
-                  </ActionIcon>
-                }
-              />
-            </Group>
+            <TextInput
+              label="XC Password"
+              description="Clear to disable XC API"
+              {...form.getInputProps('xc_password')}
+              key={form.key('xc_password')}
+              rightSectionWidth={30}
+              rightSection={
+                <ActionIcon
+                  variant="transparent"
+                  size="sm"
+                  color="white"
+                  onClick={generateXCPassword}
+                >
+                  <RotateCcwKey />
+                </ActionIcon>
+              }
+            />
 
             {showPermissions && (
               <MultiSelect

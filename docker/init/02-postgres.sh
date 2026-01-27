@@ -162,5 +162,3 @@ ensure_utf8_encoding() {
         echo "Database $POSTGRES_DB converted to UTF8 and permissions set."
     fi
 }
-
-

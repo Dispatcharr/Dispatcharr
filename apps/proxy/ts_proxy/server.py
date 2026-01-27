@@ -1121,12 +1121,6 @@ class ProxyServer:
                                     else:
                                         # Grace period expired with clients - mark channel as active
                                         logger.info(f"Grace period expired with {total_clients} clients - marking channel {channel_id} as active")
-<<<<<<< HEAD
-                                        old_state = "unknown"
-                                        if metadata and 'state' in metadata:
-                                            old_state = metadata['state']
-=======
->>>>>>> origin/dev
                                         if self.update_channel_state(channel_id, ChannelState.ACTIVE, {
                                             "grace_period_ended_at": str(time.time()),
                                             "clients_at_activation": str(total_clients)
