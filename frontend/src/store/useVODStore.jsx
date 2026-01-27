@@ -213,30 +213,6 @@ const useVODStore = create((set, get) => ({
     }
   },
 
-  fetchSeriesEpisodes: async (seriesId) => {
-    set({ loading: true, error: null });
-    try {
-      const response = await api.getSeriesEpisodes(seriesId);
-
-      set((state) => ({
-        episodes: {
-          ...state.episodes,
-          ...response.reduce((acc, episode) => {
-            acc[episode.id] = episode;
-            return acc;
-          }, {}),
-        },
-        loading: false,
-      }));
-
-      return response;
-    } catch (error) {
-      console.error('Failed to fetch series episodes:', error);
-      set({ error: 'Failed to load episodes.', loading: false });
-      throw error; // Re-throw to allow calling component to handle
-    }
-  },
-
   fetchMovieDetails: async (movieId) => {
     set({ loading: true, error: null });
     try {

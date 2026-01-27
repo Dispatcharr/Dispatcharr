@@ -702,8 +702,6 @@ const StreamsTable = ({ onReady }) => {
       channel_profile_ids: channelProfileIds,
     });
     await API.requeryChannels();
-    const fetchLogos = useChannelsStore.getState().fetchLogos;
-    fetchLogos();
   };
 
   // Handle confirming the single channel numbering modal

@@ -72,9 +72,6 @@ const useLogosStore = create((set, get) => ({
 
   // Smart loading methods
   fetchLogos: async (pageSize = 100) => {
-    // Don't fetch if logo fetching is not allowed yet
-    if (!get().allowLogoFetching) return [];
-
     set({ isLoading: true, error: null });
     try {
       const response = await api.getLogos({ page_size: pageSize });
