@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import api from '../api';
 import useSettingsStore from './settings';
 import useChannelsStore from './channels';
 import usePlaylistsStore from './playlists';
@@ -82,20 +81,16 @@ const useAuthStore = create((set, get) => ({
 
   getToken: async () => {
     const tokenExpiration = localStorage.getItem('tokenExpiration');
-    let accessToken = null;
-    if (isTokenExpired(tokenExpiration)) {
-      accessToken = await get().getRefreshToken();
-    } else {
-      accessToken = localStorage.getItem('accessToken');
-    }
 
-    return accessToken;
+    return isTokenExpired(tokenExpiration)
+      ? await get().getRefreshToken()
+      : localStorage.getItem('accessToken');
   },
 
   // Action to login
   login: async ({ username, password }) => {
     try {
-      const response = await api.login(username, password);
+      const response = await API.login(username, password);
       if (response.access) {
         const expiration = decodeToken(response.access);
         set({
@@ -121,8 +116,8 @@ const useAuthStore = create((set, get) => ({
     if (!refreshToken) return false; // Add explicit return here
 
     try {
-      const data = await api.refreshToken(refreshToken);
-      if (data && data.access) {
+      const data = await API.refreshToken(refreshToken);
+      if (data?.access) {
         set({
           accessToken: data.access,
           tokenExpiration: decodeToken(data.access),
