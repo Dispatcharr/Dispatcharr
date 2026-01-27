@@ -11,21 +11,30 @@ import {
   Center,
   Flex,
   Group,
+  Progress,
   Select,
   Stack,
   Text,
   Tooltip,
+  useMantineTheme,
 } from '@mantine/core';
 import {
+  ChevronDown,
+  ChevronRight,
+  CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  Radio,
   SquareX,
   Timer,
   Users,
   Video,
 } from 'lucide-react';
-import { toFriendlyDuration } from '../../utils/dateTimeUtils.js';
+import {
+  toFriendlyDuration,
+  useDateTimeFormat,
+} from '../../utils/dateTimeUtils.js';
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
 import { TableHelper } from '../../helpers/index.jsx';
 import logo from '../../images/logo.png';
@@ -45,6 +54,7 @@ import {
   getStreamsByIds,
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
+import useVideoStore from '../../store/useVideoStore';
 
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
@@ -54,6 +64,8 @@ const StreamConnectionCard = ({
   stopChannel,
   logos,
   channelsByUUID,
+  channels,
+  currentProgram,
 }) => {
   const location = useLocation();
   const [availableStreams, setAvailableStreams] = useState([]);
@@ -62,16 +74,21 @@ const StreamConnectionCard = ({
   const [currentM3UProfile, setCurrentM3UProfile] = useState(null); // Add state for current M3U profile
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
+  const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+
+  const theme = useMantineTheme();
 
   // Get M3U account data from the playlists store
   const m3uAccounts = usePlaylistsStore((s) => s.playlists);
-  // Get settings for speed threshold
+  // Get settings for speed threshold and environment mode
   const settings = useSettingsStore((s) => s.settings);
+  const env_mode =
+    useSettingsStore((s) => s.environment?.env_mode) || 'production';
+  // Get video preview function
+  const showVideo = useVideoStore((s) => s.showVideo);
 
-  // Get Date-format from localStorage
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
-  const [tableSize] = useLocalStorage('table-size', 'default');
+  // Get user's date/time format preferences
+  const { fullDateTimeFormat } = useDateTimeFormat();
 
   // Create a map of M3U account IDs to names for quick lookup
   const m3uAccountsMap = useMemo(() => {
@@ -254,12 +271,20 @@ const StreamConnectionCard = ({
       {
         header: 'IP Address',
         accessorKey: 'ip_address',
+        size: 150,
+        cell: ({ cell }) => (
+          <Tooltip label={cell.getValue()}>
+            <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+              {cell.getValue()}
+            </Text>
+          </Tooltip>
+        ),
       },
       // Updated Connected column with tooltip
       {
         id: 'connected',
         header: 'Connected',
-        accessorFn: connectedAccessor(dateFormat),
+        accessorFn: connectedAccessor(fullDateTimeFormat),
         cell: ({ cell }) => (
           <Tooltip
             label={
@@ -296,10 +321,10 @@ const StreamConnectionCard = ({
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: 100,
       },
     ],
-    []
+    [fullDateTimeFormat]
   );
 
   const channelClientsTable = useTable({
@@ -392,6 +417,23 @@ const StreamConnectionCard = ({
   // Create select options for available streams
   const streamOptions = getStreamOptions(availableStreams, m3uAccountsMap);
 
+  // Handle preview channel button click
+  const handlePreviewChannel = () => {
+    const channelDbId = channelsByUUID[channel.channel_id];
+    if (!channelDbId) return;
+
+    const actualChannel = channels[channelDbId];
+    if (!actualChannel?.uuid) return;
+
+    const uri = `/proxy/ts/stream/${actualChannel.uuid}`;
+    let url = `${window.location.protocol}//${window.location.host}${uri}`;
+    if (env_mode === 'dev') {
+      url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+    }
+
+    showVideo(url);
+  };
+
   if (location.pathname !== '/stats') {
     return <></>;
   }
@@ -416,14 +458,14 @@ const StreamConnectionCard = ({
       w={'100%'}
     >
       <Stack pos="relative">
-        <Group justify="space-between">
+        <Group justify="space-between" align="flex-start">
           <Box
             style={{
               alignItems: 'center',
               justifyContent: 'center',
             }}
-            w={100}
-            h={50}
+            w={140}
+            h={70}
             display="flex"
           >
             <img
@@ -437,7 +479,7 @@ const StreamConnectionCard = ({
             />
           </Box>
 
-          <Group>
+          <Group mt={10}>
             <Box>
               <Tooltip label={getStartDate(uptime)}>
                 <Center>
@@ -460,49 +502,157 @@ const StreamConnectionCard = ({
           </Group>
         </Group>
 
-        <Flex justify="space-between" align="center">
-          <Group>
-            <Text fw={500}>{channelName}</Text>
-          </Group>
-
+        {/* Stream Profile on right - absolutely positioned */}
+        <Box pos="absolute" top={65} right={16} style={{ zIndex: 1 }}>
           <Tooltip label="Active Stream Profile">
             <Group gap={5}>
               <Video size="18" />
               {streamProfileName}
             </Group>
           </Tooltip>
-        </Flex>
+        </Box>
 
-        {/* Display M3U profile information */}
-        <Flex justify="flex-end" align="center" mt={-8}>
+        {/* M3U Profile on right - absolutely positioned */}
+        <Box pos="absolute" top={95} right={16} style={{ zIndex: 1 }}>
           <Group gap={5}>
             <HardDriveUpload size="18" />
             <Tooltip label="Current M3U Profile">
               <Text size="xs">{m3uProfileName}</Text>
             </Tooltip>
           </Group>
-        </Flex>
+        </Box>
 
-        {/* Add stream selection dropdown */}
-        {availableStreams.length > 0 && (
-          <Tooltip label="Switch to another stream source">
-            <Select
+        {/* Channel Name on left */}
+        <Box mt={4}>
+          <Text fw={500}>{channelName}</Text>
+        </Box>
+
+        {/* Display current program on its own line */}
+        {currentProgram && (
+          <Group gap={5} mt={-9} wrap="nowrap">
+            <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
+            <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
+              Now Playing:
+            </Text>
+            <Text size="xs" c="dimmed" truncate>
+              {currentProgram.title}
+            </Text>
+            <ActionIcon
               size="xs"
-              label="Active Stream"
-              placeholder={
-                isLoadingStreams ? 'Loading streams...' : 'Select stream'
+              variant="subtle"
+              onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
+              style={{ flexShrink: 0 }}
+            >
+              {isProgramDescExpanded ? (
+                <ChevronDown size="14" />
+              ) : (
+                <ChevronRight size="14" />
+              )}
+            </ActionIcon>
+          </Group>
+        )}
+
+        {/* Expandable program description */}
+        {currentProgram &&
+          isProgramDescExpanded &&
+          currentProgram.description && (
+            <Box mt={4} ml={24}>
+              <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
+                {currentProgram.description}
+              </Text>
+            </Box>
+          )}
+
+        {/* Program progress bar */}
+        {currentProgram &&
+          isProgramDescExpanded &&
+          currentProgram.start_time &&
+          currentProgram.end_time &&
+          (() => {
+            const now = new Date();
+            const startTime = new Date(currentProgram.start_time);
+            const endTime = new Date(currentProgram.end_time);
+            const totalDuration = (endTime - startTime) / 1000; // in seconds
+            const elapsed = (now - startTime) / 1000; // in seconds
+            const remaining = (endTime - now) / 1000; // in seconds
+            const percentage = Math.min(
+              100,
+              Math.max(0, (elapsed / totalDuration) * 100)
+            );
+
+            const formatProgramTime = (seconds) => {
+              const absSeconds = Math.abs(seconds);
+              const hours = Math.floor(absSeconds / 3600);
+              const minutes = Math.floor((absSeconds % 3600) / 60);
+              const secs = Math.floor(absSeconds % 60);
+              if (hours > 0) {
+                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
               }
-              data={streamOptions}
-              value={activeStreamId || channel.stream_id?.toString() || null}
-              onChange={handleStreamChange}
-              disabled={isLoadingStreams}
-              mt={8}
-            />
-          </Tooltip>
+              return `${minutes}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            return (
+              <Stack gap="xs" mt={4}>
+                <Group justify="space-between" align="center">
+                  <Text size="xs" c="dimmed">
+                    {formatProgramTime(elapsed)} elapsed
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {formatProgramTime(remaining)} remaining
+                  </Text>
+                </Group>
+                <Progress
+                  value={percentage}
+                  size="sm"
+                  color="#3BA882"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  }}
+                />
+              </Stack>
+            );
+          })()}
+
+        {/* Add stream selection dropdown and preview button */}
+        {availableStreams.length > 0 && (
+          <Box mt={-10}>
+            <Group align="flex-end" gap="xs">
+              <Box style={{ flex: 1 }}>
+                <Tooltip label="Switch to another stream source">
+                  <Select
+                    size="xs"
+                    label="Active Stream"
+                    placeholder={
+                      isLoadingStreams ? 'Loading streams...' : 'Select stream'
+                    }
+                    data={streamOptions}
+                    value={
+                      activeStreamId || channel.stream_id?.toString() || null
+                    }
+                    onChange={handleStreamChange}
+                    disabled={isLoadingStreams}
+                  />
+                </Tooltip>
+              </Box>
+              {channel.name && (
+                <Tooltip label="Preview Channel">
+                  <ActionIcon
+                    size="md"
+                    variant="transparent"
+                    color={theme.tailwind.green[5]}
+                    onClick={handlePreviewChannel}
+                    style={{ marginBottom: 1 }}
+                  >
+                    <CirclePlay size="20" />
+                  </ActionIcon>
+                </Tooltip>
+              )}
+            </Group>
+          </Box>
         )}
 
         {/* Add stream information badges */}
-        <Group gap="xs" mt="xs">
+        <Group gap="xs" mt="5">
           {channel.resolution && (
             <Tooltip label="Video resolution">
               <Badge size="sm" variant="light" color="red">

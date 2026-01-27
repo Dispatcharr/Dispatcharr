@@ -73,7 +73,9 @@ def refresh_vod_content(account_id):
         return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
 
     except Exception as e:
+        import traceback
         logger.error(f"Error refreshing VOD for account {account_id}: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
         # Send error notification
         send_m3u_update(account_id, "vod_refresh", 100, status="error",
@@ -555,12 +557,19 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if movie.logo != new_logo:
-                    movie._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if movie.logo_id != new_logo.id:
+                        movie._logo_to_update = new_logo
+                        logo_updated = True
+                elif movie.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                    movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo:
+            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 movie._logo_to_update = None
                 logo_updated = True
@@ -905,12 +914,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if series.logo != new_logo:
-                    series._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if series.logo_id != new_logo.id:
+                        series._logo_to_update = new_logo
+                        logo_updated = True
+                elif series.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                    series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo:
+            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 series._logo_to_update = None
                 logo_updated = True
@@ -2176,33 +2192,3 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     except Exception as e:
         logger.error(f"Error refreshing advanced movie data for relation {m3u_movie_relation_id}: {str(e)}")
         return f"Error: {str(e)}"
-
-
-def validate_logo_reference(obj, obj_type="object"):
-    """
-    Validate that a VOD logo reference exists in the database.
-    If not, set it to None to prevent foreign key constraint violations.
-
-    Args:
-        obj: Object with a logo attribute
-        obj_type: String description of the object type for logging
-
-    Returns:
-        bool: True if logo was valid or None, False if logo was invalid and cleared
-    """
-    if not hasattr(obj, 'logo') or not obj.logo:
-        return True
-
-    if not obj.logo.pk:
-        # Logo doesn't have a primary key, so it's not saved
-        obj.logo = None
-        return False
-
-    try:
-        # Verify the logo exists in the database
-        VODLogo.objects.get(pk=obj.logo.pk)
-        return True
-    except VODLogo.DoesNotExist:
-        logger.warning(f"VOD Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
-        obj.logo = None
-        return False

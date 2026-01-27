@@ -834,6 +834,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
+                            "is_adult": int(stream.get("is_adult", 0)) == 1,
                             "is_stale": False,
                         }
 
@@ -862,7 +863,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.url != stream_props["url"] or
                     obj.logo_url != stream_props["logo_url"] or
                     obj.tvg_id != stream_props["tvg_id"] or
-                    obj.custom_properties != stream_props["custom_properties"]
+                    obj.custom_properties != stream_props["custom_properties"] or
+                    obj.is_adult != stream_props["is_adult"]
                 )
 
                 if changed:
@@ -898,7 +900,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1011,6 +1013,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
+                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
                 "is_stale": False,
             }
 
@@ -1036,7 +1039,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.url != stream_props["url"] or
                 obj.logo_url != stream_props["logo_url"] or
                 obj.tvg_id != stream_props["tvg_id"] or
-                obj.custom_properties != stream_props["custom_properties"]
+                obj.custom_properties != stream_props["custom_properties"] or
+                obj.is_adult != stream_props["is_adult"]
             )
 
             # Always update last_seen
@@ -1049,6 +1053,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.logo_url = stream_props["logo_url"]
                 obj.tvg_id = stream_props["tvg_id"]
                 obj.custom_properties = stream_props["custom_properties"]
+                obj.is_adult = stream_props["is_adult"]
                 obj.updated_at = timezone.now()
 
             # Always mark as not stale since we saw it in this refresh
@@ -1071,7 +1076,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'is_stale'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale'],
                     batch_size=200
                 )
     except Exception as e:

@@ -12,6 +12,9 @@ import {
   Stack,
   MultiSelect,
   ActionIcon,
+  Switch,
+  Box,
+  Tooltip,
 } from '@mantine/core';
 import { RotateCcwKey, X } from 'lucide-react';
 import { useForm } from '@mantine/form';
@@ -38,6 +41,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       password: '',
       xc_password: '',
       channel_profiles: [],
+      hide_adult_content: false,
     },
 
     validate: (values) => ({
@@ -79,6 +83,10 @@ const User = ({ user = null, isOpen, onClose }) => {
     // Always save xc_password, even if it's empty (to allow clearing)
     customProps.xc_password = values.xc_password || '';
     delete values.xc_password;
+
+    // Save hide_adult_content in custom_properties
+    customProps.hide_adult_content = values.hide_adult_content || false;
+    delete values.hide_adult_content;
 
     values.custom_properties = customProps;
 
@@ -125,6 +133,7 @@ const User = ({ user = null, isOpen, onClose }) => {
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
+        hide_adult_content: customProps.hide_adult_content || false,
       });
 
       if (customProps.xc_password) {
@@ -241,6 +250,24 @@ const User = ({ user = null, isOpen, onClose }) => {
                   value: `${profile.id}`,
                 }))}
               />
+            )}
+
+            {showPermissions && (
+              <Box>
+                <Tooltip
+                  label="Hide channels marked as mature content (admin users not affected)"
+                  position="top"
+                  withArrow
+                >
+                  <Switch
+                    label="Hide Mature Content"
+                    {...form.getInputProps('hide_adult_content', {
+                      type: 'checkbox',
+                    })}
+                    key={form.key('hide_adult_content')}
+                  />
+                </Tooltip>
+              </Box>
             )}
           </Stack>
         </Group>
