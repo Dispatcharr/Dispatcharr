@@ -1,7 +1,4 @@
 import { create } from 'zustand';
-import api from '../api';
-import { notifications } from '@mantine/notifications';
-import API from '../api';
 
 const useChannelsTableStore = create((set, get) => ({
   channels: [],

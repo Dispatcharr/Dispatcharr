@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import api from '../api';
 
+const determineEPGStatus = (data, currentEpg) => {
+  if (data.status) return data.status;
+  if (data.action === 'downloading') return 'fetching';
+  if (data.action === 'parsing_channels' || data.action === 'parsing_programs') return 'parsing';
+  if (data.progress === 100) return 'success';
+  return currentEpg?.status || 'idle';
+};
+
 const useEPGsStore = create((set) => ({
   epgs: {},
   tvgs: [],
@@ -92,7 +100,7 @@ const useEPGsStore = create((set) => ({
       }
 
       // Create a new refreshProgress object that includes the current update
-      const newRefreshProgress = {
+      const refreshProgress = {
         ...state.refreshProgress,
         [data.source]: {
           action: data.action,
@@ -106,45 +114,30 @@ const useEPGsStore = create((set) => ({
 
       // Set the EPG source status based on the update
       // First prioritize explicit status values from the backend
-      const sourceStatus = data.status
-        ? data.status // Use explicit status if provided
-        : data.action === 'downloading'
-          ? 'fetching'
-          : data.action === 'parsing_channels' ||
-              data.action === 'parsing_programs'
-            ? 'parsing'
-            : data.progress === 100
-              ? 'success' // Mark as success when progress is 100%
-              : state.epgs[data.source]?.status || 'idle';
+      const status = determineEPGStatus(data, state.epgs[data.source]);
 
       // Only update epgs object if status or last_message actually changed
       // This prevents unnecessary re-renders on every progress update
-      const currentEpg = state.epgs[data.source];
-      const newLastMessage =
-        data.status === 'error'
-          ? data.error || 'Unknown error'
-          : currentEpg?.last_message;
+      const lastMessage = data.status === 'error'
+        ? (data.error || 'Unknown error')
+        : state.epgs[data.source]?.last_message;
 
-      let newEpgs = state.epgs;
-      if (
-        currentEpg &&
-        (currentEpg.status !== sourceStatus ||
-          currentEpg.last_message !== newLastMessage)
-      ) {
-        newEpgs = {
+      const currentEpg = state.epgs[data.source];
+      const shouldUpdateEpg = currentEpg &&
+        (currentEpg.status !== status || currentEpg.last_message !== lastMessage);
+
+      const epgs = shouldUpdateEpg
+        ? {
           ...state.epgs,
           [data.source]: {
             ...currentEpg,
-            status: sourceStatus,
-            last_message: newLastMessage,
+            status,
+            last_message: lastMessage,
           },
-        };
-      }
+        }
+        : state.epgs;
 
-      return {
-        refreshProgress: newRefreshProgress,
-        epgs: newEpgs,
-      };
+      return { refreshProgress, epgs };
     }),
 }));
 
