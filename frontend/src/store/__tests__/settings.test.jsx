@@ -16,6 +16,10 @@ describe('useSettingsStore', () => {
         country_name: '',
         env_mode: 'prod',
       },
+      version: {
+        version: '',
+        timestamp: null,
+      },
       isLoading: false,
       error: null,
     });
@@ -200,5 +204,150 @@ describe('useSettingsStore', () => {
     });
 
     expect(result.current.settings).toEqual({});
+  });
+
+  it('should initialize version with default state', () => {
+    const { result } = renderHook(() => useSettingsStore());
+
+    expect(result.current.version).toEqual({
+      version: '',
+      timestamp: null,
+    });
+  });
+
+  it('should fetch version successfully', async () => {
+    const mockVersion = {
+      version: '1.2.3',
+      timestamp: '2024-01-01T00:00:00Z',
+    };
+
+    api.getVersion.mockResolvedValue(mockVersion);
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    let versionResult;
+    await act(async () => {
+      versionResult = await result.current.fetchVersion();
+    });
+
+    expect(api.getVersion).toHaveBeenCalled();
+    expect(result.current.version).toEqual({
+      version: '1.2.3',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+    expect(versionResult).toEqual({
+      version: '1.2.3',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+  });
+
+  it('should skip fetching version if already loaded', async () => {
+    useSettingsStore.setState({
+      version: {
+        version: '1.0.0',
+        timestamp: '2023-01-01T00:00:00Z',
+      },
+    });
+
+    api.getVersion.mockResolvedValue({ version: '2.0.0', timestamp: '2024-01-01T00:00:00Z' });
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    let versionResult;
+    await act(async () => {
+      versionResult = await result.current.fetchVersion();
+    });
+
+    expect(api.getVersion).not.toHaveBeenCalled();
+    expect(result.current.version).toEqual({
+      version: '1.0.0',
+      timestamp: '2023-01-01T00:00:00Z',
+    });
+    expect(versionResult).toEqual({
+      version: '1.0.0',
+      timestamp: '2023-01-01T00:00:00Z',
+    });
+  });
+
+  it('should handle null version response', async () => {
+    api.getVersion.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    await act(async () => {
+      await result.current.fetchVersion();
+    });
+
+    expect(result.current.version).toEqual({
+      version: '',
+      timestamp: null,
+    });
+  });
+
+  it('should handle fetch version error', async () => {
+    const mockError = new Error('Version fetch failed');
+    api.getVersion.mockRejectedValue(mockError);
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    let versionResult;
+    await act(async () => {
+      versionResult = await result.current.fetchVersion();
+    });
+
+    expect(versionResult).toEqual({
+      version: '',
+      timestamp: null,
+    });
+  });
+
+  it('should fetch version with settings when version not loaded', async () => {
+    const mockSettings = [{ key: 'setting1', value: 'value1' }];
+    const mockEnv = { public_ip: '192.168.1.1' };
+    const mockVersion = { version: '1.0.0', timestamp: '2024-01-01T00:00:00Z' };
+
+    api.getSettings.mockResolvedValue(mockSettings);
+    api.getEnvironmentSettings.mockResolvedValue(mockEnv);
+    api.getVersion.mockResolvedValue(mockVersion);
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    await act(async () => {
+      await result.current.fetchSettings();
+    });
+
+    expect(api.getVersion).toHaveBeenCalled();
+    expect(result.current.version).toEqual({
+      version: '1.0.0',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+  });
+
+  it('should skip fetching version with settings when already loaded', async () => {
+    useSettingsStore.setState({
+      version: {
+        version: '1.0.0',
+        timestamp: '2023-01-01T00:00:00Z',
+      },
+    });
+
+    const mockSettings = [{ key: 'setting1', value: 'value1' }];
+    const mockEnv = { public_ip: '192.168.1.1' };
+
+    api.getSettings.mockResolvedValue(mockSettings);
+    api.getEnvironmentSettings.mockResolvedValue(mockEnv);
+    api.getVersion.mockResolvedValue({ version: '2.0.0', timestamp: '2024-01-01T00:00:00Z' });
+
+    const { result } = renderHook(() => useSettingsStore());
+
+    await act(async () => {
+      await result.current.fetchSettings();
+    });
+
+    expect(api.getVersion).not.toHaveBeenCalled();
+    expect(result.current.version).toEqual({
+      version: '1.0.0',
+      timestamp: '2023-01-01T00:00:00Z',
+    });
   });
 });

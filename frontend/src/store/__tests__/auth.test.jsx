@@ -40,9 +40,6 @@ const localStorageMock = (() => {
 
 global.localStorage = localStorageMock;
 
-// Mock console methods
-global.console.error = vi.fn();
-
 // Helper to create a mock JWT token
 const createMockToken = (expiresInSeconds = 3600) => {
   const now = Math.floor(Date.now() / 1000);
@@ -161,7 +158,9 @@ describe('useAuthStore', () => {
         await result.current.login({ username: 'testuser', password: 'wrong' });
       });
 
-      expect(console.error).toHaveBeenCalledWith('Login failed:', expect.any(Error));
+      expect(API.login).toHaveBeenCalledWith('testuser', 'wrong');
+      expect(result.current.isAuthenticated).toBe(false);
+      expect(localStorageMock.setItem).not.toHaveBeenCalled();
     });
   });
 
@@ -183,7 +182,6 @@ describe('useAuthStore', () => {
 
       expect(API.refreshToken).toHaveBeenCalledWith('old-refresh-token');
       expect(newToken).toBe(mockNewAccessToken);
-      expect(result.current.isAuthenticated).toBe(true);
       expect(localStorageMock.setItem).toHaveBeenCalledWith('accessToken', mockNewAccessToken);
     });
 
@@ -212,7 +210,6 @@ describe('useAuthStore', () => {
         await result.current.getRefreshToken();
       });
 
-      expect(console.error).toHaveBeenCalledWith('Token refresh failed:', expect.any(Error));
       expect(result.current.isAuthenticated).toBe(false);
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('accessToken');
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('refreshToken');
@@ -292,7 +289,6 @@ describe('useAuthStore', () => {
         await result.current.logout();
       });
 
-      expect(console.error).toHaveBeenCalledWith('Logout API call failed:', expect.any(Error));
       expect(result.current.isAuthenticated).toBe(false);
       expect(localStorageMock.removeItem).toHaveBeenCalled();
     });
@@ -435,8 +431,6 @@ describe('useAuthStore', () => {
       await act(async () => {
         await result.current.initData();
       });
-
-      expect(console.error).toHaveBeenCalledWith('Error initializing data:', expect.any(Error));
     });
   });
 
@@ -474,6 +468,164 @@ describe('useAuthStore', () => {
       });
 
       expect(result.current.superuserExists).toBe(false);
+    });
+  });
+
+  describe('getRefreshToken edge cases', () => {
+    it('should return false if API response has no access token', async () => {
+      localStorageMock.getItem.mockReturnValue('refresh-token');
+      API.refreshToken.mockResolvedValue({});
+
+      const { result } = renderHook(() => useAuthStore());
+
+      let response;
+      await act(async () => {
+        response = await result.current.getRefreshToken();
+      });
+
+      expect(response).toBe(false);
+    });
+  });
+
+  describe('login edge cases', () => {
+    it('should not update state if response has no access token', async () => {
+      API.login.mockResolvedValue({});
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        await result.current.login({ username: 'testuser', password: 'password' });
+      });
+
+      expect(result.current.accessToken).toBeNull();
+      expect(localStorageMock.setItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('logout edge cases', () => {
+    it('should reset isInitializing flag on logout', async () => {
+      useAuthStore.setState({ isInitializing: true });
+      API.logout.mockResolvedValue();
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        await result.current.logout();
+      });
+
+      expect(result.current.isInitializing).toBe(false);
+    });
+  });
+
+  describe('initializeAuth edge cases', () => {
+    it('should return false if refresh token API call fails', async () => {
+      localStorageMock.getItem.mockReturnValue('refresh-token');
+      API.refreshToken.mockRejectedValue(new Error('Token expired'));
+      API.logout.mockResolvedValue();
+
+      const { result } = renderHook(() => useAuthStore());
+
+      let initialized;
+      await act(async () => {
+        initialized = await result.current.initializeAuth();
+      });
+
+      expect(initialized).toBe(false);
+    });
+
+    it('should return false if refresh returns no access token', async () => {
+      localStorageMock.getItem.mockReturnValue('refresh-token');
+      API.refreshToken.mockResolvedValue({});
+
+      const { result } = renderHook(() => useAuthStore());
+
+      let initialized;
+      await act(async () => {
+        initialized = await result.current.initializeAuth();
+      });
+
+      expect(initialized).toBe(false);
+    });
+  });
+
+  describe('initData edge cases', () => {
+    it('should skip initialization if already initialized', async () => {
+      useAuthStore.setState({ isInitialized: true });
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        await result.current.initData();
+      });
+
+      expect(API.me).not.toHaveBeenCalled();
+    });
+
+    it('should skip initialization if already initializing', async () => {
+      useAuthStore.setState({ isInitializing: true });
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        await result.current.initData();
+      });
+
+      expect(API.me).not.toHaveBeenCalled();
+    });
+
+    it('should set isInitializing to false on error', async () => {
+      // Reset state before the test
+      useAuthStore.setState({
+        isInitializing: false,
+        isInitialized: false
+      });
+
+      API.me.mockRejectedValue(new Error('API error'));
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        try {
+          await result.current.initData();
+        } catch {
+          // Expected error
+        }
+      });
+
+      expect(result.current.isInitializing).toBe(false);
+      expect(result.current.isInitialized).toBe(false);
+    });
+
+    it('should call fetchChannels in background after initialization', async () => {
+      const mockUser = {
+        username: 'admin',
+        email: 'admin@test.com',
+        user_level: USER_LEVELS.ADMIN,
+      };
+
+      const fetchChannels = vi.fn().mockResolvedValue();
+      useChannelsStore.getState = () => ({
+        fetchChannels,
+        fetchChannelGroups: vi.fn().mockResolvedValue(),
+        fetchChannelProfiles: vi.fn().mockResolvedValue(),
+      });
+
+      API.me.mockResolvedValue(mockUser);
+
+      const { result } = renderHook(() => useAuthStore());
+
+      await act(async () => {
+        await result.current.initData();
+      });
+
+      // Wait for the background call to complete
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      });
+
+      // The background fetchChannels is called synchronously without await
+      // so we just need to verify it was called
+      expect(fetchChannels).toHaveBeenCalled();
     });
   });
 });

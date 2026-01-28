@@ -292,4 +292,111 @@ describe('useChannelsTableStore', () => {
       expect(result.current.sorting).toEqual([]);
     });
   });
+
+  describe('isUnlocked', () => {
+    it('should initialize with default false value', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      expect(result.current.isUnlocked).toBe(false);
+    });
+  });
+
+  describe('setIsUnlocked', () => {
+    it('should update isUnlocked to true', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.setIsUnlocked(true);
+      });
+
+      expect(result.current.isUnlocked).toBe(true);
+    });
+
+    it('should update isUnlocked to false', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      act(() => {
+        result.current.setIsUnlocked(true);
+      });
+
+      expect(result.current.isUnlocked).toBe(true);
+
+      act(() => {
+        result.current.setIsUnlocked(false);
+      });
+
+      expect(result.current.isUnlocked).toBe(false);
+    });
+  });
+
+  describe('updateChannel', () => {
+    it('should update an existing channel', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      const mockChannels = [
+        { id: 1, name: 'Channel 1', channel_number: 1 },
+        { id: 2, name: 'Channel 2', channel_number: 2 },
+        { id: 3, name: 'Channel 3', channel_number: 3 },
+      ];
+
+      act(() => {
+        useChannelsTableStore.setState({ channels: mockChannels });
+      });
+
+      const updatedChannel = { id: 2, name: 'Updated Channel 2', channel_number: 22 };
+
+      act(() => {
+        result.current.updateChannel(updatedChannel);
+      });
+
+      expect(result.current.channels).toEqual([
+        { id: 1, name: 'Channel 1', channel_number: 1 },
+        { id: 2, name: 'Updated Channel 2', channel_number: 22 },
+        { id: 3, name: 'Channel 3', channel_number: 3 },
+      ]);
+    });
+
+    it('should not modify channels when updating non-existent channel', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      const mockChannels = [
+        { id: 1, name: 'Channel 1', channel_number: 1 },
+        { id: 2, name: 'Channel 2', channel_number: 2 },
+      ];
+
+      act(() => {
+        useChannelsTableStore.setState({ channels: mockChannels });
+      });
+
+      const updatedChannel = { id: 999, name: 'Non-existent', channel_number: 999 };
+
+      act(() => {
+        result.current.updateChannel(updatedChannel);
+      });
+
+      expect(result.current.channels).toEqual(mockChannels);
+    });
+
+    it('should preserve other channels when updating one channel', () => {
+      const { result } = renderHook(() => useChannelsTableStore());
+
+      const mockChannels = [
+        { id: 1, name: 'Channel 1', channel_number: 1, streams: ['stream1'] },
+        { id: 2, name: 'Channel 2', channel_number: 2, streams: ['stream2'] },
+      ];
+
+      act(() => {
+        useChannelsTableStore.setState({ channels: mockChannels });
+      });
+
+      const updatedChannel = { id: 1, name: 'Updated Channel 1', channel_number: 10 };
+
+      act(() => {
+        result.current.updateChannel(updatedChannel);
+      });
+
+      expect(result.current.channels[0]).toEqual(updatedChannel);
+      expect(result.current.channels[1]).toEqual(mockChannels[1]);
+    });
+  });
 });

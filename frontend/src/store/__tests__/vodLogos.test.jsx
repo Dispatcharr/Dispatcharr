@@ -477,4 +477,74 @@ describe('useVODLogosStore', () => {
 
     expect(api.getVODLogos).toHaveBeenCalledWith({ search: 'test', page: 2 });
   });
+
+  it('should get unused logos count successfully', async () => {
+    const mockResponse = {
+      results: [{ id: 1, name: 'Unused Logo' }],
+      count: 42,
+    };
+
+    api.getVODLogos.mockResolvedValue(mockResponse);
+
+    const { result } = renderHook(() => useVODLogosStore());
+
+    let unusedCount;
+    await act(async () => {
+      unusedCount = await result.current.getUnusedLogosCount();
+    });
+
+    expect(api.getVODLogos).toHaveBeenCalledWith({
+      used: 'false',
+      page_size: 1,
+    });
+    expect(unusedCount).toBe(42);
+  });
+
+  it('should return 0 when unused logos count response has no count', async () => {
+    api.getVODLogos.mockResolvedValue({ results: [] });
+
+    const { result } = renderHook(() => useVODLogosStore());
+
+    let unusedCount;
+    await act(async () => {
+      unusedCount = await result.current.getUnusedLogosCount();
+    });
+
+    expect(unusedCount).toBe(0);
+  });
+
+  it('should handle get unused logos count error', async () => {
+    const mockError = new Error('Failed to fetch count');
+    api.getVODLogos.mockRejectedValue(mockError);
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useVODLogosStore());
+
+    await act(async () => {
+      try {
+        await result.current.getUnusedLogosCount();
+      } catch (error) {
+        expect(error).toBe(mockError);
+      }
+    });
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch unused logos count:', mockError);
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('should update currentPage and pageSize state', () => {
+    const { result } = renderHook(() => useVODLogosStore());
+
+    act(() => {
+      useVODLogosStore.setState({
+        currentPage: 3,
+        pageSize: 50,
+      });
+    });
+
+    expect(result.current.currentPage).toBe(3);
+    expect(result.current.pageSize).toBe(50);
+  });
 });
