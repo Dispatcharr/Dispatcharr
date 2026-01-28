@@ -370,6 +370,25 @@ const StreamsTable = ({ onReady }) => {
           </Tooltip>
         ),
       },
+      {
+        header: 'TVG-ID',
+        id: 'tvg_id',
+        accessorKey: 'tvg_id',
+        size: columnSizing.tvg_id || 120,
+        cell: ({ getValue }) => (
+          <Tooltip label={getValue()} openDelay={500}>
+            <Box
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {getValue()}
+            </Box>
+          </Tooltip>
+        ),
+      },
     ],
     [channelGroups, playlists, columnSizing]
   );
@@ -427,6 +446,7 @@ const StreamsTable = ({ onReady }) => {
           name: 'name',
           group: 'channel_group__name',
           m3u: 'm3u_account__name',
+          tvg_id: 'tvg_id',
         };
         const sortField = fieldMapping[columnId] || columnId;
         const sortDirection = sorting[0].desc ? '-' : '';
@@ -967,6 +987,33 @@ const StreamsTable = ({ onReady }) => {
           </Flex>
         );
       }
+
+      case 'tvg_id':
+        return (
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
+            <TextInput
+              name="tvg_id"
+              placeholder="TVG-ID"
+              value={filters.tvg_id || ''}
+              onClick={(e) => e.stopPropagation()}
+              onChange={handleFilterChange}
+              size="xs"
+              variant="unstyled"
+              className="table-input-header"
+              leftSection={<Search size={14} opacity={0.5} />}
+              style={{ flex: 1, minWidth: 0 }}
+              rightSectionPointerEvents="auto"
+              rightSection={React.createElement(sortingIcon, {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSortingChange('tvg_id');
+                },
+                size: 14,
+                style: { cursor: 'pointer' },
+              })}
+            />
+          </Flex>
+        );
     }
   };
 
@@ -1019,6 +1066,7 @@ const StreamsTable = ({ onReady }) => {
       name: renderHeaderCell,
       group: renderHeaderCell,
       m3u: renderHeaderCell,
+      tvg_id: renderHeaderCell,
     },
     bodyCellRenderFns: {
       actions: renderBodyCell,
