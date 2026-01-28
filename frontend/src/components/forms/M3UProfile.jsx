@@ -45,16 +45,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
 
   const schema = Yup.object({
     name: Yup.string().required('Name is required'),
-    search_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile,
-      then: (schema) => schema.required('Search pattern is required'),
-      otherwise: (schema) => schema.notRequired(),
-    }),
-    replace_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile,
-      then: (schema) => schema.required('Replace pattern is required'),
-      otherwise: (schema) => schema.notRequired(),
-    }),
+    search_pattern: Yup.string().required('Search pattern is required'),
+    replace_pattern: Yup.string().required('Replace pattern is required'),
     notes: Yup.string(), // Optional field
   });
 
@@ -73,31 +65,18 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const onSubmit = async (values) => {
     console.log('submiting');
 
-    // For default profiles, only send name and custom_properties (notes)
-    let submitValues;
-    if (isDefaultProfile) {
-      submitValues = {
-        name: values.name,
-        custom_properties: {
-          // Preserve existing custom_properties and add/update notes
-          ...(profile?.custom_properties || {}),
-          notes: values.notes || '',
-        },
-      };
-    } else {
-      // For regular profiles, send all fields
-      submitValues = {
-        name: values.name,
-        max_streams: values.max_streams,
-        search_pattern: values.search_pattern,
-        replace_pattern: values.replace_pattern,
-        custom_properties: {
-          // Preserve existing custom_properties and add/update notes
-          ...(profile?.custom_properties || {}),
-          notes: values.notes || '',
-        },
-      };
-    }
+    // Send all fields for both default and regular profiles
+    const submitValues = {
+      name: values.name,
+      max_streams: values.max_streams,
+      search_pattern: values.search_pattern,
+      replace_pattern: values.replace_pattern,
+      custom_properties: {
+        // Preserve existing custom_properties and add/update notes
+        ...(profile?.custom_properties || {}),
+        notes: values.notes || '',
+      },
+    };
 
     if (profile?.id) {
       await API.updateM3UProfile(m3u.id, {
@@ -212,11 +191,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     <Modal
       opened={isOpen}
       onClose={onClose}
-      title={
-        isDefaultProfile
-          ? 'Edit Default Profile (Name & Notes Only)'
-          : 'M3U Profile'
-      }
+      title={'M3U Profile'}
       size="lg"
     >
       <form onSubmit={handleSubmit(onSubmit)}>
@@ -239,23 +214,18 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           />
         )}
 
-        {/* Only show search/replace fields for non-default profiles */}
-        {!isDefaultProfile && (
-          <>
-            <TextInput
-              label="Search Pattern (Regex)"
-              value={searchPattern}
-              onChange={onSearchPatternUpdate}
-              error={errors.search_pattern?.message}
-            />
-            <TextInput
-              label="Replace Pattern"
-              value={replacePattern}
-              onChange={onReplacePatternUpdate}
-              error={errors.replace_pattern?.message}
-            />
-          </>
-        )}
+        <TextInput
+          label="Search Pattern (Regex)"
+          value={searchPattern}
+          onChange={onSearchPatternUpdate}
+          error={errors.search_pattern?.message}
+        />
+        <TextInput
+          label="Replace Pattern"
+          value={replacePattern}
+          onChange={onReplacePatternUpdate}
+          error={errors.replace_pattern?.message}
+        />
 
         <Textarea
           label="Notes"
@@ -285,60 +255,55 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         </Flex>
       </form>
 
-      {/* Only show regex demonstration for non-default profiles */}
-      {!isDefaultProfile && (
-        <>
-          <Title order={4} mt={15} mb={10}>
-            Live Regex Demonstration
-          </Title>
+      <Title order={4} mt={15} mb={10}>
+        Live Regex Demonstration
+      </Title>
 
-          <Paper shadow="sm" p="xs" radius="md" withBorder mb={8}>
+      <Paper shadow="sm" p="xs" radius="md" withBorder mb={8}>
+        <Text size="sm" weight={500} mb={3}>
+          Sample Text
+        </Text>
+        <TextInput
+          value={sampleInput}
+          onChange={handleSampleInputChange}
+          placeholder="Enter a sample URL to test with"
+          size="sm"
+        />
+      </Paper>
+
+      <Grid gutter="xs">
+        <Grid.Col span={12}>
+          <Paper shadow="sm" p="xs" radius="md" withBorder>
             <Text size="sm" weight={500} mb={3}>
-              Sample Text
+              Matched Text{' '}
+              <Badge size="xs" color="yellow">
+                highlighted
+              </Badge>
             </Text>
-            <TextInput
-              value={sampleInput}
-              onChange={handleSampleInputChange}
-              placeholder="Enter a sample URL to test with"
+            <Text
               size="sm"
+              dangerouslySetInnerHTML={{
+                __html: getHighlightedSearchText(),
+              }}
+              sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
             />
           </Paper>
+        </Grid.Col>
 
-          <Grid gutter="xs">
-            <Grid.Col span={12}>
-              <Paper shadow="sm" p="xs" radius="md" withBorder>
-                <Text size="sm" weight={500} mb={3}>
-                  Matched Text{' '}
-                  <Badge size="xs" color="yellow">
-                    highlighted
-                  </Badge>
-                </Text>
-                <Text
-                  size="sm"
-                  dangerouslySetInnerHTML={{
-                    __html: getHighlightedSearchText(),
-                  }}
-                  sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                />
-              </Paper>
-            </Grid.Col>
-
-            <Grid.Col span={12}>
-              <Paper shadow="sm" p="xs" radius="md" withBorder>
-                <Text size="sm" weight={500} mb={3}>
-                  Result After Replace
-                </Text>
-                <Text
-                  size="sm"
-                  sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                >
-                  {getLocalReplaceResult()}
-                </Text>
-              </Paper>
-            </Grid.Col>
-          </Grid>
-        </>
-      )}
+        <Grid.Col span={12}>
+          <Paper shadow="sm" p="xs" radius="md" withBorder>
+            <Text size="sm" weight={500} mb={3}>
+              Result After Replace
+            </Text>
+            <Text
+              size="sm"
+              sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+            >
+              {getLocalReplaceResult()}
+            </Text>
+          </Paper>
+        </Grid.Col>
+      </Grid>
     </Modal>
   );
 };
