@@ -77,7 +77,7 @@ services:
     entrypoint: ["/app/docker/entrypoint.celery.sh"]
 
   db:
-    image: postgres:14
+    image: postgres:17
     container_name: dispatcharr_db
     ports:
       - "5436:5432"
