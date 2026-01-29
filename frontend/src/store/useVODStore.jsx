@@ -1,6 +1,124 @@
 import { create } from 'zustand';
 import api from '../api';
 
+const getFetchContentParams = (state) => {
+  const params = new URLSearchParams();
+  params.append('page', state.currentPage);
+  params.append('page_size', state.pageSize);
+
+  if (state.filters.search) {
+    params.append('search', state.filters.search);
+  }
+
+  if (state.filters.category) {
+    params.append('category', state.filters.category);
+  }
+  return params;
+}
+
+const getMovieDetails = (response, movieId) => {
+  return {
+    id: response.id || movieId,
+    name: response.name || '',
+    description: response.description || '',
+    year: response.year || null,
+    genre: response.genre || '',
+    rating: response.rating || '',
+    duration_secs: response.duration_secs || null,
+    stream_url: response.url || '',
+    logo: response.logo_url || null,
+    type: 'movie',
+    director: response.director || '',
+    actors: response.actors || '',
+    country: response.country || '',
+    tmdb_id: response.tmdb_id || '',
+    imdb_id: response.imdb_id || '',
+    m3u_account: response.m3u_account || '',
+  };
+}
+
+const getMovieDetailsWithProvider = (response, movieId) => {
+  return {
+    id: response.id || movieId,
+    name: response.name || '',
+    description: response.description || response.plot || '',
+    year: response.year || null,
+    genre: response.genre || '',
+    rating: response.rating || '',
+    duration_secs: response.duration_secs || null,
+    stream_url: response.stream_url || '',
+    logo: response.logo || response.cover || null,
+    type: 'movie',
+    director: response.director || '',
+    actors: response.actors || response.cast || '',
+    country: response.country || '',
+    tmdb_id: response.tmdb_id || '',
+    youtube_trailer: response.youtube_trailer || '',
+    // Additional provider fields
+    backdrop_path: response.backdrop_path || [],
+    release_date: response.release_date || response.releasedate || '',
+    movie_image: response.movie_image || null,
+    o_name: response.o_name || '',
+    age: response.age || '',
+    episode_run_time: response.episode_run_time || null,
+    bitrate: response.bitrate || 0,
+    video: response.video || {},
+    audio: response.audio || {},
+  };
+}
+
+const getSeriesDetails = (response, seriesId) => {
+  return {
+    id: response.id || seriesId,
+    name: response.name || '',
+    description: response.description || response.custom_properties?.plot || '',
+    year: response.year || null,
+    genre: response.genre || '',
+    rating: response.rating || '',
+    logo: response.cover || null,
+    type: 'series',
+    director: response.custom_properties?.director || '',
+    cast: response.custom_properties?.cast || '',
+    country: response.country || '',
+    tmdb_id: response.tmdb_id || '',
+    imdb_id: response.imdb_id || '',
+    episode_count: response.episode_count || 0,
+    // Additional provider fields
+    backdrop_path: response.custom_properties?.backdrop_path || [],
+    release_date: response.release_date || '',
+    series_image: response.series_image || null,
+    o_name: response.o_name || '',
+    age: response.age || '',
+    m3u_account: response.m3u_account || '',
+    youtube_trailer: response.custom_properties?.youtube_trailer || '',
+  };
+}
+
+const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
+  return {
+    id: episode.id,
+    stream_id: episode.id,
+    name: episode.title || '',
+    description: episode.plot || '',
+    season_number: parseInt(seasonNumber) || 0,
+    episode_number: episode.episode_number || 0,
+    duration_secs: episode.duration_secs || null,
+    rating: episode.rating || '',
+    container_extension: episode.container_extension || '',
+    series: {
+      id: seriesInfo.id,
+      name: seriesInfo.name,
+    },
+    type: 'episode',
+    uuid: episode.uuid,
+    logo: episode.movie_image ? { url: episode.movie_image } : null,
+    air_date: episode.air_date || null,
+    movie_image: episode.movie_image || null,
+    tmdb_id: episode.tmdb_id || '',
+    imdb_id: episode.imdb_id || '',
+  };
+}
+
 const useVODStore = create((set, get) => ({
   content: {}, // Store for individual content details (when fetching movie/series details)
   currentPageContent: [], // Store the current page's results
@@ -39,17 +157,7 @@ const useVODStore = create((set, get) => ({
       set({ loading: true, error: null });
       const state = get();
 
-      const params = new URLSearchParams();
-      params.append('page', state.currentPage);
-      params.append('page_size', state.pageSize);
-
-      if (state.filters.search) {
-        params.append('search', state.filters.search);
-      }
-
-      if (state.filters.category) {
-        params.append('category', state.filters.category);
-      }
+      const params = getFetchContentParams(state);
 
       let allResults = [];
       let totalCount = 0;
@@ -58,12 +166,14 @@ const useVODStore = create((set, get) => ({
         // Fetch only movies
         const response = await api.getMovies(params);
         const results = response.results || response;
+
         allResults = results.map((item) => ({ ...item, contentType: 'movie' }));
         totalCount = response.count || results.length;
       } else if (state.filters.type === 'series') {
         // Fetch only series
         const response = await api.getSeries(params);
         const results = response.results || response;
+
         allResults = results.map((item) => ({
           ...item,
           contentType: 'series',
@@ -73,16 +183,9 @@ const useVODStore = create((set, get) => ({
         // Use the new unified backend endpoint for 'all' view
         const response = await api.getAllContent(params);
         console.log('getAllContent response:', response);
-        console.log('response type:', typeof response);
-        console.log(
-          'response keys:',
-          response ? Object.keys(response) : 'no response'
-        );
 
         const results = response.results || response;
         console.log('results:', results);
-        console.log('results type:', typeof results);
-        console.log('results is array:', Array.isArray(results));
 
         // Check if results is actually an array before calling map
         if (!Array.isArray(results)) {
@@ -110,54 +213,13 @@ const useVODStore = create((set, get) => ({
     }
   },
 
-  fetchSeriesEpisodes: async (seriesId) => {
-    set({ loading: true, error: null });
-    try {
-      const response = await api.getSeriesEpisodes(seriesId);
-
-      set((state) => ({
-        episodes: {
-          ...state.episodes,
-          ...response.reduce((acc, episode) => {
-            acc[episode.id] = episode;
-            return acc;
-          }, {}),
-        },
-        loading: false,
-      }));
-
-      return response;
-    } catch (error) {
-      console.error('Failed to fetch series episodes:', error);
-      set({ error: 'Failed to load episodes.', loading: false });
-      throw error; // Re-throw to allow calling component to handle
-    }
-  },
-
   fetchMovieDetails: async (movieId) => {
     set({ loading: true, error: null });
     try {
       const response = await api.getMovieDetails(movieId);
 
       // Transform the response data to match our expected format
-      const movieDetails = {
-        id: response.id || movieId,
-        name: response.name || '',
-        description: response.description || '',
-        year: response.year || null,
-        genre: response.genre || '',
-        rating: response.rating || '',
-        duration_secs: response.duration_secs || null,
-        stream_url: response.url || '',
-        logo: response.logo_url || null,
-        type: 'movie',
-        director: response.director || '',
-        actors: response.actors || '',
-        country: response.country || '',
-        tmdb_id: response.tmdb_id || '',
-        imdb_id: response.imdb_id || '',
-        m3u_account: response.m3u_account || '',
-      };
+      const movieDetails = getMovieDetails(response, movieId);
       console.log('Fetched Movie Details:', movieDetails);
       set((state) => ({
         content: {
@@ -184,33 +246,7 @@ const useVODStore = create((set, get) => ({
       const response = await api.getMovieProviderInfo(movieId);
 
       // Transform the response data to match our expected format
-      const movieDetails = {
-        id: response.id || movieId,
-        name: response.name || '',
-        description: response.description || response.plot || '',
-        year: response.year || null,
-        genre: response.genre || '',
-        rating: response.rating || '',
-        duration_secs: response.duration_secs || null,
-        stream_url: response.stream_url || '',
-        logo: response.logo || response.cover || null,
-        type: 'movie',
-        director: response.director || '',
-        actors: response.actors || response.cast || '',
-        country: response.country || '',
-        tmdb_id: response.tmdb_id || '',
-        youtube_trailer: response.youtube_trailer || '',
-        // Additional provider fields
-        backdrop_path: response.backdrop_path || [],
-        release_date: response.release_date || response.releasedate || '',
-        movie_image: response.movie_image || null,
-        o_name: response.o_name || '',
-        age: response.age || '',
-        episode_run_time: response.episode_run_time || null,
-        bitrate: response.bitrate || 0,
-        video: response.video || {},
-        audio: response.audio || {},
-      };
+      const movieDetails = getMovieDetailsWithProvider(response, movieId);
 
       set({ loading: false }); // Only update loading state
 
@@ -316,31 +352,7 @@ const useVODStore = create((set, get) => ({
       const response = await api.getSeriesInfo(seriesId);
 
       // Transform the response data to match our expected format
-      const seriesInfo = {
-        id: response.id || seriesId,
-        name: response.name || '',
-        description:
-          response.description || response.custom_properties?.plot || '',
-        year: response.year || null,
-        genre: response.genre || '',
-        rating: response.rating || '',
-        logo: response.cover || null,
-        type: 'series',
-        director: response.custom_properties?.director || '',
-        cast: response.custom_properties?.cast || '',
-        country: response.country || '',
-        tmdb_id: response.tmdb_id || '',
-        imdb_id: response.imdb_id || '',
-        episode_count: response.episode_count || 0,
-        // Additional provider fields
-        backdrop_path: response.custom_properties?.backdrop_path || [],
-        release_date: response.release_date || '',
-        series_image: response.series_image || null,
-        o_name: response.o_name || '',
-        age: response.age || '',
-        m3u_account: response.m3u_account || '',
-        youtube_trailer: response.custom_properties?.youtube_trailer || '',
-      };
+      const seriesInfo = getSeriesDetails(response, seriesId);
 
       let episodesData = {};
 
@@ -349,29 +361,11 @@ const useVODStore = create((set, get) => ({
         Object.entries(response.episodes).forEach(
           ([seasonNumber, seasonEpisodes]) => {
             seasonEpisodes.forEach((episode) => {
-              const episodeData = {
-                id: episode.id,
-                stream_id: episode.id,
-                name: episode.title || '',
-                description: episode.plot || '',
-                season_number: parseInt(seasonNumber) || 0,
-                episode_number: episode.episode_number || 0,
-                duration_secs: episode.duration_secs || null,
-                rating: episode.rating || '',
-                container_extension: episode.container_extension || '',
-                series: {
-                  id: seriesInfo.id,
-                  name: seriesInfo.name,
-                },
-                type: 'episode',
-                uuid: episode.uuid,
-                logo: episode.movie_image ? { url: episode.movie_image } : null,
-                air_date: episode.air_date || null,
-                movie_image: episode.movie_image || null,
-                tmdb_id: episode.tmdb_id || '',
-                imdb_id: episode.imdb_id || '',
-              };
-              episodesData[episode.id] = episodeData;
+              episodesData[episode.id] = getEpisodeDetails(
+                episode,
+                seasonNumber,
+                seriesInfo
+              );
             });
           }
         );
