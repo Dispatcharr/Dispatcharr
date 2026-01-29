@@ -8,6 +8,10 @@ export default defineConfig({
 
   // publicDir: '/data',
 
+  build: {
+    sourcemap: true,
+  },
+
   server: {
     port: 9191,
 

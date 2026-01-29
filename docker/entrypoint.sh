@@ -174,10 +174,10 @@ ensure_utf8_encoding
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh
     echo "Starting frontend dev environment"
-    su - $POSTGRES_USER -c "cd /app/frontend && npm run dev &"
-    npm_pid=$(pgrep vite | sort | head -n1)
-    echo "✅ vite started with PID $npm_pid"
-    pids+=("$npm_pid")
+    # su - $POSTGRES_USER -c "cd /app/frontend && npm run dev &"
+    # npm_pid=$(pgrep vite | sort | head -n1)
+    # echo "✅ vite started with PID $npm_pid"
+    # pids+=("$npm_pid")
 else
     echo "🚀 Starting nginx..."
     nginx
