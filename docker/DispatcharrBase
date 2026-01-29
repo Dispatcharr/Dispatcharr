@@ -26,7 +26,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # --- Create Python virtual environment and install dependencies ---
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/
-RUN uv venv $VIRTUAL_ENV --python 3.13 && \
+RUN uv venv $VIRTUAL_ENV --python 3.13 --seed && \
     uv sync --python $VIRTUAL_ENV/bin/python --no-cache --no-install-project --no-dev && \
     rm -rf /tmp/build
 WORKDIR /
@@ -34,7 +34,7 @@ WORKDIR /
 # --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
 RUN uv pip install --python $VIRTUAL_ENV/bin/python --no-cache build && \
     cd /tmp && \
-    uv pip download --python $VIRTUAL_ENV/bin/python --no-binary numpy --no-deps numpy && \
+    $VIRTUAL_ENV/bin/pip download --no-binary numpy --no-deps numpy && \
     tar -xzf numpy-*.tar.gz && \
     cd numpy-*/ && \
     $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
