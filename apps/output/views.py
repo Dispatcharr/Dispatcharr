@@ -1203,7 +1203,7 @@ def generate_dummy_epg(
 
         # Create program entry with escaped channel name
         xml_lines.append(
-            f'  <programme start="{start_str}" stop="{stop_str}" channel="{program["channel_id"]}">'
+            f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(program["channel_id"])}">'
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
@@ -1448,7 +1448,7 @@ def generate_epg(request, profile_name=None, user=None):
                     else:
                         tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
             display_name = channel.name
-            xml_lines.append(f'  <channel id="{channel_id}">')
+            xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
             xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
             xml_lines.append("  </channel>")
@@ -1523,7 +1523,7 @@ def generate_epg(request, profile_name=None, user=None):
                     stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
                     # Create program entry with escaped channel name
-                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                     yield f"    <title>{html.escape(program['title'])}</title>\n"
                     yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
@@ -1572,7 +1572,7 @@ def generate_epg(request, profile_name=None, user=None):
                             start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
                             stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
-                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                             yield f"    <title>{html.escape(program['title'])}</title>\n"
                             yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
@@ -1634,7 +1634,7 @@ def generate_epg(request, profile_name=None, user=None):
                         start_str = prog.start_time.strftime("%Y%m%d%H%M%S %z")
                         stop_str = prog.end_time.strftime("%Y%m%d%H%M%S %z")
 
-                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">']
+                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">']
                         program_xml.append(f'    <title>{html.escape(prog.title)}</title>')
 
                         # Add subtitle if available
