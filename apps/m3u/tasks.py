@@ -1271,6 +1271,12 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
 
+                        # Add delay after authentication to prevent rate limiting
+                        # Some XC servers block rapid successive requests (error 844)
+                        auth_delay = getattr(settings, 'XC_AUTH_DELAY', 0)
+                        logger.info(f"Waiting {auth_delay}s after authentication to avoid rate limiting")
+                        time.sleep(auth_delay)
+
                         # Queue async profile refresh task to run in background
                         # This prevents any delay in the main refresh process
                         try:

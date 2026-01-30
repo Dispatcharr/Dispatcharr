@@ -57,6 +57,11 @@ EPG_ENABLE_MEMORY_MONITORING = True  # Whether to monitor memory usage during pr
 # This prevents providers from temporarily banning users with many profiles
 XC_PROFILE_REFRESH_DELAY = float(os.environ.get('XC_PROFILE_REFRESH_DELAY', '2.5'))  # seconds between profile refreshes
 
+# Delay after authentication before making first API request (e.g., get_live_categories)
+# Some XC servers enforce strict rate limiting and block rapid successive requests
+# Set to 0 by default (disabled). Increase if you experience rate limiting errors (e.g., error 844)
+XC_AUTH_DELAY = float(os.environ.get('XC_AUTH_DELAY', '0'))  # seconds after authentication
+
 # Database optimization settings
 DATABASE_STATEMENT_TIMEOUT = 300  # Seconds before timing out long-running queries
 DATABASE_CONN_MAX_AGE = (

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- XtreamCodes rate limiting protection: Added `XC_AUTH_DELAY` environment variable to configure delay after authentication before making first API request (e.g., `get_live_categories`). Some XC servers enforce strict rate limiting and block rapid successive requests with error 844. Default value is 0 (disabled) to maintain current behavior. Users experiencing rate limiting can set this to 2.5 or higher via environment variable. This is separate from the existing `XC_PROFILE_REFRESH_DELAY` which controls delays between multiple profile authentications.
+
 ## [0.18.1] - 2026-01-27
 
 ### Fixed
