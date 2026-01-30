@@ -6,8 +6,8 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
     permission_classes_by_method,
 )
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.core.cache import cache
@@ -357,9 +357,8 @@ class RefreshM3UAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of all active M3U accounts",
-        responses={202: "M3U refresh initiated"},
+    @extend_schema(
+        description="Triggers a refresh of all active M3U accounts",
     )
     def post(self, request, format=None):
         refresh_m3u_accounts.delay()
@@ -380,9 +379,8 @@ class RefreshSingleM3UAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of a single M3U account",
-        responses={202: "M3U account refresh initiated"},
+    @extend_schema(
+        description="Triggers a refresh of a single M3U account",
     )
     def post(self, request, account_id, format=None):
         refresh_single_m3u_account.delay(account_id)
@@ -406,9 +404,8 @@ class RefreshAccountInfoAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of account information for a specific M3U profile",
-        responses={202: "Account info refresh initiated", 400: "Profile not found or not XtreamCodes"},
+    @extend_schema(
+        description="Triggers a refresh of account information for a specific M3U profile",
     )
     def post(self, request, profile_id, format=None):
         try:
