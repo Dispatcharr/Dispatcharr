@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
 - EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Fixed NumPy baseline detection in Docker entrypoint. Now properly detects when NumPy crashes on import due to CPU baseline incompatibility and installs legacy NumPy version. Previously, if NumPy failed to import, the script would skip legacy installation assuming it was already compatible.
 
 ## [0.18.1] - 2026-01-27
 
