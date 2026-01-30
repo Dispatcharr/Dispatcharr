@@ -197,6 +197,9 @@ const StreamsTable = ({ onReady }) => {
 
   const [paginationString, setPaginationString] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
+  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
+  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
 
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
@@ -412,10 +415,6 @@ const StreamsTable = ({ onReady }) => {
 
   const fetchData = useCallback(
     async ({ showLoader = true } = {}) => {
-      if (showLoader) {
-        setIsLoading(true);
-      }
-
       const params = new URLSearchParams();
       params.append('page', pagination.pageIndex + 1);
       params.append('page_size', pagination.pageSize);
@@ -443,12 +442,38 @@ const StreamsTable = ({ onReady }) => {
         }
       });
 
+      const paramsString = params.toString();
+
+      // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
+      if (
+        fetchInProgressRef.current &&
+        lastFetchParamsRef.current === paramsString
+      ) {
+        return;
+      }
+
+      // Increment fetch version to track this specific fetch request
+      const currentFetchVersion = ++fetchVersionRef.current;
+      lastFetchParamsRef.current = paramsString;
+      fetchInProgressRef.current = true;
+
+      if (showLoader) {
+        setIsLoading(true);
+      }
+
       try {
         const [result, ids, filterOptions] = await Promise.all([
           API.queryStreamsTable(params),
           API.getAllStreamIds(params),
           API.getStreamFilterOptions(params),
         ]);
+
+        fetchInProgressRef.current = false;
+
+        // Skip state updates if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
 
         setAllRowIds(ids);
 
@@ -481,7 +506,18 @@ const StreamsTable = ({ onReady }) => {
           onReady();
         }
       } catch (error) {
+        fetchInProgressRef.current = false;
+
+        // Skip logging if a newer fetch has been initiated
+        if (currentFetchVersion !== fetchVersionRef.current) {
+          return;
+        }
         console.error('Error fetching data:', error);
+      }
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
       }
 
       hasFetchedOnce.current = true;

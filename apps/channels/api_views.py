@@ -2406,9 +2406,72 @@ class SeriesRulesAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_summary="List all series rules",
+        operation_description="Retrieve all configured DVR series recording rules.",
+        responses={
+            200: openapi.Response(
+                description="List of series rules",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'rules': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'tvg_id': openapi.Schema(type=openapi.TYPE_STRING, description='Channel TVG ID'),
+                                    'mode': openapi.Schema(type=openapi.TYPE_STRING, enum=['all', 'new'], description='Recording mode: all episodes or new only'),
+                                    'title': openapi.Schema(type=openapi.TYPE_STRING, description='Series title'),
+                                },
+                            ),
+                            description='List of series recording rules'
+                        ),
+                    },
+                ),
+            ),
+        },
+    )
     def get(self, request):
         return Response({"rules": CoreSettings.get_dvr_series_rules()})
 
+    @swagger_auto_schema(
+        operation_summary="Create or update a series rule",
+        operation_description="Add a new series recording rule or update an existing one. Rules will be evaluated immediately to find matching episodes.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['tvg_id'],
+            properties={
+                'tvg_id': openapi.Schema(type=openapi.TYPE_STRING, description='Channel TVG ID'),
+                'mode': openapi.Schema(type=openapi.TYPE_STRING, enum=['all', 'new'], default='all', description='all: record all episodes, new: record only new episodes'),
+                'title': openapi.Schema(type=openapi.TYPE_STRING, description='Series title'),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="Series rule created/updated successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                        'rules': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'tvg_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'mode': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                },
+                            ),
+                            description='Updated list of all rules'
+                        ),
+                    },
+                ),
+            ),
+            400: openapi.Response(description="Bad request (missing tvg_id or invalid mode)"),
+        },
+    )
     def post(self, request):
         data = request.data or {}
         tvg_id = str(data.get("tvg_id") or "").strip()
@@ -2441,6 +2504,36 @@ class DeleteSeriesRuleAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_summary="Delete a series rule",
+        operation_description="Remove a series recording rule by TVG ID. This does not remove already scheduled recordings.",
+        manual_parameters=[
+            openapi.Parameter('tvg_id', openapi.IN_PATH, type=openapi.TYPE_STRING, required=True, description='Channel TVG ID'),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Series rule deleted successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                        'rules': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'tvg_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'mode': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'title': openapi.Schema(type=openapi.TYPE_STRING),
+                                },
+                            ),
+                            description='Updated list of all rules'
+                        ),
+                    },
+                ),
+            ),
+        },
+    )
     def delete(self, request, tvg_id):
         tvg_id = unquote(str(tvg_id or ""))
         rules = [r for r in CoreSettings.get_dvr_series_rules() if str(r.get("tvg_id")) != tvg_id]
@@ -2455,6 +2548,27 @@ class EvaluateSeriesRulesAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_summary="Evaluate series rules",
+        operation_description="Trigger evaluation of series recording rules to find and schedule matching episodes. Can evaluate all rules or a specific channel.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'tvg_id': openapi.Schema(type=openapi.TYPE_STRING, description='Optional: evaluate only rules for this channel TVG ID. If omitted, all rules are evaluated.'),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="Evaluation completed successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                    },
+                ),
+            ),
+        },
+    )
     def post(self, request):
         tvg_id = request.data.get("tvg_id")
         # Run synchronously so UI sees results immediately
@@ -2476,6 +2590,32 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @swagger_auto_schema(
+        operation_summary="Bulk remove scheduled recordings for a series",
+        operation_description="Delete future scheduled recordings for a series rule. Useful for stopping a rule without losing the configuration. Matches by channel and optionally by series title.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['tvg_id'],
+            properties={
+                'tvg_id': openapi.Schema(type=openapi.TYPE_STRING, description='Channel TVG ID (required)'),
+                'title': openapi.Schema(type=openapi.TYPE_STRING, description='Series title - when scope=title, only recordings matching this title are removed'),
+                'scope': openapi.Schema(type=openapi.TYPE_STRING, enum=['title', 'channel'], default='title', description='title: remove only matching title on channel, channel: remove all future recordings on channel'),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="Recordings removed successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'success': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                        'removed': openapi.Schema(type=openapi.TYPE_INTEGER, description='Number of recordings deleted'),
+                    },
+                ),
+            ),
+            400: openapi.Response(description="Bad request (missing tvg_id)"),
+        },
+    )
     def post(self, request):
         from django.utils import timezone
         tvg_id = str(request.data.get("tvg_id") or "").strip()

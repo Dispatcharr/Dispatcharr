@@ -253,7 +253,7 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
 
   // Get channel logos for logo selection
-  const { logos: channelLogos, ensureLogosLoaded } = useChannelLogoSelection();
+  const { ensureLogosLoaded } = useChannelLogoSelection();
 
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -344,6 +344,9 @@ const ChannelsTable = ({ onReady }) => {
   const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
+  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
+  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
 
   // Drag-and-drop sensors
   const sensors = useSensors(
@@ -423,8 +426,7 @@ const ChannelsTable = ({ onReady }) => {
    * Functions
    */
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
-
+    // Build params first to check for duplicates
     const params = new URLSearchParams();
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
@@ -447,7 +449,7 @@ const ChannelsTable = ({ onReady }) => {
     }
 
     // Apply debounced filters
-    Object.entries(filters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
       if (value) {
         if (Array.isArray(value)) {
           // Convert null values to "null" string for URL parameter
@@ -461,11 +463,35 @@ const ChannelsTable = ({ onReady }) => {
       }
     });
 
+    const paramsString = params.toString();
+
+    // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
+    if (
+      fetchInProgressRef.current &&
+      lastFetchParamsRef.current === paramsString
+    ) {
+      return;
+    }
+
+    // Increment fetch version to track this specific fetch request
+    const currentFetchVersion = ++fetchVersionRef.current;
+    lastFetchParamsRef.current = paramsString;
+    fetchInProgressRef.current = true;
+
+    setIsLoading(true);
+
     try {
       const [results, ids] = await Promise.all([
-        await API.queryChannels(params),
-        await API.getAllChannelIds(params),
+        API.queryChannels(params),
+        API.getAllChannelIds(params),
       ]);
+
+      fetchInProgressRef.current = false;
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
 
       setIsLoading(false);
       hasFetchedData.current = true;
@@ -483,6 +509,12 @@ const ChannelsTable = ({ onReady }) => {
         onReady();
       }
     } catch (error) {
+      fetchInProgressRef.current = false;
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
       setIsLoading(false);
       // API layer handles "Invalid page" errors by resetting and retrying
       // Just re-throw to show notification for actual errors
@@ -492,11 +524,9 @@ const ChannelsTable = ({ onReady }) => {
     pagination,
     sorting,
     debouncedFilters,
-    onReady,
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
-    tvgsLoaded,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -947,19 +977,11 @@ const ChannelsTable = ({ onReady }) => {
         enableResizing: false,
         header: '',
         cell: (props) => (
-          <Box
-            onClick={() => {
-              // Ensure logos are loaded when user tries to edit
-              ensureLogosLoaded();
-            }}
-            style={{ width: '100%', height: '100%' }}
-          >
-            <EditableLogoCell
-              {...props}
-              channelLogos={channelLogos}
-              LazyLogo={LazyLogo}
-            />
-          </Box>
+          <EditableLogoCell
+            {...props}
+            LazyLogo={LazyLogo}
+            ensureLogosLoaded={ensureLogosLoaded}
+          />
         ),
       },
       {
@@ -987,8 +1009,9 @@ const ChannelsTable = ({ onReady }) => {
     // the actual sizes through its own state after initialization.
     // Note: logos is intentionally excluded - LazyLogo components handle their own logo data
     // from the store, so we don't need to recreate columns when logos load.
+    // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme, tvgsById, epgs, tvgsLoaded]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
   );
 
   const renderHeaderCell = (header) => {

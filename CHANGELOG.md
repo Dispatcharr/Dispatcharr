@@ -7,15 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-01-27
+
+### Fixed
+
+- Series Rules API Swagger Documentation: Fixed drf_yasg validation error where TYPE_ARRAY schemas were missing required items parameter, causing module import failure
+
+## [0.18.0] - 2026-01-27
+
 ### Security
 
 - Updated react-router from 7.11.0 to 7.12.0 to address two security vulnerabilities:
   - **High**: Open Redirect XSS vulnerability in Action/Server Action Request Processing ([GHSA-h5cw-625j-3rxh](https://github.com/advisories/GHSA-h5cw-625j-3rxh), [GHSA-2w69-qvjg-hvjx](https://github.com/advisories/GHSA-2w69-qvjg-hvjx))
   - **Moderate**: SSR XSS vulnerability in ScrollRestoration component ([GHSA-8v8x-cx79-35w7](https://github.com/advisories/GHSA-8v8x-cx79-35w7))
 - Updated react-router-dom from 7.11.0 to 7.12.0 (dependency of react-router)
+- Fixed moderate severity Prototype Pollution vulnerability in Lodash (`_.unset` and `_.omit` functions) See [GHSA-xxjr-mmjv-4gpg](https://github.com/advisories/GHSA-xxjr-mmjv-4gpg) for details.
 
 ### Added
 
+- Series Rules API Swagger Documentation: Added comprehensive Swagger/OpenAPI documentation for all series-rules endpoints (`GET /series-rules/`, `POST /series-rules/`, `DELETE /series-rules/{tvg_id}/`, `POST /series-rules/evaluate/`, `POST /series-rules/bulk-remove/`), including detailed descriptions, request/response schemas, and error handling information for improved API discoverability
 - Editable Channel Table Mode:
   - Added a robust inline editing mode for the channels table, allowing users to quickly edit channel fields (name, number, group, EPG, logo) directly in the table without opening a modal.
   - EPG and logo columns support searchable dropdowns with instant filtering and keyboard navigation for fast assignment.
@@ -49,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Data loading and initialization refactor: Major performance improvement reducing initial page load time by eliminating duplicate API requests caused by race conditions between authentication flow and route rendering:
+  - Fixed authentication race condition where `isAuthenticated` was set before data loading completed, causing routes to render and tables to mount prematurely
+  - Added `isInitialized` flag to delay route rendering until after all initialization data is loaded via `initData()`
+  - Consolidated version and environment settings fetching into centralized settings store with caching to prevent redundant calls
+  - Implemented stale fetch prevention in ChannelsTable and StreamsTable using fetch version tracking to ignore outdated responses
+  - Fixed filter handling in tables to use `debouncedFilters` consistently, preventing unnecessary refetches
+  - Added initialization guards using refs to prevent double-execution of auth and superuser checks during React StrictMode's intentional double-rendering in development
+  - Removed duplicate version/environment fetch calls from Sidebar, LoginForm, and SuperuserForm by using centralized store
 - Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
 - Streams table button labels: Renamed "Remove" to "Delete" and "Add Stream to Channel" to "Add to Channel" for clarity and consistency with other UI terminology.
 - Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
