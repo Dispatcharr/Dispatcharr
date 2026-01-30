@@ -1,0 +1,56 @@
+[project]
+name = "dispatcharr"
+description = "Dispatcharr - Stream dispatching and management"
+readme = "README.md"
+license = "CC-BY-NC-SA-4.0"
+requires-python = ">=3.13"
+dynamic = ["version"]
+dependencies = [
+    "Django==5.2.9",
+    "psycopg2-binary==2.9.11",
+    "celery[redis]==5.6.0",
+    "djangorestframework==3.16.1",
+    "requests==2.32.5",
+    "psutil==7.1.3",
+    "pillow",
+    "drf-spectacular>=0.29.0",
+    "streamlink",
+    "python-vlc",
+    "yt-dlp",
+    "gevent==25.9.1",
+    "daphne",
+    "uwsgi",
+    "django-cors-headers",
+    "djangorestframework-simplejwt",
+    "m3u8",
+    "rapidfuzz==3.14.3",
+    "regex",
+    "tzlocal",
+    "pytz",
+    "torch==2.9.1+cpu",
+    "sentence-transformers==5.2.0",
+    "channels",
+    "channels-redis==4.3.0",
+    "django-filter",
+    "django-celery-beat",
+    "lxml==6.0.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# PyTorch CPU-only wheels index
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["dispatcharr", "apps", "core"]
+
+[tool.hatch.version]
+path = "version.py"
