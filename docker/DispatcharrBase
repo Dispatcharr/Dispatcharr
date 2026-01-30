@@ -1,6 +1,7 @@
 FROM lscr.io/linuxserver/ffmpeg:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ENV UV_COMPILE_BYTECODE=1
@@ -26,21 +27,22 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # --- Create Python virtual environment and install dependencies ---
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/
-RUN uv venv $VIRTUAL_ENV --python 3.13 --seed && \
-    uv sync --python $VIRTUAL_ENV/bin/python --no-cache --no-install-project --no-dev && \
+COPY version.py /tmp/build/
+COPY README.md /tmp/build/
+RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev && \
     rm -rf /tmp/build
 WORKDIR /
 
 # --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
-RUN uv pip install --python $VIRTUAL_ENV/bin/python --no-cache build && \
+RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build pip && \
     cd /tmp && \
-    $VIRTUAL_ENV/bin/pip download --no-binary numpy --no-deps numpy && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -m pip download --no-binary numpy --no-deps numpy && \
     tar -xzf numpy-*.tar.gz && \
     cd numpy-*/ && \
-    $VIRTUAL_ENV/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
     mv dist/*.whl /opt/ && \
     cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz && \
-    uv pip uninstall --python $VIRTUAL_ENV/bin/python build
+    uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
 
 # --- Clean up build dependencies to reduce image size ---
 RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev libpcre3-dev python3.13-dev ninja-build && \

@@ -30,9 +30,9 @@ echo_with_timestamp() {
 # --- NumPy version switching for legacy hardware ---
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     # Check if NumPy was compiled with baseline support
-    if /dispatcharrpy/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline"; then
+    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline"; then
         echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
-        /dispatcharrpy/bin/pip install --no-cache-dir --force-reinstall --no-deps /opt/numpy-*.whl
+        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
         echo_with_timestamp "✅ Legacy NumPy installed"
     else
         echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
@@ -214,7 +214,7 @@ fi
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec /dispatcharrpy/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 

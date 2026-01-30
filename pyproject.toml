@@ -1,10 +1,10 @@
 [project]
 name = "dispatcharr"
-version = "0.17.0"
 description = "Dispatcharr - Stream dispatching and management"
 readme = "README.md"
-license = "MIT"
+license = "CC-BY-NC-SA-4.0"
 requires-python = ">=3.13"
+dynamic = ["version"]
 dependencies = [
     "Django==5.2.9",
     "psycopg2-binary==2.9.11",
@@ -51,3 +51,6 @@ torch = { index = "pytorch-cpu" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["dispatcharr", "apps", "core"]
+
+[tool.hatch.version]
+path = "version.py"
