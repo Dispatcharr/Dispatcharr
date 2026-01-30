@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Modern OpenAPI 3.0 specification compliance
   - Better auto-generation of request/response schemas
   - Improved documentation accuracy with serializer introspection
+- Switched to uv for package management: Migrated from pip to uv (Astral's fast Python package installer) for improved dependency resolution speed and reliability. This includes updates to Docker build processes, installation scripts (debian_install.sh), and project configuration (pyproject.toml) to leverage uv's features like virtual environment management and lockfile generation. - Thanks [@tobimichael96](https://github.com/tobimichael96) for getting it started!
 
 ### Fixed
 
