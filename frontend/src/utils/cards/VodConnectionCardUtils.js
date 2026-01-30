@@ -117,9 +117,9 @@ export const calculateConnectionDuration = (connection) => {
   return 'Unknown duration';
 }
 
-export const calculateConnectionStartTime = (connection, dateFormat) => {
+export const calculateConnectionStartTime = (connection, fullDateTimeFormat) => {
   if (connection.connected_at) {
-    return format(connection.connected_at * 1000, `${dateFormat} HH:mm:ss`);
+    return format(connection.connected_at * 1000, fullDateTimeFormat);
   }
 
   // Fallback: calculate from client_id timestamp
@@ -128,7 +128,7 @@ export const calculateConnectionStartTime = (connection, dateFormat) => {
       const parts = connection.client_id.split('_');
       if (parts.length >= 2) {
         const clientStartTime = parseInt(parts[1]);
-        return format(clientStartTime, `${dateFormat} HH:mm:ss`);
+        return format(clientStartTime, fullDateTimeFormat);
       }
     } catch {
       // Ignore parsing errors

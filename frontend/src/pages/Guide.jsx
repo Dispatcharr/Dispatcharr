@@ -65,9 +65,7 @@ import {
   PROGRAM_HEIGHT,
   sortChannels,
 } from './guideUtils';
-import {
-  getShowVideoUrl,
-} from '../utils/cards/RecordingCardUtils.js';
+import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import {
   add,
   convertToMs,
@@ -79,10 +77,12 @@ import {
 } from '../utils/dateTimeUtils.js';
 import GuideRow from '../components/GuideRow.jsx';
 import HourTimeline from '../components/HourTimeline';
-const ProgramRecordingModal = React.lazy(() =>
-  import('../components/forms/ProgramRecordingModal'));
-const SeriesRecordingModal = React.lazy(() =>
-  import('../components/forms/SeriesRecordingModal'));
+const ProgramRecordingModal = React.lazy(
+  () => import('../components/forms/ProgramRecordingModal')
+);
+const SeriesRecordingModal = React.lazy(
+  () => import('../components/forms/SeriesRecordingModal')
+);
 import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
@@ -230,7 +230,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     [rowHeights]
   );
 
-  const [timeFormat, dateFormat] = useDateTimeFormat();
+  const { timeFormat, dateFormat } = useDateTimeFormat();
 
   // Format day label using relative terms when possible (Today, Tomorrow, etc)
   const formatDayLabel = useCallback(
@@ -774,9 +774,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
           style={{
             cursor: 'pointer',
             zIndex: isExpanded ? 25 : 5,
-            transition: isExpanded ? 'height 0.2s ease, width 0.2s ease' : 'height 0.2s ease',
+            transition: isExpanded
+              ? 'height 0.2s ease, width 0.2s ease'
+              : 'height 0.2s ease',
           }}
-          pos='absolute'
+          pos="absolute"
           left={leftPx + gapSize}
           top={0}
           w={isExpanded ? expandedWidthPx : widthPx}
@@ -806,7 +808,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             }}
             w={'100%'}
             h={'100%'}
-            pos='relative'
+            pos="relative"
             display={'flex'}
             p={isExpanded ? 12 : 8}
             c={isPast ? '#a0aec0' : '#fff'}
@@ -1007,7 +1009,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       }}
       w={'100%'}
       h={'100%'}
-      c='#ffffff'
+      c="#ffffff"
       ff={'Roboto, sans-serif'}
       onClick={handleClickOutside} // Close expanded program when clicking outside
     >
@@ -1016,9 +1018,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
         direction="column"
         style={{
           zIndex: 1000,
-          position: 'sticky'
+          position: 'sticky',
         }}
-        c='#ffffff'
+        c="#ffffff"
         p={'12px 20px'}
         top={0}
       >
@@ -1101,7 +1103,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               backgroundColor: '#245043',
             }}
             bd={'1px solid #3BA882'}
-            color='#FFFFFF'
+            color="#FFFFFF"
           >
             Series Rules
           </Button>
@@ -1125,7 +1127,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         <Box
           style={{
             zIndex: 100,
-            position: 'sticky'
+            position: 'sticky',
           }}
           display={'flex'}
           top={0}
@@ -1142,7 +1144,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             w={CHANNEL_WIDTH}
             miw={CHANNEL_WIDTH}
             h={'40px'}
-            pos='sticky'
+            pos="sticky"
             left={0}
           />
 
@@ -1152,7 +1154,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               flex: 1,
               overflow: 'hidden',
             }}
-            pos='relative'
+            pos="relative"
           >
             <Box
               ref={timelineRef}
@@ -1160,7 +1162,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 overflowX: 'auto',
                 overflowY: 'hidden',
               }}
-              pos='relative'
+              pos="relative"
               onScroll={handleTimelineScroll}
               onWheel={handleTimelineWheel} // Add wheel event handler
             >
@@ -1190,7 +1192,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             flex: 1,
             overflow: 'hidden',
           }}
-          pos='relative'
+          pos="relative"
         >
           <LoadingOverlay visible={isLoading || isProgramsLoading} />
           {nowPosition >= 0 && (
@@ -1200,7 +1202,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 zIndex: 15,
                 pointerEvents: 'none',
               }}
-              pos='absolute'
+              pos="absolute"
               left={nowPosition + CHANNEL_WIDTH - guideScrollLeft}
               top={0}
               bottom={0}
@@ -1225,7 +1227,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               {GuideRow}
             </VariableSizeList>
           ) : (
-            <Box p={'30px'} ta='center' color='#a0aec0'>
+            <Box p={'30px'} ta="center" color="#a0aec0">
               <Text size="lg">No channels match your filters</Text>
               <Button variant="subtle" onClick={clearFilters} mt={10}>
                 Clear Filters
@@ -1245,8 +1247,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               existingRuleMode={existingRuleMode}
               onRecordOne={() => recordOne(recordChoiceProgram)}
-              onRecordSeriesAll={() => saveSeriesRule(recordChoiceProgram, 'all')}
-              onRecordSeriesNew={() => saveSeriesRule(recordChoiceProgram, 'new')}
+              onRecordSeriesAll={() =>
+                saveSeriesRule(recordChoiceProgram, 'all')
+              }
+              onRecordSeriesNew={() =>
+                saveSeriesRule(recordChoiceProgram, 'new')
+              }
               onExistingRuleModeChange={setExistingRuleMode}
             />
           </Suspense>

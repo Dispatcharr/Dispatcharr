@@ -102,6 +102,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
+      is_adult: '-1',
     },
   });
 
@@ -151,6 +152,13 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       const userLevelLabel =
         USER_LEVEL_LABELS[values.user_level] || values.user_level;
       changes.push(`• User Level: ${userLevelLabel}`);
+    }
+
+    // Check mature content flag
+    if (values.is_adult && values.is_adult !== '-1') {
+      changes.push(
+        `• Mature Content: ${values.is_adult === 'true' ? 'Yes' : 'No'}`
+      );
     }
 
     // Check dummy EPG
@@ -221,6 +229,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
     if (values.user_level == '-1') {
       delete values.user_level;
+    }
+
+    if (values.is_adult === '-1') {
+      delete values.is_adult;
+    } else if (values.is_adult === 'true') {
+      values.is_adult = true;
+    } else if (values.is_adult === 'false') {
+      values.is_adult = false;
     }
 
     // Remove the channel_group field from form values as we use channel_group_id
@@ -930,6 +946,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                     };
                   })
                 )}
+              />
+
+              <Select
+                size="xs"
+                label="Mature Content"
+                {...form.getInputProps('is_adult')}
+                key={form.key('is_adult')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Yes' },
+                  { value: 'false', label: 'No' },
+                ]}
               />
             </Stack>
           </Group>

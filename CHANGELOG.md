@@ -7,12 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Frontend Unit Tests: Added comprehensive unit tests for React hooks and Zustand stores, including:
+  - `useLocalStorage` hook tests with localStorage mocking and error handling
+  - `useSmartLogos` hook tests for logo loading and management
+  - `useTablePreferences` hook tests for table settings persistence
+  - `useAuthStore` tests for authentication flow and token management
+  - `useChannelsStore` tests for channel data management
+  - `useUserAgentsStore` tests for user agent CRUD operations
+  - `useUsersStore` tests for user management functionality
+  - `useVODLogosStore` tests for VOD logo operations
+  - `useVideoStore` tests for video player state management
+  - `useWarningsStore` tests for warning suppression functionality
+  - Code refactoring for improved readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+
 ### Changed
 
-- Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+- Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
+  - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
+  - Modern OpenAPI 3.0 specification compliance
+  - Better auto-generation of request/response schemas
+  - Improved documentation accuracy with serializer introspection
 
 ### Fixed
 
+- Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
+- EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+
+## [0.18.1] - 2026-01-27
+
+### Fixed
+
+- Series Rules API Swagger Documentation: Fixed drf_yasg validation error where TYPE_ARRAY schemas were missing required items parameter, causing module import failure
+
+## [0.18.0] - 2026-01-27
+
+### Security
+
+- Updated react-router from 7.11.0 to 7.12.0 to address two security vulnerabilities:
+  - **High**: Open Redirect XSS vulnerability in Action/Server Action Request Processing ([GHSA-h5cw-625j-3rxh](https://github.com/advisories/GHSA-h5cw-625j-3rxh), [GHSA-2w69-qvjg-hvjx](https://github.com/advisories/GHSA-2w69-qvjg-hvjx))
+  - **Moderate**: SSR XSS vulnerability in ScrollRestoration component ([GHSA-8v8x-cx79-35w7](https://github.com/advisories/GHSA-8v8x-cx79-35w7))
+- Updated react-router-dom from 7.11.0 to 7.12.0 (dependency of react-router)
+- Fixed moderate severity Prototype Pollution vulnerability in Lodash (`_.unset` and `_.omit` functions) See [GHSA-xxjr-mmjv-4gpg](https://github.com/advisories/GHSA-xxjr-mmjv-4gpg) for details.
+
+### Added
+
+- Series Rules API Swagger Documentation: Added comprehensive Swagger/OpenAPI documentation for all series-rules endpoints (`GET /series-rules/`, `POST /series-rules/`, `DELETE /series-rules/{tvg_id}/`, `POST /series-rules/evaluate/`, `POST /series-rules/bulk-remove/`), including detailed descriptions, request/response schemas, and error handling information for improved API discoverability
+- Editable Channel Table Mode:
+  - Added a robust inline editing mode for the channels table, allowing users to quickly edit channel fields (name, number, group, EPG, logo) directly in the table without opening a modal.
+  - EPG and logo columns support searchable dropdowns with instant filtering and keyboard navigation for fast assignment.
+  - Drag-and-drop reordering of channels enabled when unlocked, with persistent order updates. (Closes #333)
+  - Group column uses a searchable dropdown for quick group assignment, matching the UX of EPG and logo selectors.
+  - All changes are saved via API with optimistic UI updates and error handling.
+- Stats page enhancements: Added "Now Playing" program information for active streams with smart polling that only fetches EPG data when programs are about to change (not on every stats refresh). Features include:
+  - Currently playing program title displayed with live broadcast indicator (green Radio icon)
+  - Expandable program descriptions via chevron button
+  - Progress bar showing elapsed and remaining time for currently playing programs
+  - Efficient POST-based API endpoint (`/api/epg/current-programs/`) supporting batch channel queries or fetching all channels
+  - Smart scheduling that fetches new program data 5 seconds after current program ends
+  - Only polls when active channel list changes, not on stats refresh
+- Channel preview button: Added preview functionality to active stream cards on stats page
+- Unassociated streams filter: Added "Only Unassociated" filter option to streams table for quickly finding streams not assigned to any channels - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes) (Closes #667)
+- Streams table: Added "Hide Stale" filter to quickly hide streams marked as stale.
+- Client-side logo caching: Added `Cache-Control` and `Last-Modified` headers to logo responses, enabling browsers to cache logos locally for 4 hours (local files) and respecting upstream cache headers (remote logos). This reduces network traffic and nginx load while providing faster page loads through browser-level caching that complements the existing nginx server-side cache - Thanks [@DawtCom](https://github.com/DawtCom)
+- DVR recording remux fallback strategy: Implemented two-stage TS→MP4→MKV fallback when direct TS→MKV conversion fails due to timestamp issues. On remux failure, system now attempts TS→MP4 conversion (MP4 container handles broken timestamps better) followed by MP4→MKV conversion, automatically recovering from provider timestamp corruption. Failed conversions now properly clean up partial files and preserve source TS for manual recovery.
+- Mature content filtering support:
+  - Added `is_adult` boolean field to both Stream and Channel models with database indexing for efficient filtering and sorting
+  - Automatically populated during M3U/XC refresh operations by extracting `is_adult` value from provider data
+  - Type-safe conversion supporting both integer (0/1) and string ("0"/"1") formats from different providers
+  - UI controls in channel edit form (Switch with tooltip) and bulk edit form (Select dropdown) for easy management
+  - XtreamCodes API support with proper integer formatting (0/1) in live stream responses
+  - Automatic propagation from streams to channels during both single and bulk channel creation operations
+  - Included in serializers for full API support
+  - User-level content filtering: Non-admin users can opt to hide mature content channels across all interfaces (web UI, M3U playlists, EPG data, XtreamCodes API) via "Hide Mature Content" toggle in user settings (stored in custom_properties, admin users always see all content)
+- Table header pin toggle: Pin/unpin table headers to keep them visible while scrolling. Toggle available in channel table menu and UI Settings page. Setting persists across sessions and applies to all tables. (Closes #663)
+- Cascading filters for streams table: Improved filter usability with hierarchical M3U and Group dropdowns. M3U acts as the parent filter showing only active/enabled accounts, while Group options dynamically update to display only groups available in the selected M3U(s). Only enabled M3U's are displayed. (Closes #647)
+- Streams table UI: Added descriptive tooltips to top-toolbar buttons (Add to Channel, Create Channels, Filters, Create Stream, Delete) and to row action icons (Add to Channel, Create New Channel). Tooltips now use a 500ms open delay for consistent behavior with existing table header tooltips.
+
+### Changed
+
+- Data loading and initialization refactor: Major performance improvement reducing initial page load time by eliminating duplicate API requests caused by race conditions between authentication flow and route rendering:
+  - Fixed authentication race condition where `isAuthenticated` was set before data loading completed, causing routes to render and tables to mount prematurely
+  - Added `isInitialized` flag to delay route rendering until after all initialization data is loaded via `initData()`
+  - Consolidated version and environment settings fetching into centralized settings store with caching to prevent redundant calls
+  - Implemented stale fetch prevention in ChannelsTable and StreamsTable using fetch version tracking to ignore outdated responses
+  - Fixed filter handling in tables to use `debouncedFilters` consistently, preventing unnecessary refetches
+  - Added initialization guards using refs to prevent double-execution of auth and superuser checks during React StrictMode's intentional double-rendering in development
+  - Removed duplicate version/environment fetch calls from Sidebar, LoginForm, and SuperuserForm by using centralized store
+- Table preferences (header pin and table size) now managed together with centralized state management and localStorage persistence.
+- Streams table button labels: Renamed "Remove" to "Delete" and "Add Stream to Channel" to "Add to Channel" for clarity and consistency with other UI terminology.
+- Frontend tests GitHub workflow now uses Node.js 24 (matching Dockerfile) and runs on both `main` and `dev` branch pushes and pull requests for comprehensive CI coverage.
+- Table preferences architecture refactored: Migrated `table-size` preference from individual `useLocalStorage` calls to centralized `useTablePreferences` hook. All table components now read preferences from the table instance (`table.tableSize`, `.g maintainability and providing consistent API across all tables.
+- Optimized unassociated streams filter performance: Replaced inefficient reverse foreign key NULL check (`channels__isnull=True`) with Count annotation approach, reducing query time from 4-5 seconds to under 500ms for large datasets (75k+ streams)
+
+### Fixed
+
+- Channels table pagination error handling: Fixed "Invalid page" error notifications that appeared when filters reduced the result set while on a page beyond the new total. The API layer now automatically detects invalid page errors, resets pagination to page 1, and retries the request transparently. (Fixes #864)
+- Fixed long IP addresses overlapping adjacent columns in stream connection card by adding truncation with tooltips displaying the full address. (Fixes #712)
+- Fixed nginx startup failure due to group name mismatch in non-container deployments - Thanks [@s0len](https://github.com/s0len) (Fixes #877)
+- Updated streamlink from 8.1.0 to 8.1.2 to fix YouTube live stream playback issues and improve Pluto TV ad detection (Fixes #869)
+- Fixed date/time formatting across all tables to respect user's UI preferences (time format and date format) set in Settings page:
+  - Stream connection card "Connected" column
+  - VOD connection card "Connection Start Time" column
+  - M3U table "Updated" column
+  - EPG table "Updated" column
+  - Users table "Last Login" and "Date Joined" columns
+  - All components now use centralized `format()` helper from dateTimeUtils for consistency
+- Removed unused imports from table components for cleaner code
+- Fixed build-dev.sh script stability: Resolved Dockerfile and build context paths to be relative to script location for reliable execution from any working directory, added proper --platform argument handling with array-safe quoting, and corrected push behavior to honor -p flag with accurate messaging. Improved formatting and quoting throughout to prevent word-splitting issues - Thanks [@JeffreyBytes](https://github.com/JeffreyBytes)
+- Fixed TypeError on streams table load after container restart: Added robust data validation and type coercion to handle malformed filter options during container startup. The streams table MultiSelect components now safely convert group names to strings and filter out null/undefined values, preventing "right-hand side of 'in' should be an object, got number" errors when the backend hasn't fully initialized. API error handling returns safe defaults.
+- Fixed XtreamCodes API crash when channels have NULL channel_group: The `player_api.php` endpoint (`xc_get_live_streams`) now gracefully handles channels without an assigned channel_group by dynamically looking up and assigning them to "Default Group" instead of crashing with AttributeError. Additionally, the Channel serializer now auto-assigns new channels to "Default Group" when `channel_group_id` is omitted during creation, preventing future NULL channel_group issues.
+- Fixed streams table column header overflow: Implemented fixed-height column headers (30px max-height) with pill-style filter display showing first selection plus count (e.g., "Sport +3"). Prevents header expansion when multiple filters are selected, maintaining compact table layout. (Fixes #613)
+- Fixed VOD logo cleanup button count: The "Cleanup Unused" button now displays the total count of all unused logos across all pages instead of only counting unused logos on the current page.
+- Fixed VOD refresh failures when logos are deleted: Changed logo comparisons to use `logo_id` (raw FK integer) instead of `logo` (related object) to avoid Django's lazy loading, which triggers a database fetch that fails if the referenced logo no longer exists. Also improved orphaned logo detection to properly clear stale references when logo URLs exist but logos are missing from the database.
+- Fixed channel profile filtering to properly restrict content based on assigned channel profiles for all non-admin users (user_level < 10) instead of only streamers (user_level == 0). This corrects the XtreamCodes API endpoints (`get_live_categories` and `get_live_streams`) along with M3U and EPG generation, ensuring standard users (level 1) are properly restricted by their assigned channel profiles. Previously, "Standard" users with channel profiles assigned would see all channels instead of only those in their assigned profiles.
 - Fixed NumPy baseline detection in Docker entrypoint. Now calls `numpy.show_config()` directly with case-insensitive grep instead of incorrectly wrapping the output.
 - Fixed SettingsUtils frontend tests for new grouped settings architecture. Updated test suite to properly verify grouped JSON settings (stream_settings, dvr_settings, etc.) instead of individual CharField settings, including tests for type conversions, array-to-CSV transformations, and special handling of proxy_settings and network_access.
 
@@ -20,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added tooltip on filter pills showing all selected items in a vertical list (up to 10 items, with "+N more" indicator)
 - Loading feedback for all confirmation dialogs: Extended visual loading indicators across all confirmation dialogs throughout the application. Delete, cleanup, and bulk operation dialogs now show an animated dots loader and disabled state during async operations, providing consistent user feedback for backups (restore/delete), channels, EPGs, logos, VOD logos, M3U accounts, streams, users, groups, filters, profiles, batch operations, and network access changes.
 - Channel profile edit and duplicate functionality: Users can now rename existing channel profiles and create duplicates with automatic channel membership cloning. Each profile action (edit, duplicate, delete) in the profile dropdown for quick access.
 - ProfileModal component extracted for improved code organization and maintainability of channel profile management operations.

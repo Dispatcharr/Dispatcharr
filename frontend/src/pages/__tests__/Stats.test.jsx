@@ -14,6 +14,7 @@ import useChannelsStore from '../../store/channels';
 import useLogosStore from '../../store/logos';
 import {
   fetchActiveChannelStats,
+  getCurrentPrograms,
   getClientStats,
   getCombinedConnections,
   getStatsByChannelId,
@@ -30,11 +31,11 @@ vi.mock('../../store/streamProfiles');
 vi.mock('../../hooks/useLocalStorage');
 
 vi.mock('../../components/SystemEvents', () => ({
-  default: () => <div data-testid="system-events">SystemEvents</div>
+  default: () => <div data-testid="system-events">SystemEvents</div>,
 }));
 
 vi.mock('../../components/ErrorBoundary.jsx', () => ({
-  default: ({ children }) => <div data-testid="error-boundary">{children}</div>
+  default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));
 
 vi.mock('../../components/cards/VodConnectionCard.jsx', () => ({
@@ -92,6 +93,7 @@ vi.mock('../../utils/pages/StatsUtils', () => {
   return {
     fetchActiveChannelStats: vi.fn(),
     getVODStats: vi.fn(),
+    getCurrentPrograms: vi.fn(),
     getClientStats: vi.fn(),
     getCombinedConnections: vi.fn(),
     getStatsByChannelId: vi.fn(),
@@ -112,9 +114,7 @@ describe('StatsPage', () => {
     'channel-2': mockChannels[1],
   };
 
-  const mockStreamProfiles = [
-    { id: 1, name: 'Profile 1' },
-  ];
+  const mockStreamProfiles = [{ id: 1, name: 'Profile 1' }];
 
   const mockLogos = {
     'logo-1': 'logo-url-1',
@@ -131,9 +131,7 @@ describe('StatsPage', () => {
     vod_connections: [
       {
         content_uuid: 'vod-1',
-        connections: [
-          { client_id: 'client-1', ip: '192.168.1.1' },
-        ],
+        connections: [{ client_id: 'client-1', ip: '192.168.1.1' }],
       },
     ],
   };
@@ -152,7 +150,11 @@ describe('StatsPage', () => {
   const mockCombinedConnections = [
     { id: 1, type: 'stream', data: { id: 1, uuid: 'channel-1' } },
     { id: 2, type: 'stream', data: { id: 2, uuid: 'channel-2' } },
-    { id: 3, type: 'vod', data: { content_uuid: 'vod-1', connections: [{ client_id: 'client-1' }] } },
+    {
+      id: 3,
+      type: 'vod',
+      data: { content_uuid: 'vod-1', connections: [{ client_id: 'client-1' }] },
+    },
   ];
 
   let mockSetChannelStats;
@@ -194,6 +196,7 @@ describe('StatsPage', () => {
     // Setup API mocks
     fetchActiveChannelStats.mockResolvedValue(mockChannelStats);
     getVODStats.mockResolvedValue(mockVODStats);
+    getCurrentPrograms.mockResolvedValue({});
     getStatsByChannelId.mockReturnValue(mockProcessedChannelHistory);
     getClientStats.mockReturnValue(mockClients);
     getCombinedConnections.mockReturnValue(mockCombinedConnections);
@@ -206,7 +209,7 @@ describe('StatsPage', () => {
   describe('Initial Rendering', () => {
     it('renders the page title', async () => {
       render(<StatsPage />);
-      await screen.findByText('Active Connections')
+      await screen.findByText('Active Connections');
     });
 
     it('fetches initial stats on mount', async () => {
@@ -229,7 +232,7 @@ describe('StatsPage', () => {
 
     it('renders SystemEvents component', async () => {
       render(<StatsPage />);
-      await screen.findByTestId('system-events')
+      await screen.findByTestId('system-events');
     });
   });
 
@@ -266,7 +269,7 @@ describe('StatsPage', () => {
       useLocalStorage.mockReturnValue([0, mockSetRefreshInterval]);
       render(<StatsPage />);
 
-      await screen.findByText('Refreshing disabled')
+      await screen.findByText('Refreshing disabled');
     });
   });
 
@@ -348,8 +351,12 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('stream-connection-card-channel-1')).toBeInTheDocument();
-        expect(screen.getByTestId('stream-connection-card-channel-2')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('stream-connection-card-channel-1')
+        ).toBeInTheDocument();
+        expect(
+          screen.getByTestId('stream-connection-card-channel-2')
+        ).toBeInTheDocument();
       });
     });
 
@@ -357,7 +364,9 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('vod-connection-card-vod-1')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('vod-connection-card-vod-1')
+        ).toBeInTheDocument();
       });
     });
 
@@ -376,7 +385,9 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('stop-vod-client-client-1')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('stop-vod-client-client-1')
+        ).toBeInTheDocument();
       });
 
       const stopButton = screen.getByTestId('stop-vod-client-client-1');
@@ -422,14 +433,18 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(getClientStats).toHaveBeenCalledWith(mockProcessedChannelHistory);
+        expect(getClientStats).toHaveBeenCalledWith(
+          mockProcessedChannelHistory
+        );
       });
     });
   });
 
   describe('Error Handling', () => {
     it('handles fetchActiveChannelStats error gracefully', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       fetchActiveChannelStats.mockRejectedValue(new Error('API Error'));
 
       render(<StatsPage />);
@@ -445,7 +460,9 @@ describe('StatsPage', () => {
     });
 
     it('handles getVODStats error gracefully', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       getVODStats.mockRejectedValue(new Error('VOD API Error'));
 
       render(<StatsPage />);

@@ -10,7 +10,19 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from '@mantine/form';
 import dayjs from 'dayjs';
 import { notifications } from '@mantine/notifications';
-import { Badge, Button, Card, Group, Modal, MultiSelect, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import {
+  Badge,
+  Button,
+  Card,
+  Group,
+  Modal,
+  MultiSelect,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+} from '@mantine/core';
 import { DatePickerInput, TimeInput } from '@mantine/dates';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import {
@@ -28,7 +40,8 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
-  const [timeformat, dateformat] = useDateTimeFormat();
+  const { timeFormat: timeformat, dateFormat: dateformat } =
+    useDateTimeFormat();
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -198,73 +211,70 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   const handleEnableChange = (event) => {
     form.setFieldValue('enabled', event.currentTarget.checked);
     handleToggleEnabled(event.currentTarget.checked);
-  }
+  };
 
   const handleStartDateChange = (value) => {
     form.setFieldValue('start_date', value || dayjs().toDate());
-  }
+  };
 
   const handleEndDateChange = (value) => {
     form.setFieldValue('end_date', value);
-  }
+  };
 
   const handleStartTimeChange = (value) => {
     form.setFieldValue('start_time', toTimeString(value));
-  }
+  };
 
   const handleEndTimeChange = (value) => {
     form.setFieldValue('end_time', toTimeString(value));
-  }
+  };
 
   const UpcomingList = () => {
-    return <Stack gap="xs">
-      {upcomingOccurrences.map((occ) => {
-        const occStart = toUserTime(occ.start_time);
-        const occEnd = toUserTime(occ.end_time);
+    return (
+      <Stack gap="xs">
+        {upcomingOccurrences.map((occ) => {
+          const occStart = toUserTime(occ.start_time);
+          const occEnd = toUserTime(occ.end_time);
 
-        return (
-          <Card
-            key={`occ-${occ.id}`}
-            withBorder
-            padding="sm"
-            radius="md"
-          >
-            <Group justify="space-between" align="center">
-              <Stack gap={2} flex={1}>
-                <Text fw={600} size="sm">
-                  {occStart.format(`${dateformat}, YYYY`)}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {occStart.format(timeformat)} – {occEnd.format(timeformat)}
-                </Text>
-              </Stack>
-              <Group gap={6}>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => {
-                    onClose();
-                    onEditOccurrence?.(occ);
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button
-                  size="xs"
-                  color="red"
-                  variant="light"
-                  loading={busyOccurrence === occ.id}
-                  onClick={() => handleCancelOccurrence(occ)}
-                >
-                  Cancel
-                </Button>
+          return (
+            <Card key={`occ-${occ.id}`} withBorder padding="sm" radius="md">
+              <Group justify="space-between" align="center">
+                <Stack gap={2} flex={1}>
+                  <Text fw={600} size="sm">
+                    {occStart.format(`${dateformat}, YYYY`)}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {occStart.format(timeformat)} – {occEnd.format(timeformat)}
+                  </Text>
+                </Stack>
+                <Group gap={6}>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => {
+                      onClose();
+                      onEditOccurrence?.(occ);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="xs"
+                    color="red"
+                    variant="light"
+                    loading={busyOccurrence === occ.id}
+                    onClick={() => handleCancelOccurrence(occ)}
+                  >
+                    Cancel
+                  </Button>
+                </Group>
               </Group>
-            </Group>
-          </Card>
-        );
-      })}
-    </Stack>;
-  }
+            </Card>
+          );
+        })}
+      </Stack>
+    );
+  };
 
   return (
     <Modal
@@ -371,7 +381,9 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
             <Text size="sm" c="dimmed">
               No future airings currently scheduled.
             </Text>
-          ) : <UpcomingList />}
+          ) : (
+            <UpcomingList />
+          )}
         </Stack>
       </Stack>
     </Modal>

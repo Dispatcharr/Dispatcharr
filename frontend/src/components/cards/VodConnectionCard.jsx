@@ -1,10 +1,32 @@
 // Format duration for content length
-import useLocalStorage from '../../hooks/useLocalStorage.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import logo from '../../images/logo.png';
-import { ActionIcon, Badge, Box, Card, Center, Flex, Group, Progress, Stack, Text, Tooltip } from '@mantine/core';
-import { convertToSec, fromNow, toFriendlyDuration } from '../../utils/dateTimeUtils.js';
-import { ChevronDown, HardDriveUpload, SquareX, Timer, Video } from 'lucide-react';
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Card,
+  Center,
+  Flex,
+  Group,
+  Progress,
+  Stack,
+  Text,
+  Tooltip,
+} from '@mantine/core';
+import {
+  convertToSec,
+  fromNow,
+  toFriendlyDuration,
+  useDateTimeFormat,
+} from '../../utils/dateTimeUtils.js';
+import {
+  ChevronDown,
+  HardDriveUpload,
+  SquareX,
+  Timer,
+  Video,
+} from 'lucide-react';
 import {
   calculateConnectionDuration,
   calculateConnectionStartTime,
@@ -28,19 +50,18 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
       bdrs={6}
       bd={'1px solid rgba(255, 255, 255, 0.08)'}
     >
-      {connection.user_agent &&
-        connection.user_agent !== 'Unknown' && (
-          <Group gap={8} align="flex-start">
-            <Text size="xs" fw={500} c="dimmed" miw={80}>
-              User Agent:
-            </Text>
-            <Text size="xs" ff={'monospace'} flex={1}>
-              {connection.user_agent.length > 100
-                ? `${connection.user_agent.substring(0, 100)}...`
-                : connection.user_agent}
-            </Text>
-          </Group>
-        )}
+      {connection.user_agent && connection.user_agent !== 'Unknown' && (
+        <Group gap={8} align="flex-start">
+          <Text size="xs" fw={500} c="dimmed" miw={80}>
+            User Agent:
+          </Text>
+          <Text size="xs" ff={'monospace'} flex={1}>
+            {connection.user_agent.length > 100
+              ? `${connection.user_agent.substring(0, 100)}...`
+              : connection.user_agent}
+          </Text>
+        </Group>
+      )}
 
       <Group gap={8}>
         <Text size="xs" fw={500} c="dimmed" miw={80}>
@@ -86,9 +107,7 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
                   {' '}
                   ({Math.round(connection.last_seek_byte / (1024 * 1024))}
                   MB /{' '}
-                  {Math.round(
-                    connection.total_content_size / (1024 * 1024)
-                  )}
+                  {Math.round(connection.total_content_size / (1024 * 1024))}
                   MB)
                 </span>
               )}
@@ -120,12 +139,11 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
       )}
     </Stack>
   );
-}
+};
 
 // Create a VOD Card component similar to ChannelCard
 const VodConnectionCard = ({ vodContent, stopVODClient }) => {
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
+  const { fullDateTimeFormat } = useDateTimeFormat();
   const [isClientExpanded, setIsClientExpanded] = useState(false);
   const [, setUpdateTrigger] = useState(0); // Force re-renders for progress updates
 
@@ -197,9 +215,9 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   // Get connection start time for tooltip
   const getConnectionStartTime = useCallback(
     (connection) => {
-      return calculateConnectionStartTime(connection, dateFormat);
+      return calculateConnectionStartTime(connection, fullDateTimeFormat);
     },
-    [dateFormat]
+    [fullDateTimeFormat]
   );
 
   return (
@@ -211,14 +229,16 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
       style={{
         backgroundColor: '#27272A',
       }}
-      color='#FFF'
+      color="#FFF"
       maw={700}
       w={'100%'}
     >
-      <Stack pos='relative' >
+      <Stack pos="relative">
         {/* Header with poster and basic info */}
         <Group justify="space-between">
-          <Box h={100} display='flex'
+          <Box
+            h={100}
+            display="flex"
             style={{
               alignItems: 'center',
               justifyContent: 'center',
@@ -338,7 +358,7 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
         {connection &&
           metadata.duration_secs &&
           (() => {
-            const { totalTime, currentTime, percentage} = getProgressInfo();
+            const { totalTime, currentTime, percentage } = getProgressInfo();
             return totalTime > 0 ? (
               <Stack gap="xs" mt="sm">
                 <Group justify="space-between" align="center">
@@ -346,8 +366,7 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
                     Progress
                   </Text>
                   <Text size="xs" c="dimmed">
-                    {formatTime(currentTime)} /{' '}
-                    {formatTime(totalTime)}
+                    {formatTime(currentTime)} / {formatTime(totalTime)}
                   </Text>
                 </Group>
                 <Progress
@@ -410,7 +429,8 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
             {isClientExpanded && (
               <ClientDetails
                 connection={connection}
-                connectionStartTime={getConnectionStartTime(connection)} />
+                connectionStartTime={getConnectionStartTime(connection)}
+              />
             )}
           </Stack>
         )}

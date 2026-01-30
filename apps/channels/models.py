@@ -99,6 +99,11 @@ class Stream(models.Model):
         db_index=True,
         help_text="Whether this stream is stale (not seen in recent refresh, pending deletion)"
     )
+    is_adult = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this stream contains adult content"
+    )
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
     # Stream statistics fields
@@ -300,6 +305,12 @@ class Channel(models.Model):
     )
 
     user_level = models.IntegerField(default=0)
+
+    is_adult = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this channel contains adult content"
+    )
 
     auto_created = models.BooleanField(
         default=False,

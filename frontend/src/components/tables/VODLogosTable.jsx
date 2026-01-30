@@ -64,6 +64,7 @@ export default function VODLogosTable() {
     deleteVODLogo,
     deleteVODLogos,
     cleanupUnusedVODLogos,
+    getUnusedLogosCount,
   } = useVODLogosStore();
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -77,14 +78,9 @@ export default function VODLogosTable() {
   const [deleting, setDeleting] = useState(false);
   const [paginationString, setPaginationString] = useState('');
   const [isCleaningUp, setIsCleaningUp] = useState(false);
+  const [unusedLogosCount, setUnusedLogosCount] = useState(0);
+  const [loadingUnusedCount, setLoadingUnusedCount] = useState(false);
   const tableRef = React.useRef(null);
-
-  // Calculate unused logos count
-  const unusedLogosCount = useMemo(() => {
-    return logos.filter(
-      (logo) => logo.movie_count === 0 && logo.series_count === 0
-    ).length;
-  }, [logos]);
   useEffect(() => {
     fetchVODLogos({
       page: currentPage,
@@ -93,6 +89,23 @@ export default function VODLogosTable() {
       usage: usageFilter === 'all' ? undefined : usageFilter,
     });
   }, [currentPage, pageSize, nameFilter, usageFilter, fetchVODLogos]);
+
+  // Fetch the total count of unused logos
+  useEffect(() => {
+    const fetchUnusedCount = async () => {
+      setLoadingUnusedCount(true);
+      try {
+        const count = await getUnusedLogosCount();
+        setUnusedLogosCount(count);
+      } catch (error) {
+        console.error('Failed to fetch unused logos count:', error);
+      } finally {
+        setLoadingUnusedCount(false);
+      }
+    };
+
+    fetchUnusedCount();
+  }, [getUnusedLogosCount]);
 
   const handleSelectAll = useCallback(
     (checked) => {
@@ -185,6 +198,9 @@ export default function VODLogosTable() {
         message: `Cleaned up ${result.deleted_count} unused VOD logos`,
         color: 'green',
       });
+      // Refresh the unused count after cleanup
+      const newCount = await getUnusedLogosCount();
+      setUnusedLogosCount(newCount);
     } catch (error) {
       notifications.show({
         title: 'Error',

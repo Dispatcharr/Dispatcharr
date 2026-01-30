@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
@@ -33,8 +33,7 @@ import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
-import useAuthStore from '../store/auth'; // Add this import
-import API from '../api';
+import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
 
@@ -75,16 +74,13 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const channels = useChannelsStore((s) => s.channels);
   const environment = useSettingsStore((s) => s.environment);
+  const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
   const publicIPRef = useRef(null);
 
-  const [appVersion, setAppVersion] = useState({
-    version: '',
-    timestamp: null,
-  });
   const [userFormOpen, setUserFormOpen] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
@@ -144,36 +140,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           },
         ];
 
-  // Fetch environment settings including version on component mount
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-
-    const fetchEnvironment = async () => {
-      API.getEnvironmentSettings();
-    };
-
-    fetchEnvironment();
-  }, [isAuthenticated]);
-
-  // Fetch version information on component mount (regardless of authentication)
-  useEffect(() => {
-    const fetchVersion = async () => {
-      try {
-        const versionData = await API.getVersion();
-        setAppVersion({
-          version: versionData.version || '',
-          timestamp: versionData.timestamp || null,
-        });
-      } catch (error) {
-        console.error('Failed to fetch version information:', error);
-        // Keep using default values from useState initialization
-      }
-    };
-
-    fetchVersion();
-  }, []);
+  // Environment settings and version are loaded by the settings store during initData()
+  // No need to fetch them again here - just use the store values
 
   const copyPublicIP = async () => {
     const success = await copyToClipboard(environment.public_ip);

@@ -80,7 +80,7 @@ export const useTimeHelpers = () => {
 
   const toUserTime = useCallback(
     (value) => {
-      if (!value) return dayjs.invalid();
+      if (!value) return dayjs(null);
       try {
         return initializeTime(value).tz(timeZone);
       } catch (error) {
@@ -112,7 +112,21 @@ export const useDateTimeFormat = () => {
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
 
-  return [timeFormat, dateFormat];
+  // Full format strings for detailed date-time displays
+  const fullDateFormat = dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+  const fullTimeFormat = timeFormatSetting === '12h' ? 'h:mm:ss A' : 'HH:mm:ss';
+  const fullDateTimeFormat = `${fullDateFormat}, ${fullTimeFormat}`;
+
+  return {
+    timeFormat,
+    dateFormat,
+    fullDateFormat,
+    fullTimeFormat,
+    fullDateTimeFormat,
+    // Also return raw settings for cases that need them
+    timeFormatSetting,
+    dateFormatSetting,
+  };
 };
 
 export const toTimeString = (value) => {

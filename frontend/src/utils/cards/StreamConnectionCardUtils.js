@@ -68,19 +68,19 @@ export const switchStream = (channel, streamId) => {
   return API.switchStream(channel.channel_id, streamId);
 };
 
-export const connectedAccessor = (dateFormat) => {
+export const connectedAccessor = (fullDateTimeFormat) => {
   return (row) => {
     // Check for connected_since (which is seconds since connection)
     if (row.connected_since) {
       // Calculate the actual connection time by subtracting the seconds from current time
       const connectedTime = subtract(getNow(), row.connected_since, 'second');
-      return format(connectedTime, `${dateFormat} HH:mm:ss`);
+      return format(connectedTime, fullDateTimeFormat);
     }
 
     // Fallback to connected_at if it exists
     if (row.connected_at) {
       const connectedTime = initializeTime(row.connected_at * 1000);
-      return format(connectedTime, `${dateFormat} HH:mm:ss`);
+      return format(connectedTime, fullDateTimeFormat);
     }
 
     return 'Unknown';

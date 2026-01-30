@@ -28,10 +28,15 @@ import {
   Filter,
   Square,
   SquareCheck,
+  Pin,
+  PinOff,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
 import useChannelsStore from '../../../store/channels';
+import useChannelsTableStore from '../../../store/channelsTable';
 import useAuthStore from '../../../store/auth';
 import { USER_LEVELS } from '../../../constants';
 import AssignChannelNumbersForm from '../../forms/AssignChannelNumbers';
@@ -105,6 +110,7 @@ const ChannelTableHeader = ({
   editChannel,
   deleteChannels,
   selectedTableIds,
+  table,
   showDisabled,
   setShowDisabled,
   showOnlyStreamlessChannels,
@@ -131,6 +137,11 @@ const ChannelTableHeader = ({
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const setIsUnlocked = useChannelsTableStore((s) => s.setIsUnlocked);
+
+  const headerPinned = table?.headerPinned ?? false;
+  const setHeaderPinned = table?.setHeaderPinned || (() => {});
   const closeAssignChannelNumbersModal = () => {
     setAssignNumbersModalOpen(false);
   };
@@ -229,6 +240,14 @@ const ChannelTableHeader = ({
     setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels);
   };
 
+  const toggleHeaderPinned = () => {
+    setHeaderPinned(!headerPinned);
+  };
+
+  const toggleUnlock = () => {
+    setIsUnlocked(!isUnlocked);
+  };
+
   return (
     <Group justify="space-between">
       <Group gap={5} style={{ paddingLeft: 10 }}>
@@ -248,6 +267,23 @@ const ChannelTableHeader = ({
         <Tooltip label="Create Profile">
           <CreateProfilePopover />
         </Tooltip>
+
+        {isUnlocked && (
+          <Text
+            size="xs"
+            c="yellow.5"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              paddingLeft: 10,
+              fontWeight: 500,
+            }}
+          >
+            <LockOpen size={14} />
+            Editing Mode
+          </Text>
+        )}
       </Group>
 
       <Box
@@ -346,6 +382,31 @@ const ChannelTableHeader = ({
             </Menu.Target>
 
             <Menu.Dropdown>
+              <Menu.Item
+                leftSection={
+                  headerPinned ? <Pin size={18} /> : <PinOff size={18} />
+                }
+                onClick={toggleHeaderPinned}
+              >
+                <Text size="xs">
+                  {headerPinned ? 'Unpin Headers' : 'Pin Headers'}
+                </Text>
+              </Menu.Item>
+
+              <Menu.Item
+                leftSection={
+                  isUnlocked ? <LockOpen size={18} /> : <Lock size={18} />
+                }
+                onClick={toggleUnlock}
+                disabled={authUser.user_level != USER_LEVELS.ADMIN}
+              >
+                <Text size="xs">
+                  {isUnlocked ? 'Lock Table' : 'Unlock for Editing'}
+                </Text>
+              </Menu.Item>
+
+              <Menu.Divider />
+
               <Menu.Item
                 leftSection={<ArrowDown01 size={18} />}
                 disabled={
