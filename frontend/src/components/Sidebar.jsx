@@ -76,14 +76,16 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Get user's saved navigation order
+  // Get user's saved navigation order and hidden items
   const navOrder = authUser?.custom_properties?.navOrder || null;
+  const hiddenNav = authUser?.custom_properties?.hiddenNav || [];
   const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
 
-  // Navigation Items - computed from user's saved order
+  // Navigation Items - computed from user's saved order, filtered by visibility
   const navItems = useMemo(() => {
-    return getOrderedNavItems(navOrder, isAdmin, channels);
-  }, [navOrder, isAdmin, channels]);
+    const orderedItems = getOrderedNavItems(navOrder, isAdmin, channels);
+    return orderedItems.filter((item) => !hiddenNav.includes(item.id));
+  }, [navOrder, hiddenNav, isAdmin, channels]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values

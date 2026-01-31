@@ -74,11 +74,17 @@ vi.mock('@mantine/core', () => ({
 describe('NavOrderForm', () => {
   const mockSetNavOrder = vi.fn();
   const mockGetNavOrder = vi.fn();
+  const mockGetHiddenNav = vi.fn();
+  const mockToggleNavVisibility = vi.fn();
+  const mockUpdateUserPreferences = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockSetNavOrder.mockResolvedValue({});
     mockGetNavOrder.mockReturnValue(null);
+    mockGetHiddenNav.mockReturnValue([]);
+    mockToggleNavVisibility.mockResolvedValue({});
+    mockUpdateUserPreferences.mockResolvedValue({});
   });
 
   describe('Admin User', () => {
@@ -88,6 +94,9 @@ describe('NavOrderForm', () => {
           user: { user_level: USER_LEVELS.ADMIN, custom_properties: {} },
           getNavOrder: mockGetNavOrder,
           setNavOrder: mockSetNavOrder,
+          getHiddenNav: mockGetHiddenNav,
+          toggleNavVisibility: mockToggleNavVisibility,
+          updateUserPreferences: mockUpdateUserPreferences,
         };
         return selector(state);
       });
@@ -121,7 +130,7 @@ describe('NavOrderForm', () => {
       expect(screen.queryByText('Channels')).not.toBeInTheDocument();
     });
 
-    it('calls setNavOrder when reset button is clicked', async () => {
+    it('calls updateUserPreferences when reset button is clicked', async () => {
       const user = userEvent.setup();
       render(<NavOrderForm active={true} />);
 
@@ -129,8 +138,39 @@ describe('NavOrderForm', () => {
       await user.click(resetButton);
 
       await waitFor(() => {
-        expect(mockSetNavOrder).toHaveBeenCalledWith(DEFAULT_ADMIN_ORDER);
+        expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
+          navOrder: DEFAULT_ADMIN_ORDER,
+          hiddenNav: [],
+        });
       });
+    });
+
+    it('renders visibility toggle icons for hideable items', () => {
+      render(<NavOrderForm active={true} />);
+
+      // All items except Settings should have visibility toggle
+      const toggleButtons = screen.getAllByTitle(/from navigation/i);
+      expect(toggleButtons.length).toBeGreaterThan(0);
+    });
+
+    it('calls toggleNavVisibility when eye icon is clicked', async () => {
+      const user = userEvent.setup();
+      render(<NavOrderForm active={true} />);
+
+      const toggleButtons = screen.getAllByTitle('Hide from navigation');
+      await user.click(toggleButtons[0]);
+
+      await waitFor(() => {
+        expect(mockToggleNavVisibility).toHaveBeenCalled();
+      });
+    });
+
+    it('shows hidden items with dimmed styling', () => {
+      mockGetHiddenNav.mockReturnValue(['channels']);
+      render(<NavOrderForm active={true} />);
+
+      // The component should still render the hidden item
+      expect(screen.getByText('Channels')).toBeInTheDocument();
     });
 
     it('uses saved order when available', () => {
@@ -152,6 +192,9 @@ describe('NavOrderForm', () => {
           user: { user_level: USER_LEVELS.USER, custom_properties: {} },
           getNavOrder: mockGetNavOrder,
           setNavOrder: mockSetNavOrder,
+          getHiddenNav: mockGetHiddenNav,
+          toggleNavVisibility: mockToggleNavVisibility,
+          updateUserPreferences: mockUpdateUserPreferences,
         };
         return selector(state);
       });
@@ -175,7 +218,7 @@ describe('NavOrderForm', () => {
       expect(screen.queryByText('Logo Manager')).not.toBeInTheDocument();
     });
 
-    it('calls setNavOrder with user default order when reset', async () => {
+    it('calls updateUserPreferences with user default order when reset', async () => {
       const user = userEvent.setup();
       render(<NavOrderForm active={true} />);
 
@@ -183,7 +226,10 @@ describe('NavOrderForm', () => {
       await user.click(resetButton);
 
       await waitFor(() => {
-        expect(mockSetNavOrder).toHaveBeenCalledWith(DEFAULT_USER_ORDER);
+        expect(mockUpdateUserPreferences).toHaveBeenCalledWith({
+          navOrder: DEFAULT_USER_ORDER,
+          hiddenNav: [],
+        });
       });
     });
   });

@@ -9,7 +9,7 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, Eye, EyeOff } from 'lucide-react';
 import {
   closestCenter,
   DndContext,
@@ -36,7 +36,7 @@ import {
 } from '../../../config/navigation';
 import { USER_LEVELS } from '../../../constants';
 
-const DraggableNavItem = ({ item }) => {
+const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
   const theme = useMantineTheme();
   const { transform, transition, setNodeRef, isDragging, attributes, listeners } = useSortable({
     id: item.id,
@@ -45,7 +45,7 @@ const DraggableNavItem = ({ item }) => {
   const style = {
     transform: CSS.Transform.toString(transform),
     transition: transition,
-    opacity: isDragging ? 0.8 : 1,
+    opacity: isDragging ? 0.8 : isHidden ? 0.5 : 1,
     zIndex: isDragging ? 1 : 0,
     position: 'relative',
   };
@@ -75,11 +75,25 @@ const DraggableNavItem = ({ item }) => {
           >
             <GripVertical size={16} color="#888" />
           </ActionIcon>
-          {IconComponent && <IconComponent size={18} color="#ccc" />}
-          <Text size="sm" c="gray.3">
+          {IconComponent && <IconComponent size={18} color={isHidden ? '#666' : '#ccc'} />}
+          <Text size="sm" c={isHidden ? 'dimmed' : 'gray.3'}>
             {item.label}
           </Text>
         </Group>
+        {canHide && (
+          <ActionIcon
+            variant="transparent"
+            size="sm"
+            onClick={() => onToggleVisibility(item.id)}
+            title={isHidden ? 'Show in navigation' : 'Hide from navigation'}
+          >
+            {isHidden ? (
+              <EyeOff size={16} color="#666" />
+            ) : (
+              <Eye size={16} color="#888" />
+            )}
+          </ActionIcon>
+        )}
       </Group>
     </Box>
   );
@@ -90,6 +104,8 @@ const NavOrderForm = ({ active }) => {
   const user = useAuthStore((s) => s.user);
   const getNavOrder = useAuthStore((s) => s.getNavOrder);
   const setNavOrder = useAuthStore((s) => s.setNavOrder);
+  const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
+  const toggleNavVisibility = useAuthStore((s) => s.toggleNavVisibility);
 
   const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
@@ -147,10 +163,12 @@ const NavOrderForm = ({ active }) => {
     }
   };
 
+  const updateUserPreferences = useAuthStore((s) => s.updateUserPreferences);
+
   const handleReset = async () => {
     setIsSaving(true);
     try {
-      await setNavOrder(defaultOrder);
+      await updateUserPreferences({ navOrder: defaultOrder, hiddenNav: [] });
       const orderedItems = getOrderedNavItems(defaultOrder, isAdmin);
       setItems(orderedItems);
       notifications.show({
@@ -191,7 +209,13 @@ const NavOrderForm = ({ active }) => {
           strategy={verticalListSortingStrategy}
         >
           {items.map((item) => (
-            <DraggableNavItem key={item.id} item={item} />
+            <DraggableNavItem
+              key={item.id}
+              item={item}
+              isHidden={getHiddenNav().includes(item.id)}
+              canHide={item.id !== 'settings'}
+              onToggleVisibility={toggleNavVisibility}
+            />
           ))}
         </SortableContext>
       </DndContext>
