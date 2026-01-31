@@ -38,6 +38,9 @@ const DvrSettingsForm = React.lazy(
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
 );
+const NavOrderForm = React.lazy(
+  () => import('../components/forms/settings/NavOrderForm.jsx')
+);
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -66,6 +69,18 @@ const SettingsPage = () => {
             <AccordionControl>UI Settings</AccordionControl>
             <AccordionPanel>
               <UiSettingsForm active={accordianValue === 'ui-settings'} />
+            </AccordionPanel>
+          </AccordionItem>
+
+          <AccordionItem value="nav-order">
+            <AccordionControl>Navigation</AccordionControl>
+            <AccordionPanel>
+              <ErrorBoundary>
+                <Suspense fallback={<Loader />}>
+                  <NavOrderForm
+                    active={accordianValue === 'nav-order'} />
+                </Suspense>
+              </ErrorBoundary>
             </AccordionPanel>
           </AccordionItem>
 

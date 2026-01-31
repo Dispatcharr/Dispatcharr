@@ -1,26 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
-  ListOrdered,
-  Play,
-  Database,
-  LayoutGrid,
-  Settings as LucideSettings,
   Copy,
-  ChartLine,
-  Video,
-  PlugZap,
   LogOut,
-  User,
-  FileImage,
-  Webhook,
-  Logs,
   ChevronDown,
   ChevronRight,
-  MonitorCog,
-  Blocks,
 } from 'lucide-react';
+import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
   Group,
@@ -43,6 +30,7 @@ import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
 
 const NavLink = ({ item, isActive, collapsed }) => {
+  const IconComponent = item.icon;
   return (
     <UnstyledButton
       key={item.path}
@@ -50,7 +38,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
       to={item.path}
       className={`navlink ${isActive ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
     >
-      {item.icon}
+      {IconComponent && <IconComponent size={20} />}
       {!collapsed && (
         <Text
           sx={{
@@ -158,82 +146,14 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
-    authUser && authUser.user_level == USER_LEVELS.ADMIN
-      ? [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
-          },
-          {
-            label: 'VODs',
-            path: '/vods',
-            icon: <Video size={20} />,
-          },
-          {
-            label: 'M3U & EPG Manager',
-            icon: <Play size={20} />,
-            path: '/sources',
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
-          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
-          {
-            label: 'Integrations',
-            icon: <Blocks size={20} />,
-            paths: [
-              {
-                label: 'Connections',
-                icon: <Webhook size={20} />,
-                path: '/connect',
-              },
-              {
-                label: 'Logs',
-                icon: <Logs size={20} />,
-                path: '/connect/logs',
-              },
-            ],
-          },
-          {
-            label: 'System',
-            icon: <MonitorCog size={20} />,
-            paths: [
-              {
-                label: 'Users',
-                icon: <User size={20} />,
-                path: '/users',
-              },
-              {
-                label: 'Logo Manager',
-                icon: <FileImage size={20} />,
-                path: '/logos',
-              },
-              {
-                label: 'Settings',
-                icon: <LucideSettings size={20} />,
-                path: '/settings',
-              },
-            ],
-          },
-        ]
-      : [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ];
+  // Get user's saved navigation order
+  const navOrder = authUser?.custom_properties?.navOrder || null;
+  const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
+
+  // Navigation Items - computed from user's saved order
+  const navItems = useMemo(() => {
+    return getOrderedNavItems(navOrder, isAdmin, channels);
+  }, [navOrder, isAdmin, channels]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values
