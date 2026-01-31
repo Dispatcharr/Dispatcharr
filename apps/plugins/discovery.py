@@ -158,6 +158,13 @@ class PluginDiscovery:
         Returns:
             LoadedPlugin with extracted metadata
         """
+        # Extract navigation and auto-generate path if needed
+        navigation = getattr(instance, "navigation", None)
+        if navigation and isinstance(navigation, dict):
+            navigation = navigation.copy()
+            if "path" not in navigation:
+                navigation["path"] = f"/plugins/{key}"
+
         return LoadedPlugin(
             key=key,
             name=getattr(instance, "name", key),
@@ -167,6 +174,8 @@ class PluginDiscovery:
             instance=instance,
             fields=getattr(instance, "fields", []),
             actions=getattr(instance, "actions", []),
+            navigation=navigation,
+            pages=getattr(instance, "pages", None),
         )
 
     def reload_plugin(self, key: str) -> Optional[LoadedPlugin]:

@@ -14,6 +14,18 @@ class PluginConfig(models.Model):
     # Tracks whether this plugin has ever been enabled at least once
     ever_enabled = models.BooleanField(default=False)
     settings = models.JSONField(default=dict, blank=True)
+    # Navigation item configuration (null if plugin doesn't add to nav)
+    navigation = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Navigation item config: {label, icon, path, badge, position}",
+    )
+    # UI schema for plugin pages (null if plugin uses legacy actions UI)
+    pages = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Page definitions for plugin UI",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

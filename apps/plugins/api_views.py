@@ -349,6 +349,79 @@ class PluginDeleteAPIView(PluginPermissionMixin, APIView):
 
 
 # =============================================================================
+# Plugin Navigation and Pages API Views
+# =============================================================================
+
+
+class PluginNavigationAPIView(PluginPermissionMixin, APIView):
+    """Get navigation items for enabled plugins."""
+
+    def get(self, request):
+        """Get navigation items for all enabled plugins with navigation defined."""
+        pm = PluginManager.get()
+        nav_items = pm._registry.get_navigation_items()
+        return Response({"success": True, "navigation": nav_items})
+
+
+class PluginPageAPIView(PluginPermissionMixin, APIView):
+    """Get page schema for a plugin."""
+
+    def get(self, request, key, page_id="main"):
+        """Get the page schema for a plugin.
+
+        Args:
+            key: Plugin key
+            page_id: Page identifier (default: "main")
+        """
+        pm = PluginManager.get()
+        plugin = pm.get_plugin(key)
+
+        if not plugin:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Check if plugin is enabled
+        try:
+            config = PluginConfig.objects.get(key=key)
+            if not config.enabled:
+                return Response(
+                    {"success": False, "error": "Plugin is disabled"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Get pages from plugin
+        pages = plugin.pages
+        if not pages:
+            return Response(
+                {"success": False, "error": "Plugin does not define custom pages"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        page = pages.get(page_id)
+        if not page:
+            return Response(
+                {"success": False, "error": f"Page '{page_id}' not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            "success": True,
+            "plugin": {
+                "key": key,
+                "name": plugin.name,
+            },
+            "page": page,
+        })
+
+
+# =============================================================================
 # Plugin Data API Views
 # =============================================================================
 

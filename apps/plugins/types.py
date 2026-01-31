@@ -177,11 +177,23 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    navigation: Optional[Dict[str, Any]] = None
+    pages: Optional[Dict[str, Dict[str, Any]]] = None
 
     @property
     def is_valid(self) -> bool:
         """Check if the plugin has a valid runnable instance."""
         return self.instance is not None and callable(getattr(self.instance, "run", None))
+
+    @property
+    def has_navigation(self) -> bool:
+        """Check if the plugin defines a navigation item."""
+        return self.navigation is not None and bool(self.navigation.get("label"))
+
+    @property
+    def has_custom_ui(self) -> bool:
+        """Check if the plugin defines custom pages."""
+        return self.pages is not None and len(self.pages) > 0
 
 
 # Type aliases for backwards compatibility and convenience

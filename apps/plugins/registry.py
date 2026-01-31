@@ -121,6 +121,14 @@ class PluginRegistry:
                         if obj.description != plugin.description:
                             obj.description = plugin.description
                             changed = True
+                        # Sync navigation (always update from plugin definition)
+                        if obj.navigation != plugin.navigation:
+                            obj.navigation = plugin.navigation
+                            changed = True
+                        # Sync pages (always update from plugin definition)
+                        if obj.pages != plugin.pages:
+                            obj.pages = plugin.pages
+                            changed = True
                         if changed:
                             obj.save()
 
@@ -162,6 +170,8 @@ class PluginRegistry:
                 "fields": plugin.fields or [],
                 "settings": conf.settings if conf else {},
                 "actions": plugin.actions or [],
+                "navigation": plugin.navigation,
+                "pages": plugin.pages,
                 "missing": False,
             })
 
@@ -180,7 +190,58 @@ class PluginRegistry:
                 "fields": [],
                 "settings": conf.settings or {},
                 "actions": [],
+                "navigation": conf.navigation,
+                "pages": conf.pages,
                 "missing": True,
             })
 
         return plugins
+
+    def get_navigation_items(self) -> List[Dict[str, Any]]:
+        """Get navigation items for all enabled plugins with navigation.
+
+        Returns:
+            List of navigation items for plugins that:
+            - Are enabled
+            - Define a navigation item
+            - Are not missing (files exist)
+        """
+        from .models import PluginConfig
+
+        nav_items: List[Dict[str, Any]] = []
+
+        try:
+            configs = {c.key: c for c in PluginConfig.objects.filter(enabled=True)}
+        except Exception as e:
+            logger.warning("PluginConfig table unavailable: %s", e)
+            return nav_items
+
+        for key, plugin in self._plugins.items():
+            conf = configs.get(key)
+            if not conf or not conf.enabled:
+                continue
+
+            nav = plugin.navigation
+            if not nav or not nav.get("label"):
+                continue
+
+            nav_items.append({
+                "key": key,
+                "label": nav.get("label"),
+                "icon": nav.get("icon", "puzzle"),
+                "path": nav.get("path", f"/plugins/{key}"),
+                "badge": nav.get("badge"),
+                "position": nav.get("position", "bottom"),
+            })
+
+        # Sort by position (numeric positions first, then "top", then "bottom")
+        def sort_key(item):
+            pos = item.get("position", "bottom")
+            if isinstance(pos, int):
+                return (0, pos)
+            if pos == "top":
+                return (1, 0)
+            return (2, 0)
+
+        nav_items.sort(key=sort_key)
+        return nav_items
