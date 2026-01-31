@@ -1797,6 +1797,116 @@ export default class API {
     }
   }
 
+  // Plugin Navigation API
+  static async getPluginNavigation() {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/navigation/`);
+      return response.navigation || [];
+    } catch (e) {
+      // Silently fail - navigation is optional
+      console.warn('Failed to fetch plugin navigation:', e);
+      return [];
+    }
+  }
+
+  // Plugin Page Schema API
+  static async getPluginPage(key, pageId = 'main') {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/page/${pageId}/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to load plugin page', e);
+      throw e;
+    }
+  }
+
+  // Plugin Data API
+  static async getPluginData(key, collection) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/`);
+      return response.data || [];
+    } catch (e) {
+      errorNotification('Failed to fetch plugin data', e);
+      return [];
+    }
+  }
+
+  static async addPluginData(key, collection, data) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/`, {
+        method: 'POST',
+        body: { data },
+      });
+      return response.data;
+    } catch (e) {
+      errorNotification('Failed to add plugin data', e);
+      throw e;
+    }
+  }
+
+  static async updatePluginData(key, collection, recordId, data) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/${recordId}/`, {
+        method: 'PUT',
+        body: { data },
+      });
+      return response.data;
+    } catch (e) {
+      errorNotification('Failed to update plugin data', e);
+      throw e;
+    }
+  }
+
+  static async patchPluginData(key, collection, recordId, data) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/${recordId}/`, {
+        method: 'PATCH',
+        body: { data },
+      });
+      return response.data;
+    } catch (e) {
+      errorNotification('Failed to update plugin data', e);
+      throw e;
+    }
+  }
+
+  static async deletePluginData(key, collection, recordId) {
+    try {
+      await request(`${host}/api/plugins/plugins/${key}/data/${collection}/${recordId}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete plugin data', e);
+      throw e;
+    }
+  }
+
+  static async clearPluginData(key, collection) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/`, {
+        method: 'DELETE',
+      });
+      return response.deleted_count || 0;
+    } catch (e) {
+      errorNotification('Failed to clear plugin data', e);
+      throw e;
+    }
+  }
+
+  static async bulkSetPluginData(key, collection, dataList) {
+    try {
+      const response = await request(`${host}/api/plugins/plugins/${key}/data/${collection}/bulk/`, {
+        method: 'PUT',
+        body: { data: dataList },
+      });
+      return response.data || [];
+    } catch (e) {
+      errorNotification('Failed to set plugin data', e);
+      throw e;
+    }
+  }
+
   static async checkSetting(values) {
     const { id, ...payload } = values;
 

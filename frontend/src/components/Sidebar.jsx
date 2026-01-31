@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
@@ -15,6 +15,35 @@ import {
   LogOut,
   User,
   FileImage,
+  CalendarDays,
+  Puzzle,
+  Calendar,
+  Bell,
+  Star,
+  Home,
+  List,
+  Folder,
+  Music,
+  Image,
+  Film,
+  Tv,
+  Radio,
+  Mic,
+  Book,
+  Globe,
+  Map,
+  Clock,
+  Heart,
+  Bookmark,
+  Tag,
+  Hash,
+  Zap,
+  Cloud,
+  Sun,
+  Moon,
+  Activity,
+  BarChart,
+  PieChart,
 } from 'lucide-react';
 import {
   Avatar,
@@ -27,6 +56,7 @@ import {
   TextInput,
   ActionIcon,
   Menu,
+  Badge,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import logo from '../images/logo.png';
@@ -34,10 +64,59 @@ import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
+import { usePluginStore } from '../store/plugins';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
 
+// Map icon names to Lucide components
+const iconMap = {
+  puzzle: Puzzle,
+  calendar: Calendar,
+  'calendar-days': CalendarDays,
+  bell: Bell,
+  star: Star,
+  home: Home,
+  list: List,
+  folder: Folder,
+  music: Music,
+  image: Image,
+  film: Film,
+  tv: Tv,
+  radio: Radio,
+  mic: Mic,
+  book: Book,
+  globe: Globe,
+  map: Map,
+  clock: Clock,
+  heart: Heart,
+  bookmark: Bookmark,
+  tag: Tag,
+  hash: Hash,
+  zap: Zap,
+  cloud: Cloud,
+  sun: Sun,
+  moon: Moon,
+  activity: Activity,
+  'bar-chart': BarChart,
+  'pie-chart': PieChart,
+  settings: LucideSettings,
+  user: User,
+  video: Video,
+  database: Database,
+  play: Play,
+  chart: ChartLine,
+  plug: PlugZap,
+};
+
+const getIcon = (iconName, size = 20) => {
+  const IconComponent = iconMap[iconName?.toLowerCase()] || Puzzle;
+  return <IconComponent size={size} />;
+};
+
 const NavLink = ({ item, isActive, collapsed }) => {
+  // Support both React elements and icon name strings
+  const icon = typeof item.icon === 'string' ? getIcon(item.icon) : item.icon;
+
   return (
     <UnstyledButton
       key={item.path}
@@ -45,7 +124,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
       to={item.path}
       className={`navlink ${isActive ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
     >
-      {item.icon}
+      {icon}
       {!collapsed && (
         <Text
           sx={{
@@ -61,9 +140,15 @@ const NavLink = ({ item, isActive, collapsed }) => {
         </Text>
       )}
       {!collapsed && item.badge && (
-        <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
-          {item.badge}
-        </Text>
+        typeof item.badge === 'number' ? (
+          <Badge size="sm" variant="filled" color="blue">
+            {item.badge}
+          </Badge>
+        ) : (
+          <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
+            {item.badge}
+          </Text>
+        )
       )}
     </UnstyledButton>
   );
@@ -79,66 +164,115 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
+  // Plugin navigation
+  const pluginNavigation = usePluginStore((s) => s.navigation);
+  const fetchPluginNavigation = usePluginStore((s) => s.fetchNavigation);
+
   const publicIPRef = useRef(null);
 
   const [userFormOpen, setUserFormOpen] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
-    authUser && authUser.user_level == USER_LEVELS.ADMIN
-      ? [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          {
-            label: 'VODs',
-            path: '/vods',
-            icon: <Video size={20} />,
-          },
-          {
-            label: 'M3U & EPG Manager',
-            icon: <Play size={20} />,
-            path: '/sources',
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
-          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
-          {
-            label: 'Users',
-            icon: <User size={20} />,
-            path: '/users',
-          },
-          {
-            label: 'Logo Manager',
-            icon: <FileImage size={20} />,
-            path: '/logos',
-          },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ]
-      : [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ];
+  // Fetch plugin navigation on mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchPluginNavigation();
+    }
+  }, [isAuthenticated, fetchPluginNavigation]);
+
+  // Base navigation items
+  const baseNavItems = useMemo(() => {
+    if (authUser && authUser.user_level == USER_LEVELS.ADMIN) {
+      return [
+        {
+          label: 'Channels',
+          icon: <ListOrdered size={20} />,
+          path: '/channels',
+          badge: `(${Object.keys(channels).length})`,
+        },
+        {
+          label: 'VODs',
+          path: '/vods',
+          icon: <Video size={20} />,
+        },
+        {
+          label: 'M3U & EPG Manager',
+          icon: <Play size={20} />,
+          path: '/sources',
+        },
+        { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
+        { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
+        {
+          label: 'Sports Calendar',
+          icon: <CalendarDays size={20} />,
+          path: '/sports-calendar',
+        },
+        { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
+        { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
+        {
+          label: 'Users',
+          icon: <User size={20} />,
+          path: '/users',
+        },
+        {
+          label: 'Logo Manager',
+          icon: <FileImage size={20} />,
+          path: '/logos',
+        },
+        {
+          label: 'Settings',
+          icon: <LucideSettings size={20} />,
+          path: '/settings',
+        },
+      ];
+    }
+    return [
+      {
+        label: 'Channels',
+        icon: <ListOrdered size={20} />,
+        path: '/channels',
+        badge: `(${Object.keys(channels).length})`,
+      },
+      { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
+      {
+        label: 'Settings',
+        icon: <LucideSettings size={20} />,
+        path: '/settings',
+      },
+    ];
+  }, [authUser, channels]);
+
+  // Merge plugin navigation items
+  const navItems = useMemo(() => {
+    if (!pluginNavigation || pluginNavigation.length === 0) {
+      return baseNavItems;
+    }
+
+    // Convert plugin nav items to the format expected by NavLink
+    const pluginItems = pluginNavigation.map((item) => ({
+      label: item.label,
+      icon: item.icon, // Will be converted by NavLink
+      path: item.path,
+      badge: item.badge,
+      isPlugin: true,
+    }));
+
+    // Find the index of Settings (last item before plugins)
+    const settingsIndex = baseNavItems.findIndex((item) => item.path === '/settings');
+
+    // Insert plugin items before Settings
+    if (settingsIndex !== -1) {
+      return [
+        ...baseNavItems.slice(0, settingsIndex),
+        ...pluginItems,
+        ...baseNavItems.slice(settingsIndex),
+      ];
+    }
+
+    // Fallback: append at end
+    return [...baseNavItems, ...pluginItems];
+  }, [baseNavItems, pluginNavigation]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values
