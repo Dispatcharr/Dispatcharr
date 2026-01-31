@@ -128,17 +128,24 @@ EOF
 **What this does:**
 - Creates a `.env` file with all the necessary environment variables
 - The file is already in `.gitignore`, so it won't be committed to version control
-- You'll source this file before running tests or development commands
+- You'll source this file once per terminal session to load the variables
 
 **Note:** The `.env` file is for local development only and should never be committed to the repository.
 
+**How it works:**
+- When you run `source .env`, the environment variables are loaded into your current terminal session
+- They remain available for all subsequent commands in that session
+- When you open a new terminal window/tab, you'll need to `source .env` again
+
 ## Running Tests
 
-Before running tests, load your environment variables from the `.env` file:
+Before running tests for the first time in a terminal session, load your environment variables from the `.env` file:
 
 ```bash
 source .env
 ```
+
+**Important:** You only need to run `source .env` once per terminal session. The environment variables will persist for all commands in that session. If you open a new terminal window or tab, you'll need to source the file again.
 
 ### Run All Tests
 
@@ -205,12 +212,13 @@ git checkout -b fix/bug-description
 
 ### 3. Run Tests Before Committing
 
-Always run tests to ensure you haven't broken anything. First, load your environment variables:
+Always run tests to ensure you haven't broken anything:
 
 ```bash
-source .env
 python manage.py test apps.channels.tests
 ```
+
+**Note:** If you're in a new terminal session and haven't sourced `.env` yet, run `source .env` first.
 
 ### 4. Commit Your Changes
 
