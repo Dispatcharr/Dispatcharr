@@ -22,7 +22,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
       command: profile?.command || '',
       parameters: profile?.parameters || '',
       is_active: profile?.is_active ?? true,
-      user_agent: profile?.user_agent || '',
+      user_agent: profile?.user_agent ? `${profile.user_agent}` : '',
     }),
     [profile]
   );
@@ -33,6 +33,7 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
     formState: { errors, isSubmitting },
     reset,
     watch,
+    setValue,
   } = useForm({
     defaultValues,
     resolver: yupResolver(schema),
@@ -83,8 +84,8 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
 
         <Select
           label="User-Agent"
-          {...register('user_agent')}
           value={userAgentValue}
+          onChange={(value) => setValue('user_agent', value)}
           error={errors.user_agent?.message}
           data={userAgents.map((ua) => ({
             label: ua.name,
