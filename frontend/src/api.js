@@ -2899,6 +2899,19 @@ export default class API {
     return await request(`${host}/api/accounts/users/me/`);
   }
 
+  static async updateMe(data) {
+    try {
+      const response = await request(`${host}/api/accounts/users/me/`, {
+        method: 'PATCH',
+        body: data,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update user preferences', e);
+      throw e;
+    }
+  }
+
   static async getUsers() {
     try {
       const response = await request(`${host}/api/accounts/users/`);
