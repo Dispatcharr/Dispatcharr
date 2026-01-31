@@ -26,11 +26,10 @@ Before you begin, make sure you have the following installed on your system:
    - Check if installed: `docker --version`
    - Download: [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/)
 
-### Optional but Recommended
-
-- **uv** - Fast Python package installer (alternative to pip)
-  - Install: [https://docs.astral.sh/uv/](https://docs.astral.sh/uv/)
-  - If you don't have uv, standard pip will work fine
+4. **uv** - Fast Python package manager
+   - Check if installed: `uv --version`
+   - Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   - Documentation: [https://docs.astral.sh/uv/](https://docs.astral.sh/uv/)
 
 ## Getting Started
 
@@ -43,15 +42,21 @@ git clone https://github.com/YOUR-USERNAME/Dispatcharr.git
 cd Dispatcharr
 ```
 
-### 2. Set Up Python Virtual Environment
+### 2. Install Dependencies
 
-Create a virtual environment to isolate project dependencies:
+Dispatcharr uses [uv](https://docs.astral.sh/uv/) for fast, reliable dependency management. The `uv sync` command reads from `pyproject.toml` and automatically creates a virtual environment:
 
 ```bash
-python3 -m venv .venv
+uv sync
 ```
 
-Activate the virtual environment:
+**Expected output:** You'll see packages being resolved and installed. UV is fast - this typically completes in seconds.
+
+**Note:** Some dependencies like `torch` and `sentence-transformers` are large ML libraries required for EPG auto-matching features.
+
+### 3. Activate the Virtual Environment
+
+After `uv sync` creates the `.venv` directory, activate it:
 
 **On macOS/Linux:**
 ```bash
@@ -64,19 +69,6 @@ source .venv/bin/activate
 ```
 
 You should see `(.venv)` appear in your terminal prompt, indicating the virtual environment is active.
-
-### 3. Install Dependencies
-
-Install the project dependencies:
-
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-**Expected output:** You'll see packages being downloaded and installed. This may take a few minutes on first run.
-
-**Note:** Some dependencies like `torch` and `sentence-transformers` are large ML libraries. They're optional for basic development but required for EPG auto-matching features.
 
 ### 4. Start PostgreSQL Database
 
@@ -282,8 +274,8 @@ docker exec -it dispatcharr-test-postgres psql -U dispatch -d dispatcharr_test
 ### "No module named 'X'" Error
 
 If you see import errors, ensure you've:
-1. Activated your virtual environment: `source .venv/bin/activate`
-2. Installed all dependencies: `pip install -r requirements.txt`
+1. Installed dependencies: `uv sync`
+2. Activated your virtual environment: `source .venv/bin/activate`
 
 ### PostgreSQL Connection Errors
 
