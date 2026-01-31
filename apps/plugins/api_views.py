@@ -186,6 +186,12 @@ class PluginImportAPIView(APIView):
                 "ever_enabled": ever_enabled,
                 "fields": plugin.fields or [],
                 "actions": plugin.actions or [],
+                "compatible": plugin.compatible,
+                "compatibility_error": plugin.compatibility_error,
+                "repository": plugin.repository,
+                "authors": plugin.authors,
+                "icon": plugin.icon,
+                "has_manifest": plugin.has_manifest,
             }
         })
 
@@ -257,14 +263,48 @@ class PluginEnabledAPIView(APIView):
         enabled = request.data.get("enabled")
         if enabled is None:
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
+
+        pm = PluginManager.get()
+        plugin = pm.get_plugin(key)
+
+        # Check compatibility before enabling
+        if enabled:
+            if plugin and not plugin.compatible:
+                return Response({
+                    "success": False,
+                    "error": f"Cannot enable incompatible plugin: {plugin.compatibility_error}"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Check for manifest_key conflicts with already-enabled plugins
+            if plugin and plugin.manifest_key:
+                conflicting_keys = pm.get_plugins_by_manifest_key(plugin.manifest_key, exclude_key=key)
+                for conflict_key in conflicting_keys:
+                    try:
+                        conflict_cfg = PluginConfig.objects.get(key=conflict_key)
+                        if conflict_cfg.enabled:
+                            conflict_plugin = pm.get_plugin(conflict_key)
+                            conflict_name = conflict_plugin.name if conflict_plugin else conflict_key
+                            return Response({
+                                "success": False,
+                                "error": f"Cannot enable: '{conflict_name}' is already enabled with the same plugin key '{plugin.manifest_key}'"
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                    except PluginConfig.DoesNotExist:
+                        pass
+
         try:
             cfg = PluginConfig.objects.get(key=key)
+
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
             if cfg.enabled and not cfg.ever_enabled:
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
-            return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
+
+            return Response({
+                "success": True,
+                "enabled": cfg.enabled,
+                "ever_enabled": cfg.ever_enabled,
+            })
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 

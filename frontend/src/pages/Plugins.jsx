@@ -77,6 +77,7 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
                 <PluginCard
                   key={p.key}
                   plugin={p}
+                  allPlugins={plugins}
                   onSaveSettings={updatePluginSettings}
                   onRunAction={runPluginAction}
                   onToggleEnabled={handleTogglePluginEnabled}

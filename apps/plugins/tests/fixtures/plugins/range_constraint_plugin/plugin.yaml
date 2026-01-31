@@ -1,0 +1,6 @@
+plugin:
+  key: range-plugin
+  name: Range Plugin
+  version: 1.0.0
+  requires:
+    dispatcharr: ">=0.18.0,<0.19.0"

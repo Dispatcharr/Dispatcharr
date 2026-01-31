@@ -1,0 +1,3 @@
+plugin:
+  key: incomplete-plugin
+  # Missing 'name' and 'version' fields
