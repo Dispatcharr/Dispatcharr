@@ -480,15 +480,18 @@ def rehash_streams(keys):
 
     try:
         batch_size = 1000
-        queryset = Stream.objects.all()
 
         # Track statistics
         total_processed = 0
         duplicates_merged = 0
+        # hash_keys maps new_hash -> stream_id for streams we've already processed
         hash_keys = {}
+        # Track IDs of streams that have been deleted to avoid stale references
+        deleted_stream_ids = set()
 
-        total_records = queryset.count()
-        logger.info(f"Starting rehash of {total_records} streams with keys: {keys}")
+        # Get initial count for progress reporting
+        initial_total_records = Stream.objects.count()
+        logger.info(f"Starting rehash of {initial_total_records} streams with keys: {keys}")
 
         # Send initial WebSocket update
         send_websocket_update(
@@ -499,103 +502,108 @@ def rehash_streams(keys):
                 "type": "stream_rehash",
                 "action": "starting",
                 "progress": 0,
-                "total_records": total_records,
-                "message": f"Starting rehash of {total_records} streams"
+                "total_records": initial_total_records,
+                "message": f"Starting rehash of {initial_total_records} streams"
             }
         )
 
-        for start in range(0, total_records, batch_size):
+        # Use ID-based pagination to handle deletions correctly
+        # This ensures we don't skip records when items are deleted
+        last_processed_id = 0
+        batch_number = 0
+
+        while True:
+            batch_number += 1
             batch_processed = 0
             batch_duplicates = 0
 
             with transaction.atomic():
-                batch = queryset[start:start + batch_size]
+                # Fetch batch by ID ordering, using select_for_update to lock records
+                # This prevents race conditions and ensures we process each record exactly once
+                batch = list(
+                    Stream.objects.filter(id__gt=last_processed_id)
+                    .select_for_update(skip_locked=True, of=('self',))
+                    .select_related('channel_group', 'm3u_account')
+                    .order_by('id')[:batch_size]
+                )
+
+                if not batch:
+                    # No more records to process
+                    break
 
                 for obj in batch:
+                    # Update the last processed ID for next batch
+                    last_processed_id = obj.id
+
                     # Generate new hash
                     group_name = obj.channel_group.name if obj.channel_group else None
                     new_hash = Stream.generate_hash_key(obj.name, obj.url, obj.tvg_id, keys, m3u_id=obj.m3u_account_id, group=group_name)
 
-                    # Check if this hash already exists in our tracking dict or in database
+                    # Check if this hash already exists in our tracking dict
                     if new_hash in hash_keys:
-                        # Found duplicate in current batch - merge the streams
                         existing_stream_id = hash_keys[new_hash]
-                        existing_stream = Stream.objects.get(id=existing_stream_id)
 
-                        # Move any channel relationships from duplicate to existing stream
-                        # Handle potential unique constraint violations
-                        for channel_stream in ChannelStream.objects.filter(stream_id=obj.id):
-                            # Check if this channel already has a relationship with the target stream
-                            existing_relationship = ChannelStream.objects.filter(
-                                channel_id=channel_stream.channel_id,
-                                stream_id=existing_stream_id
-                            ).first()
+                        # Verify the target stream still exists and hasn't been deleted
+                        if existing_stream_id in deleted_stream_ids:
+                            # The target was deleted, so this stream becomes the new canonical one
+                            obj.stream_hash = new_hash
+                            obj.save(update_fields=['stream_hash'])
+                            hash_keys[new_hash] = obj.id
+                            batch_processed += 1
+                            continue
 
-                            if existing_relationship:
-                                # Relationship already exists, just delete the duplicate
-                                channel_stream.delete()
-                            else:
-                                # Safe to update the relationship
-                                channel_stream.stream_id = existing_stream_id
-                                channel_stream.save()
+                        try:
+                            existing_stream = Stream.objects.get(id=existing_stream_id)
+                        except Stream.DoesNotExist:
+                            # Target stream was deleted externally, make this the canonical one
+                            deleted_stream_ids.add(existing_stream_id)
+                            obj.stream_hash = new_hash
+                            obj.save(update_fields=['stream_hash'])
+                            hash_keys[new_hash] = obj.id
+                            batch_processed += 1
+                            continue
 
-                        # Update the existing stream with the most recent data
-                        if obj.updated_at > existing_stream.updated_at:
-                            existing_stream.name = obj.name
-                            existing_stream.url = obj.url
-                            existing_stream.logo_url = obj.logo_url
-                            existing_stream.tvg_id = obj.tvg_id
-                            existing_stream.m3u_account = obj.m3u_account
-                            existing_stream.channel_group = obj.channel_group
-                            existing_stream.custom_properties = obj.custom_properties
-                            existing_stream.last_seen = obj.last_seen
-                            existing_stream.updated_at = obj.updated_at
-                            existing_stream.save()
+                        # Determine which stream to keep based on channel ordering
+                        stream_to_keep, stream_to_delete = _determine_stream_to_keep(existing_stream, obj)
 
-                        # Delete the duplicate
-                        obj.delete()
+                        # Move channel relationships from the stream being deleted to the one being kept
+                        _merge_stream_relationships(stream_to_delete, stream_to_keep)
+
+                        # Delete the duplicate FIRST to free up the unique hash constraint
+                        deleted_stream_ids.add(stream_to_delete.id)
+                        stream_to_delete.delete()
                         batch_duplicates += 1
+
+                        # Now safely set the hash on the kept stream (after deletion freed it up)
+                        if stream_to_keep.stream_hash != new_hash:
+                            stream_to_keep.stream_hash = new_hash
+                            stream_to_keep.save(update_fields=['stream_hash'])
+
+                        # Update hash_keys to point to the kept stream
+                        hash_keys[new_hash] = stream_to_keep.id
                     else:
-                        # Check if hash already exists in database (from previous batches or existing data)
+                        # Check if hash already exists in database (from streams not yet processed)
                         existing_stream = Stream.objects.filter(stream_hash=new_hash).exclude(id=obj.id).first()
                         if existing_stream:
-                            # Found duplicate in database - merge the streams
-                            # Move any channel relationships from duplicate to existing stream
-                            # Handle potential unique constraint violations
-                            for channel_stream in ChannelStream.objects.filter(stream_id=obj.id):
-                                # Check if this channel already has a relationship with the target stream
-                                existing_relationship = ChannelStream.objects.filter(
-                                    channel_id=channel_stream.channel_id,
-                                    stream_id=existing_stream.id
-                                ).first()
+                            # Found duplicate in database - determine which to keep based on channel ordering
+                            stream_to_keep, stream_to_delete = _determine_stream_to_keep(existing_stream, obj)
 
-                                if existing_relationship:
-                                    # Relationship already exists, just delete the duplicate
-                                    channel_stream.delete()
-                                else:
-                                    # Safe to update the relationship
-                                    channel_stream.stream_id = existing_stream.id
-                                    channel_stream.save()
+                            # Move channel relationships from the stream being deleted to the one being kept
+                            _merge_stream_relationships(stream_to_delete, stream_to_keep)
 
-                            # Update the existing stream with the most recent data
-                            if obj.updated_at > existing_stream.updated_at:
-                                existing_stream.name = obj.name
-                                existing_stream.url = obj.url
-                                existing_stream.logo_url = obj.logo_url
-                                existing_stream.tvg_id = obj.tvg_id
-                                existing_stream.m3u_account = obj.m3u_account
-                                existing_stream.channel_group = obj.channel_group
-                                existing_stream.custom_properties = obj.custom_properties
-                                existing_stream.last_seen = obj.last_seen
-                                existing_stream.updated_at = obj.updated_at
-                                existing_stream.save()
-
-                            # Delete the duplicate
-                            obj.delete()
+                            # Delete the duplicate FIRST to free up the unique hash constraint
+                            deleted_stream_ids.add(stream_to_delete.id)
+                            stream_to_delete.delete()
                             batch_duplicates += 1
-                            hash_keys[new_hash] = existing_stream.id
+
+                            # Now safely set the hash on the kept stream (after deletion freed it up)
+                            if stream_to_keep.stream_hash != new_hash:
+                                stream_to_keep.stream_hash = new_hash
+                                stream_to_keep.save(update_fields=['stream_hash'])
+
+                            hash_keys[new_hash] = stream_to_keep.id
                         else:
-                            # Update hash for this stream
+                            # No duplicate - update hash for this stream
                             obj.stream_hash = new_hash
                             obj.save(update_fields=['stream_hash'])
                             hash_keys[new_hash] = obj.id
@@ -605,10 +613,9 @@ def rehash_streams(keys):
             total_processed += batch_processed
             duplicates_merged += batch_duplicates
 
-            # Calculate progress percentage
-            progress_percent = int((total_processed / total_records) * 100)
-            current_batch = start // batch_size + 1
-            total_batches = (total_records // batch_size) + 1
+            # Calculate progress percentage based on initial count
+            # Cap at 99% until we're actually done to avoid showing 100% prematurely
+            progress_percent = min(99, int((total_processed / max(initial_total_records, 1)) * 100))
 
             # Send progress update via WebSocket
             send_websocket_update(
@@ -619,15 +626,14 @@ def rehash_streams(keys):
                     "type": "stream_rehash",
                     "action": "processing",
                     "progress": progress_percent,
-                    "batch": current_batch,
-                    "total_batches": total_batches,
+                    "batch": batch_number,
                     "processed": total_processed,
                     "duplicates_merged": duplicates_merged,
-                    "message": f"Processed batch {current_batch}/{total_batches}: {batch_processed} streams, {batch_duplicates} duplicates merged"
+                    "message": f"Processed batch {batch_number}: {batch_processed} streams, {batch_duplicates} duplicates merged"
                 }
             )
 
-            logger.info(f"Rehashed batch {current_batch}/{total_batches}: "
+            logger.info(f"Rehashed batch {batch_number}: "
                        f"{batch_processed} processed, {batch_duplicates} duplicates merged")
 
         logger.info(f"Rehashing complete: {total_processed} streams processed, "
@@ -654,13 +660,90 @@ def rehash_streams(keys):
         return f"Successfully rehashed {total_processed} streams"
 
     except Exception as e:
-        logger.error(f"Error during stream rehash: {e}")
+        logger.error(f"Error during stream rehash: {e}", exc_info=True)
         raise
     finally:
         # Always release all acquired M3U locks
         for account_id in acquired_locks:
             release_task_lock('refresh_single_m3u_account', account_id)
         logger.info(f"Released M3U task locks for {len(acquired_locks)} accounts")
+
+
+def _merge_stream_relationships(source_stream, target_stream):
+    """
+    Move channel relationships from source_stream to target_stream.
+    Handles unique constraint violations by preserving existing relationships.
+    Preserves the best ordering when merging relationships.
+    """
+    for channel_stream in ChannelStream.objects.filter(stream_id=source_stream.id):
+        # Check if this channel already has a relationship with the target stream
+        existing_relationship = ChannelStream.objects.filter(
+            channel_id=channel_stream.channel_id,
+            stream_id=target_stream.id
+        ).first()
+
+        if existing_relationship:
+            # Relationship already exists - keep the one with better ordering (lower order value)
+            if channel_stream.order < existing_relationship.order:
+                existing_relationship.order = channel_stream.order
+                existing_relationship.save(update_fields=['order'])
+            # Delete the duplicate relationship
+            channel_stream.delete()
+        else:
+            # Safe to update the relationship
+            channel_stream.stream_id = target_stream.id
+            channel_stream.save()
+
+
+def _get_best_channel_order(stream):
+    """
+    Get the best (lowest) channel order for a stream.
+    Returns None if stream has no channel relationships.
+    Lower order value = better/higher position in the channel list.
+    """
+    best_order = ChannelStream.objects.filter(stream_id=stream.id).order_by('order').values_list('order', flat=True).first()
+    return best_order
+
+
+def _determine_stream_to_keep(stream_a, stream_b):
+    """
+    Determine which stream should be kept when merging duplicates.
+
+    Priority:
+    1. Stream with better (lower) channel order wins
+    2. If both have same order or neither has channel relationships,
+       keep the one with more recent updated_at
+    3. If still tied, keep the one with the lower ID (more stable)
+
+    Returns: (stream_to_keep, stream_to_delete)
+    """
+    order_a = _get_best_channel_order(stream_a)
+    order_b = _get_best_channel_order(stream_b)
+
+    # If one has channel relationships and the other doesn't, keep the one with relationships
+    if order_a is not None and order_b is None:
+        return (stream_a, stream_b)
+    if order_b is not None and order_a is None:
+        return (stream_b, stream_a)
+
+    # If both have channel relationships, keep the one with better (lower) order
+    if order_a is not None and order_b is not None:
+        if order_a < order_b:
+            return (stream_a, stream_b)
+        elif order_b < order_a:
+            return (stream_b, stream_a)
+        # Same order, fall through to other criteria
+
+    # Neither has relationships, or same order - use updated_at
+    if stream_a.updated_at > stream_b.updated_at:
+        return (stream_a, stream_b)
+    elif stream_b.updated_at > stream_a.updated_at:
+        return (stream_b, stream_a)
+
+    # Same updated_at - keep lower ID for stability
+    if stream_a.id < stream_b.id:
+        return (stream_a, stream_b)
+    return (stream_b, stream_a)
 
 
 @shared_task
