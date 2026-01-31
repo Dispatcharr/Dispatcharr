@@ -14,9 +14,11 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import PluginPage from './pages/PluginPage';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
+import SportsCalendar from './pages/SportsCalendar';
 import useAuthStore from './store/auth';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
@@ -152,6 +154,9 @@ const App = () => {
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
                         <Route path="/plugins" element={<PluginsPage />} />
+                        <Route path="/plugins/:pluginKey" element={<PluginPage />} />
+                        <Route path="/plugins/:pluginKey/:pageId" element={<PluginPage />} />
+                        <Route path="/sports-calendar" element={<SportsCalendar />} />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
