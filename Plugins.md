@@ -8,7 +8,19 @@ This document explains how to build, install, and use Python plugins in Dispatch
 
 1) Create a folder under `/app/data/plugins/my_plugin/` (host path `data/plugins/my_plugin/` in the repo).
 
-2) Add a `plugin.py` file exporting a `Plugin` class:
+2) Optionally add a `plugin.yaml` manifest file (recommended for declaring version compatibility):
+
+```yaml
+plugin:
+  key: my-plugin
+  name: My Plugin
+  version: 0.1.0
+  description: Does something useful
+  requires:
+    dispatcharr: ">=0.18.0"
+```
+
+3) Add a `plugin.py` file exporting a `Plugin` class (required):
 
 ```
 # /app/data/plugins/my_plugin/plugin.py
@@ -48,7 +60,7 @@ class Plugin:
         return {"status": "error", "message": f"Unknown action {action}"}
 ```
 
-3) Open the Plugins page in the UI, click the refresh icon to reload discovery, then configure and run your plugin.
+4) Open the Plugins page in the UI, click the refresh icon to reload discovery, then configure and run your plugin.
 
 ---
 
@@ -61,6 +73,97 @@ class Plugin:
   - a Python package (`__init__.py`) exporting a `Plugin` class.
 
 The directory name (lowercased, spaces as `_`) is used as the registry key and module import path (e.g. `my_plugin.plugin`).
+
+---
+
+## Plugin Manifest (plugin.yaml)
+
+Plugins can include an optional `plugin.yaml` manifest file to declare metadata and version compatibility requirements. If a manifest is present, the loader reads it before importing any Python code.
+
+### Manifest Format
+
+```yaml
+plugin:
+  key: my-plugin
+  name: My Plugin
+  version: 1.0.0
+  description: Does something useful
+  repository: https://github.com/example/my-plugin
+  authors:
+    - Your Name
+  icon: calendar
+  requires:
+    dispatcharr: ">=0.18.0"
+```
+
+### Manifest Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `key` | Yes | Unique identifier (lowercase, hyphens allowed) |
+| `name` | Yes | Human-readable display name |
+| `version` | Yes | Semantic version string (e.g., "1.0.0") |
+| `description` | No | Brief description of the plugin |
+| `repository` | No | URL to source repository (GitHub, etc.) |
+| `authors` | No | List of author names |
+| `icon` | No | Icon name from the Lucide icon set |
+| `requires.dispatcharr` | No | Version constraint for Dispatcharr compatibility |
+
+### Version Constraints
+
+The `requires.dispatcharr` field uses [PEP 440](https://peps.python.org/pep-0440/) version specifiers:
+
+| Constraint | Meaning |
+|------------|---------|
+| `>=0.18.0` | Minimum version (0.18.0 or higher) |
+| `<1.0.0` | Maximum version (below 1.0.0) |
+| `>=0.18.0,<1.0.0` | Version range |
+| `==0.18.0` | Exact version only |
+| `~=0.18.0` | Compatible release (>=0.18.0, <0.19.0) |
+| `!=0.18.5` | Exclude specific version |
+
+If a plugin specifies a version constraint that the current Dispatcharr version does not satisfy:
+- The plugin appears in the UI with a warning banner showing the compatibility error
+- The enable toggle and action buttons are disabled
+- The plugin's Python code is **not imported** (preventing potential crashes)
+
+### Backwards Compatibility
+
+Plugins without a `plugin.yaml` manifest continue to work exactly as before:
+- Metadata (`name`, `version`, `description`) is read from the `Plugin` class
+- No version checking is performed (assumed compatible)
+- The `has_manifest` field in the API response will be `false`
+
+### Example: Plugin with Manifest
+
+**plugin.yaml:**
+```yaml
+plugin:
+  key: event-channel-managarr
+  name: Event Channel Managarr
+  version: 0.5.0
+  description: Manage channel visibility based on EPG data
+  repository: https://github.com/example/event-channel-managarr
+  authors:
+    - Your Name
+  icon: calendar
+  requires:
+    dispatcharr: ">=0.18.0"
+```
+
+**plugin.py:**
+```python
+class Plugin:
+    # These can be omitted if defined in plugin.yaml (manifest takes precedence)
+    name = "Event Channel Managarr"
+    version = "0.5.0"
+
+    fields = [...]
+    actions = [...]
+
+    def run(self, action, params, context):
+        ...
+```
 
 ---
 
@@ -187,7 +290,7 @@ Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
 ## REST Endpoints (for UI and tooling)
 
 - List plugins: `GET /api/plugins/plugins/`
-  - Response: `{ "plugins": [{ key, name, version, description, enabled, fields, settings, actions }, ...] }`
+  - Response: `{ "plugins": [{ key, name, version, description, enabled, fields, settings, actions, compatible, compatibility_error, repository, authors, icon, has_manifest }, ...] }`
 - Reload discovery: `POST /api/plugins/plugins/reload/`
 - Import plugin: `POST /api/plugins/plugins/import/` with form-data file field `file`
 - Update settings: `POST /api/plugins/plugins/<key>/settings/` with `{"settings": {...}}`
@@ -266,6 +369,8 @@ class Plugin:
 - Import errors: the folder name is the import name; avoid spaces or exotic characters.
 - No confirmation: include a boolean field with `id: "confirm"` and set it to true or default true.
 - HTTP 403 on run: the plugin is disabled; enable it from the toggle or via the `enabled/` endpoint.
+- Plugin shows "Incompatible": the `requires.dispatcharr` constraint in `plugin.yaml` doesn't match the current Dispatcharr version. Update the plugin or Dispatcharr.
+- Malformed manifest error: check that `plugin.yaml` is valid YAML and includes required fields (`key`, `name`, `version`).
 
 ---
 
@@ -279,8 +384,11 @@ class Plugin:
 ## Internals Reference
 
 - Loader: `apps/plugins/loader.py`
+- Manifest Parser: `apps/plugins/manifest.py`
+- Version Checker: `apps/plugins/version.py`
 - API Views: `apps/plugins/api_views.py`
 - API URLs: `apps/plugins/api_urls.py`
 - Model: `apps/plugins/models.py`
 - Frontend page: `frontend/src/pages/Plugins.jsx`
+- Plugin card: `frontend/src/components/cards/PluginCard.jsx`
 - Sidebar entry: `frontend/src/components/Sidebar.jsx`
