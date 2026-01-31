@@ -248,7 +248,7 @@ const StreamsTable = ({ onReady }) => {
 
   // Column visibility - persisted to localStorage
   // Default visible: name, group, m3u
-  // Default hidden: tvg_id, source_info
+  // Default hidden: tvg_id, stats
   const DEFAULT_COLUMN_VISIBILITY = {
     actions: true,
     select: true,
@@ -256,7 +256,7 @@ const StreamsTable = ({ onReady }) => {
     group: true,
     m3u: true,
     tvg_id: false,
-    source_info: false,
+    stats: false,
   };
 
   const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
@@ -274,7 +274,10 @@ const StreamsTable = ({ onReady }) => {
     // Merge: start with defaults, overlay stored values only for keys that exist in defaults
     const merged = { ...DEFAULT_COLUMN_VISIBILITY };
     for (const key of Object.keys(DEFAULT_COLUMN_VISIBILITY)) {
-      if (key in storedColumnVisibility && typeof storedColumnVisibility[key] === 'boolean') {
+      if (
+        key in storedColumnVisibility &&
+        typeof storedColumnVisibility[key] === 'boolean'
+      ) {
         merged[key] = storedColumnVisibility[key];
       }
     }
@@ -284,7 +287,10 @@ const StreamsTable = ({ onReady }) => {
   const setColumnVisibility = (newValue) => {
     if (typeof newValue === 'function') {
       setStoredColumnVisibility((prev) => {
-        const prevMerged = prev && typeof prev === 'object' ? { ...DEFAULT_COLUMN_VISIBILITY, ...prev } : DEFAULT_COLUMN_VISIBILITY;
+        const prevMerged =
+          prev && typeof prev === 'object'
+            ? { ...DEFAULT_COLUMN_VISIBILITY, ...prev }
+            : DEFAULT_COLUMN_VISIBILITY;
         return newValue(prevMerged);
       });
     } else {
@@ -366,16 +372,19 @@ const StreamsTable = ({ onReady }) => {
       {
         id: 'actions',
         size: columnSizing.actions || 75,
+        minSize: 65,
       },
       {
         id: 'select',
         size: columnSizing.select || 30,
+        minSize: 30,
       },
       {
         header: 'Name',
         accessorKey: 'name',
         grow: true,
         size: columnSizing.name || 200,
+        minSize: 100,
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -398,6 +407,7 @@ const StreamsTable = ({ onReady }) => {
             ? channelGroups[row.channel_group].name
             : '',
         size: columnSizing.group || 150,
+        minSize: 75,
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -416,6 +426,7 @@ const StreamsTable = ({ onReady }) => {
         header: 'M3U',
         id: 'm3u',
         size: columnSizing.m3u || 150,
+        minSize: 75,
         accessorFn: (row) =>
           playlists.find((playlist) => playlist.id === row.m3u_account)?.name,
         cell: ({ getValue }) => (
@@ -437,6 +448,7 @@ const StreamsTable = ({ onReady }) => {
         id: 'tvg_id',
         accessorKey: 'tvg_id',
         size: columnSizing.tvg_id || 120,
+        minSize: 75,
         cell: ({ getValue }) => (
           <Tooltip label={getValue()} openDelay={500}>
             <Box
@@ -452,13 +464,19 @@ const StreamsTable = ({ onReady }) => {
         ),
       },
       {
-        header: 'Source Info',
-        id: 'source_info',
+        header: 'Stats',
+        id: 'stats',
         accessorKey: 'stream_stats',
-        size: columnSizing.source_info || 120,
+        size: columnSizing.stats || 120,
+        minSize: 75,
         cell: ({ getValue }) => {
           const stats = getValue();
-          if (!stats) return <Text size="xs" c="dimmed">-</Text>;
+          if (!stats)
+            return (
+              <Text size="xs" c="dimmed">
+                -
+              </Text>
+            );
 
           // Build compact display (resolution + video codec)
           const parts = [];
@@ -474,21 +492,37 @@ const StreamsTable = ({ onReady }) => {
 
           // Build tooltip content with friendly labels
           const tooltipLines = [];
-          if (stats.resolution) tooltipLines.push(`Resolution: ${stats.resolution}`);
-          if (stats.video_codec) tooltipLines.push(`Video Codec: ${stats.video_codec.toUpperCase()}`);
-          if (stats.video_bitrate) tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
-          if (stats.source_fps) tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
-          if (stats.audio_codec) tooltipLines.push(`Audio Codec: ${stats.audio_codec.toUpperCase()}`);
-          if (stats.audio_channels) tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
-          if (stats.audio_bitrate) tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
+          if (stats.resolution)
+            tooltipLines.push(`Resolution: ${stats.resolution}`);
+          if (stats.video_codec)
+            tooltipLines.push(
+              `Video Codec: ${stats.video_codec.toUpperCase()}`
+            );
+          if (stats.video_bitrate)
+            tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
+          if (stats.source_fps)
+            tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
+          if (stats.audio_codec)
+            tooltipLines.push(
+              `Audio Codec: ${stats.audio_codec.toUpperCase()}`
+            );
+          if (stats.audio_channels)
+            tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
+          if (stats.audio_bitrate)
+            tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
 
-          const tooltipContent = tooltipLines.length > 0
-            ? tooltipLines.join('\n')
-            : 'No source info available';
+          const tooltipContent =
+            tooltipLines.length > 0
+              ? tooltipLines.join('\n')
+              : 'No source info available';
 
           return (
             <Tooltip
-              label={<Text size="xs" style={{ whiteSpace: 'pre-line' }}>{tooltipContent}</Text>}
+              label={
+                <Text size="xs" style={{ whiteSpace: 'pre-line' }}>
+                  {tooltipContent}
+                </Text>
+              }
               openDelay={500}
               multiline
               w={220}
@@ -1131,6 +1165,30 @@ const StreamsTable = ({ onReady }) => {
             />
           </Flex>
         );
+
+      case 'stats':
+        return (
+          <Flex align="center" style={{ width: '100%', flex: 1 }}>
+            <div
+              className="table-input-header"
+              style={{
+                flex: 1,
+                minWidth: 75,
+                display: 'flex',
+                alignItems: 'center',
+                pointerEvents: 'none',
+                userSelect: 'none',
+                cursor: 'default',
+                color: '#cfcfcf',
+                fontWeight: 400,
+                fontSize: 14,
+                lineHeight: '1',
+              }}
+            >
+              <span style={{ width: '100%' }}>Stats</span>
+            </div>
+          </Flex>
+        );
     }
   };
 
@@ -1186,6 +1244,7 @@ const StreamsTable = ({ onReady }) => {
       group: renderHeaderCell,
       m3u: renderHeaderCell,
       tvg_id: renderHeaderCell,
+      stats: renderHeaderCell,
     },
     bodyCellRenderFns: {
       actions: renderBodyCell,
@@ -1435,9 +1494,39 @@ const StreamsTable = ({ onReady }) => {
               </Menu.Dropdown>
             </Menu>
 
+            <Tooltip label="Create a new custom stream" openDelay={500}>
+              <Button
+                leftSection={<SquarePlus size={18} />}
+                variant="light"
+                size="xs"
+                onClick={() => editStream()}
+                p={5}
+                color={theme.tailwind.green[5]}
+                style={{
+                  borderWidth: '1px',
+                  borderColor: theme.tailwind.green[5],
+                  color: 'white',
+                }}
+              >
+                Create Stream
+              </Button>
+            </Tooltip>
+
+            <Tooltip label="Delete selected stream(s)" openDelay={500}>
+              <Button
+                leftSection={<SquareMinus size={18} />}
+                variant="default"
+                size="xs"
+                onClick={deleteStreams}
+                disabled={selectedStreamIds.length == 0}
+              >
+                Delete
+              </Button>
+            </Tooltip>
+
             <Menu shadow="md" width={200}>
               <Menu.Target>
-                <Tooltip label="Column Settings" openDelay={500}>
+                <Tooltip label="Table Settings" openDelay={500}>
                   <ActionIcon variant="default" size={30}>
                     <EllipsisVertical size={18} />
                   </ActionIcon>
@@ -1495,16 +1584,16 @@ const StreamsTable = ({ onReady }) => {
                   <Text size="xs">TVG-ID</Text>
                 </Menu.Item>
                 <Menu.Item
-                  onClick={() => toggleColumnVisibility('source_info')}
+                  onClick={() => toggleColumnVisibility('stats')}
                   leftSection={
-                    columnVisibility.source_info !== false ? (
+                    columnVisibility.stats !== false ? (
                       <Eye size={18} />
                     ) : (
                       <EyeOff size={18} />
                     )
                   }
                 >
-                  <Text size="xs">Source Info</Text>
+                  <Text size="xs">Stats</Text>
                 </Menu.Item>
                 <Menu.Divider />
                 <Menu.Item
@@ -1515,36 +1604,6 @@ const StreamsTable = ({ onReady }) => {
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>
-
-            <Tooltip label="Create a new custom stream" openDelay={500}>
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editStream()}
-                p={5}
-                color={theme.tailwind.green[5]}
-                style={{
-                  borderWidth: '1px',
-                  borderColor: theme.tailwind.green[5],
-                  color: 'white',
-                }}
-              >
-                Create Stream
-              </Button>
-            </Tooltip>
-
-            <Tooltip label="Delete selected stream(s)" openDelay={500}>
-              <Button
-                leftSection={<SquareMinus size={18} />}
-                variant="default"
-                size="xs"
-                onClick={deleteStreams}
-                disabled={selectedStreamIds.length == 0}
-              >
-                Delete
-              </Button>
-            </Tooltip>
           </Flex>
         </Flex>
 
