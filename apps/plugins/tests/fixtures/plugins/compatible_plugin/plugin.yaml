@@ -1,0 +1,11 @@
+plugin:
+  key: test-plugin
+  name: Test Plugin
+  version: 1.0.0
+  description: A test plugin
+  repository: https://github.com/test/plugin
+  authors:
+    - Test Author
+  icon: star
+  requires:
+    dispatcharr: ">=0.1.0"

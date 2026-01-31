@@ -1,7 +1,7 @@
 """Tests for plugin manifest parsing and validation."""
 
-import os
 import tempfile
+from pathlib import Path
 from unittest import TestCase
 
 import yaml
@@ -12,28 +12,19 @@ from apps.plugins.manifest import (
     validate_manifest,
 )
 
+# Path to test fixtures
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "manifests"
+
 
 class TestLoadManifest(TestCase):
     """Test cases for load_manifest function."""
 
     def test_load_valid_manifest(self):
         """Test loading a valid plugin.yaml file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_content = {
-                "plugin": {
-                    "key": "test-plugin",
-                    "name": "Test Plugin",
-                    "version": "1.0.0",
-                }
-            }
-            manifest_path = os.path.join(tmpdir, "plugin.yaml")
-            with open(manifest_path, "w") as f:
-                yaml.dump(manifest_content, f)
-
-            result = load_manifest(tmpdir)
-            self.assertIsNotNone(result)
-            self.assertEqual(result["plugin"]["key"], "test-plugin")
-            self.assertEqual(result["plugin"]["name"], "Test Plugin")
+        result = load_manifest(str(FIXTURES_DIR / "valid_minimal"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["plugin"]["key"], "test-plugin")
+        self.assertEqual(result["plugin"]["name"], "Test Plugin")
 
     def test_load_missing_manifest(self):
         """Test loading from directory without plugin.yaml returns None."""
@@ -43,37 +34,15 @@ class TestLoadManifest(TestCase):
 
     def test_load_malformed_yaml(self):
         """Test loading malformed YAML raises error."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_path = os.path.join(tmpdir, "plugin.yaml")
-            with open(manifest_path, "w") as f:
-                f.write("invalid: yaml: content: [[[")
-
-            with self.assertRaises(yaml.YAMLError):
-                load_manifest(tmpdir)
+        with self.assertRaises(yaml.YAMLError):
+            load_manifest(str(FIXTURES_DIR / "malformed_yaml"))
 
     def test_load_full_manifest(self):
         """Test loading a manifest with all fields."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_content = {
-                "plugin": {
-                    "key": "full-plugin",
-                    "name": "Full Plugin",
-                    "version": "2.0.0",
-                    "description": "A complete plugin",
-                    "repository": "https://github.com/example/plugin",
-                    "authors": ["Author One", "Author Two"],
-                    "icon": "calendar",
-                    "requires": {"dispatcharr": ">=0.18.0"},
-                }
-            }
-            manifest_path = os.path.join(tmpdir, "plugin.yaml")
-            with open(manifest_path, "w") as f:
-                yaml.dump(manifest_content, f)
-
-            result = load_manifest(tmpdir)
-            self.assertEqual(result["plugin"]["description"], "A complete plugin")
-            self.assertEqual(result["plugin"]["authors"], ["Author One", "Author Two"])
-            self.assertEqual(result["plugin"]["requires"]["dispatcharr"], ">=0.18.0")
+        result = load_manifest(str(FIXTURES_DIR / "valid_full"))
+        self.assertEqual(result["plugin"]["description"], "A complete plugin")
+        self.assertEqual(result["plugin"]["authors"], ["Author One", "Author Two"])
+        self.assertEqual(result["plugin"]["requires"]["dispatcharr"], ">=0.18.0")
 
 
 class TestValidateManifest(TestCase):
