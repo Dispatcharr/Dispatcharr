@@ -138,6 +138,11 @@ const PluginCard = ({
       }
       setEnabled(next);
       const resp = await onToggleEnabled(plugin.key, next);
+      if (resp?.success === false) {
+        // Revert toggle on failure
+        setEnabled(!next);
+        return;
+      }
       if (next && resp?.ever_enabled) {
         plugin.ever_enabled = true;
       }
