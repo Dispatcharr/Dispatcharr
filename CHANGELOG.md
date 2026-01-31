@@ -12,6 +12,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - XtreamCodes rate limiting protection: Added configurable Auth Delay setting to Xtream Codes accounts to prevent server-side blocking (Error 844).
   - **Auth Delay**: Configurable pause after authentication before making the first API call (fixes 844 errors on strict servers).
   - This setting is now accessible via the M3U Account edit form.
+- Frontend Unit Tests: Added comprehensive unit tests for React hooks and Zustand stores, including:
+  - `useLocalStorage` hook tests with localStorage mocking and error handling
+  - `useSmartLogos` hook tests for logo loading and management
+  - `useTablePreferences` hook tests for table settings persistence
+  - `useAuthStore` tests for authentication flow and token management
+  - `useChannelsStore` tests for channel data management
+  - `useUserAgentsStore` tests for user agent CRUD operations
+  - `useUsersStore` tests for user management functionality
+  - `useVODLogosStore` tests for VOD logo operations
+  - `useVideoStore` tests for video player state management
+  - `useWarningsStore` tests for warning suppression functionality
+  - Code refactoring for improved readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+
+### Changed
+
+- Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
+  - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
+  - Modern OpenAPI 3.0 specification compliance
+  - Better auto-generation of request/response schemas
+  - Improved documentation accuracy with serializer introspection
+- Switched to uv for package management: Migrated from pip to uv (Astral's fast Python package installer) for improved dependency resolution speed and reliability. This includes updates to Docker build processes, installation scripts (debian_install.sh), and project configuration (pyproject.toml) to leverage uv's features like virtual environment management and lockfile generation. - Thanks [@tobimichael96](https://github.com/tobimichael96) for getting it started!
+
+### Fixed
+
+- Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
+- EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Fixed NumPy baseline detection in Docker entrypoint. Now properly detects when NumPy crashes on import due to CPU baseline incompatibility and installs legacy NumPy version. Previously, if NumPy failed to import, the script would skip legacy installation assuming it was already compatible.
 
 ## [0.18.1] - 2026-01-27
 

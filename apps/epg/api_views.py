@@ -1,10 +1,10 @@
 import logging, os
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 from datetime import timedelta
 from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
@@ -122,8 +122,8 @@ class EPGGridAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
+    @extend_schema(
+        description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
         responses={200: ProgramDataSerializer(many=True)},
     )
     def get(self, request, format=None):
@@ -371,9 +371,8 @@ class EPGImportAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers an EPG data import",
-        responses={202: "EPG data import initiated"},
+    @extend_schema(
+        description="Triggers an EPG data import",
     )
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
@@ -435,20 +434,20 @@ class CurrentProgramsAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Get currently playing programs for specified channels or all channels",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                'channel_ids': openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
-                    description="Array of channel IDs. If null or omitted, returns all channels with current programs.",
-                    nullable=True,
-                )
+    @extend_schema(
+        description="Get currently playing programs for specified channels or all channels",
+        request=inline_serializer(
+            name="CurrentProgramsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    allow_null=True,
+                    help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
+                ),
             },
         ),
-        responses={200: openapi.Response('Current programs', ProgramDataSerializer(many=True))},
+        responses={200: ProgramDataSerializer(many=True)},
     )
     def post(self, request, format=None):
         # Get channel IDs from request body
