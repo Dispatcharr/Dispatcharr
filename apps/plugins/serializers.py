@@ -32,4 +32,5 @@ class PluginSerializer(serializers.Serializer):
     authors = serializers.ListField(child=serializers.CharField(), default=list)
     icon = serializers.CharField(allow_blank=True, default="")
     has_manifest = serializers.BooleanField(default=False)
+    manifest_key = serializers.CharField(allow_blank=True, default="")
 

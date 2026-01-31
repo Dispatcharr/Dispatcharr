@@ -236,3 +236,96 @@ class TestLoaderWithManifest(TestCase):
             plugin = pm.get_plugin("range_constraint_plugin2")
             self.assertFalse(plugin.compatible)
             self.assertIn(">=0.18.0,<0.19.0", plugin.compatibility_error)
+
+    def test_manifest_key_loaded_from_manifest(self):
+        """Test that manifest_key is properly loaded from plugin.yaml."""
+        self._copy_fixture("compatible_plugin")
+
+        from apps.plugins.loader import PluginManager
+
+        PluginManager._instance = None
+        pm = PluginManager.get()
+        pm.plugins_dir = self.temp_dir
+
+        pm.discover_plugins(sync_db=False)
+
+        plugin = pm.get_plugin("compatible_plugin")
+        self.assertIsNotNone(plugin)
+        self.assertEqual(plugin.manifest_key, "test-plugin")
+
+    def test_manifest_key_empty_for_legacy_plugin(self):
+        """Test that manifest_key is empty for plugins without manifest."""
+        self._copy_fixture("legacy_plugin")
+
+        from apps.plugins.loader import PluginManager
+
+        PluginManager._instance = None
+        pm = PluginManager.get()
+        pm.plugins_dir = self.temp_dir
+
+        pm.discover_plugins(sync_db=False)
+
+        plugin = pm.get_plugin("legacy_plugin")
+        self.assertIsNotNone(plugin)
+        self.assertEqual(plugin.manifest_key, "")
+
+    def test_get_plugins_by_manifest_key(self):
+        """Test finding plugins with the same manifest_key."""
+        self._copy_fixture("duplicate_key_plugin_a")
+        self._copy_fixture("duplicate_key_plugin_b")
+
+        from apps.plugins.loader import PluginManager
+
+        PluginManager._instance = None
+        pm = PluginManager.get()
+        pm.plugins_dir = self.temp_dir
+
+        pm.discover_plugins(sync_db=False)
+
+        # Both plugins should have the same manifest_key
+        plugin_a = pm.get_plugin("duplicate_key_plugin_a")
+        plugin_b = pm.get_plugin("duplicate_key_plugin_b")
+        self.assertEqual(plugin_a.manifest_key, "shared-plugin-key")
+        self.assertEqual(plugin_b.manifest_key, "shared-plugin-key")
+
+        # get_plugins_by_manifest_key should find both
+        matches = pm.get_plugins_by_manifest_key("shared-plugin-key")
+        self.assertEqual(sorted(matches), ["duplicate_key_plugin_a", "duplicate_key_plugin_b"])
+
+        # With exclude_key, should find only the other one
+        matches = pm.get_plugins_by_manifest_key("shared-plugin-key", exclude_key="duplicate_key_plugin_a")
+        self.assertEqual(matches, ["duplicate_key_plugin_b"])
+
+    def test_get_plugins_by_manifest_key_empty(self):
+        """Test that empty manifest_key returns no matches."""
+        self._copy_fixture("legacy_plugin")
+
+        from apps.plugins.loader import PluginManager
+
+        PluginManager._instance = None
+        pm = PluginManager.get()
+        pm.plugins_dir = self.temp_dir
+
+        pm.discover_plugins(sync_db=False)
+
+        # Empty manifest_key should return empty list
+        matches = pm.get_plugins_by_manifest_key("")
+        self.assertEqual(matches, [])
+
+    def test_list_plugins_includes_manifest_key(self):
+        """Test that list_plugins includes manifest_key field."""
+        self._copy_fixture("compatible_plugin")
+
+        from apps.plugins.loader import PluginManager
+
+        PluginManager._instance = None
+        pm = PluginManager.get()
+        pm.plugins_dir = self.temp_dir
+
+        pm.discover_plugins(sync_db=False)
+        plugins = pm.list_plugins()
+
+        plugin = next((p for p in plugins if p["key"] == "compatible_plugin"), None)
+        self.assertIsNotNone(plugin)
+        self.assertIn("manifest_key", plugin)
+        self.assertEqual(plugin["manifest_key"], "test-plugin")

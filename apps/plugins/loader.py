@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LoadedPlugin:
-    key: str
+    key: str  # Directory-based key (used for registry and DB)
     name: str
     version: str = ""
     description: str = ""
@@ -32,6 +32,7 @@ class LoadedPlugin:
     authors: List[str] = field(default_factory=list)
     icon: str = ""
     has_manifest: bool = False
+    manifest_key: str = ""  # Key declared in manifest (for uniqueness checking)
 
 
 class PluginManager:
@@ -106,6 +107,7 @@ class PluginManager:
                 compatible=False,
                 compatibility_error=f"Malformed plugin.yaml: {e}",
                 has_manifest=True,
+                manifest_key="",
             )
             return
 
@@ -120,6 +122,7 @@ class PluginManager:
                     compatible=False,
                     compatibility_error=f"Invalid manifest: {'; '.join(errors)}",
                     has_manifest=True,
+                    manifest_key="",
                 )
                 return
 
@@ -133,7 +136,7 @@ class PluginManager:
                     logger.info(f"Plugin '{key}' is incompatible: {compatibility_error}")
                     # Register plugin with metadata but mark as incompatible
                     self._registry[key] = LoadedPlugin(
-                        key=manifest_meta.get("key", key),
+                        key=key,
                         name=manifest_meta.get("name", key),
                         version=manifest_meta.get("version", ""),
                         description=manifest_meta.get("description", ""),
@@ -143,6 +146,7 @@ class PluginManager:
                         compatible=False,
                         compatibility_error=compatibility_error,
                         has_manifest=True,
+                        manifest_key=manifest_meta.get("key", ""),
                     )
                     return
 
@@ -153,7 +157,7 @@ class PluginManager:
             if has_manifest:
                 # Manifest exists but no Python code - valid for metadata-only plugins
                 self._registry[key] = LoadedPlugin(
-                    key=manifest_meta.get("key", key),
+                    key=key,
                     name=manifest_meta.get("name", key),
                     version=manifest_meta.get("version", ""),
                     description=manifest_meta.get("description", ""),
@@ -163,6 +167,7 @@ class PluginManager:
                     compatible=True,
                     compatibility_error="",
                     has_manifest=True,
+                    manifest_key=manifest_meta.get("key", ""),
                 )
                 logger.warning(f"Plugin '{key}' has manifest but no plugin.py or package")
             else:
@@ -219,6 +224,9 @@ class PluginManager:
         fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
 
+        # Get manifest key if available
+        manifest_key = manifest_meta.get("key", "") if manifest_meta else ""
+
         self._registry[key] = LoadedPlugin(
             key=key,
             name=name,
@@ -234,6 +242,7 @@ class PluginManager:
             authors=authors,
             icon=icon,
             has_manifest=has_manifest,
+            manifest_key=manifest_key,
         )
 
     def _sync_db_with_registry(self):
@@ -295,6 +304,7 @@ class PluginManager:
                     "authors": lp.authors,
                     "icon": lp.icon,
                     "has_manifest": lp.has_manifest,
+                    "manifest_key": lp.manifest_key,
                 }
             )
 
@@ -322,6 +332,7 @@ class PluginManager:
                     "authors": [],
                     "icon": "",
                     "has_manifest": False,
+                    "manifest_key": "",
                 }
             )
 
@@ -329,6 +340,26 @@ class PluginManager:
 
     def get_plugin(self, key: str) -> Optional[LoadedPlugin]:
         return self._registry.get(key)
+
+    def get_plugins_by_manifest_key(self, manifest_key: str, exclude_key: str = "") -> List[str]:
+        """Find all plugin keys that have the given manifest_key.
+
+        Args:
+            manifest_key: The manifest key to search for
+            exclude_key: Optional plugin key to exclude from results
+
+        Returns:
+            List of plugin keys (directory names) with matching manifest_key
+        """
+        if not manifest_key:
+            return []
+        matches = []
+        for key, lp in self._registry.items():
+            if key == exclude_key:
+                continue
+            if lp.manifest_key == manifest_key:
+                matches.append(key)
+        return matches
 
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
         cfg = PluginConfig.objects.get(key=key)

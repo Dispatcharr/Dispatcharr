@@ -264,10 +264,11 @@ class PluginEnabledAPIView(APIView):
         if enabled is None:
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
 
+        pm = PluginManager.get()
+        plugin = pm.get_plugin(key)
+
         # Check compatibility before enabling
         if enabled:
-            pm = PluginManager.get()
-            plugin = pm.get_plugin(key)
             if plugin and not plugin.compatible:
                 return Response({
                     "success": False,
@@ -276,12 +277,37 @@ class PluginEnabledAPIView(APIView):
 
         try:
             cfg = PluginConfig.objects.get(key=key)
+
+            # When enabling, check for and disable any other plugins with the same manifest_key
+            disabled_conflicts = []
+            if enabled and plugin and plugin.manifest_key:
+                conflicting_keys = pm.get_plugins_by_manifest_key(plugin.manifest_key, exclude_key=key)
+                for conflict_key in conflicting_keys:
+                    try:
+                        conflict_cfg = PluginConfig.objects.get(key=conflict_key)
+                        if conflict_cfg.enabled:
+                            conflict_cfg.enabled = False
+                            conflict_cfg.save(update_fields=["enabled", "updated_at"])
+                            disabled_conflicts.append(conflict_key)
+                            logger.info(f"Disabled plugin '{conflict_key}' due to manifest_key conflict with '{key}'")
+                    except PluginConfig.DoesNotExist:
+                        pass
+
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
             if cfg.enabled and not cfg.ever_enabled:
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
-            return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
+
+            response_data = {
+                "success": True,
+                "enabled": cfg.enabled,
+                "ever_enabled": cfg.ever_enabled,
+            }
+            if disabled_conflicts:
+                response_data["disabled_conflicts"] = disabled_conflicts
+
+            return Response(response_data)
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
