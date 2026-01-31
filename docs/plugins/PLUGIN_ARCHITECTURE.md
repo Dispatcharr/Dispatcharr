@@ -650,9 +650,16 @@ Or import via ZIP:
 - [x] Drag-and-drop list component with @dnd-kit
 
 ### TODO
-- [ ] Example plugin using new UI system
 - [ ] Frontend WebSocket integration for live data updates
 - [ ] Additional field types (date, time, color pickers)
+
+### Example Plugin
+The `sports_calendar` plugin (`data/plugins/sports_calendar/plugin.py`) demonstrates the new UI system with:
+- Navigation item for sidebar
+- Tabbed page layout (Calendars, Events, Matches, Settings)
+- Forms for adding calendars and configuring settings
+- Tables with search, sort, pagination, and row actions
+- Data persistence via PluginData collections
 
 ## API Reference
 
