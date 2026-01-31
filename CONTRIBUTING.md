@@ -43,13 +43,6 @@ git clone https://github.com/YOUR-USERNAME/Dispatcharr.git
 cd Dispatcharr
 ```
 
-If you're contributing directly (for team members):
-
-```bash
-git clone https://github.com/Dispatcharr/Dispatcharr.git
-cd Dispatcharr
-```
-
 ### 2. Set Up Python Virtual Environment
 
 Create a virtual environment to isolate project dependencies:
@@ -117,33 +110,42 @@ docker exec dispatcharr-test-postgres pg_isready
 
 ### 5. Set Up Environment Variables
 
-For testing, you'll need to set environment variables. The easiest way is to export them before running tests:
+Create a `.env` file in the project root to store your environment variables. This makes it easy to load them whenever you need to run tests or development commands.
+
+Create the file:
 
 ```bash
+cat > .env << 'EOF'
 export POSTGRES_DB=dispatcharr_test
 export POSTGRES_USER=dispatch
 export POSTGRES_PASSWORD=test123
 export POSTGRES_HOST=localhost
 export POSTGRES_PORT=5432
 export DJANGO_SECRET_KEY=test-secret-key-for-development
+EOF
 ```
 
-**Tip:** Consider adding these to a `.env` file or a shell script that you source before development.
+**What this does:**
+- Creates a `.env` file with all the necessary environment variables
+- The file is already in `.gitignore`, so it won't be committed to version control
+- You'll source this file before running tests or development commands
+
+**Note:** The `.env` file is for local development only and should never be committed to the repository.
 
 ## Running Tests
+
+Before running tests, load your environment variables from the `.env` file:
+
+```bash
+source .env
+```
 
 ### Run All Tests
 
 To run the complete test suite:
 
 ```bash
-POSTGRES_DB=dispatcharr_test \
-POSTGRES_USER=dispatch \
-POSTGRES_PASSWORD=test123 \
-POSTGRES_HOST=localhost \
-POSTGRES_PORT=5432 \
-DJANGO_SECRET_KEY=test-secret-key \
-.venv/bin/python manage.py test apps.channels.tests
+python manage.py test apps.channels.tests
 ```
 
 **Expected output:**
@@ -160,25 +162,13 @@ OK
 To run just the channel API tests:
 
 ```bash
-POSTGRES_DB=dispatcharr_test \
-POSTGRES_USER=dispatch \
-POSTGRES_PASSWORD=test123 \
-POSTGRES_HOST=localhost \
-POSTGRES_PORT=5432 \
-DJANGO_SECRET_KEY=test-secret-key \
-.venv/bin/python manage.py test apps.channels.tests.test_channel_api
+python manage.py test apps.channels.tests.test_channel_api
 ```
 
 To run recurring rules tests:
 
 ```bash
-POSTGRES_DB=dispatcharr_test \
-POSTGRES_USER=dispatch \
-POSTGRES_PASSWORD=test123 \
-POSTGRES_HOST=localhost \
-POSTGRES_PORT=5432 \
-DJANGO_SECRET_KEY=test-secret-key \
-.venv/bin/python manage.py test apps.channels.tests.test_recurring_rules
+python manage.py test apps.channels.tests.test_recurring_rules
 ```
 
 ### Understanding Test Output
@@ -215,16 +205,11 @@ git checkout -b fix/bug-description
 
 ### 3. Run Tests Before Committing
 
-Always run tests to ensure you haven't broken anything:
+Always run tests to ensure you haven't broken anything. First, load your environment variables:
 
 ```bash
-POSTGRES_DB=dispatcharr_test \
-POSTGRES_USER=dispatch \
-POSTGRES_PASSWORD=test123 \
-POSTGRES_HOST=localhost \
-POSTGRES_PORT=5432 \
-DJANGO_SECRET_KEY=test-secret-key \
-.venv/bin/python manage.py test apps.channels.tests
+source .env
+python manage.py test apps.channels.tests
 ```
 
 ### 4. Commit Your Changes
@@ -297,7 +282,8 @@ If you see import errors, ensure you've:
 If tests fail with database connection errors:
 1. Check PostgreSQL is running: `docker ps | grep postgres`
 2. Verify port 5432 isn't already in use by another process
-3. Ensure environment variables are set correctly
+3. Ensure you've sourced the `.env` file: `source .env`
+4. Verify environment variables are loaded: `echo $POSTGRES_HOST`
 
 ### Tests Fail with "near 'DO': syntax error"
 
