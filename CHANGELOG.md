@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Frontend now automatically refreshes streams and channels after a stream rehash completes, ensuring the UI is always up-to-date following backend merge operations.
 - Frontend Unit Tests: Added comprehensive unit tests for React hooks and Zustand stores, including:
   - `useLocalStorage` hook tests with localStorage mocking and error handling
   - `useSmartLogos` hook tests for logo loading and management
