@@ -1,254 +1,203 @@
-import importlib
-import json
+"""Plugin loader - main entry point and facade for the plugin system.
+
+This module provides the PluginManager singleton that coordinates
+plugin discovery, registration, and execution. It serves as the
+primary interface for the rest of the application.
+
+The implementation has been refactored into focused modules:
+- discovery.py: Finding and loading plugins from disk
+- registry.py: Managing loaded plugins in memory
+- executor.py: Running plugin actions
+
+This file maintains backwards compatibility while delegating to
+the specialized modules.
+"""
+
 import logging
 import os
-import sys
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from django.db import transaction
-
-from .models import PluginConfig
+from .discovery import PluginDiscovery
+from .executor import PluginExecutor
+from .registry import PluginRegistry
+from .types import LoadedPlugin
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class LoadedPlugin:
-    key: str
-    name: str
-    version: str = ""
-    description: str = ""
-    module: Any = None
-    instance: Any = None
-    fields: List[Dict[str, Any]] = field(default_factory=list)
-    actions: List[Dict[str, Any]] = field(default_factory=list)
+# Re-export LoadedPlugin for backwards compatibility
+__all__ = ["LoadedPlugin", "PluginManager"]
 
 
 class PluginManager:
-    """Singleton manager that discovers and runs plugins from /data/plugins."""
+    """Singleton manager that discovers and runs plugins from /data/plugins.
+
+    This is the main interface for the plugin system. It coordinates:
+    - Plugin discovery from the filesystem
+    - In-memory plugin registry
+    - Database synchronization
+    - Action execution
+
+    Usage:
+        pm = PluginManager.get()
+        pm.discover_plugins()
+        result = pm.run_action("my_plugin", "do_work", {"param": "value"})
+    """
 
     _instance: Optional["PluginManager"] = None
 
     @classmethod
     def get(cls) -> "PluginManager":
+        """Get the singleton PluginManager instance.
+
+        Returns:
+            The PluginManager singleton
+        """
         if not cls._instance:
             cls._instance = PluginManager()
         return cls._instance
 
-    def __init__(self) -> None:
-        self.plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
-        self._registry: Dict[str, LoadedPlugin] = {}
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance (mainly for testing).
 
-        # Ensure plugins directory exists
-        os.makedirs(self.plugins_dir, exist_ok=True)
-        if self.plugins_dir not in sys.path:
-            sys.path.append(self.plugins_dir)
+        This clears the singleton, allowing a fresh instance to be created.
+        """
+        cls._instance = None
+
+    def __init__(self) -> None:
+        """Initialize the PluginManager.
+
+        Sets up the plugins directory, discovery system, registry, and executor.
+        """
+        self.plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
+
+        # Initialize subsystems
+        self._discovery = PluginDiscovery(self.plugins_dir)
+        self._registry = PluginRegistry()
+        self._executor = PluginExecutor(self._registry)
+
+    @property
+    def _registry_dict(self) -> Dict[str, LoadedPlugin]:
+        """Backwards compatibility: access to the internal registry dict.
+
+        Deprecated: Use get_plugin() or list_plugins() instead.
+        """
+        return self._registry.get_all()
 
     def discover_plugins(self, *, sync_db: bool = True) -> Dict[str, LoadedPlugin]:
+        """Discover all plugins in the plugins directory.
+
+        This scans the plugins directory, loads all valid plugins,
+        and optionally syncs with the database.
+
+        Args:
+            sync_db: Whether to sync discovered plugins to the database.
+                    Set to False during early startup when DB isn't ready.
+
+        Returns:
+            Dictionary mapping plugin keys to LoadedPlugin instances
+        """
         if sync_db:
             logger.info(f"Discovering plugins in {self.plugins_dir}")
         else:
             logger.debug(f"Discovering plugins (no DB sync) in {self.plugins_dir}")
-        self._registry.clear()
 
-        try:
-            for entry in sorted(os.listdir(self.plugins_dir)):
-                path = os.path.join(self.plugins_dir, entry)
-                if not os.path.isdir(path):
-                    continue
+        # Discover all plugins
+        discovered = self._discovery.discover_all()
 
-                plugin_key = entry.replace(" ", "_").lower()
+        # Update registry
+        self._registry.update_from_discovery(discovered)
 
-                try:
-                    self._load_plugin(plugin_key, path)
-                except Exception:
-                    logger.exception(f"Failed to load plugin '{plugin_key}' from {path}")
+        logger.info(f"Discovered {len(self._registry)} plugin(s)")
 
-            logger.info(f"Discovered {len(self._registry)} plugin(s)")
-        except FileNotFoundError:
-            logger.warning(f"Plugins directory not found: {self.plugins_dir}")
-
-        # Sync DB records (optional)
+        # Sync to database if requested
         if sync_db:
             try:
-                self._sync_db_with_registry()
+                self._registry.sync_to_database()
             except Exception:
-                # Defer sync if database is not ready (e.g., first startup before migrate)
                 logger.exception("Deferring plugin DB sync; database not ready yet")
-        return self._registry
 
-    def _load_plugin(self, key: str, path: str):
-        # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
-        has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
-        has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
-        if not (has_pkg or has_pluginpy):
-            logger.debug(f"Skipping {path}: no plugin.py or package")
-            return
-
-        candidate_modules = []
-        if has_pluginpy:
-            candidate_modules.append(f"{key}.plugin")
-        if has_pkg:
-            candidate_modules.append(key)
-
-        module = None
-        plugin_cls = None
-        last_error = None
-        for module_name in candidate_modules:
-            try:
-                logger.debug(f"Importing plugin module {module_name}")
-                module = importlib.import_module(module_name)
-                plugin_cls = getattr(module, "Plugin", None)
-                if plugin_cls is not None:
-                    break
-                else:
-                    logger.warning(f"Module {module_name} has no Plugin class")
-            except Exception as e:
-                last_error = e
-                logger.exception(f"Error importing module {module_name}")
-
-        if plugin_cls is None:
-            if last_error:
-                raise last_error
-            else:
-                logger.warning(f"No Plugin class found for {key}; skipping")
-                return
-
-        instance = plugin_cls()
-
-        name = getattr(instance, "name", key)
-        version = getattr(instance, "version", "")
-        description = getattr(instance, "description", "")
-        fields = getattr(instance, "fields", [])
-        actions = getattr(instance, "actions", [])
-
-        self._registry[key] = LoadedPlugin(
-            key=key,
-            name=name,
-            version=version,
-            description=description,
-            module=module,
-            instance=instance,
-            fields=fields,
-            actions=actions,
-        )
-
-    def _sync_db_with_registry(self):
-        with transaction.atomic():
-            for key, lp in self._registry.items():
-                obj, _ = PluginConfig.objects.get_or_create(
-                    key=key,
-                    defaults={
-                        "name": lp.name,
-                        "version": lp.version,
-                        "description": lp.description,
-                        "settings": {},
-                    },
-                )
-                # Update meta if changed
-                changed = False
-                if obj.name != lp.name:
-                    obj.name = lp.name
-                    changed = True
-                if obj.version != lp.version:
-                    obj.version = lp.version
-                    changed = True
-                if obj.description != lp.description:
-                    obj.description = lp.description
-                    changed = True
-                if changed:
-                    obj.save()
+        return self._registry.get_all()
 
     def list_plugins(self) -> List[Dict[str, Any]]:
-        from .models import PluginConfig
+        """Get a list of all plugins with their configuration.
 
-        plugins: List[Dict[str, Any]] = []
-        try:
-            configs = {c.key: c for c in PluginConfig.objects.all()}
-        except Exception as e:
-            # Database might not be migrated yet; fall back to registry only
-            logger.warning("PluginConfig table unavailable; listing registry only: %s", e)
-            configs = {}
-
-        # First, include all discovered plugins
-        for key, lp in self._registry.items():
-            conf = configs.get(key)
-            plugins.append(
-                {
-                    "key": key,
-                    "name": lp.name,
-                    "version": lp.version,
-                    "description": lp.description,
-                    "enabled": conf.enabled if conf else False,
-                    "ever_enabled": getattr(conf, "ever_enabled", False) if conf else False,
-                    "fields": lp.fields or [],
-                    "settings": (conf.settings if conf else {}),
-                    "actions": lp.actions or [],
-                    "missing": False,
-                }
-            )
-
-        # Then, include any DB-only configs (files missing or failed to load)
-        discovered_keys = set(self._registry.keys())
-        for key, conf in configs.items():
-            if key in discovered_keys:
-                continue
-            plugins.append(
-                {
-                    "key": key,
-                    "name": conf.name,
-                    "version": conf.version,
-                    "description": conf.description,
-                    "enabled": conf.enabled,
-                    "ever_enabled": getattr(conf, "ever_enabled", False),
-                    "fields": [],
-                    "settings": conf.settings or {},
-                    "actions": [],
-                    "missing": True,
-                }
-            )
-
-        return plugins
+        Returns:
+            List of plugin dictionaries with metadata and settings
+        """
+        return self._registry.list_plugins_with_config()
 
     def get_plugin(self, key: str) -> Optional[LoadedPlugin]:
+        """Get a specific plugin by key.
+
+        Args:
+            key: The plugin key
+
+        Returns:
+            LoadedPlugin or None if not found
+        """
         return self._registry.get(key)
 
     def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-        cfg = PluginConfig.objects.get(key=key)
-        cfg.settings = settings or {}
-        cfg.save(update_fields=["settings", "updated_at"])
-        return cfg.settings
+        """Update settings for a plugin.
 
-    def run_action(self, key: str, action_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        lp = self.get_plugin(key)
-        if not lp or not lp.instance:
-            raise ValueError(f"Plugin '{key}' not found")
+        Args:
+            key: The plugin key
+            settings: New settings dictionary
 
-        cfg = PluginConfig.objects.get(key=key)
-        if not cfg.enabled:
-            raise PermissionError(f"Plugin '{key}' is disabled")
-        params = params or {}
+        Returns:
+            The updated settings
+        """
+        return self._executor.update_settings(key, settings)
 
-        # Provide a context object to the plugin
-        context = {
-            "settings": cfg.settings or {},
-            "logger": logger,
-            "actions": {a.get("id"): a for a in (lp.actions or [])},
-        }
+    def run_action(
+        self,
+        key: str,
+        action_id: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Execute a plugin action.
 
-        # Run either via Celery if plugin provides a delayed method, or inline
-        run_method = getattr(lp.instance, "run", None)
-        if not callable(run_method):
-            raise ValueError(f"Plugin '{key}' has no runnable 'run' method")
+        Args:
+            key: The plugin key
+            action_id: The action ID to execute
+            params: Optional parameters for the action
 
-        try:
-            result = run_method(action_id, params, context)
-        except Exception:
-            logger.exception(f"Plugin '{key}' action '{action_id}' failed")
-            raise
+        Returns:
+            Result dictionary from the plugin
 
-        # Normalize return
-        if isinstance(result, dict):
-            return result
-        return {"status": "ok", "result": result}
+        Raises:
+            ValueError: If plugin not found or has no run method
+            PermissionError: If plugin is disabled
+        """
+        return self._executor.run_action(key, action_id, params)
+
+    def set_enabled(self, key: str, enabled: bool) -> Dict[str, Any]:
+        """Enable or disable a plugin.
+
+        Args:
+            key: The plugin key
+            enabled: Whether to enable or disable
+
+        Returns:
+            Dictionary with enabled and ever_enabled flags
+        """
+        return self._executor.set_enabled(key, enabled)
+
+    def reload_plugin(self, key: str) -> Optional[LoadedPlugin]:
+        """Reload a single plugin.
+
+        Args:
+            key: The plugin key to reload
+
+        Returns:
+            Reloaded LoadedPlugin or None if not found
+        """
+        plugin = self._discovery.reload_plugin(key)
+        if plugin:
+            self._registry.register(plugin)
+            try:
+                self._registry.sync_to_database()
+            except Exception:
+                logger.exception(f"Failed to sync plugin {key} to database")
+        return plugin
