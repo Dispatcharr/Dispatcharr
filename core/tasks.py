@@ -535,9 +535,16 @@ def rehash_streams(keys):
                     # Update the last processed ID for next batch
                     last_processed_id = obj.id
 
-                    # Generate new hash
+                    # Generate new hash - handle XC accounts differently
                     group_name = obj.channel_group.name if obj.channel_group else None
-                    new_hash = Stream.generate_hash_key(obj.name, obj.url, obj.tvg_id, keys, m3u_id=obj.m3u_account_id, group=group_name)
+                    account_type = obj.m3u_account.account_type if obj.m3u_account else None
+                    stream_id_val = obj.stream_id if hasattr(obj, 'stream_id') else None
+
+                    new_hash = Stream.generate_hash_key(
+                        obj.name, obj.url, obj.tvg_id, keys,
+                        m3u_id=obj.m3u_account_id, group=group_name,
+                        account_type=account_type, stream_id=stream_id_val
+                    )
 
                     # Check if this hash already exists in our tracking dict
                     if new_hash in hash_keys:

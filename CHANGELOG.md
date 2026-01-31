@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Stream Identity Stability: Added `stream_id` (provider stream identifier) and `stream_chno` (provider channel number) fields to Stream model. For XC accounts, the stream hash now uses the stable `stream_id` instead of the URL when hashing, ensuring XC streams maintain their identity and channel associations even when account credentials or server URLs change. Supports both XC `num` and M3U `tvg-chno`/`channel-number` attributes.
 - Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
   - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
   - Modern OpenAPI 3.0 specification compliance
