@@ -23,6 +23,9 @@ import {
   Filter,
   Square,
   SquareCheck,
+  Eye,
+  EyeOff,
+  RotateCcw,
 } from 'lucide-react';
 import {
   TextInput,
@@ -242,6 +245,64 @@ const StreamsTable = ({ onReady }) => {
     'streams-table-column-sizing',
     {}
   );
+
+  // Column visibility - persisted to localStorage
+  // Default visible: name, group, m3u
+  // Default hidden: tvg_id, source_info
+  const DEFAULT_COLUMN_VISIBILITY = {
+    actions: true,
+    select: true,
+    name: true,
+    group: true,
+    m3u: true,
+    tvg_id: false,
+    source_info: false,
+  };
+
+  const [storedColumnVisibility, setStoredColumnVisibility] = useLocalStorage(
+    'streams-table-column-visibility',
+    null // Use null as default to detect fresh install
+  );
+
+  // Merge defaults with stored values, ensuring all columns have values
+  // - Fresh install (null): use defaults
+  // - Existing users: merge settings with defaults for any new columns
+  const columnVisibility = useMemo(() => {
+    if (!storedColumnVisibility || typeof storedColumnVisibility !== 'object') {
+      return DEFAULT_COLUMN_VISIBILITY;
+    }
+    // Merge: start with defaults, overlay stored values only for keys that exist in defaults
+    const merged = { ...DEFAULT_COLUMN_VISIBILITY };
+    for (const key of Object.keys(DEFAULT_COLUMN_VISIBILITY)) {
+      if (key in storedColumnVisibility && typeof storedColumnVisibility[key] === 'boolean') {
+        merged[key] = storedColumnVisibility[key];
+      }
+    }
+    return merged;
+  }, [storedColumnVisibility]);
+
+  const setColumnVisibility = (newValue) => {
+    if (typeof newValue === 'function') {
+      setStoredColumnVisibility((prev) => {
+        const prevMerged = prev && typeof prev === 'object' ? { ...DEFAULT_COLUMN_VISIBILITY, ...prev } : DEFAULT_COLUMN_VISIBILITY;
+        return newValue(prevMerged);
+      });
+    } else {
+      setStoredColumnVisibility(newValue);
+    }
+  };
+
+  const toggleColumnVisibility = (columnId) => {
+    setColumnVisibility((prev) => ({
+      ...prev,
+      [columnId]: !prev[columnId],
+    }));
+  };
+
+  const resetColumnVisibility = () => {
+    setStoredColumnVisibility(DEFAULT_COLUMN_VISIBILITY);
+  };
+
   const debouncedFilters = useDebounce(filters, 500, () => {
     // Reset to first page whenever filters change to avoid "Invalid page" errors
     setPagination({
@@ -272,6 +333,7 @@ const StreamsTable = ({ onReady }) => {
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
+  const videoIsVisible = useVideoStore((s) => s.isVisible);
 
   const data = useStreamsTableStore((s) => s.streams);
   const pageCount = useStreamsTableStore((s) => s.pageCount);
@@ -388,6 +450,61 @@ const StreamsTable = ({ onReady }) => {
             </Box>
           </Tooltip>
         ),
+      },
+      {
+        header: 'Source Info',
+        id: 'source_info',
+        accessorKey: 'stream_stats',
+        size: columnSizing.source_info || 120,
+        cell: ({ getValue }) => {
+          const stats = getValue();
+          if (!stats) return <Text size="xs" c="dimmed">-</Text>;
+
+          // Build compact display (resolution + video codec)
+          const parts = [];
+          if (stats.resolution) {
+            // Convert "1920x1080" to "1080p" format
+            const height = stats.resolution.split('x')[1];
+            if (height) parts.push(`${height}p`);
+          }
+          if (stats.video_codec) {
+            parts.push(stats.video_codec.toUpperCase());
+          }
+          const compactDisplay = parts.length > 0 ? parts.join(' ') : '-';
+
+          // Build tooltip content with friendly labels
+          const tooltipLines = [];
+          if (stats.resolution) tooltipLines.push(`Resolution: ${stats.resolution}`);
+          if (stats.video_codec) tooltipLines.push(`Video Codec: ${stats.video_codec.toUpperCase()}`);
+          if (stats.video_bitrate) tooltipLines.push(`Video Bitrate: ${stats.video_bitrate} kbps`);
+          if (stats.source_fps) tooltipLines.push(`Frame Rate: ${stats.source_fps} FPS`);
+          if (stats.audio_codec) tooltipLines.push(`Audio Codec: ${stats.audio_codec.toUpperCase()}`);
+          if (stats.audio_channels) tooltipLines.push(`Audio Channels: ${stats.audio_channels}`);
+          if (stats.audio_bitrate) tooltipLines.push(`Audio Bitrate: ${stats.audio_bitrate} kbps`);
+
+          const tooltipContent = tooltipLines.length > 0
+            ? tooltipLines.join('\n')
+            : 'No source info available';
+
+          return (
+            <Tooltip
+              label={<Text size="xs" style={{ whiteSpace: 'pre-line' }}>{tooltipContent}</Text>}
+              openDelay={500}
+              multiline
+              w={220}
+            >
+              <Box
+                style={{
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                <Text size="xs">{compactDisplay}</Text>
+              </Box>
+            </Tooltip>
+          );
+        },
       },
     ],
     [channelGroups, playlists, columnSizing]
@@ -1053,6 +1170,7 @@ const StreamsTable = ({ onReady }) => {
     sorting,
     columnSizing,
     setColumnSizing,
+    onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: onRowSelectionChange,
     manualPagination: true,
     manualSorting: true,
@@ -1061,6 +1179,7 @@ const StreamsTable = ({ onReady }) => {
     state: {
       pagination,
       sorting,
+      columnVisibility,
     },
     headerCellRenderFns: {
       name: renderHeaderCell,
@@ -1088,6 +1207,16 @@ const StreamsTable = ({ onReady }) => {
     // Load data independently, don't wait for logos or other data
     fetchData();
   }, [fetchData]);
+
+  // Refetch data when video player closes to update stream stats
+  const prevVideoVisible = useRef(false);
+  useEffect(() => {
+    if (prevVideoVisible.current && !videoIsVisible) {
+      // Video was closed, refetch to get updated stream stats
+      fetchData({ showLoader: false });
+    }
+    prevVideoVisible.current = videoIsVisible;
+  }, [videoIsVisible, fetchData]);
 
   useEffect(() => {
     if (
@@ -1302,6 +1431,87 @@ const StreamsTable = ({ onReady }) => {
                   }
                 >
                   <Text size="xs">Hide Stale</Text>
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <Tooltip label="Column Settings" openDelay={500}>
+                  <ActionIcon variant="default" size={30}>
+                    <EllipsisVertical size={18} />
+                  </ActionIcon>
+                </Tooltip>
+              </Menu.Target>
+
+              <Menu.Dropdown>
+                <Menu.Label>Toggle Columns</Menu.Label>
+                <Menu.Item
+                  onClick={() => toggleColumnVisibility('name')}
+                  leftSection={
+                    columnVisibility.name !== false ? (
+                      <Eye size={18} />
+                    ) : (
+                      <EyeOff size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Name</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => toggleColumnVisibility('group')}
+                  leftSection={
+                    columnVisibility.group !== false ? (
+                      <Eye size={18} />
+                    ) : (
+                      <EyeOff size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Group</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => toggleColumnVisibility('m3u')}
+                  leftSection={
+                    columnVisibility.m3u !== false ? (
+                      <Eye size={18} />
+                    ) : (
+                      <EyeOff size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">M3U</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => toggleColumnVisibility('tvg_id')}
+                  leftSection={
+                    columnVisibility.tvg_id !== false ? (
+                      <Eye size={18} />
+                    ) : (
+                      <EyeOff size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">TVG-ID</Text>
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => toggleColumnVisibility('source_info')}
+                  leftSection={
+                    columnVisibility.source_info !== false ? (
+                      <Eye size={18} />
+                    ) : (
+                      <EyeOff size={18} />
+                    )
+                  }
+                >
+                  <Text size="xs">Source Info</Text>
+                </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item
+                  onClick={resetColumnVisibility}
+                  leftSection={<RotateCcw size={18} />}
+                >
+                  <Text size="xs">Reset to Default</Text>
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>
