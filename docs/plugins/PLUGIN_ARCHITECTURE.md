@@ -9,9 +9,9 @@ Dispatcharr's plugin system allows developers to extend the application with cus
 - [x] Define configuration settings rendered in the UI
 - [x] Provide action buttons that trigger backend code
 - [x] Persist data in the database (new: `PluginData` model)
-- [ ] Add navigation items to the sidebar
-- [ ] Provide custom pages with rich UI components
-- [ ] Use forms, tables, drag-and-drop, and other interactive elements
+- [x] Add navigation items to the sidebar
+- [x] Provide custom pages with rich UI components
+- [x] Use forms, tables, drag-and-drop, and other interactive elements
 
 ## Compatibility
 
@@ -368,13 +368,37 @@ pages = {
 }
 ```
 
-**DragDropList** - Reorderable list
+**DragDropList** - Reorderable list with drag-and-drop
 ```python
 {
     "type": "drag_drop_list",
     "data_source": "priorities",
-    "item_template": {"title": "{{name}}"},
+    "item_template": {
+        "title": "{{name}}",
+        "subtitle": "{{description}}",
+        "badge": "{{status}}",
+    },
     "on_reorder": "update_order",
+    "order_field": "order",  # Default: "order" - field used for sorting
+    "actions": [
+        {"id": "edit", "label": "Edit", "icon": "edit", "action": "edit_item"},
+        {"id": "delete", "label": "Delete", "icon": "trash", "action": "delete_item", "color": "red"},
+    ],
+    "empty_message": "No items to display",
+}
+```
+
+When items are reordered via drag-and-drop, the `on_reorder` action is called with:
+```python
+params = {
+    "items": [
+        {"_id": "123", "order": 0},
+        {"_id": "456", "order": 1},
+        # ... new order for all items
+    ],
+    "moved_item_id": "123",
+    "from_index": 2,
+    "to_index": 0,
 }
 ```
 
@@ -612,20 +636,23 @@ Or import via ZIP:
 - [x] Data CRUD REST API
 - [x] UI schema type definitions
 - [x] Plugin system code refactoring (modular architecture)
-
-### In Progress
-- [ ] Navigation item registration
-- [ ] Navigation API endpoint
+- [x] Navigation item registration
+- [x] Navigation API endpoint (`GET /api/plugins/navigation/`)
+- [x] Plugin page routing (`/plugins/:key`, `/plugins/:key/:pageId`)
+- [x] Page schema API endpoint (`GET /api/plugins/:key/page/`)
+- [x] UI schema renderer (PluginRenderer component)
+- [x] Layout components (Stack, Group, Card, Tabs)
+- [x] Content components (Title, Text, Alert, Badge, Button, Divider)
+- [x] Form component with validation and action submission
+- [x] Table component with search, sort, pagination, row actions
+- [x] List component with item templates
+- [x] Modal support in renderer
+- [x] Drag-and-drop list component with @dnd-kit
 
 ### TODO
-- [ ] Plugin page routing (`/plugins/:key`)
-- [ ] UI schema renderer (basic components)
-- [ ] Form component with data binding
-- [ ] Table component with data source
-- [ ] Tabs and Modal components
-- [ ] Drag-and-drop list component
-- [ ] Update documentation plugin example
-- [ ] Frontend WebSocket integration for live updates
+- [ ] Example plugin using new UI system
+- [ ] Frontend WebSocket integration for live data updates
+- [ ] Additional field types (date, time, color pickers)
 
 ## API Reference
 

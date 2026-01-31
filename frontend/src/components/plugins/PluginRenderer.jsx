@@ -24,6 +24,7 @@ import API from '../../api';
 import PluginForm from './PluginForm';
 import PluginTable from './PluginTable';
 import PluginList from './PluginList';
+import PluginDragDropList from './PluginDragDropList';
 
 // Context for sharing plugin state across components
 const PluginContext = createContext(null);
@@ -186,6 +187,9 @@ const ComponentRenderer = ({ component }) => {
 
     case 'list':
       return <PluginList {...props} />;
+
+    case 'drag_drop_list':
+      return <PluginDragDropList {...props} />;
 
     case 'loading':
       return (

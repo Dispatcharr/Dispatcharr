@@ -651,6 +651,14 @@ def validate_component(component: Dict[str, Any]) -> List[str]:
         if "label" not in component:
             errors.append("Button component missing 'label'")
 
+    elif comp_type == "drag_drop_list":
+        if "data_source" not in component:
+            errors.append("DragDropList component missing 'data_source'")
+
+    elif comp_type == "list":
+        if "data_source" not in component:
+            errors.append("List component missing 'data_source'")
+
     return errors
 
 
