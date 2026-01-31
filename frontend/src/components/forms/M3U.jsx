@@ -66,6 +66,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      xc_auth_delay: 0,
     },
 
     validate: {
@@ -91,7 +92,7 @@ const M3U = ({
         password: '',
         stale_stream_days:
           m3uAccount.stale_stream_days !== undefined &&
-          m3uAccount.stale_stream_days !== null
+            m3uAccount.stale_stream_days !== null
             ? m3uAccount.stale_stream_days
             : 7,
         priority:
@@ -99,6 +100,7 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        xc_auth_delay: m3uAccount.xc_auth_delay || 0,
       });
 
       if (m3uAccount.account_type == 'XC') {
@@ -333,6 +335,18 @@ const M3U = ({
                     label="Password"
                     description="Password for Xtream Codes authentication (leave empty to keep existing)"
                     {...form.getInputProps('password')}
+                  />
+
+                  <Divider label="Rate Limiting" labelPosition="center" my="sm" />
+
+                  <NumberInput
+                    min={0}
+                    max={60}
+                    step={0.5}
+                    precision={1}
+                    label="Auth Delay (seconds)"
+                    description="Delay after authentication before first API call (fixes 844 errors)"
+                    {...form.getInputProps('xc_auth_delay')}
                   />
                 </Box>
               )}

@@ -139,6 +139,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    xc_auth_delay = serializers.FloatField(required=False, write_only=True, default=0)
 
     class Meta:
         model = M3UAccount
@@ -170,6 +171,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "auto_enable_new_groups_live",
             "auto_enable_new_groups_vod",
             "auto_enable_new_groups_series",
+            "xc_auth_delay",
         ]
         extra_kwargs = {
             "password": {
@@ -188,6 +190,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
+        data["xc_auth_delay"] = custom_props.get("xc_auth_delay", 0)
         return data
 
     def update(self, instance, validated_data):
@@ -196,6 +199,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
+        xc_auth_delay = validated_data.pop("xc_auth_delay", None)
 
         # Get existing custom_properties
         custom_props = instance.custom_properties or {}
@@ -209,6 +213,8 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         if auto_enable_new_groups_series is not None:
             custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        if xc_auth_delay is not None:
+            custom_props["xc_auth_delay"] = xc_auth_delay
 
         validated_data["custom_properties"] = custom_props
 
@@ -249,6 +255,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
+        xc_auth_delay = validated_data.pop("xc_auth_delay", 0)
 
         # Parse existing custom_properties or create new
         custom_props = validated_data.get("custom_properties", {})
@@ -258,6 +265,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
         custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
         custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        custom_props["xc_auth_delay"] = xc_auth_delay
         validated_data["custom_properties"] = custom_props
 
         return super().create(validated_data)
