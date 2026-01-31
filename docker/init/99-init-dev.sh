@@ -15,11 +15,12 @@ fi
 
 # Install frontend dependencies
 cd /app/frontend && npm install
-# Install pip dependencies
-cd /app && pip install -r requirements.txt
+
+# Sync Python dependencies using UV (reads from pyproject.toml)
+cd /app && uv sync --no-install-project --no-dev
 
 # Install debugpy for remote debugging
 if [ "$DISPATCHARR_DEBUG" = "true" ]; then
     echo "=== setting up debugpy ==="
-    pip install debugpy
+    uv pip install debugpy
 fi

@@ -54,6 +54,11 @@ uv sync
 
 **Note:** Some dependencies like `torch` and `sentence-transformers` are large ML libraries required for EPG auto-matching features.
 
+**macOS Users:** The ML dependencies (torch) are configured for Linux. On macOS, you have two options:
+
+1. **Use Docker for development** (recommended): See [Alternative: Docker Development](#alternative-docker-development) below
+2. **Modify torch version temporarily**: Edit `pyproject.toml` and change `torch==2.9.1+cpu` to `torch>=2.0.0`, then remove the `[tool.uv.sources]` section for torch. Don't commit these changes.
+
 ### 3. Activate the Virtual Environment
 
 After `uv sync` creates the `.venv` directory, activate it:
@@ -267,6 +272,33 @@ If you need to inspect the database:
 
 ```bash
 docker exec -it dispatcharr-test-postgres psql -U dispatch -d dispatcharr_test
+```
+
+## Alternative: Docker Development
+
+If you're on macOS or prefer a fully containerized environment, you can use the dev Docker setup:
+
+```bash
+cd docker
+docker compose -f docker-compose.dev.yml up -d
+```
+
+This starts a development container with all dependencies pre-installed. The container:
+- Mounts your local code at `/app`
+- Runs the frontend dev server on port 9191
+- Runs the backend on port 5656
+- Includes PostgreSQL and Redis
+
+To run tests inside the container:
+
+```bash
+docker exec dispatcharr_dev python manage.py test apps.channels.tests
+```
+
+To view logs:
+
+```bash
+docker logs -f dispatcharr_dev
 ```
 
 ## Troubleshooting
