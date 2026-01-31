@@ -74,6 +74,19 @@ const useAuthStore = create((set, get) => ({
     return await get().updateUserPreferences({ navOrder });
   },
 
+  getHiddenNav: () => {
+    const user = get().user;
+    return user?.custom_properties?.hiddenNav || [];
+  },
+
+  toggleNavVisibility: async (itemId) => {
+    const hiddenNav = get().getHiddenNav();
+    const newHiddenNav = hiddenNav.includes(itemId)
+      ? hiddenNav.filter((id) => id !== itemId)
+      : [...hiddenNav, itemId];
+    return await get().updateUserPreferences({ hiddenNav: newHiddenNav });
+  },
+
   initData: async () => {
     // Prevent multiple simultaneous initData calls
     if (get().isInitializing || get().isInitialized) {
