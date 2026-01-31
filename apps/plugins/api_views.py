@@ -20,7 +20,7 @@ from apps.accounts.permissions import (
 )
 
 from .loader import PluginManager
-from .models import PluginConfig
+from .models import PluginConfig, PluginData
 
 logger = logging.getLogger(__name__)
 
@@ -346,3 +346,191 @@ class PluginDeleteAPIView(PluginPermissionMixin, APIView):
         # Reload registry
         pm.discover_plugins()
         return Response({"success": True})
+
+
+# =============================================================================
+# Plugin Data API Views
+# =============================================================================
+
+
+class PluginDataListAPIView(PluginPermissionMixin, APIView):
+    """List and create data in a plugin collection."""
+
+    def get(self, request, key, collection):
+        """Get all items in a collection."""
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        data = PluginData.objects.get_collection_data(key, collection)
+        return Response({"success": True, "data": data})
+
+    def post(self, request, key, collection):
+        """Add a new item to a collection."""
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        data = request.data.get("data", {})
+        if not isinstance(data, dict):
+            return Response(
+                {"success": False, "error": "'data' must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            record = PluginData.objects.add_to_collection(key, collection, data)
+            return Response({
+                "success": True,
+                "data": {**record.data, "_id": record.id},
+            }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.exception("Failed to add plugin data")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def delete(self, request, key, collection):
+        """Clear all items in a collection."""
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        count = PluginData.objects.clear_collection(key, collection)
+        return Response({"success": True, "deleted_count": count})
+
+
+class PluginDataDetailAPIView(PluginPermissionMixin, APIView):
+    """Get, update, or delete a specific data item."""
+
+    def get(self, request, key, collection, record_id):
+        """Get a specific item."""
+        try:
+            record = PluginData.objects.get(
+                plugin__key=key,
+                collection=collection,
+                id=record_id,
+            )
+            return Response({
+                "success": True,
+                "data": {**record.data, "_id": record.id},
+            })
+        except PluginData.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Record not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    def put(self, request, key, collection, record_id):
+        """Update a specific item (full replacement)."""
+        data = request.data.get("data", {})
+        if not isinstance(data, dict):
+            return Response(
+                {"success": False, "error": "'data' must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record = PluginData.objects.update_in_collection(
+            key, collection, record_id, data
+        )
+        if record is None:
+            return Response(
+                {"success": False, "error": "Record not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            "success": True,
+            "data": {**record.data, "_id": record.id},
+        })
+
+    def patch(self, request, key, collection, record_id):
+        """Partially update a specific item (merge)."""
+        try:
+            record = PluginData.objects.get(
+                plugin__key=key,
+                collection=collection,
+                id=record_id,
+            )
+        except PluginData.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Record not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        updates = request.data.get("data", {})
+        if not isinstance(updates, dict):
+            return Response(
+                {"success": False, "error": "'data' must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Merge updates into existing data
+        record.data.update(updates)
+        record.save()
+
+        return Response({
+            "success": True,
+            "data": {**record.data, "_id": record.id},
+        })
+
+    def delete(self, request, key, collection, record_id):
+        """Delete a specific item."""
+        deleted = PluginData.objects.remove_from_collection(
+            key, collection, record_id
+        )
+        if not deleted:
+            return Response(
+                {"success": False, "error": "Record not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({"success": True})
+
+
+class PluginDataBulkAPIView(PluginPermissionMixin, APIView):
+    """Bulk operations on plugin data collections."""
+
+    def put(self, request, key, collection):
+        """Replace entire collection with new data."""
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        data_list = request.data.get("data", [])
+        if not isinstance(data_list, list):
+            return Response(
+                {"success": False, "error": "'data' must be an array"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            records = PluginData.objects.set_collection(key, collection, data_list)
+            result = [
+                {**r.data, "_id": r.id}
+                for r in records
+            ]
+            return Response({"success": True, "data": result})
+        except Exception as e:
+            logger.exception("Failed to set collection")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
