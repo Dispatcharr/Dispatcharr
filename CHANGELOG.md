@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- XtreamCodes rate limiting protection: Added configurable Auth Delay setting to Xtream Codes accounts to prevent server-side blocking (Error 844).
+  - **Auth Delay**: Configurable pause after authentication before making the first API call (fixes 844 errors on strict servers).
+  - This setting is now accessible via the M3U Account edit form.
+
 ## [0.18.1] - 2026-01-27
 
 ### Fixed
