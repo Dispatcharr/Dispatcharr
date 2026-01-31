@@ -73,6 +73,7 @@ const PluginActionStatus = ({ running, lastResult }) => {
 
 const PluginCard = ({
   plugin,
+  allPlugins = [],
   onSaveSettings,
   onRunAction,
   onToggleEnabled,
@@ -115,6 +116,19 @@ const PluginCard = ({
 
   const missing = plugin.missing;
   const compatible = plugin.compatible !== false;
+
+  // Check for manifest_key conflict with another enabled plugin
+  const conflictingPlugin = React.useMemo(() => {
+    if (!plugin.manifest_key || plugin.enabled) return null;
+    return allPlugins.find(
+      (p) =>
+        p.key !== plugin.key &&
+        p.manifest_key === plugin.manifest_key &&
+        p.enabled
+    );
+  }, [plugin.key, plugin.manifest_key, plugin.enabled, allPlugins]);
+
+  const hasKeyConflict = !!conflictingPlugin;
 
   const handleEnableChange = () => {
     return async (e) => {
@@ -195,13 +209,24 @@ const PluginCard = ({
     }
   };
 
+  // Determine card styling based on state
+  const getCardStyle = () => {
+    if (!compatible) {
+      return { borderColor: 'var(--mantine-color-orange-6)', borderWidth: 2 };
+    }
+    if (hasKeyConflict) {
+      return { borderColor: 'var(--mantine-color-yellow-6)', borderWidth: 2 };
+    }
+    return undefined;
+  };
+
   return (
     <Card
       shadow="sm"
       radius="md"
       withBorder
-      opacity={!missing && compatible && enabled ? 1 : 0.6}
-      style={!compatible ? { borderColor: 'var(--mantine-color-orange-6)', borderWidth: 2 } : undefined}
+      opacity={!missing && compatible && !hasKeyConflict && enabled ? 1 : 0.6}
+      style={getCardStyle()}
     >
       <Group justify="space-between" mb="xs" align="center">
         <div>
@@ -228,7 +253,7 @@ const PluginCard = ({
             size="xs"
             onLabel="On"
             offLabel="Off"
-            disabled={missing || !compatible}
+            disabled={missing || !compatible || hasKeyConflict}
           />
         </Group>
       </Group>
@@ -241,6 +266,17 @@ const PluginCard = ({
           mb="sm"
         >
           {plugin.compatibility_error || 'This plugin is not compatible with the current version of Dispatcharr.'}
+        </Alert>
+      )}
+
+      {hasKeyConflict && (
+        <Alert
+          icon={<AlertTriangle size={16} />}
+          title="Plugin Key Conflict"
+          color="yellow"
+          mb="sm"
+        >
+          Cannot enable while "{conflictingPlugin.name}" is enabled. Both plugins use the key "{plugin.manifest_key}".
         </Alert>
       )}
 

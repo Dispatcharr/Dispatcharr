@@ -275,23 +275,24 @@ class PluginEnabledAPIView(APIView):
                     "error": f"Cannot enable incompatible plugin: {plugin.compatibility_error}"
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            cfg = PluginConfig.objects.get(key=key)
-
-            # When enabling, check for and disable any other plugins with the same manifest_key
-            disabled_conflicts = []
-            if enabled and plugin and plugin.manifest_key:
+            # Check for manifest_key conflicts with already-enabled plugins
+            if plugin and plugin.manifest_key:
                 conflicting_keys = pm.get_plugins_by_manifest_key(plugin.manifest_key, exclude_key=key)
                 for conflict_key in conflicting_keys:
                     try:
                         conflict_cfg = PluginConfig.objects.get(key=conflict_key)
                         if conflict_cfg.enabled:
-                            conflict_cfg.enabled = False
-                            conflict_cfg.save(update_fields=["enabled", "updated_at"])
-                            disabled_conflicts.append(conflict_key)
-                            logger.info(f"Disabled plugin '{conflict_key}' due to manifest_key conflict with '{key}'")
+                            conflict_plugin = pm.get_plugin(conflict_key)
+                            conflict_name = conflict_plugin.name if conflict_plugin else conflict_key
+                            return Response({
+                                "success": False,
+                                "error": f"Cannot enable: '{conflict_name}' is already enabled with the same plugin key '{plugin.manifest_key}'"
+                            }, status=status.HTTP_400_BAD_REQUEST)
                     except PluginConfig.DoesNotExist:
                         pass
+
+        try:
+            cfg = PluginConfig.objects.get(key=key)
 
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
@@ -299,15 +300,11 @@ class PluginEnabledAPIView(APIView):
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
 
-            response_data = {
+            return Response({
                 "success": True,
                 "enabled": cfg.enabled,
                 "ever_enabled": cfg.ever_enabled,
-            }
-            if disabled_conflicts:
-                response_data["disabled_conflicts"] = disabled_conflicts
-
-            return Response(response_data)
+            })
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)
 
