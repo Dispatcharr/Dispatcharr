@@ -1,14 +1,16 @@
 import importlib
-import json
 import logging
 import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import yaml
 from django.db import transaction
 
+from .manifest import extract_manifest_metadata, load_manifest, validate_manifest
 from .models import PluginConfig
+from .version import check_compatibility
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,13 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    # Manifest-related fields
+    compatible: bool = True
+    compatibility_error: str = ""
+    repository: str = ""
+    authors: List[str] = field(default_factory=list)
+    icon: str = ""
+    has_manifest: bool = False
 
 
 class PluginManager:
@@ -79,11 +88,85 @@ class PluginManager:
         return self._registry
 
     def _load_plugin(self, key: str, path: str):
+        # Check for plugin.yaml manifest first
+        manifest_data = None
+        manifest_meta = None
+        has_manifest = False
+        compatible = True
+        compatibility_error = ""
+
+        try:
+            manifest_data = load_manifest(path)
+        except yaml.YAMLError as e:
+            logger.error(f"Malformed plugin.yaml in {path}: {e}")
+            # Register as incompatible with parse error
+            self._registry[key] = LoadedPlugin(
+                key=key,
+                name=key,
+                compatible=False,
+                compatibility_error=f"Malformed plugin.yaml: {e}",
+                has_manifest=True,
+            )
+            return
+
+        if manifest_data is not None:
+            has_manifest = True
+            is_valid, errors = validate_manifest(manifest_data)
+            if not is_valid:
+                logger.warning(f"Invalid manifest for {key}: {errors}")
+                self._registry[key] = LoadedPlugin(
+                    key=key,
+                    name=key,
+                    compatible=False,
+                    compatibility_error=f"Invalid manifest: {'; '.join(errors)}",
+                    has_manifest=True,
+                )
+                return
+
+            manifest_meta = extract_manifest_metadata(manifest_data)
+
+            # Check version compatibility if constraint is specified
+            requires_dispatcharr = manifest_meta.get("requires_dispatcharr", "")
+            if requires_dispatcharr:
+                compatible, compatibility_error = check_compatibility(requires_dispatcharr)
+                if not compatible:
+                    logger.info(f"Plugin '{key}' is incompatible: {compatibility_error}")
+                    # Register plugin with metadata but mark as incompatible
+                    self._registry[key] = LoadedPlugin(
+                        key=manifest_meta.get("key", key),
+                        name=manifest_meta.get("name", key),
+                        version=manifest_meta.get("version", ""),
+                        description=manifest_meta.get("description", ""),
+                        repository=manifest_meta.get("repository", ""),
+                        authors=manifest_meta.get("authors", []),
+                        icon=manifest_meta.get("icon", ""),
+                        compatible=False,
+                        compatibility_error=compatibility_error,
+                        has_manifest=True,
+                    )
+                    return
+
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
         has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
         if not (has_pkg or has_pluginpy):
-            logger.debug(f"Skipping {path}: no plugin.py or package")
+            if has_manifest:
+                # Manifest exists but no Python code - valid for metadata-only plugins
+                self._registry[key] = LoadedPlugin(
+                    key=manifest_meta.get("key", key),
+                    name=manifest_meta.get("name", key),
+                    version=manifest_meta.get("version", ""),
+                    description=manifest_meta.get("description", ""),
+                    repository=manifest_meta.get("repository", ""),
+                    authors=manifest_meta.get("authors", []),
+                    icon=manifest_meta.get("icon", ""),
+                    compatible=True,
+                    compatibility_error="",
+                    has_manifest=True,
+                )
+                logger.warning(f"Plugin '{key}' has manifest but no plugin.py or package")
+            else:
+                logger.debug(f"Skipping {path}: no plugin.py or package")
             return
 
         candidate_modules = []
@@ -117,9 +200,22 @@ class PluginManager:
 
         instance = plugin_cls()
 
-        name = getattr(instance, "name", key)
-        version = getattr(instance, "version", "")
-        description = getattr(instance, "description", "")
+        # Use manifest metadata if available, otherwise fall back to Plugin class attributes
+        if manifest_meta:
+            name = manifest_meta.get("name", key)
+            version = manifest_meta.get("version", "")
+            description = manifest_meta.get("description", "")
+            repository = manifest_meta.get("repository", "")
+            authors = manifest_meta.get("authors", [])
+            icon = manifest_meta.get("icon", "")
+        else:
+            name = getattr(instance, "name", key)
+            version = getattr(instance, "version", "")
+            description = getattr(instance, "description", "")
+            repository = ""
+            authors = []
+            icon = ""
+
         fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
 
@@ -132,6 +228,12 @@ class PluginManager:
             instance=instance,
             fields=fields,
             actions=actions,
+            compatible=compatible,
+            compatibility_error=compatibility_error,
+            repository=repository,
+            authors=authors,
+            icon=icon,
+            has_manifest=has_manifest,
         )
 
     def _sync_db_with_registry(self):
@@ -186,6 +288,13 @@ class PluginManager:
                     "settings": (conf.settings if conf else {}),
                     "actions": lp.actions or [],
                     "missing": False,
+                    # Manifest-related fields
+                    "compatible": lp.compatible,
+                    "compatibility_error": lp.compatibility_error,
+                    "repository": lp.repository,
+                    "authors": lp.authors,
+                    "icon": lp.icon,
+                    "has_manifest": lp.has_manifest,
                 }
             )
 
@@ -206,6 +315,13 @@ class PluginManager:
                     "settings": conf.settings or {},
                     "actions": [],
                     "missing": True,
+                    # Defaults for missing plugins
+                    "compatible": True,
+                    "compatibility_error": "",
+                    "repository": "",
+                    "authors": [],
+                    "icon": "",
+                    "has_manifest": False,
                 }
             )
 
@@ -224,6 +340,9 @@ class PluginManager:
         lp = self.get_plugin(key)
         if not lp or not lp.instance:
             raise ValueError(f"Plugin '{key}' not found")
+
+        if not lp.compatible:
+            raise PermissionError(f"Plugin '{key}' is incompatible: {lp.compatibility_error}")
 
         cfg = PluginConfig.objects.get(key=key)
         if not cfg.enabled:

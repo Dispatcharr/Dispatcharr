@@ -186,6 +186,12 @@ class PluginImportAPIView(APIView):
                 "ever_enabled": ever_enabled,
                 "fields": plugin.fields or [],
                 "actions": plugin.actions or [],
+                "compatible": plugin.compatible,
+                "compatibility_error": plugin.compatibility_error,
+                "repository": plugin.repository,
+                "authors": plugin.authors,
+                "icon": plugin.icon,
+                "has_manifest": plugin.has_manifest,
             }
         })
 
@@ -257,6 +263,17 @@ class PluginEnabledAPIView(APIView):
         enabled = request.data.get("enabled")
         if enabled is None:
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check compatibility before enabling
+        if enabled:
+            pm = PluginManager.get()
+            plugin = pm.get_plugin(key)
+            if plugin and not plugin.compatible:
+                return Response({
+                    "success": False,
+                    "error": f"Cannot enable incompatible plugin: {plugin.compatibility_error}"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             cfg = PluginConfig.objects.get(key=key)
             cfg.enabled = bool(enabled)
