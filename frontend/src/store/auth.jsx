@@ -30,11 +30,49 @@ const useAuthStore = create((set, get) => ({
     username: '',
     email: '',
     user_level: '',
+    custom_properties: {},
   },
   isLoading: false,
   error: null,
 
   setUser: (user) => set({ user }),
+
+  updateUserPreferences: async (preferences) => {
+    const currentUser = get().user;
+    const updatedCustomProperties = {
+      ...currentUser.custom_properties,
+      ...preferences,
+    };
+
+    // Optimistic update
+    set({
+      user: {
+        ...currentUser,
+        custom_properties: updatedCustomProperties,
+      },
+    });
+
+    try {
+      const response = await API.updateMe({
+        custom_properties: updatedCustomProperties,
+      });
+      set({ user: response });
+      return response;
+    } catch (error) {
+      // Revert on failure
+      set({ user: currentUser });
+      throw error;
+    }
+  },
+
+  getNavOrder: () => {
+    const user = get().user;
+    return user?.custom_properties?.navOrder || null;
+  },
+
+  setNavOrder: async (navOrder) => {
+    return await get().updateUserPreferences({ navOrder });
+  },
 
   initData: async () => {
     // Prevent multiple simultaneous initData calls
