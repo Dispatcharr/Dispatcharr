@@ -233,6 +233,7 @@ class CoreSettings(models.Model):
     def get_epg_settings(cls):
         """Get all EPG-related settings."""
         return cls._get_group(EPG_SETTINGS_KEY, {
+            "epg_match_mode": "default",
             "epg_match_ignore_prefixes": [],
             "epg_match_ignore_suffixes": [],
             "epg_match_ignore_custom": [],

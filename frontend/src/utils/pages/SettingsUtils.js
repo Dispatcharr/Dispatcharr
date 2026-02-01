@@ -28,7 +28,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
 
   // Map of field prefixes to their groups
   const streamFields = ['default_user_agent', 'default_stream_profile', 'm3u_hash_key', 'preferred_region', 'auto_import_mapped_files'];
-  const epgFields = ['epg_match_ignore_prefixes', 'epg_match_ignore_suffixes', 'epg_match_ignore_custom'];
+  const epgFields = ['epg_match_mode', 'epg_match_ignore_prefixes', 'epg_match_ignore_suffixes', 'epg_match_ignore_custom'];
   const dvrFields = ['tv_template', 'movie_template', 'tv_fallback_dir', 'tv_fallback_template', 'movie_fallback_template',
                      'comskip_enabled', 'comskip_custom_path', 'pre_offset_minutes', 'post_offset_minutes', 'series_rules'];
   const backupFields = ['schedule_enabled', 'schedule_frequency', 'schedule_time', 'schedule_day_of_week',
@@ -133,6 +133,12 @@ export const getChangedSettings = (values, settings) => {
 
     let actualValue = values[settingKey];
     let compareValue;
+
+    // Handle EPG mode field - always include (defaults to 'default' if not set)
+    if (settingKey === 'epg_match_mode') {
+      changedSettings[settingKey] = actualValue || 'default';
+      continue;
+    }
 
     // Handle EPG fields specially - keep as arrays, don't skip empty arrays
     if (epgFields.includes(settingKey)) {

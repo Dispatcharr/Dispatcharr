@@ -139,7 +139,7 @@ COMMON_EXTRANEOUS_WORDS = [
 def normalize_name(name: str) -> str:
     """
     A more aggressive normalization that:
-      - Removes user-configured prefixes/suffixes/custom strings (if configured)
+      - Removes user-configured prefixes/suffixes/custom strings (only if mode is 'advanced')
       - Lowercases
       - Removes bracketed/parenthesized text
       - Removes punctuation
@@ -157,17 +157,23 @@ def normalize_name(name: str) -> str:
     try:
         from core.models import CoreSettings
         settings = CoreSettings.get_epg_settings()
-        prefixes = settings.get("epg_match_ignore_prefixes", [])
-        suffixes = settings.get("epg_match_ignore_suffixes", [])
-        custom_strings = settings.get("epg_match_ignore_custom", [])
 
-        # Ensure we have lists
-        if not isinstance(prefixes, list):
-            prefixes = []
-        if not isinstance(suffixes, list):
-            suffixes = []
-        if not isinstance(custom_strings, list):
-            custom_strings = []
+        # Check if user has enabled advanced mode
+        mode = settings.get("epg_match_mode", "default")
+
+        # Only use custom settings if mode is 'advanced'
+        if mode == "advanced":
+            prefixes = settings.get("epg_match_ignore_prefixes", [])
+            suffixes = settings.get("epg_match_ignore_suffixes", [])
+            custom_strings = settings.get("epg_match_ignore_custom", [])
+
+            # Ensure we have lists
+            if not isinstance(prefixes, list):
+                prefixes = []
+            if not isinstance(suffixes, list):
+                suffixes = []
+            if not isinstance(custom_strings, list):
+                custom_strings = []
 
     except Exception as e:
         # Settings unavailable or error - continue with empty lists (graceful degradation)
