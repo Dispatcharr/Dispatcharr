@@ -266,9 +266,18 @@ class UserViewSet(viewsets.ModelViewSet):
     @extend_schema(
         description="Get active user information",
     )
-    @action(detail=False, methods=["get"], url_path="me")
+    @swagger_auto_schema(
+        method="patch",
+        operation_description="Update active user preferences",
+    )
+    @action(detail=False, methods=["get", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        if request.method == "PATCH":
+            serializer = UserSerializer(user, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
         serializer = UserSerializer(user)
         return Response(serializer.data)
 
