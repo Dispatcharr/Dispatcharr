@@ -5,6 +5,7 @@ Provides a simple CRUD API for plugins to store documents without migrations.
 Each plugin's data is namespaced by its plugin_key.
 """
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +62,20 @@ class PluginCollection:
             raise ValueError("doc_id is required")
         if not isinstance(data, dict):
             raise ValueError("data must be a dict")
+
+        # Enforce document size limit (1MB)
+        MAX_DOCUMENT_SIZE = 1024 * 1024  # 1MB
+        try:
+            data_size = len(json.dumps(data))
+            if data_size > MAX_DOCUMENT_SIZE:
+                raise ValueError(
+                    f"Document exceeds maximum size of {MAX_DOCUMENT_SIZE} bytes "
+                    f"(got {data_size} bytes)"
+                )
+        except (TypeError, ValueError) as e:
+            if "exceeds maximum size" in str(e):
+                raise
+            raise ValueError(f"Data is not JSON-serializable: {e}")
 
         doc, created = PluginDocument.objects.update_or_create(
             plugin_key=self._plugin_key,

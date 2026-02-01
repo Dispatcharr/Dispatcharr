@@ -609,3 +609,71 @@ class PluginStorageAPITestCase(TestCase):
 
         # Verify deleted
         self.assertEqual(storage.collection("tasks").all(), [])
+
+    def test_list_documents_default_limit(self):
+        """Test that listing documents has a default limit."""
+        # Create more than the default limit of documents
+        storage = PluginStorage("test-plugin")
+        for i in range(150):
+            storage.collection("tasks").save(f"t{i}", {"x": i})
+
+        auth = self.get_auth_header(self.admin_user)
+        url = "/api/plugins/plugins/test-plugin/storage/tasks/"
+        response = self.client.get(url, HTTP_AUTHORIZATION=auth)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Default limit is 100
+        self.assertEqual(len(data["documents"]), 100)
+
+    def test_list_documents_max_limit(self):
+        """Test that listing documents enforces a max limit."""
+        auth = self.get_auth_header(self.admin_user)
+        # Request more than max limit
+        url = "/api/plugins/plugins/test-plugin/storage/tasks/?limit=5000"
+        response = self.client.get(url, HTTP_AUTHORIZATION=auth)
+
+        self.assertEqual(response.status_code, 200)
+        # Should be capped at MAX_LIMIT (1000), not 5000
+
+    def test_list_documents_invalid_pagination(self):
+        """Test that negative pagination values are rejected."""
+        auth = self.get_auth_header(self.admin_user)
+
+        # Negative offset
+        url = "/api/plugins/plugins/test-plugin/storage/tasks/?offset=-1"
+        response = self.client.get(url, HTTP_AUTHORIZATION=auth)
+        self.assertEqual(response.status_code, 400)
+
+        # Zero limit
+        url = "/api/plugins/plugins/test-plugin/storage/tasks/?limit=0"
+        response = self.client.get(url, HTTP_AUTHORIZATION=auth)
+        self.assertEqual(response.status_code, 400)
+
+
+class PluginStorageDocumentSizeLimitTestCase(TestCase):
+    """Tests for document size limits."""
+
+    def test_save_document_size_limit(self):
+        """Test that saving a document exceeding size limit raises error."""
+        storage = PluginStorage("test-plugin")
+        collection = storage.collection("large")
+
+        # Create data that exceeds 1MB
+        large_data = {"content": "x" * (1024 * 1024 + 1)}  # Just over 1MB
+
+        with self.assertRaises(ValueError) as ctx:
+            collection.save("large-doc", large_data)
+
+        self.assertIn("exceeds maximum size", str(ctx.exception))
+
+    def test_save_document_within_size_limit(self):
+        """Test that saving a document within size limit works."""
+        storage = PluginStorage("test-plugin")
+        collection = storage.collection("normal")
+
+        # Create data that's under 1MB
+        normal_data = {"content": "x" * 1000}
+
+        doc = collection.save("normal-doc", normal_data)
+        self.assertEqual(doc["id"], "normal-doc")

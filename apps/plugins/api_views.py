@@ -357,13 +357,19 @@ class PluginStorageListAPIView(APIView):
 
         storage = PluginStorage(key)
 
-        # Optional pagination
+        # Pagination with safety limits
+        DEFAULT_LIMIT = 100
+        MAX_LIMIT = 1000
+
         limit = request.query_params.get("limit")
         offset = request.query_params.get("offset", 0)
 
         try:
-            limit = int(limit) if limit else None
+            limit = int(limit) if limit else DEFAULT_LIMIT
+            limit = min(limit, MAX_LIMIT)  # Enforce maximum
             offset = int(offset)
+            if offset < 0 or limit < 1:
+                raise ValueError("Invalid pagination values")
         except ValueError:
             return Response(
                 {"success": False, "error": "Invalid limit or offset"},
