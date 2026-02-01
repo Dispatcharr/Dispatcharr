@@ -73,7 +73,7 @@ const PluginActionStatus = ({ running, lastResult }) => {
 
 const PluginCard = ({
   plugin,
-  allPlugins = [],
+  conflictingPlugin = null,  // Pre-computed by parent for O(n) instead of O(n^2)
   onSaveSettings,
   onRunAction,
   onToggleEnabled,
@@ -116,51 +116,37 @@ const PluginCard = ({
 
   const missing = plugin.missing;
   const compatible = plugin.compatible !== false;
-
-  // Check for manifest_key conflict with another enabled plugin
-  const conflictingPlugin = React.useMemo(() => {
-    if (!plugin.manifest_key || plugin.enabled) return null;
-    return allPlugins.find(
-      (p) =>
-        p.key !== plugin.key &&
-        p.manifest_key === plugin.manifest_key &&
-        p.enabled
-    );
-  }, [plugin.key, plugin.manifest_key, plugin.enabled, allPlugins]);
-
   const hasKeyConflict = !!conflictingPlugin;
 
-  const handleEnableChange = () => {
-    return async (e) => {
-      const next = e.currentTarget.checked;
-      // Prevent enabling incompatible plugins
-      if (next && !compatible) {
-        showNotification({
-          title: 'Cannot enable plugin',
-          message: plugin.compatibility_error || 'Plugin is incompatible with this version of Dispatcharr',
-          color: 'red',
-        });
+  const handleEnableChange = async (e) => {
+    const next = e.currentTarget.checked;
+    // Prevent enabling incompatible plugins
+    if (next && !compatible) {
+      showNotification({
+        title: 'Cannot enable plugin',
+        message: plugin.compatibility_error || 'Plugin is incompatible with this version of Dispatcharr',
+        color: 'red',
+      });
+      return;
+    }
+    if (next && !plugin.ever_enabled && onRequireTrust) {
+      const ok = await onRequireTrust(plugin);
+      if (!ok) {
+        // Revert
+        setEnabled(false);
         return;
       }
-      if (next && !plugin.ever_enabled && onRequireTrust) {
-        const ok = await onRequireTrust(plugin);
-        if (!ok) {
-          // Revert
-          setEnabled(false);
-          return;
-        }
-      }
-      setEnabled(next);
-      const resp = await onToggleEnabled(plugin.key, next);
-      if (resp?.success === false) {
-        // Revert toggle on failure
-        setEnabled(!next);
-        return;
-      }
-      if (next && resp?.ever_enabled) {
-        plugin.ever_enabled = true;
-      }
-    };
+    }
+    setEnabled(next);
+    const resp = await onToggleEnabled(plugin.key, next);
+    if (resp?.success === false) {
+      // Revert toggle on failure
+      setEnabled(!next);
+      return;
+    }
+    if (next && resp?.ever_enabled) {
+      plugin.ever_enabled = true;
+    }
   };
 
   const handlePluginRun = async (a) => {
@@ -183,7 +169,7 @@ const PluginCard = ({
       // Save settings before running to ensure backend uses latest values
       try {
         await onSaveSettings(plugin.key, settings);
-      } catch (e) {
+      } catch {
         /* ignore, run anyway */
       }
       const resp = await onRunAction(plugin.key, a.id);
@@ -249,7 +235,7 @@ const PluginCard = ({
           </Text>
           <Switch
             checked={!missing && !compatible ? false : enabled}
-            onChange={handleEnableChange()}
+            onChange={handleEnableChange}
             size="xs"
             onLabel="On"
             offLabel="Off"

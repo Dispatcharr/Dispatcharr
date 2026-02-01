@@ -2,8 +2,9 @@ import importlib
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 from django.db import transaction
@@ -14,22 +15,26 @@ from .version import check_compatibility
 
 logger = logging.getLogger(__name__)
 
+# Default cache TTL for plugin discovery (seconds)
+DEFAULT_DISCOVERY_CACHE_TTL = 60.0
+
 
 @dataclass
 class LoadedPlugin:
+    """Represents a discovered plugin with its metadata."""
     key: str  # Directory-based key (used for registry and DB)
     name: str
     version: str = ""
     description: str = ""
     module: Any = None
     instance: Any = None
-    fields: List[Dict[str, Any]] = field(default_factory=list)
-    actions: List[Dict[str, Any]] = field(default_factory=list)
+    fields: list[dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
     # Manifest-related fields
     compatible: bool = True
     compatibility_error: str = ""
     repository: str = ""
-    authors: List[str] = field(default_factory=list)
+    authors: list[str] = field(default_factory=list)
     icon: str = ""
     has_manifest: bool = False
     manifest_key: str = ""  # Key declared in manifest (for uniqueness checking)
@@ -38,7 +43,7 @@ class LoadedPlugin:
 class PluginManager:
     """Singleton manager that discovers and runs plugins from /data/plugins."""
 
-    _instance: Optional["PluginManager"] = None
+    _instance: "PluginManager | None" = None
 
     @classmethod
     def get(cls) -> "PluginManager":
@@ -47,15 +52,43 @@ class PluginManager:
         return cls._instance
 
     def __init__(self) -> None:
+        """Initialize the plugin manager."""
         self.plugins_dir = os.environ.get("DISPATCHARR_PLUGINS_DIR", "/data/plugins")
-        self._registry: Dict[str, LoadedPlugin] = {}
+        self._registry: dict[str, LoadedPlugin] = {}
+        # Discovery caching
+        self._discovery_timestamp: float = 0
+        self._discovery_cache_ttl: float = float(
+            os.environ.get("DISPATCHARR_PLUGIN_CACHE_TTL", DEFAULT_DISCOVERY_CACHE_TTL)
+        )
 
         # Ensure plugins directory exists
         os.makedirs(self.plugins_dir, exist_ok=True)
         if self.plugins_dir not in sys.path:
             sys.path.append(self.plugins_dir)
 
-    def discover_plugins(self, *, sync_db: bool = True) -> Dict[str, LoadedPlugin]:
+    def _is_cache_valid(self) -> bool:
+        """Check if the discovery cache is still valid."""
+        if not self._registry:
+            return False
+        return (time.time() - self._discovery_timestamp) < self._discovery_cache_ttl
+
+    def discover_plugins(
+        self, *, sync_db: bool = True, force: bool = False
+    ) -> dict[str, LoadedPlugin]:
+        """Discover plugins from the plugins directory.
+
+        Args:
+            sync_db: Whether to sync discovered plugins with the database.
+            force: Force rediscovery even if cache is valid.
+
+        Returns:
+            Dictionary mapping plugin keys to LoadedPlugin instances.
+        """
+        # Return cached results if valid and not forced
+        if not force and self._is_cache_valid():
+            logger.debug("Using cached plugin discovery results")
+            return self._registry
+
         if sync_db:
             logger.info(f"Discovering plugins in {self.plugins_dir}")
         else:
@@ -66,6 +99,10 @@ class PluginManager:
             for entry in sorted(os.listdir(self.plugins_dir)):
                 path = os.path.join(self.plugins_dir, entry)
                 if not os.path.isdir(path):
+                    continue
+                # Skip symlinked directories (security)
+                if os.path.islink(path):
+                    logger.warning(f"Skipping symlinked plugin directory: {path}")
                     continue
 
                 plugin_key = entry.replace(" ", "_").lower()
@@ -79,6 +116,9 @@ class PluginManager:
         except FileNotFoundError:
             logger.warning(f"Plugins directory not found: {self.plugins_dir}")
 
+        # Update cache timestamp
+        self._discovery_timestamp = time.time()
+
         # Sync DB records (optional)
         if sync_db:
             try:
@@ -88,11 +128,57 @@ class PluginManager:
                 logger.exception("Deferring plugin DB sync; database not ready yet")
         return self._registry
 
-    def _load_plugin(self, key: str, path: str):
+    def _make_loaded_plugin(
+        self,
+        key: str,
+        manifest_meta: dict[str, Any] | None = None,
+        *,
+        module: Any = None,
+        instance: Any = None,
+        fields: list[dict[str, Any]] | None = None,
+        actions: list[dict[str, Any]] | None = None,
+        compatible: bool = True,
+        compatibility_error: str = "",
+    ) -> LoadedPlugin:
+        """Create a LoadedPlugin from manifest metadata with optional overrides.
+
+        Args:
+            key: The plugin's directory-based key.
+            manifest_meta: Metadata extracted from plugin.yaml (or None for legacy plugins).
+            module: The loaded Python module (if any).
+            instance: The Plugin class instance (if any).
+            fields: Plugin configuration fields.
+            actions: Plugin actions.
+            compatible: Whether the plugin is compatible with this Dispatcharr version.
+            compatibility_error: Error message if incompatible.
+
+        Returns:
+            A LoadedPlugin instance with all fields populated.
+        """
+        meta = manifest_meta or {}
+        return LoadedPlugin(
+            key=key,
+            name=meta.get("name", key),
+            version=meta.get("version", ""),
+            description=meta.get("description", ""),
+            module=module,
+            instance=instance,
+            fields=fields or [],
+            actions=actions or [],
+            compatible=compatible,
+            compatibility_error=compatibility_error,
+            repository=meta.get("repository", ""),
+            authors=meta.get("authors", []),
+            icon=meta.get("icon", ""),
+            has_manifest=manifest_meta is not None,
+            manifest_key=meta.get("key", ""),
+        )
+
+    def _load_plugin(self, key: str, path: str) -> None:
+        """Load a single plugin from the given path."""
         # Check for plugin.yaml manifest first
         manifest_data = None
         manifest_meta = None
-        has_manifest = False
         compatible = True
         compatibility_error = ""
 
@@ -101,29 +187,28 @@ class PluginManager:
         except yaml.YAMLError as e:
             logger.error(f"Malformed plugin.yaml in {path}: {e}")
             # Register as incompatible with parse error
-            self._registry[key] = LoadedPlugin(
-                key=key,
-                name=key,
+            # Use empty dict with has_manifest=True marker for error case
+            self._registry[key] = self._make_loaded_plugin(
+                key,
+                {"name": key, "key": ""},  # Minimal meta to satisfy helper
                 compatible=False,
                 compatibility_error=f"Malformed plugin.yaml: {e}",
-                has_manifest=True,
-                manifest_key="",
             )
+            # Override has_manifest since we want it True for malformed manifests
+            self._registry[key].has_manifest = True
             return
 
         if manifest_data is not None:
-            has_manifest = True
             is_valid, errors = validate_manifest(manifest_data)
             if not is_valid:
                 logger.warning(f"Invalid manifest for {key}: {errors}")
-                self._registry[key] = LoadedPlugin(
-                    key=key,
-                    name=key,
+                self._registry[key] = self._make_loaded_plugin(
+                    key,
+                    {"name": key, "key": ""},
                     compatible=False,
                     compatibility_error=f"Invalid manifest: {'; '.join(errors)}",
-                    has_manifest=True,
-                    manifest_key="",
                 )
+                self._registry[key].has_manifest = True
                 return
 
             manifest_meta = extract_manifest_metadata(manifest_data)
@@ -135,18 +220,11 @@ class PluginManager:
                 if not compatible:
                     logger.info(f"Plugin '{key}' is incompatible: {compatibility_error}")
                     # Register plugin with metadata but mark as incompatible
-                    self._registry[key] = LoadedPlugin(
-                        key=key,
-                        name=manifest_meta.get("name", key),
-                        version=manifest_meta.get("version", ""),
-                        description=manifest_meta.get("description", ""),
-                        repository=manifest_meta.get("repository", ""),
-                        authors=manifest_meta.get("authors", []),
-                        icon=manifest_meta.get("icon", ""),
+                    self._registry[key] = self._make_loaded_plugin(
+                        key,
+                        manifest_meta,
                         compatible=False,
                         compatibility_error=compatibility_error,
-                        has_manifest=True,
-                        manifest_key=manifest_meta.get("key", ""),
                     )
                     return
 
@@ -154,21 +232,9 @@ class PluginManager:
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
         has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
         if not (has_pkg or has_pluginpy):
-            if has_manifest:
+            if manifest_meta:
                 # Manifest exists but no Python code - valid for metadata-only plugins
-                self._registry[key] = LoadedPlugin(
-                    key=key,
-                    name=manifest_meta.get("name", key),
-                    version=manifest_meta.get("version", ""),
-                    description=manifest_meta.get("description", ""),
-                    repository=manifest_meta.get("repository", ""),
-                    authors=manifest_meta.get("authors", []),
-                    icon=manifest_meta.get("icon", ""),
-                    compatible=True,
-                    compatibility_error="",
-                    has_manifest=True,
-                    manifest_key=manifest_meta.get("key", ""),
-                )
+                self._registry[key] = self._make_loaded_plugin(key, manifest_meta)
                 logger.warning(f"Plugin '{key}' has manifest but no plugin.py or package")
             else:
                 logger.debug(f"Skipping {path}: no plugin.py or package")
@@ -204,46 +270,42 @@ class PluginManager:
                 return
 
         instance = plugin_cls()
-
-        # Use manifest metadata if available, otherwise fall back to Plugin class attributes
-        if manifest_meta:
-            name = manifest_meta.get("name", key)
-            version = manifest_meta.get("version", "")
-            description = manifest_meta.get("description", "")
-            repository = manifest_meta.get("repository", "")
-            authors = manifest_meta.get("authors", [])
-            icon = manifest_meta.get("icon", "")
-        else:
-            name = getattr(instance, "name", key)
-            version = getattr(instance, "version", "")
-            description = getattr(instance, "description", "")
-            repository = ""
-            authors = []
-            icon = ""
-
         fields = getattr(instance, "fields", [])
         actions = getattr(instance, "actions", [])
 
-        # Get manifest key if available
-        manifest_key = manifest_meta.get("key", "") if manifest_meta else ""
-
-        self._registry[key] = LoadedPlugin(
-            key=key,
-            name=name,
-            version=version,
-            description=description,
-            module=module,
-            instance=instance,
-            fields=fields,
-            actions=actions,
-            compatible=compatible,
-            compatibility_error=compatibility_error,
-            repository=repository,
-            authors=authors,
-            icon=icon,
-            has_manifest=has_manifest,
-            manifest_key=manifest_key,
-        )
+        # Use manifest metadata if available, otherwise build from Plugin class attributes
+        if manifest_meta:
+            self._registry[key] = self._make_loaded_plugin(
+                key,
+                manifest_meta,
+                module=module,
+                instance=instance,
+                fields=fields,
+                actions=actions,
+                compatible=compatible,
+                compatibility_error=compatibility_error,
+            )
+        else:
+            # Legacy plugin without manifest - build metadata from class attributes
+            legacy_meta = {
+                "name": getattr(instance, "name", key),
+                "version": getattr(instance, "version", ""),
+                "description": getattr(instance, "description", ""),
+            }
+            self._registry[key] = self._make_loaded_plugin(
+                key,
+                None,  # Pass None to indicate no manifest
+                module=module,
+                instance=instance,
+                fields=fields,
+                actions=actions,
+                compatible=compatible,
+                compatibility_error=compatibility_error,
+            )
+            # Override fields from legacy meta
+            self._registry[key].name = legacy_meta["name"]
+            self._registry[key].version = legacy_meta["version"]
+            self._registry[key].description = legacy_meta["description"]
 
     def _sync_db_with_registry(self):
         with transaction.atomic():
@@ -271,10 +333,9 @@ class PluginManager:
                 if changed:
                     obj.save()
 
-    def list_plugins(self) -> List[Dict[str, Any]]:
-        from .models import PluginConfig
-
-        plugins: List[Dict[str, Any]] = []
+    def list_plugins(self) -> list[dict[str, Any]]:
+        """Return a list of all plugins (discovered + DB-only missing)."""
+        plugins: list[dict[str, Any]] = []
         try:
             configs = {c.key: c for c in PluginConfig.objects.all()}
         except Exception as e:
@@ -338,10 +399,11 @@ class PluginManager:
 
         return plugins
 
-    def get_plugin(self, key: str) -> Optional[LoadedPlugin]:
+    def get_plugin(self, key: str) -> LoadedPlugin | None:
+        """Get a plugin by its key."""
         return self._registry.get(key)
 
-    def get_plugins_by_manifest_key(self, manifest_key: str, exclude_key: str = "") -> List[str]:
+    def get_plugins_by_manifest_key(self, manifest_key: str, exclude_key: str = "") -> list[str]:
         """Find all plugin keys that have the given manifest_key.
 
         Args:
@@ -361,13 +423,16 @@ class PluginManager:
                 matches.append(key)
         return matches
 
-    def update_settings(self, key: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    def update_settings(self, key: str, settings: dict[str, Any]) -> dict[str, Any]:
+        """Update settings for a plugin."""
         cfg = PluginConfig.objects.get(key=key)
         cfg.settings = settings or {}
         cfg.save(update_fields=["settings", "updated_at"])
         return cfg.settings
 
-    def run_action(self, key: str, action_id: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run_action(
+        self, key: str, action_id: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         lp = self.get_plugin(key)
         if not lp or not lp.instance:
             raise ValueError(f"Plugin '{key}' not found")
