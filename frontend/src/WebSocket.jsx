@@ -700,6 +700,17 @@ export const WebsocketProvider = ({ children }) => {
                   withCloseButton: true, // Allow manual close
                   loading: false, // Remove loading indicator
                 });
+                // Requery streams and channels after rehash completes
+                try {
+                  await API.requeryChannels();
+                  await API.requeryStreams();
+                  await useChannelsStore.getState().fetchChannels();
+                } catch (error) {
+                  console.error(
+                    'Error refreshing channels/streams after rehash:',
+                    error
+                  );
+                }
               } else if (parsedEvent.data.action === 'blocked') {
                 // Handle blocked rehash attempt
                 notifications.show({
