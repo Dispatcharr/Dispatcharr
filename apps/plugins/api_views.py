@@ -207,8 +207,12 @@ class PluginSettingsAPIView(APIView):
         try:
             updated = pm.update_settings(key, settings)
             return Response({"success": True, "settings": updated})
-        except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Failed to update plugin settings")
+            return Response(
+                {"success": False, "error": "Failed to update settings"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class PluginRunAPIView(APIView):
@@ -238,11 +242,17 @@ class PluginRunAPIView(APIView):
         try:
             result = pm.run_action(key, action, params)
             return Response({"success": True, "result": result})
-        except PermissionError as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-        except Exception as e:
+        except PermissionError:
+            return Response(
+                {"success": False, "error": "Plugin is disabled"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except Exception:
             logger.exception("Plugin action failed")
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"success": False, "error": "Plugin action failed"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class PluginEnabledAPIView(APIView):
@@ -413,10 +423,16 @@ class PluginStorageListAPIView(APIView):
         try:
             document = storage.collection(collection).save(doc_id, data)
             return Response({"success": True, "document": document})
-        except Exception as e:
-            logger.exception("Failed to save plugin document")
+        except ValueError as e:
+            # Validation errors (size limit, invalid data) are safe to show
             return Response(
                 {"success": False, "error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Failed to save plugin document")
+            return Response(
+                {"success": False, "error": "Failed to save document"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
