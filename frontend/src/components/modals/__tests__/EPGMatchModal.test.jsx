@@ -40,6 +40,98 @@ vi.mock('../../../store/settings', () => ({
   }),
 }));
 
+vi.mock('@mantine/core', () => {
+  const React = require('react');
+
+  const RadioComponent = ({ label, value, checked, description, groupValue, groupOnChange }) => {
+    const isChecked = checked !== undefined ? checked : groupValue === value;
+    const handleChange = groupOnChange || (() => {});
+
+    return (
+      <label>
+        <input
+          type="radio"
+          value={value}
+          checked={isChecked}
+          onChange={() => handleChange(value)}
+          aria-label={label}
+        />
+        {label}
+        {description && <span>{description}</span>}
+      </label>
+    );
+  };
+
+  RadioComponent.Group = ({ children, value, onChange, label }) => {
+    // Clone children and inject group props
+    const enhancedChildren = React.Children.map(children, (child) => {
+      if (React.isValidElement(child)) {
+        // If it's a Stack or other container, recursively enhance its children
+        if (child.type?.name === 'Stack' || child.props['data-testid'] === 'stack') {
+          return React.cloneElement(child, {
+            children: React.Children.map(child.props.children, (nestedChild) => {
+              if (React.isValidElement(nestedChild) && nestedChild.type === RadioComponent) {
+                return React.cloneElement(nestedChild, {
+                  groupValue: value,
+                  groupOnChange: onChange,
+                });
+              }
+              return nestedChild;
+            }),
+          });
+        }
+        // If it's a Radio component, inject props directly
+        if (child.type === RadioComponent) {
+          return React.cloneElement(child, {
+            groupValue: value,
+            groupOnChange: onChange,
+          });
+        }
+      }
+      return child;
+    });
+
+    return (
+      <div role="radiogroup" aria-label={label}>
+        {label && <span>{label}</span>}
+        {enhancedChildren}
+      </div>
+    );
+  };
+
+  return {
+    Modal: ({ children, opened, title }) =>
+      opened ? (
+        <div data-testid="modal">
+          <div data-testid="modal-title">{title}</div>
+          {children}
+        </div>
+      ) : null,
+    Stack: ({ children }) => <div data-testid="stack">{children}</div>,
+    Radio: RadioComponent,
+    TagsInput: ({ label, value, onChange, ...props }) => (
+      <div>
+        <label htmlFor={label}>{label}</label>
+        <input
+          id={label}
+          aria-label={label}
+          value={value?.join(',') || ''}
+          onChange={(e) => onChange(e.target.value.split(',').filter(Boolean))}
+          {...props}
+        />
+      </div>
+    ),
+    Button: ({ children, onClick, loading, ...props }) => (
+      <button onClick={onClick} disabled={loading} {...props}>
+        {loading ? 'Loading...' : children}
+      </button>
+    ),
+    Group: ({ children }) => <div data-testid="group">{children}</div>,
+    Loader: () => <div data-testid="loader">Loading...</div>,
+    Text: ({ children }) => <span>{children}</span>,
+  };
+});
+
 describe('EPGMatchModal', () => {
   const defaultProps = {
     opened: true,
