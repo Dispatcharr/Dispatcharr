@@ -748,3 +748,82 @@ class PluginStorageDocumentSizeLimitTestCase(TestCase):
 
         doc = collection.save("normal-doc", normal_data)
         self.assertEqual(doc["id"], "normal-doc")
+
+
+class PluginStorageIdentifierValidationTestCase(TestCase):
+    """Tests for collection name and doc_id validation."""
+
+    def setUp(self):
+        self.storage = PluginStorage("test-plugin")
+        self.collection = self.storage.collection("tasks")
+
+    def test_doc_id_max_length(self):
+        """Test that doc_id over 255 characters is rejected."""
+        long_id = "x" * 256
+
+        with self.assertRaises(ValueError) as ctx:
+            self.collection.save(long_id, {"data": "test"})
+
+        self.assertIn("255 characters or less", str(ctx.exception))
+
+    def test_collection_name_max_length(self):
+        """Test that collection name over 128 characters is rejected."""
+        long_name = "x" * 129
+
+        with self.assertRaises(ValueError) as ctx:
+            self.storage.collection(long_name)
+
+        self.assertIn("128 characters or less", str(ctx.exception))
+
+    def test_doc_id_null_byte_rejected(self):
+        """Test that doc_id with null byte is rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            self.collection.save("doc\x00id", {"data": "test"})
+
+        self.assertIn("null bytes", str(ctx.exception))
+
+    def test_collection_name_null_byte_rejected(self):
+        """Test that collection name with null byte is rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            self.storage.collection("tasks\x00evil")
+
+        self.assertIn("null bytes", str(ctx.exception))
+
+    def test_doc_id_control_char_rejected(self):
+        """Test that doc_id with control characters is rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            self.collection.save("doc\nid", {"data": "test"})
+
+        self.assertIn("control characters", str(ctx.exception))
+
+    def test_collection_name_control_char_rejected(self):
+        """Test that collection name with control characters is rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            self.storage.collection("tasks\ttab")
+
+        self.assertIn("control characters", str(ctx.exception))
+
+    def test_international_characters_allowed(self):
+        """Test that international characters (Unicode) are allowed."""
+        # Japanese
+        doc1 = self.collection.save("日本語", {"title": "Japanese"})
+        self.assertEqual(doc1["id"], "日本語")
+
+        # Spanish with accents
+        doc2 = self.collection.save("El-Señor", {"title": "Spanish"})
+        self.assertEqual(doc2["id"], "El-Señor")
+
+        # Emoji
+        doc3 = self.collection.save("movie-🎬", {"title": "Emoji"})
+        self.assertEqual(doc3["id"], "movie-🎬")
+
+    def test_punctuation_allowed(self):
+        """Test that common punctuation is allowed in identifiers."""
+        # Apostrophes, periods, colons
+        doc = self.collection.save("Marvel's Agents of S.H.I.E.L.D.", {"x": 1})
+        self.assertEqual(doc["id"], "Marvel's Agents of S.H.I.E.L.D.")
+
+    def test_spaces_allowed(self):
+        """Test that spaces are allowed in identifiers."""
+        doc = self.collection.save("The Office (US)", {"x": 1})
+        self.assertEqual(doc["id"], "The Office (US)")

@@ -7,6 +7,7 @@ Each plugin's data is namespaced by its plugin_key.
 
 import json
 import logging
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 from django.db import transaction
@@ -14,6 +15,45 @@ from django.db import transaction
 from .models import PluginDocument
 
 logger = logging.getLogger(__name__)
+
+# Length limits matching model constraints
+MAX_COLLECTION_LENGTH = 128
+MAX_DOC_ID_LENGTH = 255
+
+
+def _validate_identifier(value: str, field_name: str, max_length: int) -> None:
+    """
+    Validate a collection name or doc_id.
+
+    Allows full Unicode (including international characters) while blocking
+    control characters and null bytes that could cause issues.
+
+    Args:
+        value: The string to validate
+        field_name: Name of field for error messages (e.g., "doc_id")
+        max_length: Maximum allowed length
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if not value:
+        raise ValueError(f"{field_name} is required")
+
+    if len(value) > max_length:
+        raise ValueError(
+            f"{field_name} must be {max_length} characters or less "
+            f"(got {len(value)})"
+        )
+
+    # Block null bytes
+    if "\x00" in value:
+        raise ValueError(f"{field_name} cannot contain null bytes")
+
+    # Block control characters (ASCII 0-31, 127, Unicode Cc category)
+    # but allow normal spaces and printable punctuation
+    for char in value:
+        if unicodedata.category(char) == "Cc":
+            raise ValueError(f"{field_name} cannot contain control characters")
 
 
 class PluginCollection:
@@ -60,8 +100,8 @@ class PluginCollection:
         Returns:
             The saved document data with metadata
         """
-        if not doc_id:
-            raise ValueError("doc_id is required")
+        _validate_identifier(doc_id, "doc_id", MAX_DOC_ID_LENGTH)
+
         if not isinstance(data, dict):
             raise ValueError("data must be a dict")
 
@@ -103,8 +143,7 @@ class PluginCollection:
         Returns:
             Document data with metadata, or None if not found
         """
-        if not doc_id:
-            raise ValueError("doc_id is required")
+        _validate_identifier(doc_id, "doc_id", MAX_DOC_ID_LENGTH)
 
         try:
             doc = PluginDocument.objects.get(
@@ -156,8 +195,7 @@ class PluginCollection:
         Returns:
             True if document was deleted, False if it didn't exist
         """
-        if not doc_id:
-            raise ValueError("doc_id is required")
+        _validate_identifier(doc_id, "doc_id", MAX_DOC_ID_LENGTH)
 
         deleted_count, _ = PluginDocument.objects.filter(
             plugin_key=self._plugin_key,
@@ -217,6 +255,8 @@ class PluginCollection:
         Returns:
             True if document exists
         """
+        _validate_identifier(doc_id, "doc_id", MAX_DOC_ID_LENGTH)
+
         return PluginDocument.objects.filter(
             plugin_key=self._plugin_key,
             collection=self._collection_name,
@@ -281,8 +321,7 @@ class PluginStorage:
         Returns:
             A PluginCollection instance for the named collection
         """
-        if not name:
-            raise ValueError("collection name is required")
+        _validate_identifier(name, "collection name", MAX_COLLECTION_LENGTH)
 
         # Cache collection references for efficiency
         if name not in self._collection_cache:
