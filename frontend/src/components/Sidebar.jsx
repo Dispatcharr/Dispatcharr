@@ -139,6 +139,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const getNavOrder = useAuthStore((s) => s.getNavOrder);
+  const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
 
   const publicIPRef = useRef(null);
 
@@ -146,9 +148,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Get user's saved navigation order and hidden items
-  const navOrder = authUser?.custom_properties?.navOrder || null;
-  const hiddenNav = authUser?.custom_properties?.hiddenNav || [];
+  // Get user's saved navigation order and hidden items using store getters
+  const navOrder = getNavOrder();
+  const hiddenNav = getHiddenNav();
   const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
 
   // Navigation Items - computed from user's saved order, filtered by visibility
@@ -310,7 +312,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                   </UnstyledButton>
                 </Group>
                 <ActionIcon variant="transparent" color="white" size="sm">
-                  <LogOut onClick={logout} />
+                  <LogOut onClick={onLogout} />
                 </ActionIcon>
               </Group>
             )}

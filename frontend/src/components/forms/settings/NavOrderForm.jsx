@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Button,
@@ -6,7 +6,6 @@ import {
   Group,
   ActionIcon,
   Stack,
-  useMantineTheme,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { GripVertical, Eye, EyeOff } from 'lucide-react';
@@ -37,7 +36,6 @@ import {
 import { USER_LEVELS } from '../../../constants';
 
 const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
-  const theme = useMantineTheme();
   const { transform, transition, setNodeRef, isDragging, attributes, listeners } = useSortable({
     id: item.id,
   });
@@ -100,18 +98,23 @@ const DraggableNavItem = ({ item, isHidden, canHide, onToggleVisibility }) => {
 };
 
 const NavOrderForm = ({ active }) => {
-  const theme = useMantineTheme();
+  // All store selectors grouped together
   const user = useAuthStore((s) => s.user);
   const getNavOrder = useAuthStore((s) => s.getNavOrder);
   const setNavOrder = useAuthStore((s) => s.setNavOrder);
   const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
   const toggleNavVisibility = useAuthStore((s) => s.toggleNavVisibility);
+  const updateUserPreferences = useAuthStore((s) => s.updateUserPreferences);
 
   const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
 
   const [items, setItems] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Refs for debouncing
+  const saveTimeoutRef = useRef(null);
+  const pendingOrderRef = useRef(null);
 
   const sensors = useSensors(
     useSensor(MouseSensor, {}),
@@ -127,7 +130,57 @@ const NavOrderForm = ({ active }) => {
     }
   }, [active, isAdmin, getNavOrder]);
 
-  const handleDragEnd = async ({ active, over }) => {
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced save function
+  const debouncedSave = useCallback(async (newOrder) => {
+    // Clear any pending save
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Store the pending order
+    pendingOrderRef.current = newOrder;
+
+    // Schedule save after 800ms of inactivity
+    saveTimeoutRef.current = setTimeout(async () => {
+      const orderToSave = pendingOrderRef.current;
+      if (!orderToSave) return;
+
+      setIsSaving(true);
+      try {
+        await setNavOrder(orderToSave);
+        notifications.show({
+          title: 'Navigation',
+          message: 'Order saved successfully',
+          color: 'green',
+          autoClose: 2000,
+        });
+      } catch {
+        // Revert on failure
+        const savedOrder = getNavOrder();
+        const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
+        setItems(orderedItems);
+        notifications.show({
+          title: 'Error',
+          message: 'Failed to save navigation order',
+          color: 'red',
+        });
+      } finally {
+        setIsSaving(false);
+        pendingOrderRef.current = null;
+      }
+    }, 800);
+  }, [setNavOrder, getNavOrder, isAdmin]);
+
+  const handleDragEnd = ({ active, over }) => {
     if (!over || active.id === over.id) return;
 
     const oldIndex = items.findIndex((item) => item.id === active.id);
@@ -137,35 +190,37 @@ const NavOrderForm = ({ active }) => {
     // Optimistic update
     setItems(newItems);
 
-    // Save to backend
-    setIsSaving(true);
+    // Debounced save to backend
+    const newOrder = newItems.map((item) => item.id);
+    debouncedSave(newOrder);
+  };
+
+  // Wrapped visibility toggle with error handling
+  const handleToggleVisibility = useCallback(async (itemId) => {
     try {
-      const newOrder = newItems.map((item) => item.id);
-      await setNavOrder(newOrder);
+      await toggleNavVisibility(itemId);
       notifications.show({
         title: 'Navigation',
-        message: 'Order saved successfully',
+        message: 'Visibility updated',
         color: 'green',
         autoClose: 2000,
       });
-    } catch (error) {
-      // Revert on failure
-      const savedOrder = getNavOrder();
-      const orderedItems = getOrderedNavItems(savedOrder, isAdmin);
-      setItems(orderedItems);
+    } catch {
       notifications.show({
         title: 'Error',
-        message: 'Failed to save navigation order',
+        message: 'Failed to update visibility',
         color: 'red',
       });
-    } finally {
-      setIsSaving(false);
     }
-  };
-
-  const updateUserPreferences = useAuthStore((s) => s.updateUserPreferences);
+  }, [toggleNavVisibility]);
 
   const handleReset = async () => {
+    // Cancel any pending debounced save
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      pendingOrderRef.current = null;
+    }
+
     setIsSaving(true);
     try {
       await updateUserPreferences({ navOrder: defaultOrder, hiddenNav: [] });
@@ -177,7 +232,7 @@ const NavOrderForm = ({ active }) => {
         color: 'blue',
         autoClose: 2000,
       });
-    } catch (error) {
+    } catch {
       notifications.show({
         title: 'Error',
         message: 'Failed to reset navigation order',
@@ -191,6 +246,9 @@ const NavOrderForm = ({ active }) => {
   if (!active) {
     return null;
   }
+
+  // Cache hiddenNav before render loop to avoid calling getter N times
+  const hiddenNav = getHiddenNav();
 
   return (
     <Stack gap="md">
@@ -212,9 +270,9 @@ const NavOrderForm = ({ active }) => {
             <DraggableNavItem
               key={item.id}
               item={item}
-              isHidden={getHiddenNav().includes(item.id)}
-              canHide={item.id !== 'settings'}
-              onToggleVisibility={toggleNavVisibility}
+              isHidden={hiddenNav.includes(item.id)}
+              canHide={item.canHide !== false}
+              onToggleVisibility={handleToggleVisibility}
             />
           ))}
         </SortableContext>
