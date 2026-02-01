@@ -296,6 +296,31 @@ class PluginStorageTestCase(TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(tasks.all(), [])
 
+    def test_clear_all_deletes_all_collections(self):
+        """Test that clear_all() removes all documents across all collections."""
+        self.storage.collection("tasks").save("t1", {"x": 1})
+        self.storage.collection("tasks").save("t2", {"x": 2})
+        self.storage.collection("notes").save("n1", {"x": 1})
+        self.storage.collection("logs").save("l1", {"x": 1})
+
+        count = self.storage.clear_all()
+
+        self.assertEqual(count, 4)
+        self.assertEqual(self.storage.collections(), [])
+
+    def test_clear_all_only_affects_own_plugin(self):
+        """Test that clear_all() doesn't affect other plugins' data."""
+        # Create data for two plugins
+        self.storage.collection("tasks").save("t1", {"x": 1})
+        other_storage = PluginStorage("other-plugin")
+        other_storage.collection("tasks").save("t1", {"x": 1})
+
+        # Clear only test-plugin
+        self.storage.clear_all()
+
+        # Other plugin's data should remain
+        self.assertEqual(other_storage.collection("tasks").count(), 1)
+
 
 class ManifestTestCase(TestCase):
     """Test cases for manifest key detection."""
@@ -649,6 +674,52 @@ class PluginStorageAPITestCase(TestCase):
         url = "/api/plugins/plugins/test-plugin/storage/tasks/?limit=0"
         response = self.client.get(url, HTTP_AUTHORIZATION=auth)
         self.assertEqual(response.status_code, 400)
+
+    def test_delete_all_plugin_storage(self):
+        """Test deleting all storage for a plugin via API."""
+        storage = PluginStorage("test-plugin")
+        storage.collection("tasks").save("t1", {"x": 1})
+        storage.collection("tasks").save("t2", {"x": 2})
+        storage.collection("notes").save("n1", {"x": 1})
+
+        auth = self.get_auth_header(self.admin_user)
+        url = "/api/plugins/plugins/test-plugin/storage/"
+        response = self.client.delete(url, HTTP_AUTHORIZATION=auth)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["deleted_count"], 3)
+
+        # Verify all deleted
+        self.assertEqual(storage.collections(), [])
+
+    def test_delete_all_plugin_storage_works_when_disabled(self):
+        """Test that delete all storage works even when plugin is disabled."""
+        storage = PluginStorage("test-plugin")
+        storage.collection("tasks").save("t1", {"x": 1})
+
+        # Disable the plugin
+        self.plugin.enabled = False
+        self.plugin.save()
+
+        auth = self.get_auth_header(self.admin_user)
+        url = "/api/plugins/plugins/test-plugin/storage/"
+        response = self.client.delete(url, HTTP_AUTHORIZATION=auth)
+
+        # Should still work
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["deleted_count"], 1)
+
+    def test_delete_all_plugin_storage_plugin_not_found(self):
+        """Test delete all storage returns 404 for non-existent plugin."""
+        auth = self.get_auth_header(self.admin_user)
+        url = "/api/plugins/plugins/nonexistent/storage/"
+        response = self.client.delete(url, HTTP_AUTHORIZATION=auth)
+
+        self.assertEqual(response.status_code, 404)
 
 
 class PluginStorageDocumentSizeLimitTestCase(TestCase):

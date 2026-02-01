@@ -315,3 +315,26 @@ class PluginStorage:
             Number of documents deleted
         """
         return self.collection(collection_name).clear()
+
+    def clear_all(self) -> int:
+        """
+        Delete ALL documents for this plugin (all collections).
+
+        This is a destructive operation intended for the "Delete Plugin Data"
+        UI action. Uses transaction.atomic() for all-or-nothing deletion.
+
+        Returns:
+            Number of documents deleted
+        """
+        with transaction.atomic():
+            deleted_count, _ = PluginDocument.objects.filter(
+                plugin_key=self.plugin_key,
+            ).delete()
+
+            if deleted_count > 0:
+                logger.info(
+                    f"Cleared all storage for plugin {self.plugin_key}: "
+                    f"{deleted_count} documents"
+                )
+
+            return deleted_count

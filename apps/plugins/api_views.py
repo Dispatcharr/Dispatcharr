@@ -342,6 +342,27 @@ class PluginStorageCollectionsAPIView(APIView):
         collections = storage.collections()
         return Response({"success": True, "collections": collections})
 
+    def delete(self, request, key):
+        """
+        Delete ALL storage for a plugin (all collections).
+
+        This is the backend for the "Delete Plugin Data" UI button.
+        Works even when the plugin is disabled, allowing users to clear
+        data before re-enabling or after troubleshooting.
+        """
+        # Verify plugin exists (but don't require it to be enabled)
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+        deleted_count = storage.clear_all()
+        return Response({"success": True, "deleted_count": deleted_count})
+
 
 class PluginStorageListAPIView(APIView):
     """List documents in a collection or save a document."""
