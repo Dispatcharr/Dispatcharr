@@ -390,6 +390,58 @@ def validate_flexible_url(value):
         raise ValidationError("Enter a valid URL.")
 
 
+def parse_failover_urls(url_string):
+    """
+    Parse pipe-separated URL string into list.
+
+    Args:
+        url_string: A pipe-separated string of URLs or already a list
+
+    Returns:
+        List of URL strings
+    """
+    if not url_string:
+        return []
+    if isinstance(url_string, list):
+        return url_string
+    return [url.strip() for url in url_string.split('|') if url.strip()]
+
+
+def format_failover_urls(url_list):
+    """
+    Convert URL list back to pipe-separated string for display.
+
+    Args:
+        url_list: A list of URLs or already a string
+
+    Returns:
+        Pipe-separated string of URLs
+    """
+    if not url_list:
+        return ''
+    if isinstance(url_list, str):
+        return url_list
+    return '|'.join(url_list)
+
+
+def validate_failover_urls(value):
+    """
+    Validate each URL in a pipe-separated string.
+
+    Args:
+        value: A pipe-separated string of URLs
+
+    Raises:
+        ValidationError: If any URL in the string is invalid
+    """
+    urls = parse_failover_urls(value)
+    for i, url in enumerate(urls, 1):
+        try:
+            validate_flexible_url(url)
+        except ValidationError:
+            raise ValidationError(f"URL #{i} is invalid: '{url}'")
+
+
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
     Log a system event and maintain the configured max history.
