@@ -28,11 +28,11 @@ class M3UAccount(models.Model):
     name = models.CharField(
         max_length=255, unique=True, help_text="Unique name for this M3U account"
     )
-    server_url = models.URLField(
-        max_length=1000,
+    server_url = models.JSONField(
+        default=list,
         blank=True,
         null=True,
-        help_text="The base URL of the M3U server (optional if a file is uploaded)",
+        help_text="List of server URLs with failover support. Enter as pipe-separated URLs.",
     )
     file_path = models.CharField(max_length=255, blank=True, null=True)
     server_group = models.ForeignKey(
