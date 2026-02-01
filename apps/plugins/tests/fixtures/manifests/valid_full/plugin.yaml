@@ -1,0 +1,12 @@
+plugin:
+  key: full-plugin
+  name: Full Plugin
+  version: 2.0.0
+  description: A complete plugin
+  repository: https://github.com/example/plugin
+  authors:
+    - Author One
+    - Author Two
+  icon: calendar
+  requires:
+    dispatcharr: ">=0.18.0"

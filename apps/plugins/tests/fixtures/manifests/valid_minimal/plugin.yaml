@@ -1,0 +1,4 @@
+plugin:
+  key: test-plugin
+  name: Test Plugin
+  version: 1.0.0

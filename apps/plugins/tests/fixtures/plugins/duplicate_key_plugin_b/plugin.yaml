@@ -1,0 +1,5 @@
+plugin:
+  key: shared-plugin-key
+  name: Duplicate Key Plugin B
+  version: 2.0.0
+  description: Second plugin with shared key

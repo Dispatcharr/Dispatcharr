@@ -1,0 +1,6 @@
+plugin:
+  key: future-plugin
+  name: Future Plugin
+  version: 1.0.0
+  requires:
+    dispatcharr: ">=99.0.0"

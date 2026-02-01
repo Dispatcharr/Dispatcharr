@@ -1,0 +1,5 @@
+plugin:
+  key: override-plugin
+  name: Manifest Name
+  version: 3.0.0
+  description: From manifest

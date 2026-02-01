@@ -3,6 +3,7 @@ import { showNotification } from '../../utils/notificationUtils.js';
 import { Field } from '../Field.jsx';
 import {
   ActionIcon,
+  Alert,
   Button,
   Card,
   Divider,
@@ -11,7 +12,7 @@ import {
   Switch,
   Text,
 } from '@mantine/core';
-import { Trash2 } from 'lucide-react';
+import { AlertTriangle, Trash2 } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
@@ -25,7 +26,7 @@ const PluginFieldList = ({ plugin, settings, updateField }) => {
   ));
 };
 
-const PluginActionList = ({ plugin, enabled, running, handlePluginRun }) => {
+const PluginActionList = ({ plugin, enabled, running, handlePluginRun, compatible }) => {
   return plugin.actions.map((action) => (
     <Group key={action.id} justify="space-between">
       <div>
@@ -38,7 +39,7 @@ const PluginActionList = ({ plugin, enabled, running, handlePluginRun }) => {
       </div>
       <Button
         loading={running}
-        disabled={!enabled}
+        disabled={!enabled || !compatible}
         onClick={() => handlePluginRun(action)}
         size="xs"
       >
@@ -72,6 +73,7 @@ const PluginActionStatus = ({ running, lastResult }) => {
 
 const PluginCard = ({
   plugin,
+  conflictingPlugin = null,  // Pre-computed by parent for O(n) instead of O(n^2)
   onSaveSettings,
   onRunAction,
   onToggleEnabled,
@@ -113,24 +115,38 @@ const PluginCard = ({
   };
 
   const missing = plugin.missing;
+  const compatible = plugin.compatible !== false;
+  const hasKeyConflict = !!conflictingPlugin;
 
-  const handleEnableChange = () => {
-    return async (e) => {
-      const next = e.currentTarget.checked;
-      if (next && !plugin.ever_enabled && onRequireTrust) {
-        const ok = await onRequireTrust(plugin);
-        if (!ok) {
-          // Revert
-          setEnabled(false);
-          return;
-        }
+  const handleEnableChange = async (e) => {
+    const next = e.currentTarget.checked;
+    // Prevent enabling incompatible plugins
+    if (next && !compatible) {
+      showNotification({
+        title: 'Cannot enable plugin',
+        message: plugin.compatibility_error || 'Plugin is incompatible with this version of Dispatcharr',
+        color: 'red',
+      });
+      return;
+    }
+    if (next && !plugin.ever_enabled && onRequireTrust) {
+      const ok = await onRequireTrust(plugin);
+      if (!ok) {
+        // Revert
+        setEnabled(false);
+        return;
       }
-      setEnabled(next);
-      const resp = await onToggleEnabled(plugin.key, next);
-      if (next && resp?.ever_enabled) {
-        plugin.ever_enabled = true;
-      }
-    };
+    }
+    setEnabled(next);
+    const resp = await onToggleEnabled(plugin.key, next);
+    if (resp?.success === false) {
+      // Revert toggle on failure
+      setEnabled(!next);
+      return;
+    }
+    if (next && resp?.ever_enabled) {
+      plugin.ever_enabled = true;
+    }
   };
 
   const handlePluginRun = async (a) => {
@@ -153,7 +169,7 @@ const PluginCard = ({
       // Save settings before running to ensure backend uses latest values
       try {
         await onSaveSettings(plugin.key, settings);
-      } catch (e) {
+      } catch {
         /* ignore, run anyway */
       }
       const resp = await onRunAction(plugin.key, a.id);
@@ -179,12 +195,24 @@ const PluginCard = ({
     }
   };
 
+  // Determine card styling based on state
+  const getCardStyle = () => {
+    if (!compatible) {
+      return { borderColor: 'var(--mantine-color-orange-6)', borderWidth: 2 };
+    }
+    if (hasKeyConflict) {
+      return { borderColor: 'var(--mantine-color-yellow-6)', borderWidth: 2 };
+    }
+    return undefined;
+  };
+
   return (
     <Card
       shadow="sm"
       radius="md"
       withBorder
-      opacity={!missing && enabled ? 1 : 0.6}
+      opacity={!missing && compatible && !hasKeyConflict && enabled ? 1 : 0.6}
+      style={getCardStyle()}
     >
       <Group justify="space-between" mb="xs" align="center">
         <div>
@@ -206,15 +234,37 @@ const PluginCard = ({
             v{plugin.version || '1.0.0'}
           </Text>
           <Switch
-            checked={!missing && enabled}
-            onChange={handleEnableChange()}
+            checked={!missing && !compatible ? false : enabled}
+            onChange={handleEnableChange}
             size="xs"
             onLabel="On"
             offLabel="Off"
-            disabled={missing}
+            disabled={missing || !compatible || hasKeyConflict}
           />
         </Group>
       </Group>
+
+      {!compatible && (
+        <Alert
+          icon={<AlertTriangle size={16} />}
+          title="Incompatible Plugin"
+          color="orange"
+          mb="sm"
+        >
+          {plugin.compatibility_error || 'This plugin is not compatible with the current version of Dispatcharr.'}
+        </Alert>
+      )}
+
+      {hasKeyConflict && (
+        <Alert
+          icon={<AlertTriangle size={16} />}
+          title="Plugin Key Conflict"
+          color="yellow"
+          mb="sm"
+        >
+          Cannot enable while "{conflictingPlugin.name}" is enabled. Both plugins use the key "{plugin.manifest_key}".
+        </Alert>
+      )}
 
       {missing && (
         <Text size="sm" c="red">
@@ -246,6 +296,7 @@ const PluginCard = ({
               enabled={enabled}
               running={running}
               handlePluginRun={handlePluginRun}
+              compatible={compatible}
             />
             <PluginActionStatus running={running} lastResult={lastResult} />
           </Stack>

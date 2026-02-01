@@ -25,4 +25,12 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    # Manifest-related fields
+    compatible = serializers.BooleanField(default=True)
+    compatibility_error = serializers.CharField(allow_blank=True, default="")
+    repository = serializers.CharField(allow_blank=True, default="")
+    authors = serializers.ListField(child=serializers.CharField(), default=list)
+    icon = serializers.CharField(allow_blank=True, default="")
+    has_manifest = serializers.BooleanField(default=False)
+    manifest_key = serializers.CharField(allow_blank=True, default="")
 

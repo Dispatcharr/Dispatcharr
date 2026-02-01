@@ -48,6 +48,21 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
     }
   }, []);
 
+  // Pre-compute conflict map once for all plugins (O(n) instead of O(n^2))
+  // Maps manifest_key -> first enabled plugin with that key
+  const conflictMap = React.useMemo(() => {
+    const map = new Map();
+    plugins.forEach((p) => {
+      if (p.manifest_key && p.enabled) {
+        // Only store the first enabled plugin for each manifest_key
+        if (!map.has(p.manifest_key)) {
+          map.set(p.manifest_key, p);
+        }
+      }
+    });
+    return map;
+  }, [plugins]);
+
   const handleTogglePluginEnabled = async (key, next) => {
     const resp = await setPluginEnabled(key, next);
 
@@ -57,6 +72,7 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
         ever_enabled: resp?.ever_enabled,
       });
     }
+    return resp;
   };
 
   if (loading && plugins.length === 0) {
@@ -73,18 +89,32 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
         >
           <ErrorBoundary>
             <Suspense fallback={<Loader />}>
-              {plugins.map((p) => (
-                <PluginCard
-                  key={p.key}
-                  plugin={p}
-                  onSaveSettings={updatePluginSettings}
-                  onRunAction={runPluginAction}
-                  onToggleEnabled={handleTogglePluginEnabled}
-                  onRequireTrust={onRequireTrust}
-                  onRequestDelete={onRequestDelete}
-                  onRequestConfirm={onRequestConfirm}
-                />
-              ))}
+              {plugins.map((p) => {
+                // Compute conflicting plugin for this card using the pre-computed map
+                const conflictingPlugin =
+                  p.manifest_key && !p.enabled
+                    ? conflictMap.get(p.manifest_key)
+                    : null;
+                // Only show conflict if it's a different plugin
+                const actualConflict =
+                  conflictingPlugin && conflictingPlugin.key !== p.key
+                    ? conflictingPlugin
+                    : null;
+
+                return (
+                  <PluginCard
+                    key={p.key}
+                    plugin={p}
+                    conflictingPlugin={actualConflict}
+                    onSaveSettings={updatePluginSettings}
+                    onRunAction={runPluginAction}
+                    onToggleEnabled={handleTogglePluginEnabled}
+                    onRequireTrust={onRequireTrust}
+                    onRequestDelete={onRequestDelete}
+                    onRequestConfirm={onRequestConfirm}
+                  />
+                );
+              })}
             </Suspense>
           </ErrorBoundary>
         </SimpleGrid>
@@ -129,6 +159,7 @@ export default function PluginsPage() {
     setDeleteOpen(true);
   }, []);
 
+  // eslint-disable-next-line no-unused-vars
   const requireTrust = useCallback((plugin) => {
     return new Promise((resolve) => {
       setTrustResolve(() => resolve);
