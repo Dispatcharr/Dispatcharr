@@ -191,6 +191,9 @@ except Exception:
         sleep 1
     done
     echo "✅ External PostgreSQL is ready"
+
+    # Check PostgreSQL version compatibility
+    check_external_postgres_version || exit 1
 fi
 
 # Wait for Redis to be ready (modular mode uses external Redis)

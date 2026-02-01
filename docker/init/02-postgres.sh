@@ -191,4 +191,58 @@ ensure_utf8_encoding() {
     fi
 }
 
+check_external_postgres_version() {
+    # Only check for modular deployments using external databases
+    if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+        return 0
+    fi
+
+    echo "🔍 Checking external PostgreSQL version compatibility..."
+
+    # Get minimum required version from base image (set in entrypoint.sh)
+    # PG_VERSION is the version installed in DispatcharrBase
+    MIN_REQUIRED_VERSION=$PG_VERSION
+
+    # Query external PostgreSQL version
+    EXTERNAL_VERSION=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "postgres" -tAc "SHOW server_version;" 2>/dev/null | grep -oE '^[0-9]+')
+
+    if [ -z "$EXTERNAL_VERSION" ]; then
+        echo "❌ ERROR: Unable to determine external PostgreSQL version"
+        echo "   Could not connect to database at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+        echo "   Please verify your database connection settings."
+        return 1
+    fi
+
+    # Compare versions
+    if [[ "$EXTERNAL_VERSION" -lt "$MIN_REQUIRED_VERSION" ]]; then
+        # FAIL: Version too old
+        echo ""
+        echo "❌ ERROR: PostgreSQL version mismatch"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  External Database: PostgreSQL $EXTERNAL_VERSION"
+        echo "  Required Version:  PostgreSQL $MIN_REQUIRED_VERSION or higher"
+        echo ""
+        echo "  Your external PostgreSQL database is too old for Dispatcharr."
+        echo "  Please upgrade to PostgreSQL $MIN_REQUIRED_VERSION or later."
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        return 1
+
+    elif [[ "$EXTERNAL_VERSION" -eq "$MIN_REQUIRED_VERSION" ]]; then
+        # MATCH: Exact version match
+        echo "✅ PostgreSQL version check passed"
+        echo "   External Database: PostgreSQL $EXTERNAL_VERSION (matches target version)"
+
+    else
+        # HIGHER: Newer version
+        echo "✅ PostgreSQL version check passed"
+        echo "   External Database: PostgreSQL $EXTERNAL_VERSION"
+        echo "   Target Version:    PostgreSQL $MIN_REQUIRED_VERSION"
+        echo "   ℹ️  Your database is newer than the target version."
+        echo "   PostgreSQL version should be compatible with Dispatcharr."
+    fi
+
+    return 0
+}
+
 
