@@ -31,3 +31,12 @@ export const getNetworkAccessFormValidation = () => {
     return acc;
   }, {});
 };
+
+export const getNetworkAccessDefaults = () => {
+  return {
+    M3U_EPG: M3U_EPG_DEFAULTS,
+    STREAMS: '0.0.0.0/0,::/0',
+    XC_API: '0.0.0.0/0,::/0',
+    UI: '0.0.0.0/0,::/0',
+  };
+};

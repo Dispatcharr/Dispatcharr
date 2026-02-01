@@ -11,6 +11,7 @@ import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import {
   getNetworkAccessFormInitialValues,
   getNetworkAccessFormValidation,
+  getNetworkAccessDefaults,
 } from '../../../utils/forms/settings/NetworkAccessFormUtils.js';
 
 const NetworkAccessForm = React.memo(({ active }) => {
@@ -49,6 +50,10 @@ const NetworkAccessForm = React.memo(({ active }) => {
       }, {})
     );
   }, [settings]);
+
+  const resetNetworkAccessToDefaults = () => {
+    networkAccessForm.setValues(getNetworkAccessDefaults());
+  };
 
   const onNetworkAccessSubmit = async () => {
     setSaved(false);
@@ -125,7 +130,14 @@ const NetworkAccessForm = React.memo(({ active }) => {
             />
           ))}
 
-          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+          <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
+            <Button
+              variant="subtle"
+              color="gray"
+              onClick={resetNetworkAccessToDefaults}
+            >
+              Reset to Defaults
+            </Button>
             <Button
               type="submit"
               disabled={networkAccessForm.submitting}
