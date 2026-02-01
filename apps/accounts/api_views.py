@@ -264,11 +264,17 @@ class UserViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     @extend_schema(
-        description="Get active user information",
+        description="Get or update active user information. PATCH updates custom_properties with merge semantics.",
+        methods=["GET", "PATCH"],
     )
-    @action(detail=False, methods=["get"], url_path="me")
+    @action(detail=False, methods=["get", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        if request.method == "PATCH":
+            serializer = UserSerializer(user, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
         serializer = UserSerializer(user)
         return Response(serializer.data)
 

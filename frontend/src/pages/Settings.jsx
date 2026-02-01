@@ -29,6 +29,8 @@ const DvrSettingsForm = React.lazy(() =>
   import('../components/forms/settings/DvrSettingsForm.jsx'));
 const SystemSettingsForm = React.lazy(() =>
   import('../components/forms/settings/SystemSettingsForm.jsx'));
+const NavOrderForm = React.lazy(() =>
+  import('../components/forms/settings/NavOrderForm.jsx'));
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -52,7 +54,19 @@ const SettingsPage = () => {
             </AccordionPanel>
           </AccordionItem>
 
-          {authUser.user_level == USER_LEVELS.ADMIN && (
+          <AccordionItem value="nav-order">
+            <AccordionControl>Navigation</AccordionControl>
+            <AccordionPanel>
+              <ErrorBoundary>
+                <Suspense fallback={<Loader />}>
+                  <NavOrderForm
+                    active={accordianValue === 'nav-order'} />
+                </Suspense>
+              </ErrorBoundary>
+            </AccordionPanel>
+          </AccordionItem>
+
+          {authUser.user_level >= USER_LEVELS.ADMIN && (
             <>
               <AccordionItem value="dvr-settings">
                 <AccordionControl>DVR</AccordionControl>

@@ -1,21 +1,11 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
-  ListOrdered,
-  Play,
-  Database,
-  SlidersHorizontal,
-  LayoutGrid,
-  Settings as LucideSettings,
   Copy,
-  ChartLine,
-  Video,
-  PlugZap,
   LogOut,
-  User,
-  FileImage,
 } from 'lucide-react';
+import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
   AppShell,
@@ -38,6 +28,7 @@ import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
 
 const NavLink = ({ item, isActive, collapsed }) => {
+  const IconComponent = item.icon;
   return (
     <UnstyledButton
       key={item.path}
@@ -45,7 +36,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
       to={item.path}
       className={`navlink ${isActive ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
     >
-      {item.icon}
+      {IconComponent && <IconComponent size={20} />}
       {!collapsed && (
         <Text
           sx={{
@@ -78,6 +69,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const getNavOrder = useAuthStore((s) => s.getNavOrder);
+  const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
 
   const publicIPRef = useRef(null);
 
@@ -85,60 +78,16 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
-    authUser && authUser.user_level == USER_LEVELS.ADMIN
-      ? [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          {
-            label: 'VODs',
-            path: '/vods',
-            icon: <Video size={20} />,
-          },
-          {
-            label: 'M3U & EPG Manager',
-            icon: <Play size={20} />,
-            path: '/sources',
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
-          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
-          {
-            label: 'Users',
-            icon: <User size={20} />,
-            path: '/users',
-          },
-          {
-            label: 'Logo Manager',
-            icon: <FileImage size={20} />,
-            path: '/logos',
-          },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ]
-      : [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ];
+  // Get user's saved navigation order and hidden items using store getters
+  const navOrder = getNavOrder();
+  const hiddenNav = getHiddenNav();
+  const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
+
+  // Navigation Items - computed from user's saved order, filtered by visibility
+  const navItems = useMemo(() => {
+    const orderedItems = getOrderedNavItems(navOrder, isAdmin, channels);
+    return orderedItems.filter((item) => !hiddenNav.includes(item.id));
+  }, [navOrder, hiddenNav, isAdmin, channels]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values
@@ -276,7 +225,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 </UnstyledButton>
 
                 <ActionIcon variant="transparent" color="white" size="sm">
-                  <LogOut onClick={logout} />
+                  <LogOut onClick={onLogout} />
                 </ActionIcon>
               </Group>
             )}
