@@ -17,6 +17,7 @@ from apps.accounts.permissions import (
 
 from .loader import PluginManager
 from .models import PluginConfig
+from .storage import PluginStorage
 
 logger = logging.getLogger(__name__)
 
@@ -303,4 +304,193 @@ class PluginDeleteAPIView(APIView):
 
         # Reload registry
         pm.discover_plugins()
+        return Response({"success": True})
+
+
+class PluginStorageCollectionsAPIView(APIView):
+    """List all collections for a plugin."""
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def get(self, request, key):
+        # Verify plugin exists
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+        collections = storage.collections()
+        return Response({"success": True, "collections": collections})
+
+
+class PluginStorageListAPIView(APIView):
+    """List documents in a collection or save a document."""
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def get(self, request, key, collection):
+        """List all documents in a collection."""
+        # Verify plugin exists
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+
+        # Optional pagination
+        limit = request.query_params.get("limit")
+        offset = request.query_params.get("offset", 0)
+
+        try:
+            limit = int(limit) if limit else None
+            offset = int(offset)
+        except ValueError:
+            return Response(
+                {"success": False, "error": "Invalid limit or offset"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        documents = storage.collection(collection).all(limit=limit, offset=offset)
+        return Response({"success": True, "documents": documents})
+
+    def post(self, request, key, collection):
+        """Save a document to a collection."""
+        # Verify plugin exists and is enabled
+        try:
+            cfg = PluginConfig.objects.get(key=key)
+            if not cfg.enabled:
+                return Response(
+                    {"success": False, "error": "Plugin is disabled"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        doc_id = request.data.get("id")
+        data = request.data.get("data")
+
+        if not doc_id:
+            return Response(
+                {"success": False, "error": "Missing 'id' field"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(data, dict):
+            return Response(
+                {"success": False, "error": "'data' must be an object"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        storage = PluginStorage(key)
+        try:
+            document = storage.collection(collection).save(doc_id, data)
+            return Response({"success": True, "document": document})
+        except Exception as e:
+            logger.exception("Failed to save plugin document")
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def delete(self, request, key, collection):
+        """Delete all documents in a collection."""
+        # Verify plugin exists and is enabled
+        try:
+            cfg = PluginConfig.objects.get(key=key)
+            if not cfg.enabled:
+                return Response(
+                    {"success": False, "error": "Plugin is disabled"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+        deleted_count = storage.collection(collection).clear()
+        return Response({"success": True, "deleted_count": deleted_count})
+
+
+class PluginStorageDetailAPIView(APIView):
+    """Get or delete a specific document."""
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    def get(self, request, key, collection, doc_id):
+        """Get a document by ID."""
+        # Verify plugin exists
+        try:
+            PluginConfig.objects.get(key=key)
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+        document = storage.collection(collection).get(doc_id)
+
+        if document is None:
+            return Response(
+                {"success": False, "error": "Document not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({"success": True, "document": document})
+
+    def delete(self, request, key, collection, doc_id):
+        """Delete a document by ID."""
+        # Verify plugin exists and is enabled
+        try:
+            cfg = PluginConfig.objects.get(key=key)
+            if not cfg.enabled:
+                return Response(
+                    {"success": False, "error": "Plugin is disabled"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        except PluginConfig.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Plugin not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        storage = PluginStorage(key)
+        deleted = storage.collection(collection).delete(doc_id)
+
+        if not deleted:
+            return Response(
+                {"success": False, "error": "Document not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         return Response({"success": True})
