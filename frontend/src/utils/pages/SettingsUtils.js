@@ -20,6 +20,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
   // Group changes by their setting group based on field name prefixes
   const groupedChanges = {
     stream_settings: {},
+    epg_settings: {},
     dvr_settings: {},
     backup_settings: {},
     system_settings: {},
@@ -27,6 +28,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
 
   // Map of field prefixes to their groups
   const streamFields = ['default_user_agent', 'default_stream_profile', 'm3u_hash_key', 'preferred_region', 'auto_import_mapped_files'];
+  const epgFields = ['epg_match_ignore_prefixes', 'epg_match_ignore_suffixes', 'epg_match_ignore_custom'];
   const dvrFields = ['tv_template', 'movie_template', 'tv_fallback_dir', 'tv_fallback_template', 'movie_fallback_template',
                      'comskip_enabled', 'comskip_custom_path', 'pre_offset_minutes', 'post_offset_minutes', 'series_rules'];
   const backupFields = ['schedule_enabled', 'schedule_frequency', 'schedule_time', 'schedule_day_of_week',
@@ -58,6 +60,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     }
 
     // Type conversions for proper storage
+    // EPG fields should remain as arrays, don't convert them
     if (formKey === 'm3u_hash_key' && Array.isArray(value)) {
       value = value.join(',');
     }
@@ -79,6 +82,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     // Route to appropriate group
     if (streamFields.includes(formKey)) {
       groupedChanges.stream_settings[formKey] = value;
+    } else if (epgFields.includes(formKey)) {
+      groupedChanges.epg_settings[formKey] = value;
     } else if (dvrFields.includes(formKey)) {
       groupedChanges.dvr_settings[formKey] = value;
     } else if (backupFields.includes(formKey)) {
@@ -114,6 +119,9 @@ export const saveChangedSettings = async (settings, changedSettings) => {
 export const getChangedSettings = (values, settings) => {
   const changedSettings = {};
 
+  // EPG fields that should be kept as arrays
+  const epgFields = ['epg_match_ignore_prefixes', 'epg_match_ignore_suffixes', 'epg_match_ignore_custom'];
+
   for (const settingKey in values) {
     // Skip grouped settings that are handled by their own dedicated forms
     if (settingKey === 'proxy_settings' || settingKey === 'network_access') {
@@ -123,10 +131,20 @@ export const getChangedSettings = (values, settings) => {
     // Only compare against existing value if the setting exists
     const existing = settings[settingKey];
 
-    // Convert array values (like m3u_hash_key) to comma-separated strings for comparison
-    let compareValue;
     let actualValue = values[settingKey];
+    let compareValue;
 
+    // Handle EPG fields specially - keep as arrays, don't skip empty arrays
+    if (epgFields.includes(settingKey)) {
+      if (!Array.isArray(actualValue)) {
+        actualValue = [];
+      }
+      // Always include EPG fields in changes (even if empty)
+      changedSettings[settingKey] = actualValue;
+      continue;
+    }
+
+    // Convert array values (like m3u_hash_key) to comma-separated strings for comparison
     if (Array.isArray(actualValue)) {
       actualValue = actualValue.join(',');
       compareValue = actualValue;
@@ -172,6 +190,13 @@ export const parseSettings = (settings) => {
       parsed.m3u_hash_key = [];
     }
   }
+
+  // EPG settings - direct mapping with underscore keys
+  const epgSettings = settings['epg_settings']?.value;
+  // Always set EPG fields (even if settings don't exist yet)
+  parsed.epg_match_ignore_prefixes = (epgSettings && Array.isArray(epgSettings.epg_match_ignore_prefixes)) ? epgSettings.epg_match_ignore_prefixes : [];
+  parsed.epg_match_ignore_suffixes = (epgSettings && Array.isArray(epgSettings.epg_match_ignore_suffixes)) ? epgSettings.epg_match_ignore_suffixes : [];
+  parsed.epg_match_ignore_custom = (epgSettings && Array.isArray(epgSettings.epg_match_ignore_custom)) ? epgSettings.epg_match_ignore_custom : [];
 
   // DVR settings - direct mapping with underscore keys
   const dvrSettings = settings['dvr_settings']?.value;
