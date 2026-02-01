@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Streams table column visibility toggle: Added column menu to Streams table header allowing users to show/hide optional columns (TVG-ID, Stats) based on preference, with optional columns hidden by default for cleaner default view.
+- Streams table TVG-ID column with search filter and sort: Added TVG-ID column to streams table with search filtering and sort capability for better stream organization. (Closes #866) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Frontend now automatically refreshes streams and channels after a stream rehash completes, ensuring the UI is always up-to-date following backend merge operations.
 - Frontend Unit Tests: Added comprehensive unit tests for React hooks and Zustand stores, including:
   - `useLocalStorage` hook tests with localStorage mocking and error handling
   - `useSmartLogos` hook tests for logo loading and management
@@ -24,16 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Stream Identity Stability: Added `stream_id` (provider stream identifier) and `stream_chno` (provider channel number) fields to Stream model. For XC accounts, the stream hash now uses the stable `stream_id` instead of the URL when hashing, ensuring XC streams maintain their identity and channel associations even when account credentials or server URLs change. Supports both XC `num` and M3U `tvg-chno`/`channel-number` attributes.
 - Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
   - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
   - Modern OpenAPI 3.0 specification compliance
   - Better auto-generation of request/response schemas
   - Improved documentation accuracy with serializer introspection
+- Switched to uv for package management: Migrated from pip to uv (Astral's fast Python package installer) for improved dependency resolution speed and reliability. This includes updates to Docker build processes, installation scripts (debian_install.sh), and project configuration (pyproject.toml) to leverage uv's features like virtual environment management and lockfile generation. - Thanks [@tobimichael96](https://github.com/tobimichael96) for getting it started!
+- Copy to Clipboard: Refactored `copyToClipboard` utility function to include notification handling internally, eliminating duplicate notification code across the frontend. The function now accepts optional parameters for customizing success/failure messages while providing consistent behavior across all copy operations.
 
 ### Fixed
 
+- Stream rehash/merge logic now guarantees unique stream_hash and always preserves the stream with the best channel ordering and relationships. This prevents duplicate key errors and ensures the correct stream is retained when merging. (Fixes #892)
 - Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
 - EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Fixed NumPy baseline detection in Docker entrypoint. Now properly detects when NumPy crashes on import due to CPU baseline incompatibility and installs legacy NumPy version. Previously, if NumPy failed to import, the script would skip legacy installation assuming it was already compatible.
 
 ## [0.18.1] - 2026-01-27
 

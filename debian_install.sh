@@ -160,15 +160,28 @@ EOSU
 # 6) Setup Python Environment
 ##############################################################################
 
+install_uv() {
+  echo ">>> Installing UV package manager..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+}
+
 setup_python_env() {
-  echo ">>> Setting up Python virtual environment..."
+  echo ">>> Setting up Python virtual environment with UV..."
+  # Install UV globally first
+  install_uv
+
   su - "$DISPATCH_USER" <<EOSU
 cd "$APP_DIR"
-$PYTHON_BIN -m venv env
-source env/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install gunicorn
+export PATH="\$HOME/.local/bin:\$PATH"
+# Install UV for the dispatch user if not already available
+if ! command -v uv &> /dev/null; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="\$HOME/.local/bin:\$PATH"
+fi
+# Create venv and install dependencies using UV
+uv venv env --python $PYTHON_BIN
+uv sync --python env/bin/python --no-install-project --no-dev
 EOSU
   ln -sf /usr/bin/ffmpeg "$APP_DIR/env/bin/ffmpeg"
 }

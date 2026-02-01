@@ -2693,13 +2693,9 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                     channel_number = None
 
                     if starting_channel_number is None:
-                        # Mode 1: Use provider numbers when available
-                        if "tvg-chno" in stream_custom_props:
-                            channel_number = float(stream_custom_props["tvg-chno"])
-                        elif "channel-number" in stream_custom_props:
-                            channel_number = float(stream_custom_props["channel-number"])
-                        elif "num" in stream_custom_props:
-                            channel_number = float(stream_custom_props["num"])
+                        # Mode 1: Use provider numbers when available (from stream_chno field)
+                        if stream.stream_chno is not None:
+                            channel_number = stream.stream_chno
 
                     # For modes 2 and 3 (starting_channel_number == 0 or specific number),
                     # ignore provider numbers and use sequential assignment
