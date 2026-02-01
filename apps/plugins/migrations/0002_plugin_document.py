@@ -26,10 +26,9 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'Plugin Documents',
             },
         ),
-        migrations.AddIndex(
-            model_name='plugindocument',
-            index=models.Index(fields=['plugin_key', 'collection'], name='plugins_plu_plugin__a1b2c3_idx'),
-        ),
+        # Note: No explicit index on (plugin_key, collection) needed.
+        # The unique constraint below creates an index on (plugin_key, collection, doc_id)
+        # which covers queries by (plugin_key, collection) via leftmost prefix.
         migrations.AddConstraint(
             model_name='plugindocument',
             constraint=models.UniqueConstraint(fields=['plugin_key', 'collection', 'doc_id'], name='unique_plugin_document'),

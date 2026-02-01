@@ -56,10 +56,9 @@ class PluginDocument(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        # unique_together creates an index on (plugin_key, collection, doc_id)
+        # which covers queries by (plugin_key, collection) via leftmost prefix
         unique_together = ["plugin_key", "collection", "doc_id"]
-        indexes = [
-            models.Index(fields=["plugin_key", "collection"]),
-        ]
         verbose_name = "Plugin Document"
         verbose_name_plural = "Plugin Documents"
 
