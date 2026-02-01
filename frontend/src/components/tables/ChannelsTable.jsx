@@ -727,14 +727,6 @@ const ChannelsTable = ({ onReady }) => {
     setRecordingModalOpen(false);
   };
 
-  const handleCopy = async (textToCopy, ref) => {
-    const success = await copyToClipboard(textToCopy);
-    notifications.show({
-      title: success ? 'Copied!' : 'Copy Failed',
-      message: success ? undefined : 'Failed to copy to clipboard',
-      color: success ? 'green' : 'red',
-    });
-  };
   // Build URLs with parameters
   const buildM3UUrl = () => {
     const params = new URLSearchParams();
@@ -759,35 +751,23 @@ const ChannelsTable = ({ onReady }) => {
   };
   // Example copy URLs
   const copyM3UUrl = async () => {
-    const success = await copyToClipboard(buildM3UUrl());
-    notifications.show({
-      title: success ? 'M3U URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The M3U URL has been copied to your clipboard.'
-        : 'Failed to copy M3U URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(buildM3UUrl(), {
+      successTitle: 'M3U URL Copied!',
+      successMessage: 'The M3U URL has been copied to your clipboard.',
     });
   };
 
   const copyEPGUrl = async () => {
-    const success = await copyToClipboard(buildEPGUrl());
-    notifications.show({
-      title: success ? 'EPG URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The EPG URL has been copied to your clipboard.'
-        : 'Failed to copy EPG URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(buildEPGUrl(), {
+      successTitle: 'EPG URL Copied!',
+      successMessage: 'The EPG URL has been copied to your clipboard.',
     });
   };
 
   const copyHDHRUrl = async () => {
-    const success = await copyToClipboard(hdhrUrl);
-    notifications.show({
-      title: success ? 'HDHR URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The HDHR URL has been copied to your clipboard.'
-        : 'Failed to copy HDHR URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(hdhrUrl, {
+      successTitle: 'HDHR URL Copied!',
+      successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
   };
 

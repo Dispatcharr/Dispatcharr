@@ -144,16 +144,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   // No need to fetch them again here - just use the store values
 
   const copyPublicIP = async () => {
-    const success = await copyToClipboard(environment.public_ip);
-    if (success) {
-      notifications.show({
-        title: 'Success',
-        message: 'Public IP copied to clipboard',
-        color: 'green',
-      });
-    } else {
-      console.error('Failed to copy public IP to clipboard');
-    }
+    await copyToClipboard(environment.public_ip, {
+      successTitle: 'Success',
+      successMessage: 'Public IP copied to clipboard',
+    });
   };
 
   const onLogout = async () => {
