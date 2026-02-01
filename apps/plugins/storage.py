@@ -9,6 +9,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from django.db import transaction
+
 from .models import PluginDocument
 
 logger = logging.getLogger(__name__)
@@ -174,20 +176,24 @@ class PluginCollection:
         """
         Delete all documents in this collection.
 
+        Uses transaction.atomic() to ensure all-or-nothing deletion.
+        If interrupted, the entire operation rolls back.
+
         Returns:
             Number of documents deleted
         """
-        deleted_count, _ = PluginDocument.objects.filter(
-            plugin_key=self._plugin_key,
-            collection=self._collection_name,
-        ).delete()
+        with transaction.atomic():
+            deleted_count, _ = PluginDocument.objects.filter(
+                plugin_key=self._plugin_key,
+                collection=self._collection_name,
+            ).delete()
 
-        if deleted_count > 0:
-            logger.debug(
-                f"Cleared {deleted_count} documents from "
-                f"{self._plugin_key}/{self._collection_name}"
-            )
-        return deleted_count
+            if deleted_count > 0:
+                logger.debug(
+                    f"Cleared {deleted_count} documents from "
+                    f"{self._plugin_key}/{self._collection_name}"
+                )
+            return deleted_count
 
     def count(self) -> int:
         """
