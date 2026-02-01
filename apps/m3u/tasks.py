@@ -1338,10 +1338,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                 f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
             )
 
+            # Create failover callback for WebSocket notifications
+            failover_callback = create_xc_failover_callback(account_id)
+
             # Create XCClient with explicit error handling
             try:
                 with XCClient(
-                    account.server_url, account.username, account.password, user_agent_string
+                    account.server_url, account.username, account.password, user_agent_string,
+                    failover_callback=failover_callback
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
@@ -1350,6 +1354,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         logger.debug(f"Authenticating with XC server {server_url}")
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
+
+                        # Notify UI that we've connected successfully
+                        send_m3u_update(
+                            account_id,
+                            "processing_groups",
+                            0,
+                            message="Connected, fetching categories..."
+                        )
 
                         # Queue async profile refresh task to run in background
                         # This prevents any delay in the main refresh process
@@ -1382,6 +1394,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                         xc_categories = xc_client.get_live_categories()
                         logger.info(
                             f"Found {len(xc_categories)} categories: {xc_categories}"
+                        )
+
+                        # Notify UI of category count
+                        send_m3u_update(
+                            account_id,
+                            "processing_groups",
+                            0,
+                            message=f"Found {len(xc_categories)} categories, fetching streams..."
                         )
 
                         # Validate response
@@ -3086,3 +3106,29 @@ def send_m3u_update(account_id, action, progress, **kwargs):
 
     # Explicitly clear data reference to help garbage collection
     data = None
+
+
+def create_xc_failover_callback(account_id):
+    """
+    Create a callback function for XCClient failover notifications.
+
+    Args:
+        account_id: The M3U account ID for notification routing
+
+    Returns:
+        Callback function that sends WebSocket updates during failover
+    """
+    def failover_callback(url_num, total_urls, cycle_num, max_cycles, message, waiting=False):
+        """Send failover progress via WebSocket."""
+        send_m3u_update(
+            account_id,
+            "processing_groups",
+            0,  # Progress is 0 during failover attempts
+            failover_url=url_num,
+            failover_total_urls=total_urls,
+            failover_cycle=cycle_num,
+            failover_max_cycles=max_cycles,
+            failover_waiting=waiting,
+            message=message,
+        )
+    return failover_callback

@@ -9,7 +9,18 @@ logger = logging.getLogger(__name__)
 class Client:
     """Xtream Codes API Client with robust error handling and failover support"""
 
-    def __init__(self, server_url, username, password, user_agent=None):
+    def __init__(self, server_url, username, password, user_agent=None, failover_callback=None):
+        """
+        Initialize XCClient.
+
+        Args:
+            server_url: Single URL string or list of URLs for failover
+            username: XC username
+            password: XC password
+            user_agent: User agent string or object with user_agent attribute
+            failover_callback: Optional callback function(url_num, total_urls, cycle_num, max_cycles, message)
+                              Called during failover events to notify UI of progress
+        """
         # Handle both string and list inputs for server_url
         if isinstance(server_url, list):
             self.server_urls = [url for url in server_url if url]
@@ -24,6 +35,7 @@ class Client:
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.failover_callback = failover_callback
 
         # Fix: Properly handle all possible user_agent input types
         if user_agent:
@@ -41,11 +53,11 @@ class Client:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': user_agent_string})
 
-        # Configure connection pooling
+        # Configure connection pooling (no retries - we handle failover ourselves)
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=1,
             pool_maxsize=2,
-            max_retries=3,
+            max_retries=0,
             pool_block=False
         )
         self.session.mount('http://', adapter)
@@ -73,7 +85,7 @@ class Client:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
 
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=(5, 5))  # 5s connect + 5s read
             response.raise_for_status()
 
             # Check if response is empty
@@ -144,24 +156,51 @@ class Client:
         attempt = 0
         last_exception = None
 
+        # Start from the last successful URL index (remembered from previous calls)
+        start_idx = self.current_url_index
+
         for cycle in range(max_cycles):
-            for idx, url in enumerate(self.server_urls):
+            for i in range(total_urls):
+                # Rotate through URLs starting from the last successful one
+                idx = (start_idx + i) % total_urls
+                url = self.server_urls[idx]
                 attempt += 1
                 url_num = idx + 1
                 cycle_num = cycle + 1
                 self.server_url = self._normalize_url(url)
 
                 # Log failover progress in user-friendly format
-                if total_urls > 1 or cycle > 0:
-                    logger.warning(
+                # Only notify UI if we're actually failing over (not on first attempt with known-good URL)
+                # i > 0 means we've already tried the first URL and are now trying others
+                # cycle > 0 means we're on a retry cycle
+                is_failover = i > 0 or cycle > 0
+
+                if total_urls > 1 and is_failover:
+                    failover_msg = (
                         f"XC failover: Attempting Address {url_num} of {total_urls}, "
                         f"Round {cycle_num} of {max_cycles}"
                     )
+                    logger.warning(failover_msg)
+
+                    # Notify UI of failover progress
+                    if self.failover_callback:
+                        try:
+                            self.failover_callback(
+                                url_num=url_num,
+                                total_urls=total_urls,
+                                cycle_num=cycle_num,
+                                max_cycles=max_cycles,
+                                message=failover_msg
+                            )
+                        except Exception as cb_err:
+                            logger.warning(f"Failover callback error: {cb_err}")
 
                 try:
                     logger.info(f"XC trying: {self.server_url}")
                     result = self._make_request(endpoint, params)
                     logger.info(f"XC success: {self.server_url}")
+                    # Remember this URL for next time
+                    self.current_url_index = idx
                     return result
                 except Exception as e:
                     last_exception = e
@@ -169,6 +208,21 @@ class Client:
                     logger.warning(
                         f"XC server {url_num}/{total_urls} failed: {error_short}"
                     )
+
+                    # Notify UI of failure and waiting
+                    if self.failover_callback and attempt < total_urls * max_cycles:
+                        try:
+                            self.failover_callback(
+                                url_num=url_num,
+                                total_urls=total_urls,
+                                cycle_num=cycle_num,
+                                max_cycles=max_cycles,
+                                message=f"Server {url_num} failed, trying next...",
+                                waiting=True
+                            )
+                        except Exception as cb_err:
+                            logger.warning(f"Failover callback error: {cb_err}")
+
                     if attempt < total_urls * max_cycles:
                         logger.info(f"Waiting {timeout}s before next XC attempt...")
                         time.sleep(timeout)

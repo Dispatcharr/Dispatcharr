@@ -22,8 +22,9 @@ import {
   PasswordInput,
   Tooltip,
   Text,
+  Loader,
 } from '@mantine/core';
-import { Info } from 'lucide-react';
+import { Info, CheckCircle, XCircle } from 'lucide-react';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
 import { notifications } from '@mantine/notifications';
@@ -52,6 +53,16 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [showCredentialFields, setShowCredentialFields] = useState(false);
+  const [validationResults, setValidationResults] = useState(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationProgress, setValidationProgress] = useState(null); // {total: 2, results: [{url, status, countdown}]}
+  const countdownIntervalsRef = React.useRef({}); // Store interval IDs by index
+
+  // Helper to truncate URLs for display (keep ~35 chars to fit "http://proxpanel.app:1000/m3u")
+  const truncateUrl = (url, maxLength = 35) => {
+    if (!url || url.length <= maxLength) return url;
+    return url.substring(0, maxLength) + '...';
+  };
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -120,6 +131,148 @@ const M3U = ({
       setShowCredentialFields(true);
     }
   }, [form.values.account_type]);
+
+  // Clear validation results when URL or account type changes
+  useEffect(() => {
+    setValidationResults(null);
+  }, [form.values.server_url, form.values.account_type]);
+
+  const validateUrls = async () => {
+    const values = form.getValues();
+
+    if (!values.server_url) {
+      notifications.show({
+        title: 'Validation Error',
+        message: 'Please enter at least one URL to validate',
+        color: 'red',
+      });
+      return;
+    }
+
+    // Parse URLs from the pipe-separated string
+    const urls = values.server_url.split('|').map(u => u.trim()).filter(u => u);
+
+    if (urls.length === 0) {
+      notifications.show({
+        title: 'Validation Error',
+        message: 'Please enter at least one URL to validate',
+        color: 'red',
+      });
+      return;
+    }
+
+    setIsValidating(true);
+    setValidationResults(null);
+
+    // Initialize all URLs as "pending" upfront
+    const initialResults = urls.map(url => ({
+      url,
+      status: 'pending', // pending, testing, complete
+      success: null,
+      error: null,
+      response_time_ms: null,
+    }));
+
+    setValidationProgress({
+      total: urls.length,
+      results: initialResults,
+    });
+
+    // Test all URLs in parallel
+    const testUrl = async (url, index) => {
+      // Mark as testing and start countdown from 10 seconds
+      setValidationProgress(prev => {
+        if (!prev) return null;
+        const newResults = [...prev.results];
+        newResults[index] = { ...newResults[index], status: 'testing', countdown: 10 };
+        return { ...prev, results: newResults };
+      });
+
+      // Start countdown interval
+      countdownIntervalsRef.current[index] = setInterval(() => {
+        setValidationProgress(prev => {
+          if (!prev) return null;
+          const newResults = [...prev.results];
+          if (newResults[index] && newResults[index].status === 'testing' && newResults[index].countdown > 0) {
+            newResults[index] = { ...newResults[index], countdown: newResults[index].countdown - 1 };
+          }
+          return { ...prev, results: newResults };
+        });
+      }, 1000);
+
+      try {
+        const response = await API.validateM3UUrls({
+          account_type: values.account_type,
+          server_url: url,
+          username: values.username,
+          password: values.password || (m3uAccount?.username ? '***' : ''),
+          user_agent: values.user_agent !== '0' ? values.user_agent : null,
+        });
+
+        // Always use the frontend's original URL to preserve exact user input (including ports)
+        const backendResult = response?.results?.[0] || {};
+        const result = {
+          url, // Use frontend's original URL, not backend's potentially normalized URL
+          success: backendResult.success ?? false,
+          error: backendResult.error || (response ? null : 'No response'),
+          response_time_ms: backendResult.response_time_ms,
+        };
+
+        // Clear countdown interval and mark as complete
+        if (countdownIntervalsRef.current[index]) {
+          clearInterval(countdownIntervalsRef.current[index]);
+          delete countdownIntervalsRef.current[index];
+        }
+        setValidationProgress(prev => {
+          if (!prev) return null;
+          const newResults = [...prev.results];
+          newResults[index] = {
+            ...newResults[index],
+            status: 'complete',
+            success: result.success,
+            error: result.error,
+            response_time_ms: result.response_time_ms,
+          };
+          return { ...prev, results: newResults };
+        });
+
+        return result;
+      } catch (error) {
+        console.error('Validation failed for URL:', url, error);
+        const errorResult = { url, success: false, error: 'Request failed' };
+
+        // Clear countdown interval and mark as complete
+        if (countdownIntervalsRef.current[index]) {
+          clearInterval(countdownIntervalsRef.current[index]);
+          delete countdownIntervalsRef.current[index];
+        }
+        setValidationProgress(prev => {
+          if (!prev) return null;
+          const newResults = [...prev.results];
+          newResults[index] = {
+            ...newResults[index],
+            status: 'complete',
+            success: false,
+            error: 'Request failed',
+          };
+          return { ...prev, results: newResults };
+        });
+
+        return errorResult;
+      }
+    };
+
+    // Run all tests in parallel
+    const results = await Promise.all(urls.map((url, idx) => testUrl(url, idx)));
+
+    // Clean up any remaining intervals
+    Object.values(countdownIntervalsRef.current).forEach(clearInterval);
+    countdownIntervalsRef.current = {};
+
+    setValidationResults(results);
+    setIsValidating(false);
+    setValidationProgress(null);
+  };
 
   const onSubmit = async () => {
     const { create_epg, ...values } = form.getValues();
@@ -230,7 +383,7 @@ const M3U = ({
   return (
     <>
       <Modal
-        size={700}
+        size={840}
         opened={isOpen}
         onClose={close}
         title="M3U Account"
@@ -241,9 +394,77 @@ const M3U = ({
         yOffset="2vh"
       >
         <LoadingOverlay
-          visible={form.submitting}
-          overlayBlur={2}
-          loaderProps={loadingText ? { children: loadingText } : {}}
+          visible={form.submitting || isValidating}
+          overlayProps={{ blur: 2 }}
+          loaderProps={
+            validationProgress
+              ? {
+                  children: (
+                    <Stack align="center" gap="md">
+                      <Text fw={500}>Validating Connection...</Text>
+                      <Box
+                        style={{
+                          background: theme.colors.dark[7],
+                          borderRadius: theme.radius.sm,
+                          padding: '12px 16px',
+                          minWidth: '500px',
+                          maxWidth: '600px',
+                        }}
+                      >
+                        <Stack gap="xs">
+                          <Text size="sm" c="dimmed">
+                            Found {validationProgress.total} URL{validationProgress.total !== 1 ? 's' : ''} specified.
+                          </Text>
+                          {validationProgress.results.map((result, idx) => (
+                            <Box key={idx}>
+                              <Group gap="xs" wrap="nowrap">
+                                {result.status === 'pending' ? (
+                                  <Box style={{ width: 14, height: 14, flexShrink: 0 }} />
+                                ) : result.status === 'testing' ? (
+                                  <Loader size={14} style={{ flexShrink: 0 }} />
+                                ) : result.success ? (
+                                  <CheckCircle size={14} color={theme.colors.green[5]} style={{ flexShrink: 0 }} />
+                                ) : (
+                                  <XCircle size={14} color={theme.colors.red[5]} style={{ flexShrink: 0 }} />
+                                )}
+                                <Text
+                                  size="xs"
+                                  c={result.status === 'complete' ? (result.success ? 'green.5' : 'red.5') : 'dimmed'}
+                                  style={{ flex: 1 }}
+                                >
+                                  {truncateUrl(result.url, 45)}
+                                </Text>
+                                <Text size="xs" c="dimmed" style={{ flexShrink: 0, minWidth: '85px', textAlign: 'right' }}>
+                                  {result.status === 'pending' ? 'Waiting...' :
+                                   result.status === 'testing' ? `Testing...(${result.countdown || 0})` :
+                                   result.success ? `${result.response_time_ms}ms` : ''}
+                                </Text>
+                              </Group>
+                              {/* Show error message on its own line if present */}
+                              {result.status === 'complete' && !result.success && result.error && (
+                                <Text
+                                  size="xs"
+                                  c="red.5"
+                                  style={{
+                                    marginLeft: '22px',
+                                    marginTop: '2px',
+                                    wordBreak: 'break-word',
+                                  }}
+                                >
+                                  {result.error.length > 80 ? result.error.substring(0, 80) + '...' : result.error}
+                                </Text>
+                              )}
+                            </Box>
+                          ))}
+                        </Stack>
+                      </Box>
+                    </Stack>
+                  ),
+                }
+              : loadingText
+                ? { children: loadingText }
+                : {}
+          }
         />
 
         <form onSubmit={form.onSubmit(onSubmit)}>
@@ -287,6 +508,55 @@ const M3U = ({
                 {...form.getInputProps('server_url')}
                 key={form.key('server_url')}
               />
+
+              {/* Validation Results Display - shown below URL when results exist */}
+              {validationResults && validationResults.length > 0 && (
+                <Box
+                  style={{
+                    background: theme.colors.dark[7],
+                    borderRadius: theme.radius.sm,
+                    padding: '8px 12px',
+                  }}
+                >
+                  <Stack gap={6}>
+                    {validationResults.map((result, idx) => (
+                      <Box key={idx}>
+                        <Group gap="xs" wrap="nowrap">
+                          {result.success ? (
+                            <CheckCircle size={14} color={theme.colors.green[5]} style={{ flexShrink: 0 }} />
+                          ) : (
+                            <XCircle size={14} color={theme.colors.red[5]} style={{ flexShrink: 0 }} />
+                          )}
+                          <Text
+                            size="xs"
+                            c={result.success ? 'green.5' : 'red.5'}
+                            style={{ flex: 1 }}
+                          >
+                            {truncateUrl(result.url, 50)}
+                          </Text>
+                          <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+                            {result.success ? `${result.response_time_ms}ms` : ''}
+                          </Text>
+                        </Group>
+                        {/* Show error message on its own line if present */}
+                        {!result.success && result.error && (
+                          <Text
+                            size="xs"
+                            c="red.4"
+                            style={{
+                              marginLeft: '22px',
+                              marginTop: '2px',
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {result.error.length > 100 ? result.error.substring(0, 100) + '...' : result.error}
+                          </Text>
+                        )}
+                      </Box>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
 
               <Select
                 id="account_type"
@@ -440,6 +710,14 @@ const M3U = ({
           </Group>
 
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+            <Button
+              variant="filled"
+              size="sm"
+              onClick={validateUrls}
+              disabled={isValidating}
+            >
+              Validate
+            </Button>
             {playlist && (
               <>
                 <Button
