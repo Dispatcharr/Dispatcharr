@@ -2330,6 +2330,10 @@ class BulkDeleteUpcomingRecordingsAPIView(APIView):
         qs = Recording.objects.filter(start_time__gt=now)
         removed = qs.count()
         qs.delete()
+
+        from core import events
+        events.emit("recording.bulk_cancelled", None, count=removed)
+
         try:
             from core.utils import send_websocket_update
             send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed", "removed": removed})

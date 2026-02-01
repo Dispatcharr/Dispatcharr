@@ -106,6 +106,12 @@ def _serialize_recording_comskip_completed(recording, **ctx):
     }
 
 
+def _serialize_recording_bulk_cancelled(obj, **ctx):
+    return {
+        "count": ctx.get("count"),
+    }
+
+
 def _serialize_epg_refreshed(source, **ctx):
     return {
         "source_id": source.id,
@@ -133,6 +139,7 @@ EVENT_SERIALIZERS = {
     "recording.deleted": _serialize_recording_deleted,
     "recording.changed": _serialize_recording_changed,
     "recording.comskip_completed": _serialize_recording_comskip_completed,
+    "recording.bulk_cancelled": _serialize_recording_bulk_cancelled,
     "epg.refreshed": _serialize_epg_refreshed,
     "m3u.refreshed": _serialize_m3u_refreshed,
 }

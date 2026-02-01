@@ -11,6 +11,7 @@ import logging, requests, time
 from .tasks import run_recording, prefetch_recording_artwork
 from django.utils.timezone import now, is_aware, make_aware
 from datetime import timedelta
+from core import events
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,9 @@ def revoke_old_task_on_update(sender, instance, **kwargs):
         ):
             revoke_task(old.task_id)
             instance.task_id = None
+            events.emit("recording.changed", instance,
+                 previous_start_time=str(old.start_time),
+                 previous_end_time=str(old.end_time))
     except Recording.DoesNotExist:
         pass
 
@@ -136,6 +140,7 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
                 task_id = schedule_recording_task(instance)
                 instance.task_id = task_id
                 instance.save(update_fields=['task_id'])
+                events.emit("recording.scheduled", instance)
             else:
                 print("Start time is in the past. Not scheduling.")
         # Kick off poster/artwork prefetch to enrich Upcoming cards
@@ -151,3 +156,11 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
     revoke_task(instance.task_id)
+    cp = instance.custom_properties or {}
+    status = cp.get("status")
+    # If recording was completed or interrupted, it's a deletion of existing content
+    # Otherwise it's a cancellation of a scheduled/in-progress recording
+    if status in ("completed", "interrupted"):
+        events.emit("recording.deleted", instance)
+    else:
+        events.emit("recording.cancelled", instance)
