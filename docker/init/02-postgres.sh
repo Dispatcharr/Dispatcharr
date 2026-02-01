@@ -192,7 +192,7 @@ ensure_utf8_encoding() {
 }
 
 check_external_postgres_version() {
-    # Only check for modular deployments using external databases
+    # Only check for modular deployments
     if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
         return 0
     fi
@@ -200,7 +200,7 @@ check_external_postgres_version() {
     echo "🔍 Checking external PostgreSQL version compatibility..."
 
     # Get minimum required version from base image (set in entrypoint.sh)
-    # PG_VERSION is the version installed in DispatcharrBase
+    # PG_VERSION is from DispatcharrBase
     MIN_REQUIRED_VERSION=$PG_VERSION
 
     # Query external PostgreSQL version
@@ -223,7 +223,7 @@ check_external_postgres_version() {
         echo "  Required Version:  PostgreSQL $MIN_REQUIRED_VERSION or higher"
         echo ""
         echo "  Your external PostgreSQL database is too old for Dispatcharr."
-        echo "  Please upgrade to PostgreSQL $MIN_REQUIRED_VERSION or later."
+        echo "  Please upgrade to PostgreSQL $MIN_REQUIRED_VERSION or higher."
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
         return 1
