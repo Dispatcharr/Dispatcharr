@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +18,8 @@ from rest_framework.decorators import action
 from django.conf import settings
 from .tasks import refresh_m3u_groups
 import json
+
+logger = logging.getLogger(__name__)
 
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
@@ -278,7 +282,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """
         import time
         import requests
-        from core.utils import parse_failover_urls
+        from core.utils import parse_failover_urls, validate_url_not_private
 
         account_type = request.data.get("account_type", "M3U")
         server_url = request.data.get("server_url", "")
@@ -292,6 +296,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         if not urls:
             return Response(
                 {"error": "No URLs provided to validate"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Limit number of URLs to prevent resource exhaustion
+        MAX_URLS = 10
+        if len(urls) > MAX_URLS:
+            return Response(
+                {"error": f"Too many URLs. Maximum allowed: {MAX_URLS}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -311,6 +323,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             start_time = time.time()
 
             try:
+                # SSRF Protection: Block requests to private/internal IP addresses
+                is_safe, ssrf_error = validate_url_not_private(url)
+                if not is_safe:
+                    result["error"] = ssrf_error
+                    result["response_time_ms"] = int((time.time() - start_time) * 1000)
+                    results.append(result)
+                    continue
+
                 if account_type == M3UAccount.Types.XC:
                     # For XC accounts, try to authenticate
                     from core.xtream_codes import Client as XCClient
@@ -341,13 +361,14 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         result["error"] = "Invalid response: no user_info"
                 else:
                     # For M3U accounts, try a HEAD request or partial GET
+                    # Note: allow_redirects=False to prevent SSRF via redirect
                     response = requests.head(
                         url,
                         headers={"User-Agent": user_agent_string},
                         timeout=(5, 5),  # 5s connect + 5s read = 10s max
-                        allow_redirects=True
+                        allow_redirects=False
                     )
-                    # Accept 2xx and 3xx status codes
+                    # Accept 2xx status codes, or 3xx (redirect) as "reachable"
                     if response.status_code < 400:
                         result["success"] = True
                     else:
@@ -366,7 +387,10 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             except requests.exceptions.JSONDecodeError:
                 result["error"] = "Invalid JSON response"
             except Exception as e:
-                result["error"] = str(e)[:100]
+                # Generic error message to avoid leaking internal details
+                # Log the actual error server-side for debugging
+                logger.exception(f"URL validation failed for {url}: {e}")
+                result["error"] = "Validation failed"
 
             result["response_time_ms"] = int((time.time() - start_time) * 1000)
             results.append(result)

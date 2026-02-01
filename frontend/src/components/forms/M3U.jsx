@@ -90,7 +90,6 @@ const M3U = ({
   });
 
   useEffect(() => {
-    console.log(m3uAccount);
     if (m3uAccount) {
       setPlaylist(m3uAccount);
       form.setValues({
@@ -136,6 +135,24 @@ const M3U = ({
   useEffect(() => {
     setValidationResults(null);
   }, [form.values.server_url, form.values.account_type]);
+
+  // Cleanup intervals on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      // Clear all countdown intervals when component unmounts
+      Object.values(countdownIntervalsRef.current).forEach(clearInterval);
+      countdownIntervalsRef.current = {};
+    };
+  }, []);
+
+  // Helper to clear all validation state and intervals
+  const clearValidationState = () => {
+    Object.values(countdownIntervalsRef.current).forEach(clearInterval);
+    countdownIntervalsRef.current = {};
+    setIsValidating(false);
+    setValidationProgress(null);
+    setValidationResults(null);
+  };
 
   const validateUrls = async () => {
     const values = form.getValues();
@@ -351,6 +368,7 @@ const M3U = ({
   };
 
   const close = () => {
+    clearValidationState();
     form.reset();
     setFile(null);
     setPlaylist(null);
@@ -360,6 +378,7 @@ const M3U = ({
   const closeGroupFilter = () => {
     setGroupFilterModalOpen(false);
     // After group filter setup for a new account, reset everything
+    clearValidationState();
     form.reset();
     setFile(null);
     setPlaylist(null);

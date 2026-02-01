@@ -229,6 +229,19 @@ class Client:
 
         raise last_exception
 
+    def _api_request(self, endpoint, params=None):
+        """
+        Make an API request, automatically using failover when multiple URLs are configured.
+
+        This is the preferred method for API calls. It uses:
+        - Direct request if only one URL is configured (faster)
+        - Failover logic if multiple URLs are configured (more resilient)
+        """
+        if len(self.server_urls) > 1:
+            return self._make_request_with_failover(endpoint, params)
+        else:
+            return self._make_request(endpoint, params)
+
     def authenticate(self):
         """Authenticate and validate server response with failover support"""
         try:
@@ -238,11 +251,7 @@ class Client:
                 'password': self.password
             }
 
-            # Use failover if multiple URLs are configured
-            if len(self.server_urls) > 1:
-                self.server_info = self._make_request_with_failover(endpoint, params)
-            else:
-                self.server_info = self._make_request(endpoint, params)
+            self.server_info = self._api_request(endpoint, params)
 
             if not self.server_info or not self.server_info.get('user_info'):
                 error_msg = "Authentication failed: Invalid response from server"
@@ -310,7 +319,7 @@ class Client:
                 'action': 'get_live_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid categories response: {categories}"
@@ -339,7 +348,7 @@ class Client:
                 'category_id': category_id
             }
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for category {category_id}: {streams}"
@@ -367,7 +376,7 @@ class Client:
                 # No category_id = get all streams
             }
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for all live streams: {streams}"
@@ -406,7 +415,7 @@ class Client:
                 'action': 'get_vod_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid VOD categories response: {categories}"
@@ -436,7 +445,7 @@ class Client:
             if category_id:
                 params['category_id'] = category_id
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid VOD streams response for category {category_id}: {streams}"
@@ -464,7 +473,7 @@ class Client:
                 'vod_id': vod_id
             }
 
-            vod_info = self._make_request(endpoint, params)
+            vod_info = self._api_request(endpoint, params)
 
             if not isinstance(vod_info, dict):
                 error_msg = f"Invalid VOD info response for vod_id {vod_id}: {vod_info}"
@@ -491,7 +500,7 @@ class Client:
                 'action': 'get_series_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid series categories response: {categories}"
@@ -521,7 +530,7 @@ class Client:
             if category_id:
                 params['category_id'] = category_id
 
-            series = self._make_request(endpoint, params)
+            series = self._api_request(endpoint, params)
 
             if not isinstance(series, list):
                 error_msg = f"Invalid series response for category {category_id}: {series}"
@@ -549,7 +558,7 @@ class Client:
                 'series_id': series_id
             }
 
-            series_info = self._make_request(endpoint, params)
+            series_info = self._api_request(endpoint, params)
 
             if not isinstance(series_info, dict):
                 error_msg = f"Invalid series info response for series_id {series_id}: {series_info}"

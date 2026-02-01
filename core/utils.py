@@ -442,6 +442,86 @@ def validate_failover_urls(value):
             raise ValidationError(f"URL #{i} is invalid: '{url}'")
 
 
+def is_private_ip(ip_string):
+    """
+    Check if an IP address is in a private/reserved range.
+
+    Blocks:
+    - Private networks (RFC 1918): 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    - Loopback: 127.0.0.0/8
+    - Link-local: 169.254.0.0/16 (including cloud metadata endpoints)
+    - Current network: 0.0.0.0/8
+    - Documentation: 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
+    - Broadcast: 255.255.255.255
+
+    Args:
+        ip_string: IP address as string
+
+    Returns:
+        True if IP is private/reserved, False otherwise
+    """
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(ip_string)
+        return (
+            ip.is_private or
+            ip.is_loopback or
+            ip.is_link_local or
+            ip.is_reserved or
+            ip.is_multicast or
+            ip.is_unspecified
+        )
+    except ValueError:
+        # If it's not a valid IP, let DNS resolution handle it
+        return False
+
+
+def validate_url_not_private(url):
+    """
+    Validate that a URL does not point to a private/internal IP address.
+
+    This provides SSRF (Server-Side Request Forgery) protection by:
+    1. Extracting the hostname from the URL
+    2. Resolving DNS to get the actual IP address(es)
+    3. Checking if any resolved IP is in a private/reserved range
+
+    Args:
+        url: URL string to validate
+
+    Returns:
+        tuple: (is_safe: bool, error_message: str or None)
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+
+        if not hostname:
+            return False, "Invalid URL: no hostname found"
+
+        # Check if hostname is already an IP address
+        if is_private_ip(hostname):
+            return False, f"URL points to private/internal IP address: {hostname}"
+
+        # Resolve hostname to IP addresses
+        try:
+            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+            for family, _, _, _, sockaddr in addr_info:
+                ip = sockaddr[0]
+                if is_private_ip(ip):
+                    return False, f"URL hostname resolves to private/internal IP: {ip}"
+        except socket.gaierror as e:
+            # DNS resolution failed - this is a different error, not SSRF
+            return False, f"DNS resolution failed: {str(e)}"
+
+        return True, None
+
+    except Exception as e:
+        return False, f"URL validation error: {str(e)}"
+
+
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
     Log a system event and maintain the configured max history.
