@@ -379,13 +379,9 @@ const ChannelStreams = ({ channel, isExpanded }) => {
                           style={{ cursor: 'pointer' }}
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const success = await copyToClipboard(stream.url);
-                            notifications.show({
-                              title: success ? 'URL Copied' : 'Copy Failed',
-                              message: success
-                                ? 'Stream URL copied to clipboard'
-                                : 'Failed to copy URL to clipboard',
-                              color: success ? 'green' : 'red',
+                            await copyToClipboard(stream.url, {
+                              successTitle: 'URL Copied',
+                              successMessage: 'Stream URL copied to clipboard',
                             });
                           }}
                         >

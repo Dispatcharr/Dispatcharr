@@ -106,6 +106,19 @@ class Stream(models.Model):
     )
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
 
+    stream_id = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Provider stream ID (e.g., XC stream_id) for stable identity across credential changes"
+    )
+    stream_chno = models.FloatField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Provider channel number (XC num or M3U tvg-chno) for ordering - supports decimals like 2.1"
+    )
+
     # Stream statistics fields
     stream_stats = models.JSONField(
         null=True,
@@ -129,13 +142,26 @@ class Stream(models.Model):
         return self.name or self.url or f"Stream ID {self.id}"
 
     @classmethod
-    def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None, group=None):
+    def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None, group=None,
+                          account_type=None, stream_id=None):
         if keys is None:
             keys = CoreSettings.get_m3u_hash_key().split(",")
 
-        stream_parts = {"name": name, "url": url, "tvg_id": tvg_id, "m3u_id": m3u_id, "group": group}
+        # For XC accounts, use stream_id instead of url when 'url' is in the hash keys
+        # This ensures credential/URL changes don't break stream identity
+        effective_url = url
+        use_stream_id = account_type == 'XC' and stream_id and 'url' in keys
+        if use_stream_id:
+            effective_url = stream_id
+
+        stream_parts = {"name": name, "url": effective_url, "tvg_id": tvg_id, "m3u_id": m3u_id, "group": group}
 
         hash_parts = {key: stream_parts[key] for key in keys if key in stream_parts}
+
+        # When using stream_id instead of URL, we MUST include m3u_id to prevent
+        # collisions across different XC accounts (stream_id is only unique per account)
+        if use_stream_id and 'm3u_id' not in hash_parts:
+            hash_parts['m3u_id'] = m3u_id
 
         # Serialize and hash the dictionary
         serialized_obj = json.dumps(

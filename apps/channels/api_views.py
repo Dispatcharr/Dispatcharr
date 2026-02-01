@@ -106,6 +106,7 @@ class StreamFilter(django_filters.FilterSet):
     m3u_account_is_active = django_filters.BooleanFilter(
         field_name="m3u_account__is_active"
     )
+    tvg_id = django_filters.CharFilter(lookup_expr="icontains")
 
     class Meta:
         model = Stream
@@ -115,6 +116,7 @@ class StreamFilter(django_filters.FilterSet):
             "m3u_account",
             "m3u_account_name",
             "m3u_account_is_active",
+            "tvg_id",
         ]
 
 
@@ -129,7 +131,7 @@ class StreamViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = StreamFilter
     search_fields = ["name", "channel_group__name"]
-    ordering_fields = ["name", "channel_group__name", "m3u_account__name"]
+    ordering_fields = ["name", "channel_group__name", "m3u_account__name", "tvg_id"]
     ordering = ["-name"]
 
     def get_permissions(self):
@@ -907,18 +909,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if name is None:
             name = stream.name
 
-        # Check if client provided a channel_number; if not, auto-assign one.
-        stream_custom_props = stream.custom_properties or {}
+        # Check if client provided a channel_number; if not, use stream_chno or auto-assign
         channel_number = request.data.get("channel_number")
 
         if channel_number is None:
-            # Channel number not provided by client, check stream properties or auto-assign
-            if "tvg-chno" in stream_custom_props:
-                channel_number = float(stream_custom_props["tvg-chno"])
-            elif "channel-number" in stream_custom_props:
-                channel_number = float(stream_custom_props["channel-number"])
-            elif "num" in stream_custom_props:
-                channel_number = float(stream_custom_props["num"])
+            # Channel number not provided by client, check stream's channel number or auto-assign
+            if stream.stream_chno is not None:
+                channel_number = stream.stream_chno
         elif channel_number == 0:
             # Special case: 0 means ignore provider numbers and auto-assign
             channel_number = None
@@ -939,9 +936,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if Channel.objects.filter(channel_number=channel_number).exists():
             channel_number = Channel.get_next_available_channel_number(channel_number)
         # Get the tvc_guide_stationid from custom properties if it exists
-        tvc_guide_stationid = None
-        if "tvc-guide-stationid" in stream_custom_props:
-            tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
+        stream_custom_props = stream.custom_properties or {}
+        tvc_guide_stationid = stream_custom_props.get("tvc-guide-stationid")
 
         channel_data = {
             "channel_number": channel_number,

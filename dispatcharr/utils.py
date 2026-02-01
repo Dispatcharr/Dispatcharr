@@ -43,11 +43,19 @@ def network_access_allowed(request, settings_key):
         network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
     except CoreSettings.DoesNotExist:
         network_access = {}
+    local_cidrs = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
+    # Set defaults based on endpoint type
+    if settings_key == "M3U_EPG":
+        # M3U/EPG endpoints: local IPv4 and IPv6 only by default
+        default_cidrs = local_cidrs
+    else:
+        # Other endpoints: allow all by default
+        default_cidrs = ["0.0.0.0/0", "::/0"]
 
     cidrs = (
         network_access[settings_key].split(",")
         if settings_key in network_access
-        else ["0.0.0.0/0", "::/0"]
+        else default_cidrs
     )
 
     network_allowed = False
