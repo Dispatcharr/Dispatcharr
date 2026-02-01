@@ -282,7 +282,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """
         import time
         import requests
-        from core.utils import parse_failover_urls, validate_url_not_private
+        from core.utils import parse_failover_urls
 
         account_type = request.data.get("account_type", "M3U")
         server_url = request.data.get("server_url", "")
@@ -323,14 +323,6 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             start_time = time.time()
 
             try:
-                # SSRF Protection: Block requests to private/internal IP addresses
-                is_safe, ssrf_error = validate_url_not_private(url)
-                if not is_safe:
-                    result["error"] = ssrf_error
-                    result["response_time_ms"] = int((time.time() - start_time) * 1000)
-                    results.append(result)
-                    continue
-
                 if account_type == M3UAccount.Types.XC:
                     # For XC accounts, try to authenticate
                     from core.xtream_codes import Client as XCClient
@@ -361,12 +353,11 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         result["error"] = "Invalid response: no user_info"
                 else:
                     # For M3U accounts, try a HEAD request or partial GET
-                    # Note: allow_redirects=False to prevent SSRF via redirect
                     response = requests.head(
                         url,
                         headers={"User-Agent": user_agent_string},
                         timeout=(5, 5),  # 5s connect + 5s read = 10s max
-                        allow_redirects=False
+                        allow_redirects=True
                     )
                     # Accept 2xx status codes, or 3xx (redirect) as "reachable"
                     if response.status_code < 400:
