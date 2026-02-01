@@ -86,11 +86,11 @@ docker run -d \
   -e POSTGRES_USER=dispatch \
   -e POSTGRES_PASSWORD=test123 \
   -p 5432:5432 \
-  postgres:16-alpine
+  postgres:17-alpine
 ```
 
 **What this does:**
-- Downloads PostgreSQL 16 Alpine image (if not already downloaded)
+- Downloads PostgreSQL 17 Alpine image (if not already downloaded)
 - Starts PostgreSQL in a container named `dispatcharr-test-postgres`
 - Creates a database called `dispatcharr_test`
 - Makes it accessible on `localhost:5432`
