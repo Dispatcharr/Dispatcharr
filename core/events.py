@@ -112,12 +112,56 @@ def _serialize_recording_bulk_cancelled(obj, **ctx):
     }
 
 
-def _serialize_epg_refreshed(source, **ctx):
+def _serialize_epg_source_created(source, **ctx):
+    return {
+        "source_id": source.id,
+        "source_name": source.name,
+        "source_type": source.source_type,
+    }
+
+
+def _serialize_epg_source_deleted(source, **ctx):
+    return {
+        "source_id": source.id if source else ctx.get("source_id"),
+        "source_name": source.name if source else ctx.get("source_name"),
+    }
+
+
+def _serialize_epg_source_enabled(source, **ctx):
+    return {
+        "source_id": source.id,
+        "source_name": source.name,
+    }
+
+
+def _serialize_epg_source_disabled(source, **ctx):
+    return {
+        "source_id": source.id,
+        "source_name": source.name,
+    }
+
+
+def _serialize_epg_refresh_started(source, **ctx):
+    return {
+        "source_id": source.id,
+        "source_name": source.name,
+    }
+
+
+def _serialize_epg_refresh_completed(source, **ctx):
     return {
         "source_id": source.id,
         "source_name": source.name,
         "channel_count": ctx.get("channel_count"),
         "program_count": ctx.get("program_count"),
+    }
+
+
+def _serialize_epg_refresh_failed(source, **ctx):
+    return {
+        "source_id": source.id if source else ctx.get("source_id"),
+        "source_name": source.name if source else ctx.get("source_name"),
+        "error": ctx.get("error"),
     }
 
 
@@ -140,7 +184,13 @@ EVENT_SERIALIZERS = {
     "recording.changed": _serialize_recording_changed,
     "recording.comskip_completed": _serialize_recording_comskip_completed,
     "recording.bulk_cancelled": _serialize_recording_bulk_cancelled,
-    "epg.refreshed": _serialize_epg_refreshed,
+    "epg.source_created": _serialize_epg_source_created,
+    "epg.source_deleted": _serialize_epg_source_deleted,
+    "epg.source_enabled": _serialize_epg_source_enabled,
+    "epg.source_disabled": _serialize_epg_source_disabled,
+    "epg.refresh_started": _serialize_epg_refresh_started,
+    "epg.refresh_completed": _serialize_epg_refresh_completed,
+    "epg.refresh_failed": _serialize_epg_refresh_failed,
     "m3u.refreshed": _serialize_m3u_refreshed,
 }
 
