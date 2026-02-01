@@ -20,7 +20,10 @@ import {
   Switch,
   Box,
   PasswordInput,
+  Tooltip,
+  Text,
 } from '@mantine/core';
+import { Info } from 'lucide-react';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
 import { notifications } from '@mantine/notifications';
@@ -259,7 +262,27 @@ const M3U = ({
                 style={{ width: '100%' }}
                 id="server_url"
                 name="server_url"
-                label="URL"
+                label={
+                  <Group gap={4}>
+                    <span>URL</span>
+                    <Tooltip
+                      label={
+                        <Text size="xs">
+                          For server failover, enter multiple URLs separated by | (pipe).<br />
+                          Example: http://primary:8080|http://backup:8081<br /><br />
+                          If the primary server fails, Dispatcharr will automatically<br />
+                          try backup servers (3 full cycles with 10s between attempts).
+                        </Text>
+                      }
+                      multiline
+                      w={320}
+                      withArrow
+                      position="top"
+                    >
+                      <Info size={14} style={{ opacity: 0.6, cursor: 'help' }} />
+                    </Tooltip>
+                  </Group>
+                }
                 description="Direct URL to the M3U playlist or server"
                 {...form.getInputProps('server_url')}
                 key={form.key('server_url')}
