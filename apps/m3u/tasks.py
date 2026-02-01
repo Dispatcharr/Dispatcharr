@@ -38,12 +38,87 @@ BATCH_SIZE = 1500  # Optimized batch size for threading
 m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
 
 
+def fetch_with_failover(urls, headers, account, timeout=10, max_cycles=3):
+    """
+    Attempt to fetch from multiple URLs with retry logic.
+
+    Args:
+        urls: List of URLs to try
+        headers: Request headers
+        account: M3UAccount for logging and status updates
+        timeout: Seconds between attempts (default 10)
+        max_cycles: Number of times to cycle through all URLs (default 3)
+
+    Returns:
+        (response, successful_url) or raises exception if all fail
+    """
+    total_urls = len(urls)
+    attempt = 0
+    last_exception = None
+
+    for cycle in range(max_cycles):
+        for idx, url in enumerate(urls):
+            attempt += 1
+            url_num = idx + 1
+            cycle_num = cycle + 1
+
+            # Update status with failover progress
+            if total_urls > 1 or cycle > 0:
+                failover_msg = f"Attempting failover (Address {url_num} of {total_urls}, Round {cycle_num} of {max_cycles})"
+                logger.info(failover_msg)
+                account.last_message = failover_msg
+                account.save(update_fields=["last_message"])
+                send_m3u_update(
+                    account.id,
+                    "downloading",
+                    0,
+                    message=failover_msg,
+                    failover_url=url_num,
+                    failover_total_urls=total_urls,
+                    failover_cycle=cycle_num,
+                    failover_max_cycles=max_cycles,
+                )
+
+            try:
+                logger.info(f"Trying URL: {url}")
+                response = requests.get(url, headers=headers, stream=True, timeout=30)
+                response.raise_for_status()
+                logger.info(f"Success on attempt {attempt}: {url}")
+                return response, url
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                error_short = str(e)[:100]
+                logger.warning(f"Attempt {attempt} failed for {url}: {error_short}")
+
+                if attempt < total_urls * max_cycles:
+                    wait_msg = f"Server {url_num}/{total_urls} failed, waiting {timeout}s before next attempt..."
+                    logger.info(wait_msg)
+                    account.last_message = wait_msg
+                    account.save(update_fields=["last_message"])
+                    send_m3u_update(
+                        account.id,
+                        "downloading",
+                        0,
+                        message=wait_msg,
+                        failover_waiting=True,
+                    )
+                    time.sleep(timeout)
+
+    raise requests.exceptions.ConnectionError(
+        f"All {total_urls * max_cycles} attempts failed across {total_urls} URL(s)"
+    ) from last_exception
+
+
 def fetch_m3u_lines(account, use_cache=False):
     os.makedirs(m3u_dir, exist_ok=True)
     file_path = os.path.join(m3u_dir, f"{account.id}.m3u")
 
     """Fetch M3U file lines efficiently."""
-    if account.server_url:
+    # Handle server_url as either a list (new format) or string (legacy)
+    urls = account.server_url if isinstance(account.server_url, list) else [account.server_url] if account.server_url else []
+    urls = [u for u in urls if u]  # Filter empty values
+
+    if urls:
         if not use_cache or not os.path.exists(file_path):
             try:
                 # Try to get account-specific user agent first
@@ -58,26 +133,32 @@ def fetch_m3u_lines(account, use_cache=False):
                     f"Using user agent: {user_agent} for M3U account: {account.name}"
                 )
                 headers = {"User-Agent": user_agent}
-                logger.info(f"Fetching from URL {account.server_url}")
+                logger.info(f"Fetching from URL(s): {urls}")
 
                 # Set account status to FETCHING before starting download
                 account.status = M3UAccount.Status.FETCHING
                 account.last_message = "Starting download..."
                 account.save(update_fields=["status", "last_message"])
 
-                response = requests.get(
-                    account.server_url, headers=headers, stream=True
-                )
+                # Use failover logic if multiple URLs, otherwise single request for better error handling
+                if len(urls) > 1:
+                    response, successful_url = fetch_with_failover(urls, headers, account)
+                    logger.info(f"Failover succeeded with URL: {successful_url}")
+                else:
+                    response = requests.get(
+                        urls[0], headers=headers, stream=True, timeout=30
+                    )
+                    successful_url = urls[0]
 
                 # Log the actual response details for debugging
-                logger.debug(f"HTTP Response: {response.status_code} from {account.server_url}")
+                logger.debug(f"HTTP Response: {response.status_code} from {successful_url}")
                 logger.debug(f"Content-Type: {response.headers.get('content-type', 'Not specified')}")
                 logger.debug(f"Content-Length: {response.headers.get('content-length', 'Not specified')}")
                 logger.debug(f"Response headers: {dict(response.headers)}")
 
                 # Check if we've been redirected to a different URL
-                if hasattr(response, 'url') and response.url != account.server_url:
-                    logger.warning(f"Request was redirected from {account.server_url} to {response.url}")
+                if hasattr(response, 'url') and response.url != successful_url:
+                    logger.warning(f"Request was redirected from {successful_url} to {response.url}")
 
                 # Check for ANY non-success status code FIRST (before raise_for_status)
                 if response.status_code < 200 or response.status_code >= 300:
@@ -91,19 +172,19 @@ def fetch_m3u_lines(account, use_cache=False):
 
                     # Provide specific messages for known non-standard codes
                     if response.status_code == 884:
-                        error_msg = f"Server returned HTTP 884 (authentication/authorization failure) from URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"Server returned HTTP 884 (authentication/authorization failure) from URL: {successful_url}. Server message: {response_content}"
                     elif response.status_code >= 800:
-                        error_msg = f"Server returned non-standard HTTP status {response.status_code} from URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"Server returned non-standard HTTP status {response.status_code} from URL: {successful_url}. Server message: {response_content}"
                     elif response.status_code == 404:
-                        error_msg = f"M3U file not found (404) at URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"M3U file not found (404) at URL: {successful_url}. Server message: {response_content}"
                     elif response.status_code == 403:
-                        error_msg = f"Access forbidden (403) to M3U file at URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"Access forbidden (403) to M3U file at URL: {successful_url}. Server message: {response_content}"
                     elif response.status_code == 401:
-                        error_msg = f"Authentication required (401) for M3U file at URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"Authentication required (401) for M3U file at URL: {successful_url}. Server message: {response_content}"
                     elif response.status_code == 500:
-                        error_msg = f"Server error (500) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"Server error (500) while fetching M3U file from URL: {successful_url}. Server message: {response_content}"
                     else:
-                        error_msg = f"HTTP error ({response.status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
+                        error_msg = f"HTTP error ({response.status_code}) while fetching M3U file from URL: {successful_url}. Server message: {response_content}"
 
                     logger.error(error_msg)
                     account.status = M3UAccount.Status.ERROR
@@ -175,7 +256,7 @@ def fetch_m3u_lines(account, use_cache=False):
                 # Check if we actually received any content
                 logger.info(f"Download completed. Has content: {has_content}, Content length: {len(temp_content)} bytes")
                 if not has_content or len(temp_content) == 0:
-                    error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
+                    error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {successful_url}"
                     logger.error(error_msg)
                     account.status = M3UAccount.Status.ERROR
                     account.last_message = error_msg
@@ -232,13 +313,13 @@ def fetch_m3u_lines(account, use_cache=False):
 
                         # Try to provide more specific error messages based on content
                         if '<html' in content_lower or '<!doctype html' in content_lower:
-                            error_msg = f"Server returned HTML page instead of M3U file from URL: {account.server_url}. This usually indicates an error or authentication issue."
+                            error_msg = f"Server returned HTML page instead of M3U file from URL: {successful_url}. This usually indicates an error or authentication issue."
                         elif 'error' in content_lower or 'not found' in content_lower:
-                            error_msg = f"Server returned an error message instead of M3U file from URL: {account.server_url}. Content: {content_str[:100]}"
+                            error_msg = f"Server returned an error message instead of M3U file from URL: {successful_url}. Content: {content_str[:100]}"
                         elif len(content_str.strip()) == 0:
-                            error_msg = f"Server returned completely empty response from URL: {account.server_url}"
+                            error_msg = f"Server returned completely empty response from URL: {successful_url}"
                         else:
-                            error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
+                            error_msg = f"Server provided invalid M3U content from URL: {successful_url}. Content does not appear to be a valid M3U file."
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
@@ -254,7 +335,7 @@ def fetch_m3u_lines(account, use_cache=False):
 
                 except UnicodeDecodeError:
                     logger.error(f"Non-text content received. First 200 bytes: {temp_content[:200]!r}")
-                    error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
+                    error_msg = f"Server provided non-text content from URL: {successful_url}. Unable to process as M3U file."
                     logger.error(error_msg)
                     account.status = M3UAccount.Status.ERROR
                     account.last_message = error_msg
@@ -291,16 +372,17 @@ def fetch_m3u_lines(account, use_cache=False):
                         logger.error(f"Could not read HTTP error response content: {content_error}")
                         response_content = "Could not read error response content"
 
+                url_info = urls[0] if len(urls) == 1 else f"{len(urls)} URLs"
                 if status_code == 404:
-                    error_msg = f"M3U file not found (404) at URL: {account.server_url}. Server message: {response_content}"
+                    error_msg = f"M3U file not found (404) at URL: {url_info}. Server message: {response_content}"
                 elif status_code == 403:
-                    error_msg = f"Access forbidden (403) to M3U file at URL: {account.server_url}. Server message: {response_content}"
+                    error_msg = f"Access forbidden (403) to M3U file at URL: {url_info}. Server message: {response_content}"
                 elif status_code == 401:
-                    error_msg = f"Authentication required (401) for M3U file at URL: {account.server_url}. Server message: {response_content}"
+                    error_msg = f"Authentication required (401) for M3U file at URL: {url_info}. Server message: {response_content}"
                 elif status_code == 500:
-                    error_msg = f"Server error (500) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
+                    error_msg = f"Server error (500) while fetching M3U file from URL: {url_info}. Server message: {response_content}"
                 else:
-                    error_msg = f"HTTP error ({status_code}) while fetching M3U file from URL: {account.server_url}. Server message: {response_content}"
+                    error_msg = f"HTTP error ({status_code}) while fetching M3U file from URL: {url_info}. Server message: {response_content}"
 
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
@@ -316,12 +398,13 @@ def fetch_m3u_lines(account, use_cache=False):
                 return [], False
             except requests.exceptions.RequestException as e:
                 # Handle other request errors (connection, timeout, etc.)
+                url_info = urls[0] if len(urls) == 1 else f"{len(urls)} URLs (all failed)"
                 if "timeout" in str(e).lower():
-                    error_msg = f"Timeout while fetching M3U file from URL: {account.server_url}"
+                    error_msg = f"Timeout while fetching M3U file from URL: {url_info}"
                 elif "connection" in str(e).lower():
-                    error_msg = f"Connection error while fetching M3U file from URL: {account.server_url}"
+                    error_msg = f"Connection error while fetching M3U file from: {url_info}"
                 else:
-                    error_msg = f"Network error while fetching M3U file from URL: {account.server_url} - {str(e)}"
+                    error_msg = f"Network error while fetching M3U file from: {url_info} - {str(e)}"
 
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
@@ -337,7 +420,8 @@ def fetch_m3u_lines(account, use_cache=False):
                 return [], False
             except Exception as e:
                 # Handle any other unexpected errors
-                error_msg = f"Unexpected error while fetching M3U file from URL: {account.server_url} - {str(e)}"
+                url_info = urls[0] if len(urls) == 1 else f"{len(urls)} URLs"
+                error_msg = f"Unexpected error while fetching M3U file from: {url_info} - {str(e)}"
                 logger.error(error_msg)
                 account.status = M3UAccount.Status.ERROR
                 account.last_message = error_msg
@@ -1193,12 +1277,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             return error_msg, None
 
         try:
-            # Ensure server URL is properly formatted
-            server_url = account.server_url.rstrip("/")
-            if not (
-                server_url.startswith("http://") or server_url.startswith("https://")
-            ):
-                server_url = f"http://{server_url}"
+            # XCClient handles URL normalization and failover internally
+            server_url = account.server_url
 
             # User agent handling - completely rewritten
             try:
@@ -2227,7 +2307,9 @@ def get_transformed_credentials(account, profile=None):
             logger.warning(f"Could not get primary profile for account {account.name}: {e}")
             profile = None
 
-    base_url = account.server_url
+    # Get the primary URL for stream URL construction (use first URL if multiple)
+    server_urls = account.server_url if isinstance(account.server_url, list) else [account.server_url] if account.server_url else []
+    base_url = server_urls[0] if server_urls else None
     base_username = account.username
     base_password = account.password    # Build a complete URL with credentials (similar to how IPTV URLs are structured)
     # Format: http://server.com:port/live/username/password/1234.ts

@@ -2,14 +2,25 @@ import requests
 import logging
 import traceback
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
 class Client:
-    """Xtream Codes API Client with robust error handling"""
+    """Xtream Codes API Client with robust error handling and failover support"""
 
     def __init__(self, server_url, username, password, user_agent=None):
-        self.server_url = self._normalize_url(server_url)
+        # Handle both string and list inputs for server_url
+        if isinstance(server_url, list):
+            self.server_urls = [url for url in server_url if url]
+        else:
+            self.server_urls = [server_url] if server_url else []
+
+        if not self.server_urls:
+            raise ValueError("At least one server URL is required")
+
+        self.current_url_index = 0
+        self.server_url = self._normalize_url(self.server_urls[0])
         self.username = username
         self.password = password
         self.user_agent = user_agent
@@ -113,8 +124,59 @@ class Client:
             logger.error(traceback.format_exc())
             raise
 
+    def _make_request_with_failover(self, endpoint, params=None, timeout=10, max_cycles=3):
+        """
+        Make request with automatic failover to backup URLs.
+
+        Args:
+            endpoint: API endpoint to call
+            params: Request parameters
+            timeout: Seconds between attempts (default 10)
+            max_cycles: Number of times to cycle through all URLs (default 3)
+
+        Returns:
+            Response data from successful request
+
+        Raises:
+            Last exception if all attempts fail
+        """
+        total_urls = len(self.server_urls)
+        attempt = 0
+        last_exception = None
+
+        for cycle in range(max_cycles):
+            for idx, url in enumerate(self.server_urls):
+                attempt += 1
+                url_num = idx + 1
+                cycle_num = cycle + 1
+                self.server_url = self._normalize_url(url)
+
+                # Log failover progress in user-friendly format
+                if total_urls > 1 or cycle > 0:
+                    logger.warning(
+                        f"XC failover: Attempting Address {url_num} of {total_urls}, "
+                        f"Round {cycle_num} of {max_cycles}"
+                    )
+
+                try:
+                    logger.info(f"XC trying: {self.server_url}")
+                    result = self._make_request(endpoint, params)
+                    logger.info(f"XC success: {self.server_url}")
+                    return result
+                except Exception as e:
+                    last_exception = e
+                    error_short = str(e)[:100]
+                    logger.warning(
+                        f"XC server {url_num}/{total_urls} failed: {error_short}"
+                    )
+                    if attempt < total_urls * max_cycles:
+                        logger.info(f"Waiting {timeout}s before next XC attempt...")
+                        time.sleep(timeout)
+
+        raise last_exception
+
     def authenticate(self):
-        """Authenticate and validate server response"""
+        """Authenticate and validate server response with failover support"""
         try:
             endpoint = "player_api.php"
             params = {
@@ -122,7 +184,11 @@ class Client:
                 'password': self.password
             }
 
-            self.server_info = self._make_request(endpoint, params)
+            # Use failover if multiple URLs are configured
+            if len(self.server_urls) > 1:
+                self.server_info = self._make_request_with_failover(endpoint, params)
+            else:
+                self.server_info = self._make_request(endpoint, params)
 
             if not self.server_info or not self.server_info.get('user_info'):
                 error_msg = "Authentication failed: Invalid response from server"
