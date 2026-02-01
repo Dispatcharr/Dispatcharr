@@ -264,11 +264,8 @@ class UserViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     @extend_schema(
-        description="Get active user information",
-    )
-    @swagger_auto_schema(
-        method="patch",
-        operation_description="Update active user preferences",
+        description="Get or update active user information. PATCH updates custom_properties with merge semantics.",
+        methods=["GET", "PATCH"],
     )
     @action(detail=False, methods=["get", "patch"], url_path="me")
     def me(self, request):

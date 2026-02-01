@@ -82,6 +82,7 @@ export const NAV_ITEMS = {
     icon: LucideSettings,
     path: '/settings',
     adminOnly: false,
+    canHide: false,  // Settings can never be hidden
   },
 };
 
@@ -132,10 +133,11 @@ export const getOrderedNavItems = (userOrder, isAdmin, channels = {}) => {
       label: item.label,
       icon: item.icon,
       path: item.path,
+      canHide: item.canHide,  // Include canHide property
     };
 
     // Add badge for channels
-    if (item.hasBadge && id === 'channels') {
+    if (id === 'channels') {
       navItem.badge = `(${Object.keys(channels).length})`;
     }
 

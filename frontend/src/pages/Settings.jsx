@@ -66,7 +66,7 @@ const SettingsPage = () => {
             </AccordionPanel>
           </AccordionItem>
 
-          {authUser.user_level == USER_LEVELS.ADMIN && (
+          {authUser.user_level >= USER_LEVELS.ADMIN && (
             <>
               <AccordionItem value="dvr-settings">
                 <AccordionControl>DVR</AccordionControl>
