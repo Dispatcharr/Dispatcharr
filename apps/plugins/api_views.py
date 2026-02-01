@@ -259,11 +259,22 @@ class PluginEnabledAPIView(APIView):
             return Response({"success": False, "error": "Missing 'enabled' boolean"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             cfg = PluginConfig.objects.get(key=key)
+            was_enabled = cfg.enabled
             cfg.enabled = bool(enabled)
             # Mark that this plugin has been enabled at least once
             if cfg.enabled and not cfg.ever_enabled:
                 cfg.ever_enabled = True
             cfg.save(update_fields=["enabled", "ever_enabled", "updated_at"])
+
+            # Clean up event subscriptions when plugin is disabled
+            if was_enabled and not cfg.enabled:
+                try:
+                    from core.redis_pubsub import get_pubsub_manager
+                    pubsub = get_pubsub_manager()
+                    pubsub.unsubscribe(key)
+                except Exception as e:
+                    logger.warning(f"Failed to unsubscribe plugin '{key}' from events: {e}")
+
             return Response({"success": True, "enabled": cfg.enabled, "ever_enabled": cfg.ever_enabled})
         except PluginConfig.DoesNotExist:
             return Response({"success": False, "error": "Plugin not found"}, status=status.HTTP_404_NOT_FOUND)

@@ -146,6 +146,70 @@ class RedisPubSubManager:
                 pass
         self.pubsub = None
 
+    # Event subscription methods
+
+    def subscribe(self, event_name: str, plugin_key: str, handler_name: str):
+        """
+        Register a plugin handler for an event.
+
+        Args:
+            event_name: The event to subscribe to (e.g., "recording.completed")
+            plugin_key: The plugin's unique key
+            handler_name: The name of the handler method on the plugin instance
+        """
+        if self.is_dummy or not self.redis_client:
+            logger.warning("Cannot subscribe - Redis not available")
+            return
+
+        self.redis_client.sadd(f"events:{event_name}", f"{plugin_key}:{handler_name}")
+        logger.info(f"Plugin '{plugin_key}' subscribed to '{event_name}' with handler '{handler_name}'")
+
+    def unsubscribe(self, plugin_key: str):
+        """
+        Remove all event subscriptions for a plugin by scanning Redis.
+
+        Args:
+            plugin_key: The plugin's unique key
+        """
+        if self.is_dummy or not self.redis_client:
+            return
+
+        removed_count = 0
+        for key in self.redis_client.scan_iter("events:*"):
+            for member in self.redis_client.smembers(key):
+                if member.decode().startswith(f"{plugin_key}:"):
+                    self.redis_client.srem(key, member)
+                    removed_count += 1
+
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} event subscription(s) for plugin '{plugin_key}'")
+
+    def emit(self, event_name: str, data: dict):
+        """
+        Dispatch an event to all subscribed handlers via Celery.
+
+        Args:
+            event_name: The event name (e.g., "recording.completed")
+            data: The event data to pass to handlers
+        """
+        if self.is_dummy or not self.redis_client:
+            return
+
+        handlers = self.redis_client.smembers(f"events:{event_name}")
+        if not handlers:
+            return
+
+        # Import here to avoid circular imports
+        from apps.plugins.tasks import dispatch_event
+
+        for handler_info in handlers:
+            try:
+                plugin_key, handler_name = handler_info.decode().split(':', 1)
+                dispatch_event.delay(plugin_key, handler_name, event_name, data)
+                logger.debug(f"Dispatched '{event_name}' to plugin '{plugin_key}' handler '{handler_name}'")
+            except Exception as e:
+                logger.error(f"Failed to dispatch event to handler {handler_info}: {e}")
+
     def _connect(self):
         """
         Establish a new PubSub connection and subscribe to all channels.
