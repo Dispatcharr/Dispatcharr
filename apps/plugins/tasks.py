@@ -2,9 +2,34 @@
 Celery tasks for plugin event dispatch.
 """
 import logging
+import re
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
+
+# Security: Only allow handler names matching this pattern
+# Handlers must start with 'on_' followed by lowercase letters, numbers, or underscores
+ALLOWED_HANDLER_PATTERN = re.compile(r'^on_[a-z][a-z0-9_]*$')
+
+
+def is_valid_handler_name(handler_name: str) -> bool:
+    """
+    Validate that a handler name is safe to invoke.
+
+    Security: Prevents arbitrary method invocation by requiring handlers to:
+    - Start with 'on_' prefix (convention for event handlers)
+    - Not start with underscore (blocks private/dunder methods)
+    - Match a strict alphanumeric pattern
+    """
+    if not handler_name or not isinstance(handler_name, str):
+        return False
+
+    # Block any attempt to access private or dunder methods
+    if handler_name.startswith('_'):
+        return False
+
+    # Require the on_ prefix and alphanumeric pattern
+    return bool(ALLOWED_HANDLER_PATTERN.match(handler_name))
 
 
 @shared_task(
@@ -29,6 +54,14 @@ def dispatch_event(self, plugin_key: str, handler_name: str, event_name: str, da
     from apps.plugins.models import PluginConfig
     from apps.plugins.loader import PluginManager
 
+    # Security: Validate handler name before any getattr call
+    if not is_valid_handler_name(handler_name):
+        logger.error(
+            f"Blocked invalid handler name '{handler_name}' for plugin '{plugin_key}'. "
+            "Handler names must start with 'on_' and contain only lowercase alphanumeric characters."
+        )
+        return
+
     # Check if plugin is still enabled
     if not PluginConfig.objects.filter(key=plugin_key, enabled=True).exists():
         logger.debug(f"Plugin '{plugin_key}' is disabled, skipping event '{event_name}'")
@@ -40,7 +73,7 @@ def dispatch_event(self, plugin_key: str, handler_name: str, event_name: str, da
         logger.warning(f"Plugin '{plugin_key}' not found or has no instance")
         return
 
-    # Get the handler method
+    # Get the handler method (safe after validation)
     handler = getattr(plugin.instance, handler_name, None)
     if not callable(handler):
         logger.warning(f"Plugin '{plugin_key}' has no callable handler '{handler_name}'")

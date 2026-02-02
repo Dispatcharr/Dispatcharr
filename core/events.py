@@ -504,6 +504,42 @@ def _serialize_channel_error(obj, **ctx):
     }
 
 
+def _serialize_channel_buffering(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "buffer_size": ctx.get("buffer_size"),
+    }
+
+
+def _serialize_channel_failover(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "from_stream_id": ctx.get("from_stream_id"),
+        "to_stream_id": ctx.get("to_stream_id"),
+        "reason": ctx.get("reason"),
+    }
+
+
+def _serialize_channel_reconnected(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "stream_id": ctx.get("stream_id"),
+        "attempt": ctx.get("attempt"),
+    }
+
+
+def _serialize_channel_stream_switched(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "from_stream_id": ctx.get("from_stream_id"),
+        "to_stream_id": ctx.get("to_stream_id"),
+    }
+
+
 def _serialize_auth_login(obj, **ctx):
     return {
         "user_id": ctx.get("user_id"),
@@ -591,6 +627,10 @@ EVENT_SERIALIZERS = {
     "channel.stream_started": _serialize_channel_stream_started,
     "channel.stream_stopped": _serialize_channel_stream_stopped,
     "channel.error": _serialize_channel_error,
+    "channel.buffering": _serialize_channel_buffering,
+    "channel.failover": _serialize_channel_failover,
+    "channel.reconnected": _serialize_channel_reconnected,
+    "channel.stream_switched": _serialize_channel_stream_switched,
     # Auth events
     "auth.login": _serialize_auth_login,
     "auth.login_failed": _serialize_auth_login_failed,

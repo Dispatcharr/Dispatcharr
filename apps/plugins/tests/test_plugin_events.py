@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from apps.plugins.models import PluginConfig
-from apps.plugins.tasks import dispatch_event
+from apps.plugins.tasks import dispatch_event, is_valid_handler_name
 
 
 class PluginEventSubscriptionTests(TestCase):
@@ -104,8 +104,8 @@ class PluginEventSubscriptionTests(TestCase):
         """Test that missing plugin is handled gracefully."""
         mock_pm_get.return_value.get_plugin.return_value = None
 
-        # Should not raise, just log and return
-        result = dispatch_event("nonexistent_plugin", "handler", "test.event", {})
+        # Should not raise, just log and return (use valid handler name)
+        result = dispatch_event("nonexistent_plugin", "on_test_handler", "test.event", {})
         self.assertIsNone(result)
 
     @patch("apps.plugins.loader.PluginManager.get")
@@ -115,9 +115,74 @@ class PluginEventSubscriptionTests(TestCase):
         mock_plugin.instance = MagicMock(spec=[])  # No handlers
         mock_pm_get.return_value.get_plugin.return_value = mock_plugin
 
-        # Should not raise, just log and return
-        result = dispatch_event("test_plugin", "nonexistent_handler", "test.event", {})
+        # Should not raise, just log and return (use valid handler name)
+        result = dispatch_event("test_plugin", "on_nonexistent_handler", "test.event", {})
         self.assertIsNone(result)
+
+
+class HandlerNameValidationTests(TestCase):
+    """Security tests for handler name validation."""
+
+    def test_valid_handler_names(self):
+        """Test that valid on_* handler names are accepted."""
+        valid_names = [
+            "on_test",
+            "on_recording_completed",
+            "on_channel_created",
+            "on_event_123",
+            "on_a",
+        ]
+        for name in valid_names:
+            self.assertTrue(is_valid_handler_name(name), f"'{name}' should be valid")
+
+    def test_invalid_handler_names_blocked(self):
+        """Test that invalid handler names are rejected."""
+        invalid_names = [
+            # Missing on_ prefix
+            "handler",
+            "test_event",
+            "recording_completed",
+            # Private/dunder methods
+            "__init__",
+            "__class__",
+            "_private",
+            "__dict__",
+            # Dangerous patterns
+            "on_",  # Just prefix, no name
+            "On_test",  # Wrong case
+            "ON_TEST",  # Wrong case
+            "on_Test",  # Mixed case
+            "on-test",  # Hyphen instead of underscore
+            "on_test!",  # Special character
+            # Empty/null
+            "",
+            None,
+        ]
+        for name in invalid_names:
+            self.assertFalse(is_valid_handler_name(name), f"'{name}' should be invalid")
+
+    @patch("apps.plugins.loader.PluginManager.get")
+    def test_dunder_method_blocked(self, mock_pm_get):
+        """Test that __init__ and other dunder methods are blocked."""
+        # Should return early without even checking the plugin
+        result = dispatch_event("test_plugin", "__init__", "test.event", {})
+        self.assertIsNone(result)
+        # Plugin lookup should never be called for invalid handler
+        mock_pm_get.assert_not_called()
+
+    @patch("apps.plugins.loader.PluginManager.get")
+    def test_private_method_blocked(self, mock_pm_get):
+        """Test that _private methods are blocked."""
+        result = dispatch_event("test_plugin", "_internal_method", "test.event", {})
+        self.assertIsNone(result)
+        mock_pm_get.assert_not_called()
+
+    @patch("apps.plugins.loader.PluginManager.get")
+    def test_arbitrary_method_blocked(self, mock_pm_get):
+        """Test that arbitrary method names without on_ prefix are blocked."""
+        result = dispatch_event("test_plugin", "delete_all_data", "test.event", {})
+        self.assertIsNone(result)
+        mock_pm_get.assert_not_called()
 
 
 class PluginUnsubscribeTests(TestCase):
