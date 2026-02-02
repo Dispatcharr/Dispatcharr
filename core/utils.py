@@ -405,6 +405,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
                         stream_url='http://...', user='admin')
     """
     from core.models import SystemEvent, CoreSettings
+    from core import events
 
     try:
         # Create the event
@@ -414,6 +415,29 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             channel_name=channel_name,
             details=details
         )
+
+        # Emit plugin event for system events
+        # Map system event types to plugin event names
+        plugin_event_map = {
+            'client_connect': 'channel.client_connected',
+            'client_disconnect': 'channel.client_disconnected',
+            'channel_start': 'channel.stream_started',
+            'channel_stop': 'channel.stream_stopped',
+            'channel_buffering': 'channel.buffering',
+            'channel_failover': 'channel.failover',
+            'channel_reconnect': 'channel.reconnected',
+            'channel_error': 'channel.error',
+            'stream_switch': 'channel.stream_switched',
+        }
+        plugin_event = plugin_event_map.get(event_type)
+        if plugin_event:
+            events.emit(
+                plugin_event,
+                None,  # No model instance for these runtime events
+                channel_id=str(channel_id) if channel_id else None,
+                channel_name=channel_name,
+                **details
+            )
 
         # Get max events from settings (default 100)
         try:
