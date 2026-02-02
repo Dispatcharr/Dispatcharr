@@ -165,12 +165,56 @@ def _serialize_epg_refresh_failed(source, **ctx):
     }
 
 
-def _serialize_m3u_refreshed(account, **ctx):
+def _serialize_m3u_source_created(account, **ctx):
+    return {
+        "account_id": account.id,
+        "account_name": account.name,
+        "account_type": account.account_type,
+    }
+
+
+def _serialize_m3u_source_deleted(account, **ctx):
+    return {
+        "account_id": account.id if account else ctx.get("account_id"),
+        "account_name": account.name if account else ctx.get("account_name"),
+    }
+
+
+def _serialize_m3u_source_enabled(account, **ctx):
+    return {
+        "account_id": account.id,
+        "account_name": account.name,
+    }
+
+
+def _serialize_m3u_source_disabled(account, **ctx):
+    return {
+        "account_id": account.id,
+        "account_name": account.name,
+    }
+
+
+def _serialize_m3u_refresh_started(account, **ctx):
+    return {
+        "account_id": account.id,
+        "account_name": account.name,
+    }
+
+
+def _serialize_m3u_refresh_completed(account, **ctx):
     return {
         "account_id": account.id,
         "account_name": account.name,
         "streams_created": ctx.get("streams_created"),
         "streams_updated": ctx.get("streams_updated"),
+    }
+
+
+def _serialize_m3u_refresh_failed(account, **ctx):
+    return {
+        "account_id": account.id if account else ctx.get("account_id"),
+        "account_name": account.name if account else ctx.get("account_name"),
+        "error": ctx.get("error"),
     }
 
 
@@ -191,7 +235,13 @@ EVENT_SERIALIZERS = {
     "epg.refresh_started": _serialize_epg_refresh_started,
     "epg.refresh_completed": _serialize_epg_refresh_completed,
     "epg.refresh_failed": _serialize_epg_refresh_failed,
-    "m3u.refreshed": _serialize_m3u_refreshed,
+    "m3u.source_created": _serialize_m3u_source_created,
+    "m3u.source_deleted": _serialize_m3u_source_deleted,
+    "m3u.source_enabled": _serialize_m3u_source_enabled,
+    "m3u.source_disabled": _serialize_m3u_source_disabled,
+    "m3u.refresh_started": _serialize_m3u_refresh_started,
+    "m3u.refresh_completed": _serialize_m3u_refresh_completed,
+    "m3u.refresh_failed": _serialize_m3u_refresh_failed,
 }
 
 

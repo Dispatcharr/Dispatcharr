@@ -27,6 +27,7 @@ from core.utils import (
     log_system_event,
 )
 from core.models import CoreSettings, UserAgent
+from core import events
 from asgiref.sync import async_to_sync
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
@@ -2576,6 +2577,8 @@ def refresh_single_m3u_account(account_id):
         account.status = M3UAccount.Status.FETCHING
         account.save(update_fields=['status'])
 
+        events.emit("m3u.refresh_started", account)
+
         filters = list(account.filters.all())
 
         # Check if VOD is enabled for this account
@@ -2998,6 +3001,10 @@ def refresh_single_m3u_account(account_id):
             message=account.last_message,
         )
 
+        # Emit plugin event for M3U refresh completion
+        events.emit("m3u.refresh_completed", account,
+                    streams_created=streams_created, streams_updated=streams_updated)
+
         # Trigger VOD refresh if enabled and account is XtreamCodes type
         if vod_enabled and account.account_type == M3UAccount.Types.XC:
             logger.info(f"VOD is enabled for account {account_id}, triggering VOD refresh")
@@ -3013,6 +3020,7 @@ def refresh_single_m3u_account(account_id):
         account.status = M3UAccount.Status.ERROR
         account.last_message = f"Error processing M3U: {str(e)}"
         account.save(update_fields=["status", "last_message"])
+        events.emit("m3u.refresh_failed", account, error=str(e))
         raise  # Re-raise the exception for Celery to handle
 
     release_task_lock("refresh_single_m3u_account", account_id)
