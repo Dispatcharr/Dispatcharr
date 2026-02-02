@@ -44,16 +44,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         logger.debug("Listing all EPG sources.")
         return super().list(request, *args, **kwargs)
 
-    def perform_create(self, serializer):
-        instance = serializer.save()
-        from core import events
-        events.emit("epg.source_created", instance)
-
-    def perform_destroy(self, instance):
-        from core import events
-        events.emit("epg.source_deleted", instance)
-        super().perform_destroy(instance)
-
     @action(detail=False, methods=["post"])
     def upload(self, request):
         if "file" not in request.FILES:
@@ -82,7 +72,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         """Handle partial updates with special logic for is_active field"""
         instance = self.get_object()
-        was_active = instance.is_active
 
         # Check if we're toggling is_active
         if (
@@ -95,18 +84,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             else:
                 request.data["status"] = "disabled"
 
-        response = super().partial_update(request, *args, **kwargs)
-
-        # Emit enabled/disabled events after successful update
-        instance.refresh_from_db()
-        if was_active != instance.is_active:
-            from core import events
-            if instance.is_active:
-                events.emit("epg.source_enabled", instance)
-            else:
-                events.emit("epg.source_disabled", instance)
-
-        return response
+        return super().partial_update(request, *args, **kwargs)
 
 
 # ─────────────────────────────

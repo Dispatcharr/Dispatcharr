@@ -9,26 +9,24 @@ from apps.epg.models import EPGSource
 
 
 class EPGSourceEventTests(TestCase):
-    """Tests for EPG source lifecycle events."""
+    """Tests for EPG source lifecycle events via signals."""
 
     @patch('core.events.emit')
     def test_source_created_event(self, mock_emit):
-        """Test that epg.source_created is emitted when a source is created via API."""
-        from apps.epg.api_views import EPGSourceViewSet
-
+        """Test that epg.source_created is emitted when a source is created."""
         source = EPGSource.objects.create(
             name='Test EPG',
             source_type='xmltv',
             url='http://example.com/epg.xml',
         )
 
-        # Manually call perform_create to test the event
-        viewset = EPGSourceViewSet()
-        serializer = MagicMock()
-        serializer.save.return_value = source
-        viewset.perform_create(serializer)
-
-        mock_emit.assert_called_once_with('epg.source_created', source)
+        # Find the created call
+        created_calls = [
+            call for call in mock_emit.call_args_list
+            if call[0][0] == 'epg.source_created'
+        ]
+        self.assertEqual(len(created_calls), 1)
+        self.assertEqual(created_calls[0][0][1], source)
 
     @patch('core.events.emit')
     def test_source_deleted_event(self, mock_emit):
@@ -37,56 +35,30 @@ class EPGSourceEventTests(TestCase):
             name='Test EPG',
             source_type='xmltv',
         )
+        mock_emit.reset_mock()
 
-        from apps.epg.api_views import EPGSourceViewSet
-        viewset = EPGSourceViewSet()
-        viewset.perform_destroy(source)
+        source.delete()
 
-        mock_emit.assert_called_once_with('epg.source_deleted', source)
+        # Find the deleted call
+        deleted_calls = [
+            call for call in mock_emit.call_args_list
+            if call[0][0] == 'epg.source_deleted'
+        ]
+        self.assertEqual(len(deleted_calls), 1)
 
     @patch('core.events.emit')
     def test_source_enabled_event(self, mock_emit):
         """Test that epg.source_enabled is emitted when source is activated."""
-        from apps.epg.api_views import EPGSourceViewSet
-        from rest_framework.test import APIRequestFactory
-        from rest_framework.request import Request
-
         source = EPGSource.objects.create(
             name='Test EPG',
             source_type='xmltv',
             is_active=False,
         )
+        mock_emit.reset_mock()
 
-        factory = APIRequestFactory()
-        request = factory.patch(f'/api/epg-sources/{source.id}/', {'is_active': True})
-        drf_request = Request(request)
-        drf_request._full_data = {'is_active': True}
-
-        viewset = EPGSourceViewSet()
-        viewset.request = drf_request
-        viewset.format_kwarg = None
-        viewset.kwargs = {'pk': source.id}
-
-        # Mock get_object to return our source
-        viewset.get_object = MagicMock(return_value=source)
-
-        # Mock get_serializer to actually save the change
-        def mock_get_serializer(instance=None, data=None, partial=False):
-            mock_serializer = MagicMock()
-            mock_serializer.is_valid.return_value = True
-            def save_and_update():
-                # Actually save the is_active change to the database
-                source.is_active = True
-                source.save(update_fields=['is_active'])
-                return source
-            mock_serializer.save.side_effect = save_and_update
-            mock_serializer.data = {'id': source.id, 'is_active': True}
-            return mock_serializer
-
-        viewset.get_serializer = mock_get_serializer
-
-        # Call partial_update which should emit the enabled event
-        viewset.partial_update(drf_request, pk=source.id)
+        # Enable the source
+        source.is_active = True
+        source.save()
 
         # Find the enabled call
         enabled_calls = [
@@ -94,50 +66,21 @@ class EPGSourceEventTests(TestCase):
             if call[0][0] == 'epg.source_enabled'
         ]
         self.assertEqual(len(enabled_calls), 1)
+        self.assertEqual(enabled_calls[0][0][1], source)
 
     @patch('core.events.emit')
     def test_source_disabled_event(self, mock_emit):
         """Test that epg.source_disabled is emitted when source is deactivated."""
-        from apps.epg.api_views import EPGSourceViewSet
-        from rest_framework.test import APIRequestFactory
-        from rest_framework.request import Request
-
         source = EPGSource.objects.create(
             name='Test EPG',
             source_type='xmltv',
             is_active=True,
         )
+        mock_emit.reset_mock()
 
-        factory = APIRequestFactory()
-        request = factory.patch(f'/api/epg-sources/{source.id}/', {'is_active': False})
-        drf_request = Request(request)
-        drf_request._full_data = {'is_active': False}
-
-        viewset = EPGSourceViewSet()
-        viewset.request = drf_request
-        viewset.format_kwarg = None
-        viewset.kwargs = {'pk': source.id}
-
-        # Mock get_object to return our source
-        viewset.get_object = MagicMock(return_value=source)
-
-        # Mock get_serializer to actually save the change
-        def mock_get_serializer(instance=None, data=None, partial=False):
-            mock_serializer = MagicMock()
-            mock_serializer.is_valid.return_value = True
-            def save_and_update():
-                # Actually save the is_active change to the database
-                source.is_active = False
-                source.save(update_fields=['is_active'])
-                return source
-            mock_serializer.save.side_effect = save_and_update
-            mock_serializer.data = {'id': source.id, 'is_active': False}
-            return mock_serializer
-
-        viewset.get_serializer = mock_get_serializer
-
-        # Call partial_update which should emit the disabled event
-        viewset.partial_update(drf_request, pk=source.id)
+        # Disable the source
+        source.is_active = False
+        source.save()
 
         # Find the disabled call
         disabled_calls = [
@@ -145,6 +88,7 @@ class EPGSourceEventTests(TestCase):
             if call[0][0] == 'epg.source_disabled'
         ]
         self.assertEqual(len(disabled_calls), 1)
+        self.assertEqual(disabled_calls[0][0][1], source)
 
 
 class EPGRefreshEventTests(TestCase):
@@ -162,6 +106,7 @@ class EPGRefreshEventTests(TestCase):
             url='http://example.com/epg.xml',
             is_active=True,
         )
+        mock_emit.reset_mock()
 
         # Even if fetch fails, refresh_started should have been emitted
         mock_fetch.return_value = False
@@ -188,6 +133,7 @@ class EPGRefreshEventTests(TestCase):
             url='http://example.com/epg.xml',
             is_active=True,
         )
+        mock_emit.reset_mock()
 
         # Simulate fetch failure
         mock_fetch.return_value = False
@@ -216,6 +162,7 @@ class EPGRefreshEventTests(TestCase):
             url='http://example.com/epg.xml',
             is_active=True,
         )
+        mock_emit.reset_mock()
 
         mock_fetch.return_value = True
         mock_parse_channels.return_value = True

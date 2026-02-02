@@ -4,11 +4,57 @@ from .models import EPGSource, EPGData
 from .tasks import refresh_epg_data, delete_epg_refresh_task_by_id
 from django_celery_beat.models import PeriodicTask, IntervalSchedule
 from core.utils import is_protected_path, send_websocket_update
+from core import events
 import json
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────
+# Plugin Event Emissions
+# ─────────────────────────────
+@receiver(post_save, sender=EPGSource)
+def emit_source_created_event(sender, instance, created, **kwargs):
+    """Emit epg.source_created when a new EPG source is created."""
+    if created:
+        events.emit("epg.source_created", instance)
+
+
+@receiver(post_delete, sender=EPGSource)
+def emit_source_deleted_event(sender, instance, **kwargs):
+    """Emit epg.source_deleted when an EPG source is deleted."""
+    events.emit("epg.source_deleted", instance)
+
+
+@receiver(pre_save, sender=EPGSource)
+def emit_enabled_disabled_events(sender, instance, **kwargs):
+    """Emit epg.source_enabled or epg.source_disabled when is_active changes."""
+    if not instance.pk:
+        return  # New instance, will emit created event instead
+
+    try:
+        old = EPGSource.objects.get(pk=instance.pk)
+        if old.is_active != instance.is_active:
+            # Store event to emit after save completes (can't emit in pre_save)
+            instance._emit_enabled_event = instance.is_active
+    except EPGSource.DoesNotExist:
+        pass
+
+
+@receiver(post_save, sender=EPGSource)
+def emit_enabled_disabled_events_post(sender, instance, created, **kwargs):
+    """Emit the enabled/disabled event after save completes."""
+    if created:
+        return  # Handled by source_created event
+
+    if hasattr(instance, '_emit_enabled_event'):
+        if instance._emit_enabled_event:
+            events.emit("epg.source_enabled", instance)
+        else:
+            events.emit("epg.source_disabled", instance)
+        del instance._emit_enabled_event
 
 @receiver(post_save, sender=EPGSource)
 def trigger_refresh_on_new_epg_source(sender, instance, created, **kwargs):
