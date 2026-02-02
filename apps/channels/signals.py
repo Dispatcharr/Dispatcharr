@@ -20,47 +20,18 @@ logger = logging.getLogger(__name__)
 # Channel Plugin Event Emissions
 # ─────────────────────────────
 @receiver(post_save, sender=Channel)
-def emit_channel_created_event(sender, instance, created, **kwargs):
-    """Emit channel.created when a new channel is created."""
+def emit_channel_lifecycle_event(sender, instance, created, **kwargs):
+    """Emit channel.created or channel.updated on save."""
     if created:
         events.emit("channel.created", instance)
+    else:
+        events.emit("channel.updated", instance)
 
 
 @receiver(post_delete, sender=Channel)
 def emit_channel_deleted_event(sender, instance, **kwargs):
     """Emit channel.deleted when a channel is deleted."""
     events.emit("channel.deleted", instance)
-
-
-@receiver(pre_save, sender=Channel)
-def track_channel_changes(sender, instance, **kwargs):
-    """Track which fields changed for channel.updated event."""
-    if not instance.pk:
-        return  # New instance, will emit created event instead
-
-    try:
-        old = Channel.objects.get(pk=instance.pk)
-        changed_fields = []
-        for field in ['name', 'channel_number', 'channel_group_id', 'epg_data_id', 'logo_id', 'stream_profile_id']:
-            old_val = getattr(old, field)
-            new_val = getattr(instance, field)
-            if old_val != new_val:
-                changed_fields.append(field.replace('_id', ''))
-        if changed_fields:
-            instance._changed_fields = changed_fields
-    except Channel.DoesNotExist:
-        pass
-
-
-@receiver(post_save, sender=Channel)
-def emit_channel_updated_event(sender, instance, created, **kwargs):
-    """Emit channel.updated when a channel is modified."""
-    if created:
-        return  # Handled by channel.created
-
-    if hasattr(instance, '_changed_fields') and instance._changed_fields:
-        events.emit("channel.updated", instance, changed_fields=instance._changed_fields)
-        del instance._changed_fields
 
 
 @receiver(m2m_changed, sender=Channel.streams.through)
@@ -80,10 +51,12 @@ def emit_channel_stream_events(sender, instance, action, reverse, model, pk_set,
 # Stream Plugin Event Emissions
 # ─────────────────────────────
 @receiver(post_save, sender=Stream)
-def emit_stream_created_event(sender, instance, created, **kwargs):
-    """Emit stream.created when a new stream is created."""
+def emit_stream_lifecycle_event(sender, instance, created, **kwargs):
+    """Emit stream.created or stream.updated on save."""
     if created:
         events.emit("stream.created", instance)
+    else:
+        events.emit("stream.updated", instance)
 
 
 @receiver(post_delete, sender=Stream)
@@ -92,45 +65,16 @@ def emit_stream_deleted_event(sender, instance, **kwargs):
     events.emit("stream.deleted", instance)
 
 
-@receiver(pre_save, sender=Stream)
-def track_stream_changes(sender, instance, **kwargs):
-    """Track which fields changed for stream.updated event."""
-    if not instance.pk:
-        return  # New instance, will emit created event instead
-
-    try:
-        old = Stream.objects.get(pk=instance.pk)
-        changed_fields = []
-        for field in ['name', 'url', 'tvg_id', 'channel_group_id', 'stream_profile_id', 'is_custom']:
-            old_val = getattr(old, field)
-            new_val = getattr(instance, field)
-            if old_val != new_val:
-                changed_fields.append(field.replace('_id', ''))
-        if changed_fields:
-            instance._changed_fields = changed_fields
-    except Stream.DoesNotExist:
-        pass
-
-
-@receiver(post_save, sender=Stream)
-def emit_stream_updated_event(sender, instance, created, **kwargs):
-    """Emit stream.updated when a stream is modified."""
-    if created:
-        return  # Handled by stream.created
-
-    if hasattr(instance, '_changed_fields') and instance._changed_fields:
-        events.emit("stream.updated", instance, changed_fields=instance._changed_fields)
-        del instance._changed_fields
-
-
 # ─────────────────────────────
 # ChannelGroup Plugin Event Emissions
 # ─────────────────────────────
 @receiver(post_save, sender=ChannelGroup)
-def emit_channel_group_created_event(sender, instance, created, **kwargs):
-    """Emit channel_group.created when a new channel group is created."""
+def emit_channel_group_lifecycle_event(sender, instance, created, **kwargs):
+    """Emit channel_group.created or channel_group.updated on save."""
     if created:
         events.emit("channel_group.created", instance)
+    else:
+        events.emit("channel_group.updated", instance)
 
 
 @receiver(post_delete, sender=ChannelGroup)
@@ -139,39 +83,16 @@ def emit_channel_group_deleted_event(sender, instance, **kwargs):
     events.emit("channel_group.deleted", instance)
 
 
-@receiver(pre_save, sender=ChannelGroup)
-def track_channel_group_changes(sender, instance, **kwargs):
-    """Track which fields changed for channel_group.updated event."""
-    if not instance.pk:
-        return  # New instance, will emit created event instead
-
-    try:
-        old = ChannelGroup.objects.get(pk=instance.pk)
-        if old.name != instance.name:
-            instance._name_changed = True
-    except ChannelGroup.DoesNotExist:
-        pass
-
-
-@receiver(post_save, sender=ChannelGroup)
-def emit_channel_group_updated_event(sender, instance, created, **kwargs):
-    """Emit channel_group.updated when a channel group is modified."""
-    if created:
-        return  # Handled by channel_group.created
-
-    if hasattr(instance, '_name_changed') and instance._name_changed:
-        events.emit("channel_group.updated", instance)
-        del instance._name_changed
-
-
 # ─────────────────────────────
 # ChannelProfile Plugin Event Emissions
 # ─────────────────────────────
 @receiver(post_save, sender=ChannelProfile)
-def emit_channel_profile_created_event(sender, instance, created, **kwargs):
-    """Emit channel_profile.created when a new channel profile is created."""
+def emit_channel_profile_lifecycle_event(sender, instance, created, **kwargs):
+    """Emit channel_profile.created or channel_profile.updated on save."""
     if created:
         events.emit("channel_profile.created", instance)
+    else:
+        events.emit("channel_profile.updated", instance)
 
 
 @receiver(post_delete, sender=ChannelProfile)
@@ -180,76 +101,22 @@ def emit_channel_profile_deleted_event(sender, instance, **kwargs):
     events.emit("channel_profile.deleted", instance)
 
 
-@receiver(pre_save, sender=ChannelProfile)
-def track_channel_profile_changes(sender, instance, **kwargs):
-    """Track which fields changed for channel_profile.updated event."""
-    if not instance.pk:
-        return  # New instance, will emit created event instead
-
-    try:
-        old = ChannelProfile.objects.get(pk=instance.pk)
-        if old.name != instance.name:
-            instance._name_changed = True
-    except ChannelProfile.DoesNotExist:
-        pass
-
-
-@receiver(post_save, sender=ChannelProfile)
-def emit_channel_profile_updated_event(sender, instance, created, **kwargs):
-    """Emit channel_profile.updated when a channel profile is modified."""
-    if created:
-        return  # Handled by channel_profile.created
-
-    if hasattr(instance, '_name_changed') and instance._name_changed:
-        events.emit("channel_profile.updated", instance)
-        del instance._name_changed
-
-
 # ─────────────────────────────
 # RecurringRecordingRule Plugin Event Emissions
 # ─────────────────────────────
 @receiver(post_save, sender=RecurringRecordingRule)
-def emit_recording_rule_created_event(sender, instance, created, **kwargs):
-    """Emit recording_rule.created when a new recording rule is created."""
+def emit_recording_rule_lifecycle_event(sender, instance, created, **kwargs):
+    """Emit recording_rule.created or recording_rule.updated on save."""
     if created:
         events.emit("recording_rule.created", instance)
+    else:
+        events.emit("recording_rule.updated", instance)
 
 
 @receiver(post_delete, sender=RecurringRecordingRule)
 def emit_recording_rule_deleted_event(sender, instance, **kwargs):
     """Emit recording_rule.deleted when a recording rule is deleted."""
     events.emit("recording_rule.deleted", instance)
-
-
-@receiver(pre_save, sender=RecurringRecordingRule)
-def track_recording_rule_changes(sender, instance, **kwargs):
-    """Track which fields changed for recording_rule.updated event."""
-    if not instance.pk:
-        return  # New instance, will emit created event instead
-
-    try:
-        old = RecurringRecordingRule.objects.get(pk=instance.pk)
-        changed_fields = []
-        for field in ['channel_id', 'days_of_week', 'start_time', 'end_time', 'enabled', 'name', 'start_date', 'end_date']:
-            old_val = getattr(old, field)
-            new_val = getattr(instance, field)
-            if old_val != new_val:
-                changed_fields.append(field.replace('_id', ''))
-        if changed_fields:
-            instance._changed_fields = changed_fields
-    except RecurringRecordingRule.DoesNotExist:
-        pass
-
-
-@receiver(post_save, sender=RecurringRecordingRule)
-def emit_recording_rule_updated_event(sender, instance, created, **kwargs):
-    """Emit recording_rule.updated when a recording rule is modified."""
-    if created:
-        return  # Handled by recording_rule.created
-
-    if hasattr(instance, '_changed_fields') and instance._changed_fields:
-        events.emit("recording_rule.updated", instance, changed_fields=instance._changed_fields)
-        del instance._changed_fields
 
 
 # ─────────────────────────────

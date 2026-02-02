@@ -70,7 +70,6 @@ class ChannelEventTests(TestCase):
         ]
         self.assertEqual(len(updated_calls), 1)
         self.assertEqual(updated_calls[0][0][1], channel)
-        self.assertIn('name', updated_calls[0][1]['changed_fields'])
 
     @patch('core.events.emit')
     def test_channel_updated_event_on_number_change(self, mock_emit):
@@ -90,7 +89,6 @@ class ChannelEventTests(TestCase):
             if call[0][0] == 'channel.updated'
         ]
         self.assertEqual(len(updated_calls), 1)
-        self.assertIn('channel_number', updated_calls[0][1]['changed_fields'])
 
     @patch('core.events.emit')
     def test_channel_updated_event_on_group_change(self, mock_emit):
@@ -111,26 +109,24 @@ class ChannelEventTests(TestCase):
             if call[0][0] == 'channel.updated'
         ]
         self.assertEqual(len(updated_calls), 1)
-        self.assertIn('channel_group', updated_calls[0][1]['changed_fields'])
 
     @patch('core.events.emit')
-    def test_no_updated_event_when_no_changes(self, mock_emit):
-        """Test that channel.updated is NOT emitted when nothing changes."""
+    def test_updated_event_on_any_save(self, mock_emit):
+        """Test that channel.updated is emitted on any save to existing channel."""
         channel = Channel.objects.create(
             name='Test Channel',
             channel_number=1,
         )
         mock_emit.reset_mock()
 
-        # Save without changes
+        # Save without explicit changes still emits updated
         channel.save()
 
-        # Should not have any updated calls
         updated_calls = [
             call for call in mock_emit.call_args_list
             if call[0][0] == 'channel.updated'
         ]
-        self.assertEqual(len(updated_calls), 0)
+        self.assertEqual(len(updated_calls), 1)
 
 
 class ChannelStreamEventTests(TestCase):

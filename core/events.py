@@ -244,7 +244,6 @@ def _serialize_channel_updated(channel, **ctx):
         "channel_number": channel.channel_number,
         "channel_name": channel.name,
         "channel_uuid": str(channel.uuid),
-        "changed_fields": ctx.get("changed_fields", []),
     }
 
 
@@ -317,7 +316,6 @@ def _serialize_stream_updated(stream, **ctx):
     return {
         "stream_id": stream.id,
         "stream_name": stream.name,
-        "changed_fields": ctx.get("changed_fields", []),
     }
 
 
@@ -391,7 +389,6 @@ def _serialize_recording_rule_updated(rule, **ctx):
         "rule_id": rule.id,
         "rule_name": rule.name,
         "channel_id": rule.channel_id,
-        "changed_fields": ctx.get("changed_fields", []),
     }
 
 

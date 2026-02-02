@@ -68,7 +68,6 @@ class StreamLifecycleEventTests(TestCase):
             if call[0][0] == 'stream.updated'
         ]
         self.assertEqual(len(updated_calls), 1)
-        self.assertIn('name', updated_calls[0][1]['changed_fields'])
 
 
 class ChannelGroupLifecycleEventTests(TestCase):
@@ -228,7 +227,6 @@ class RecurringRecordingRuleLifecycleEventTests(TestCase):
             if call[0][0] == 'recording_rule.updated'
         ]
         self.assertEqual(len(updated_calls), 1)
-        self.assertIn('name', updated_calls[0][1]['changed_fields'])
 
     @patch('core.events.emit')
     def test_recording_rule_enabled_change_event(self, mock_emit):
@@ -251,4 +249,3 @@ class RecurringRecordingRuleLifecycleEventTests(TestCase):
             if call[0][0] == 'recording_rule.updated'
         ]
         self.assertEqual(len(updated_calls), 1)
-        self.assertIn('enabled', updated_calls[0][1]['changed_fields'])
