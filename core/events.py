@@ -264,6 +264,43 @@ def _serialize_channel_stream_removed(channel, **ctx):
     }
 
 
+def _serialize_plugin_installed(plugin, **ctx):
+    return {
+        "plugin_key": plugin.key,
+        "plugin_name": plugin.name,
+        "plugin_version": plugin.version,
+    }
+
+
+def _serialize_plugin_uninstalled(plugin, **ctx):
+    return {
+        "plugin_key": plugin.key,
+        "plugin_name": plugin.name,
+    }
+
+
+def _serialize_plugin_enabled(plugin, **ctx):
+    return {
+        "plugin_key": plugin.key,
+        "plugin_name": plugin.name,
+    }
+
+
+def _serialize_plugin_disabled(plugin, **ctx):
+    return {
+        "plugin_key": plugin.key,
+        "plugin_name": plugin.name,
+    }
+
+
+def _serialize_plugin_configured(plugin, **ctx):
+    return {
+        "plugin_key": plugin.key,
+        "plugin_name": plugin.name,
+        # Don't include actual settings - may contain sensitive data
+    }
+
+
 EVENT_SERIALIZERS = {
     "recording.scheduled": _serialize_recording_scheduled,
     "recording.started": _serialize_recording_started,
@@ -293,6 +330,11 @@ EVENT_SERIALIZERS = {
     "channel.updated": _serialize_channel_updated,
     "channel.stream_added": _serialize_channel_stream_added,
     "channel.stream_removed": _serialize_channel_stream_removed,
+    "plugin.installed": _serialize_plugin_installed,
+    "plugin.uninstalled": _serialize_plugin_uninstalled,
+    "plugin.enabled": _serialize_plugin_enabled,
+    "plugin.disabled": _serialize_plugin_disabled,
+    "plugin.configured": _serialize_plugin_configured,
 }
 
 
