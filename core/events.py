@@ -218,6 +218,52 @@ def _serialize_m3u_refresh_failed(account, **ctx):
     }
 
 
+def _serialize_channel_created(channel, **ctx):
+    return {
+        "channel_id": channel.id,
+        "channel_number": channel.channel_number,
+        "channel_name": channel.name,
+        "channel_uuid": str(channel.uuid),
+        "channel_group_id": channel.channel_group_id,
+        "channel_group_name": channel.channel_group.name if channel.channel_group else None,
+    }
+
+
+def _serialize_channel_deleted(channel, **ctx):
+    return {
+        "channel_id": channel.id,
+        "channel_number": channel.channel_number,
+        "channel_name": channel.name,
+        "channel_uuid": str(channel.uuid),
+    }
+
+
+def _serialize_channel_updated(channel, **ctx):
+    return {
+        "channel_id": channel.id,
+        "channel_number": channel.channel_number,
+        "channel_name": channel.name,
+        "channel_uuid": str(channel.uuid),
+        "changed_fields": ctx.get("changed_fields", []),
+    }
+
+
+def _serialize_channel_stream_added(channel, **ctx):
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.name,
+        "stream_ids": ctx.get("stream_ids", []),
+    }
+
+
+def _serialize_channel_stream_removed(channel, **ctx):
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.name,
+        "stream_ids": ctx.get("stream_ids", []),
+    }
+
+
 EVENT_SERIALIZERS = {
     "recording.scheduled": _serialize_recording_scheduled,
     "recording.started": _serialize_recording_started,
@@ -242,6 +288,11 @@ EVENT_SERIALIZERS = {
     "m3u.refresh_started": _serialize_m3u_refresh_started,
     "m3u.refresh_completed": _serialize_m3u_refresh_completed,
     "m3u.refresh_failed": _serialize_m3u_refresh_failed,
+    "channel.created": _serialize_channel_created,
+    "channel.deleted": _serialize_channel_deleted,
+    "channel.updated": _serialize_channel_updated,
+    "channel.stream_added": _serialize_channel_stream_added,
+    "channel.stream_removed": _serialize_channel_stream_removed,
 }
 
 

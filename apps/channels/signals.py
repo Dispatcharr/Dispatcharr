@@ -15,6 +15,70 @@ from core import events
 
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────
+# Channel Plugin Event Emissions
+# ─────────────────────────────
+@receiver(post_save, sender=Channel)
+def emit_channel_created_event(sender, instance, created, **kwargs):
+    """Emit channel.created when a new channel is created."""
+    if created:
+        events.emit("channel.created", instance)
+
+
+@receiver(post_delete, sender=Channel)
+def emit_channel_deleted_event(sender, instance, **kwargs):
+    """Emit channel.deleted when a channel is deleted."""
+    events.emit("channel.deleted", instance)
+
+
+@receiver(pre_save, sender=Channel)
+def track_channel_changes(sender, instance, **kwargs):
+    """Track which fields changed for channel.updated event."""
+    if not instance.pk:
+        return  # New instance, will emit created event instead
+
+    try:
+        old = Channel.objects.get(pk=instance.pk)
+        changed_fields = []
+        for field in ['name', 'channel_number', 'channel_group_id', 'epg_data_id', 'logo_id', 'stream_profile_id']:
+            old_val = getattr(old, field)
+            new_val = getattr(instance, field)
+            if old_val != new_val:
+                changed_fields.append(field.replace('_id', ''))
+        if changed_fields:
+            instance._changed_fields = changed_fields
+    except Channel.DoesNotExist:
+        pass
+
+
+@receiver(post_save, sender=Channel)
+def emit_channel_updated_event(sender, instance, created, **kwargs):
+    """Emit channel.updated when a channel is modified."""
+    if created:
+        return  # Handled by channel.created
+
+    if hasattr(instance, '_changed_fields') and instance._changed_fields:
+        events.emit("channel.updated", instance, changed_fields=instance._changed_fields)
+        del instance._changed_fields
+
+
+@receiver(m2m_changed, sender=Channel.streams.through)
+def emit_channel_stream_events(sender, instance, action, reverse, model, pk_set, **kwargs):
+    """Emit channel.stream_added/removed when streams are added/removed from a channel."""
+    if pk_set is None:
+        return
+
+    stream_ids = list(pk_set)
+    if action == "post_add":
+        events.emit("channel.stream_added", instance, stream_ids=stream_ids)
+    elif action == "post_remove":
+        events.emit("channel.stream_removed", instance, stream_ids=stream_ids)
+
+
+# ─────────────────────────────
+# Existing Channel Signals
+# ─────────────────────────────
 @receiver(m2m_changed, sender=Channel.streams.through)
 def update_channel_tvg_id_and_logo(sender, instance, action, reverse, model, pk_set, **kwargs):
     """
