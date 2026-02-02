@@ -25,6 +25,7 @@ from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
 from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
+from core import events
 
 logger = logging.getLogger(__name__)
 
@@ -190,10 +191,12 @@ def refresh_epg_data(source_id):
 
         # Continue with the normal processing...
         logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
+        events.emit("epg.refresh_started", source)
         if source.source_type == 'xmltv':
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                events.emit("epg.refresh_failed", source, error="Failed to fetch XMLTV data")
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -202,6 +205,7 @@ def refresh_epg_data(source_id):
             parse_channels_success = parse_channels_only(source)
             if not parse_channels_success:
                 logger.error(f"Failed to parse channels for source {source.name}")
+                events.emit("epg.refresh_failed", source, error="Failed to parse channels")
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -221,6 +225,7 @@ def refresh_epg_data(source_id):
             pass
     except Exception as e:
         logger.error(f"Error in refresh_epg_data for source {source_id}: {e}", exc_info=True)
+        events.emit("epg.refresh_failed", source, source_id=source_id, error=str(e))
         try:
             if source:
                 source.status = 'error'
@@ -1671,6 +1676,9 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                       status="success",
                       message=epg_source.last_message,
                       updated_at=epg_source.updated_at.isoformat())
+
+        events.emit("epg.refresh_completed", epg_source,
+                    channel_count=channels_with_programs, program_count=total_programs)
 
         logger.info(f"Completed parsing programs for source: {epg_source.name} - "
                f"{total_programs:,} programs for {channels_with_programs} channels, "

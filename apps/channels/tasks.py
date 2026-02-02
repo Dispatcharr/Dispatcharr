@@ -27,6 +27,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 import tempfile
 from urllib.parse import quote
+from core import events
 
 logger = logging.getLogger(__name__)
 
@@ -1463,6 +1464,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     except Exception as e:
         logger.error(f"Could not log recording start event: {e}")
 
+    events.emit("recording.started", None,
+                recording_id=recording_id, channel_id=channel.id, channel_name=channel.name,
+                start_time=start_time_str, end_time=end_time_str)
+
     # Try to resolve the Recording row up front
     recording_obj = None
     try:
@@ -2044,6 +2049,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         recording_obj.custom_properties = cp
         recording_obj.save(update_fields=["custom_properties"])
+
+        if interrupted:
+            events.emit("recording.interrupted", recording_obj,
+                        channel_id=channel.id, channel_name=channel.name, reason=interrupted_reason)
+        else:
+            events.emit("recording.completed", recording_obj,
+                        channel_id=channel.id, channel_name=channel.name, duration_seconds=duration_seconds)
     except Exception as e:
         logger.debug(f"Unable to finalize Recording metadata: {e}")
 
@@ -2348,6 +2360,10 @@ def comskip_process_recording(recording_id: int):
             cp["comskip"]["ini_path"] = selected_ini
         _persist_custom_properties()
         _ws('completed', {"commercials": len(commercials), "segments_kept": len(parts)})
+
+        events.emit("recording.comskip_completed", None,
+                    recording_id=recording_id, commercials_found=len(commercials), segments_kept=len(parts))
+
         return "ok"
     except Exception as e:
         cp["comskip"] = {"status": "error", "reason": str(e)}

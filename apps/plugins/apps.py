@@ -9,6 +9,8 @@ class PluginsConfig(AppConfig):
     verbose_name = "Plugins"
 
     def ready(self):
+        # Import signals to ensure they get registered
+        import apps.plugins.signals  # noqa: F401
         """Wire up plugin discovery without hitting the DB during app init.
 
         - Skip during common management commands that don't need discovery.

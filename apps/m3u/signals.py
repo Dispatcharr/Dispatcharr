@@ -1,14 +1,69 @@
 # apps/m3u/signals.py
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
-from .models import M3UAccount
-from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
 from django_celery_beat.models import PeriodicTask, IntervalSchedule
+
 import json
 import logging
 
+from core import events
+from core.signal_helpers import _get_instance_context, _set_context, _clear_context
+from .models import M3UAccount
+from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
+
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────
+# Plugin Event Emissions
+# ─────────────────────────────
+@receiver(post_save, sender=M3UAccount)
+def emit_source_created_event(sender, instance, created, **kwargs):
+    """Emit m3u.source_created when a new M3U account is created."""
+    if created:
+        events.emit("m3u.source_created", instance)
+
+
+@receiver(post_delete, sender=M3UAccount)
+def emit_source_deleted_event(sender, instance, **kwargs):
+    """Emit m3u.source_deleted when an M3U account is deleted."""
+    events.emit("m3u.source_deleted", instance)
+
+
+@receiver(pre_save, sender=M3UAccount)
+def emit_enabled_disabled_events(sender, instance, **kwargs):
+    """Emit m3u.source_enabled or m3u.source_disabled when is_active changes."""
+    if not instance.pk:
+        return  # New instance, will emit created event instead
+
+    try:
+        old = M3UAccount.objects.get(pk=instance.pk)
+        if old.is_active != instance.is_active:
+            _set_context('M3UAccount', instance.pk, {
+                'emit_enabled_event': instance.is_active
+            })
+    except M3UAccount.DoesNotExist:
+        pass
+
+
+@receiver(post_save, sender=M3UAccount)
+def emit_enabled_disabled_events_post(sender, instance, created, **kwargs):
+    """Emit the enabled/disabled event after save completes."""
+    if created:
+        return  # Handled by source_created event
+
+    ctx = _get_instance_context('M3UAccount', instance.pk)
+    if 'emit_enabled_event' in ctx:
+        if ctx['emit_enabled_event']:
+            events.emit("m3u.source_enabled", instance)
+        else:
+            events.emit("m3u.source_disabled", instance)
+        _clear_context('M3UAccount', instance.pk)
+
+
+# ─────────────────────────────
+# Existing Signals
+# ─────────────────────────────
 @receiver(post_save, sender=M3UAccount)
 def refresh_account_on_save(sender, instance, created, **kwargs):
     """

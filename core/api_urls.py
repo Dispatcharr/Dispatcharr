@@ -10,7 +10,9 @@ from .api_views import (
     version,
     rehash_streams_endpoint,
     TimezoneListView,
-    get_system_events
+    get_system_events,
+    get_event_catalog,
+    event_level,
 )
 
 router = DefaultRouter()
@@ -23,5 +25,7 @@ urlpatterns = [
     path('rehash-streams/', rehash_streams_endpoint, name='rehash_streams'),
     path('timezones/', TimezoneListView.as_view(), name='timezones'),
     path('system-events/', get_system_events, name='system_events'),
+    path('events/', get_event_catalog, name='event_catalog'),
+    path('events/level/', event_level, name='event_level'),
     path('', include(router.urls)),
 ]

@@ -33,6 +33,7 @@ import os
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -44,18 +45,18 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows user agents to be viewed, created, edited, or deleted.
     """
-
     queryset = UserAgent.objects.all()
     serializer_class = UserAgentSerializer
+    permission_classes = [IsAdmin]
 
 
 class StreamProfileViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows stream profiles to be viewed, created, edited, or deleted.
     """
-
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+    permission_classes = [IsAdmin]
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -63,9 +64,9 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
     API endpoint for editing core settings.
     This is treated as a singleton: only one instance should exist.
     """
-
     queryset = CoreSettings.objects.all()
     serializer_class = CoreSettingsSerializer
+    permission_classes = [IsAdmin]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -168,6 +169,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     API endpoint for proxy settings stored as JSON in CoreSettings.
     """
     serializer_class = ProxySettingsSerializer
+    permission_classes = [IsAdmin]
 
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
@@ -410,6 +412,107 @@ class TimezoneListView(APIView):
 # ─────────────────────────────
 # System Events API
 # ─────────────────────────────
+# ─────────────────────────────
+# Event Discovery & Configuration API
+# ─────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_event_catalog(request):
+    """
+    Get the full catalog of available events for agent/plugin discovery.
+
+    Returns all events with their:
+    - level: CRITICAL, SYSTEM, or FULL
+    - description: Human-readable description
+
+    This enables agents to discover what events they can subscribe to.
+    """
+    from core.events import get_event_catalog, EVENT_LEVELS, get_event_level, EVENT_LEVEL_NAMES
+
+    catalog = get_event_catalog()
+    current_level = get_event_level()
+
+    return Response({
+        'events': catalog,
+        'levels': list(EVENT_LEVELS.keys()),
+        'current_level': EVENT_LEVEL_NAMES.get(current_level, 'UNKNOWN'),
+        'total_events': len(catalog),
+    })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def event_level(request):
+    """
+    Get or set the current event level.
+
+    GET: Returns the current event level
+    POST: Sets a new event level (requires {"level": "NONE|CRITICAL|SYSTEM|FULL"})
+
+    Note: Setting via this API updates the database setting. The
+    DISPATCHARR_EVENT_LEVEL environment variable takes priority if set.
+    """
+    from core.events import (
+        get_event_level, EVENT_LEVELS, EVENT_LEVEL_NAMES,
+        invalidate_event_level_cache
+    )
+    import os
+
+    if request.method == 'GET':
+        current_level = get_event_level()
+        env_override = os.environ.get('DISPATCHARR_EVENT_LEVEL', '').upper()
+
+        return Response({
+            'level': EVENT_LEVEL_NAMES.get(current_level, 'UNKNOWN'),
+            'level_value': current_level,
+            'available_levels': list(EVENT_LEVELS.keys()),
+            'env_override': env_override if env_override else None,
+            'env_override_active': bool(env_override and env_override in EVENT_LEVELS),
+        })
+
+    # POST - update the level (requires admin privileges)
+    if not request.user.user_level >= 10:
+        return Response({
+            'error': 'Admin privileges required to change event level'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    new_level = request.data.get('level', '').upper()
+
+    if new_level not in EVENT_LEVELS:
+        return Response({
+            'error': f'Invalid level: {new_level}. Must be one of: {list(EVENT_LEVELS.keys())}'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Check if env var is set (it takes priority)
+    env_override = os.environ.get('DISPATCHARR_EVENT_LEVEL', '').upper()
+    if env_override and env_override in EVENT_LEVELS:
+        return Response({
+            'warning': f'DISPATCHARR_EVENT_LEVEL environment variable is set to {env_override}. '
+                       f'Database setting will be saved but env var takes priority.',
+            'level': new_level,
+            'effective_level': env_override,
+        })
+
+    # Save to database
+    try:
+        system_settings = CoreSettings.get_system_settings()
+        system_settings['event_level'] = new_level
+        CoreSettings.set_system_settings(system_settings)
+
+        # Invalidate the cache so new level takes effect immediately
+        invalidate_event_level_cache()
+
+        return Response({
+            'level': new_level,
+            'message': f'Event level set to {new_level}',
+        })
+    except Exception as e:
+        logger.error(f"Error setting event level: {e}")
+        return Response({
+            'error': 'Failed to save event level'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_system_events(request):

@@ -10,3 +10,5 @@ class VODConfig(AppConfig):
         """Initialize VOD app when Django is ready"""
         # Import models to ensure they're registered
         from . import models
+        # Import signals to register event handlers
+        from . import signals

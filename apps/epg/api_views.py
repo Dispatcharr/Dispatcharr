@@ -84,7 +84,6 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             else:
                 request.data["status"] = "disabled"
 
-        # Continue with regular partial update
         return super().partial_update(request, *args, **kwargs)
 
 
