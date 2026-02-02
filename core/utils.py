@@ -419,6 +419,7 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
         # Emit plugin event for system events
         # Map system event types to plugin event names
         plugin_event_map = {
+            # Channel/streaming events
             'client_connect': 'channel.client_connected',
             'client_disconnect': 'channel.client_disconnected',
             'channel_start': 'channel.stream_started',
@@ -428,6 +429,10 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             'channel_reconnect': 'channel.reconnected',
             'channel_error': 'channel.error',
             'stream_switch': 'channel.stream_switched',
+            # Authentication events
+            'login_success': 'auth.login',
+            'login_failed': 'auth.login_failed',
+            'logout': 'auth.logout',
         }
         plugin_event = plugin_event_map.get(event_type)
         if plugin_event:
