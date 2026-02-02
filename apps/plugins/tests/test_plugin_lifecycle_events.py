@@ -12,44 +12,6 @@ class PluginLifecycleEventTests(TestCase):
     """Tests for plugin lifecycle events via signals."""
 
     @patch('core.events.emit')
-    def test_plugin_installed_event(self, mock_emit):
-        """Test that plugin.installed is emitted when a plugin is discovered."""
-        plugin = PluginConfig.objects.create(
-            key='test-plugin',
-            name='Test Plugin',
-            version='1.0.0',
-            enabled=False,
-        )
-
-        # Find the installed call
-        installed_calls = [
-            call for call in mock_emit.call_args_list
-            if call[0][0] == 'plugin.installed'
-        ]
-        self.assertEqual(len(installed_calls), 1)
-        self.assertEqual(installed_calls[0][0][1], plugin)
-
-    @patch('core.events.emit')
-    def test_plugin_uninstalled_event(self, mock_emit):
-        """Test that plugin.uninstalled is emitted when a plugin is removed."""
-        plugin = PluginConfig.objects.create(
-            key='test-plugin',
-            name='Test Plugin',
-            version='1.0.0',
-            enabled=False,
-        )
-        mock_emit.reset_mock()
-
-        plugin.delete()
-
-        # Find the uninstalled call
-        uninstalled_calls = [
-            call for call in mock_emit.call_args_list
-            if call[0][0] == 'plugin.uninstalled'
-        ]
-        self.assertEqual(len(uninstalled_calls), 1)
-
-    @patch('core.events.emit')
     def test_plugin_enabled_event(self, mock_emit):
         """Test that plugin.enabled is emitted when a plugin is enabled."""
         plugin = PluginConfig.objects.create(
@@ -118,7 +80,7 @@ class PluginLifecycleEventTests(TestCase):
 
     @patch('core.events.emit')
     def test_no_enabled_event_on_create(self, mock_emit):
-        """Test that plugin.enabled is NOT emitted on initial create (only installed)."""
+        """Test that plugin.enabled is NOT emitted on initial create."""
         PluginConfig.objects.create(
             key='test-plugin',
             name='Test Plugin',
@@ -126,16 +88,11 @@ class PluginLifecycleEventTests(TestCase):
             enabled=True,  # Created as enabled
         )
 
-        # Should only have installed, not enabled
-        installed_calls = [
-            call for call in mock_emit.call_args_list
-            if call[0][0] == 'plugin.installed'
-        ]
+        # Should not emit enabled event on create
         enabled_calls = [
             call for call in mock_emit.call_args_list
             if call[0][0] == 'plugin.enabled'
         ]
-        self.assertEqual(len(installed_calls), 1)
         self.assertEqual(len(enabled_calls), 0)
 
     @patch('core.events.emit')

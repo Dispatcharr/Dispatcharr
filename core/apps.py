@@ -23,11 +23,26 @@ class CoreConfig(AppConfig):
         # Import signals to ensure they get registered
         import core.signals
 
+        # Validate event configuration at startup
+        self._validate_event_configuration()
+
         # Emit system startup event (only in main process, not in autoreload)
         import sys
         if 'runserver' not in sys.argv or os.environ.get('RUN_MAIN') == 'true':
             self._emit_startup_event()
             self._register_shutdown_handler()
+
+    def _validate_event_configuration(self):
+        """Validate that all events are properly configured in level sets."""
+        try:
+            from core.events import validate_event_configuration
+            validate_event_configuration()
+        except ValueError as e:
+            # Configuration error - log as error but don't crash the app
+            logging.getLogger(__name__).error(f"Event configuration error: {e}")
+        except Exception as e:
+            # Unexpected error - log but continue
+            logging.getLogger(__name__).debug(f"Could not validate event configuration: {e}")
 
     def _emit_startup_event(self):
         """Emit system.startup event when the application starts."""

@@ -314,6 +314,7 @@ class CoreSettings(models.Model):
         return cls._get_group(SYSTEM_SETTINGS_KEY, {
             "time_zone": getattr(settings, "TIME_ZONE", "UTC") or "UTC",
             "max_system_events": 100,
+            "event_level": "FULL",
         })
 
     @classmethod
@@ -324,6 +325,26 @@ class CoreSettings(models.Model):
     def set_system_time_zone(cls, tz_name: str | None):
         value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
         cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
+        return value
+
+    @classmethod
+    def get_event_level(cls):
+        """Get the configured event level (NONE, CRITICAL, SYSTEM, FULL)."""
+        return cls.get_system_settings().get("event_level", "FULL").upper()
+
+    @classmethod
+    def set_event_level(cls, level: str | None):
+        """
+        Set the event level.
+
+        Args:
+            level: One of NONE, CRITICAL, SYSTEM, FULL (case-insensitive)
+        """
+        valid_levels = {"NONE", "CRITICAL", "SYSTEM", "FULL"}
+        value = (level or "FULL").strip().upper()
+        if value not in valid_levels:
+            value = "FULL"
+        cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"event_level": value})
         return value
 
 

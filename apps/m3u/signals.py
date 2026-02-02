@@ -1,12 +1,15 @@
 # apps/m3u/signals.py
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
-from .models import M3UAccount
-from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
 from django_celery_beat.models import PeriodicTask, IntervalSchedule
-from core import events
+
 import json
 import logging
+
+from core import events
+from core.signal_helpers import _get_instance_context, _set_context, _clear_context
+from .models import M3UAccount
+from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +39,9 @@ def emit_enabled_disabled_events(sender, instance, **kwargs):
     try:
         old = M3UAccount.objects.get(pk=instance.pk)
         if old.is_active != instance.is_active:
-            # Store event to emit after save completes (can't emit in pre_save)
-            instance._emit_enabled_event = instance.is_active
+            _set_context('M3UAccount', instance.pk, {
+                'emit_enabled_event': instance.is_active
+            })
     except M3UAccount.DoesNotExist:
         pass
 
@@ -48,12 +52,13 @@ def emit_enabled_disabled_events_post(sender, instance, created, **kwargs):
     if created:
         return  # Handled by source_created event
 
-    if hasattr(instance, '_emit_enabled_event'):
-        if instance._emit_enabled_event:
+    ctx = _get_instance_context('M3UAccount', instance.pk)
+    if 'emit_enabled_event' in ctx:
+        if ctx['emit_enabled_event']:
             events.emit("m3u.source_enabled", instance)
         else:
             events.emit("m3u.source_disabled", instance)
-        del instance._emit_enabled_event
+        _clear_context('M3UAccount', instance.pk)
 
 
 # ─────────────────────────────
