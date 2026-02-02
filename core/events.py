@@ -301,6 +301,230 @@ def _serialize_plugin_configured(plugin, **ctx):
     }
 
 
+# Stream serializers
+def _serialize_stream_created(stream, **ctx):
+    return {
+        "stream_id": stream.id,
+        "stream_name": stream.name,
+        "stream_url": stream.url,
+        "tvg_id": stream.tvg_id,
+        "is_custom": stream.is_custom,
+        "m3u_account_id": stream.m3u_account_id,
+    }
+
+
+def _serialize_stream_updated(stream, **ctx):
+    return {
+        "stream_id": stream.id,
+        "stream_name": stream.name,
+        "changed_fields": ctx.get("changed_fields", []),
+    }
+
+
+def _serialize_stream_deleted(stream, **ctx):
+    return {
+        "stream_id": stream.id,
+        "stream_name": stream.name,
+    }
+
+
+# ChannelGroup serializers
+def _serialize_channel_group_created(group, **ctx):
+    return {
+        "group_id": group.id,
+        "group_name": group.name,
+    }
+
+
+def _serialize_channel_group_updated(group, **ctx):
+    return {
+        "group_id": group.id,
+        "group_name": group.name,
+    }
+
+
+def _serialize_channel_group_deleted(group, **ctx):
+    return {
+        "group_id": group.id,
+        "group_name": group.name,
+    }
+
+
+# ChannelProfile serializers
+def _serialize_channel_profile_created(profile, **ctx):
+    return {
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+    }
+
+
+def _serialize_channel_profile_updated(profile, **ctx):
+    return {
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+    }
+
+
+def _serialize_channel_profile_deleted(profile, **ctx):
+    return {
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+    }
+
+
+# RecurringRecordingRule serializers
+def _serialize_recording_rule_created(rule, **ctx):
+    return {
+        "rule_id": rule.id,
+        "rule_name": rule.name,
+        "channel_id": rule.channel_id,
+        "channel_name": rule.channel.name if rule.channel else None,
+        "days_of_week": rule.days_of_week,
+        "start_time": str(rule.start_time),
+        "end_time": str(rule.end_time),
+        "enabled": rule.enabled,
+    }
+
+
+def _serialize_recording_rule_updated(rule, **ctx):
+    return {
+        "rule_id": rule.id,
+        "rule_name": rule.name,
+        "channel_id": rule.channel_id,
+        "changed_fields": ctx.get("changed_fields", []),
+    }
+
+
+def _serialize_recording_rule_deleted(rule, **ctx):
+    return {
+        "rule_id": rule.id,
+        "rule_name": rule.name,
+        "channel_id": rule.channel_id,
+    }
+
+
+# VOD serializers
+def _serialize_vod_movie_added(movie, **ctx):
+    return {
+        "movie_id": movie.id,
+        "movie_name": movie.name,
+        "year": movie.year,
+    }
+
+
+def _serialize_vod_movie_removed(movie, **ctx):
+    return {
+        "movie_id": movie.id,
+        "movie_name": movie.name,
+    }
+
+
+def _serialize_vod_series_added(series, **ctx):
+    return {
+        "series_id": series.id,
+        "series_name": series.name,
+        "year": series.year,
+    }
+
+
+def _serialize_vod_series_removed(series, **ctx):
+    return {
+        "series_id": series.id,
+        "series_name": series.name,
+    }
+
+
+def _serialize_vod_episode_added(episode, **ctx):
+    return {
+        "episode_id": episode.id,
+        "episode_name": episode.name,
+        "series_id": episode.series_id,
+        "series_name": episode.series.name if episode.series else None,
+        "season_number": episode.season_number,
+        "episode_number": episode.episode_number,
+    }
+
+
+def _serialize_vod_episode_removed(episode, **ctx):
+    return {
+        "episode_id": episode.id,
+        "episode_name": episode.name,
+        "series_id": episode.series_id,
+    }
+
+
+# System serializers
+def _serialize_system_startup(obj, **ctx):
+    return {
+        "version": ctx.get("version"),
+    }
+
+
+def _serialize_system_shutdown(obj, **ctx):
+    return {}
+
+
+# Channel runtime event serializers (for log_system_event)
+def _serialize_channel_client_connected(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "client_ip": ctx.get("client_ip"),
+    }
+
+
+def _serialize_channel_client_disconnected(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "client_ip": ctx.get("client_ip"),
+    }
+
+
+def _serialize_channel_stream_started(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "stream_id": ctx.get("stream_id"),
+    }
+
+
+def _serialize_channel_stream_stopped(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+    }
+
+
+def _serialize_channel_error(obj, **ctx):
+    return {
+        "channel_id": ctx.get("channel_id"),
+        "channel_name": ctx.get("channel_name"),
+        "error": ctx.get("error"),
+    }
+
+
+def _serialize_auth_login(obj, **ctx):
+    return {
+        "user_id": ctx.get("user_id"),
+        "username": ctx.get("username"),
+    }
+
+
+def _serialize_auth_login_failed(obj, **ctx):
+    return {
+        "username": ctx.get("username"),
+        "reason": ctx.get("reason"),
+    }
+
+
+def _serialize_auth_logout(obj, **ctx):
+    return {
+        "user_id": ctx.get("user_id"),
+        "username": ctx.get("username"),
+    }
+
+
 EVENT_SERIALIZERS = {
     "recording.scheduled": _serialize_recording_scheduled,
     "recording.started": _serialize_recording_started,
@@ -335,6 +559,42 @@ EVENT_SERIALIZERS = {
     "plugin.enabled": _serialize_plugin_enabled,
     "plugin.disabled": _serialize_plugin_disabled,
     "plugin.configured": _serialize_plugin_configured,
+    # Stream events
+    "stream.created": _serialize_stream_created,
+    "stream.updated": _serialize_stream_updated,
+    "stream.deleted": _serialize_stream_deleted,
+    # ChannelGroup events
+    "channel_group.created": _serialize_channel_group_created,
+    "channel_group.updated": _serialize_channel_group_updated,
+    "channel_group.deleted": _serialize_channel_group_deleted,
+    # ChannelProfile events
+    "channel_profile.created": _serialize_channel_profile_created,
+    "channel_profile.updated": _serialize_channel_profile_updated,
+    "channel_profile.deleted": _serialize_channel_profile_deleted,
+    # RecurringRecordingRule events
+    "recording_rule.created": _serialize_recording_rule_created,
+    "recording_rule.updated": _serialize_recording_rule_updated,
+    "recording_rule.deleted": _serialize_recording_rule_deleted,
+    # VOD events
+    "vod.movie_added": _serialize_vod_movie_added,
+    "vod.movie_removed": _serialize_vod_movie_removed,
+    "vod.series_added": _serialize_vod_series_added,
+    "vod.series_removed": _serialize_vod_series_removed,
+    "vod.episode_added": _serialize_vod_episode_added,
+    "vod.episode_removed": _serialize_vod_episode_removed,
+    # System events
+    "system.startup": _serialize_system_startup,
+    "system.shutdown": _serialize_system_shutdown,
+    # Channel runtime events
+    "channel.client_connected": _serialize_channel_client_connected,
+    "channel.client_disconnected": _serialize_channel_client_disconnected,
+    "channel.stream_started": _serialize_channel_stream_started,
+    "channel.stream_stopped": _serialize_channel_stream_stopped,
+    "channel.error": _serialize_channel_error,
+    # Auth events
+    "auth.login": _serialize_auth_login,
+    "auth.login_failed": _serialize_auth_login_failed,
+    "auth.logout": _serialize_auth_logout,
 }
 
 

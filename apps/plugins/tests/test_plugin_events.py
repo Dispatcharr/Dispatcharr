@@ -52,7 +52,7 @@ class PluginEventSubscriptionTests(TestCase):
         manager = RedisPubSubManager(redis_client=mock_redis)
 
         # Subscribe a plugin to an event
-        manager.subscribe("test.event", "test_plugin", "on_test_event")
+        manager.subscribe_event("test.event", "test_plugin", "on_test_event")
 
         # Verify subscription was stored
         self.assertIn(b"test_plugin:on_test_event", subscriptions.get("events:test.event", set()))

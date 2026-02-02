@@ -148,7 +148,7 @@ class RedisPubSubManager:
 
     # Event subscription methods
 
-    def subscribe(self, event_name: str, plugin_key: str, handler_name: str):
+    def subscribe_event(self, event_name: str, plugin_key: str, handler_name: str):
         """
         Register a plugin handler for an event.
 
@@ -158,7 +158,7 @@ class RedisPubSubManager:
             handler_name: The name of the handler method on the plugin instance
         """
         if self.is_dummy or not self.redis_client:
-            logger.warning("Cannot subscribe - Redis not available")
+            logger.warning("Cannot subscribe to event - Redis not available")
             return
 
         self.redis_client.sadd(f"events:{event_name}", f"{plugin_key}:{handler_name}")
