@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - M3U/EPG Network Access Defaults: Updated default network access settings for M3U and EPG endpoints to only allow local/private networks by default (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7, fe80::/10). This improves security by preventing public internet access to these endpoints unless explicitly configured. Other endpoints (Streams, XC API, UI) remain open by default.
+- Modular deployments: Bumped modular Postgres image to 17 and added compatibility checks (PostgreSQL version and UTF-8 database encoding) when using external databases to prevent migration/encoding issues.
 - Stream Identity Stability: Added `stream_id` (provider stream identifier) and `stream_chno` (provider channel number) fields to Stream model. For XC accounts, the stream hash now uses the stable `stream_id` instead of the URL when hashing, ensuring XC streams maintain their identity and channel associations even when account credentials or server URLs change. Supports both XC `num` and M3U `tvg-chno`/`channel-number` attributes.
 - Swagger/OpenAPI Migration: Migrated from `drf-yasg` (OpenAPI 2.0) to `drf-spectacular` (OpenAPI 3.0) for API documentation. This provides:
   - Native Bearer token authentication support in Swagger UI - users can now enter just the JWT token and the "Bearer " prefix is automatically added
@@ -46,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed modular Docker Compose deployment and entrypoint/init scripts to properly support `DISPATCHARR_ENV=modular`, use external PostgreSQL/Redis services, and handle port, version, and encoding validation (Closes #324, Fixes #61, #445, #731) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Stream rehash/merge logic now guarantees unique stream_hash and always preserves the stream with the best channel ordering and relationships. This prevents duplicate key errors and ensures the correct stream is retained when merging. (Fixes #892)
 - Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
 - EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
