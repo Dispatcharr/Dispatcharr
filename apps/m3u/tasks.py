@@ -1326,36 +1326,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
-                    # Authenticate with detailed error handling
+                    # Queue async profile refresh task to run in background
+                    # This prevents any delay in the main refresh process
                     try:
-                        logger.debug(f"Authenticating with XC server {server_url}")
-                        auth_result = xc_client.authenticate()
-                        logger.debug(f"Authentication response: {auth_result}")
-
-                        # Queue async profile refresh task to run in background
-                        # This prevents any delay in the main refresh process
-                        try:
-                            logger.info(f"Queueing background profile refresh for account {account.name}")
-                            refresh_account_profiles.delay(account.id)
-                        except Exception as e:
-                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
-                            # Don't fail the main refresh if profile refresh can't be queued
-
+                        logger.info(f"Queueing background profile refresh for account {account.name}")
+                        refresh_account_profiles.delay(account.id)
                     except Exception as e:
-                        error_msg = f"Failed to authenticate with XC server: {str(e)}"
-                        logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
-                            account_id,
-                            "processing_groups",
-                            100,
-                            status="error",
-                            error=error_msg,
-                        )
-                        release_task_lock("refresh_m3u_account_groups", account_id)
-                        return error_msg, None
+                        logger.warning(f"Failed to queue profile refresh task: {str(e)}")
+                        # Don't fail the main refresh if profile refresh can't be queued
 
                     # Get categories with detailed error handling
                     try:
@@ -1395,7 +1373,19 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                                 "xc_id": cat_id,
                             }
                     except Exception as e:
-                        error_msg = f"Failed to get categories from XC server: {str(e)}"
+                        # Determine if this is an authentication error or category retrieval error
+                        error_str = str(e).lower()
+                        # Check for authentication-related keywords or HTTP status codes commonly used for auth failures
+                        is_auth_error = any(keyword in error_str for keyword in [
+                            'auth', 'credential', 'login', 'unauthorized', 'forbidden',
+                            '401', '403', '512', '513'  # HTTP status codes: 401 Unauthorized, 403 Forbidden, 512-513 (non-standard auth failure)
+                        ])
+
+                        if is_auth_error:
+                            error_msg = f"Failed to authenticate with XC server: {str(e)}"
+                        else:
+                            error_msg = f"Failed to get categories from XC server: {str(e)}"
+
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
