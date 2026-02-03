@@ -10,12 +10,14 @@ services:
       - db
       - redis
     environment:
+      - DISPATCHARR_ENV=modular
       - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
       - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_PORT=6379
       - DISPATCHARR_LOG_LEVEL=info
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
@@ -25,7 +27,6 @@ services:
       # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
       # Negative values require cap_add: SYS_NICE (uncomment below)
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
-      #- CELERY_NICE_LEVEL=5   # Celery/EPG/Background tasks (default: 5, low priority)
     #
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
     #cap_add:
@@ -52,25 +53,31 @@ services:
     depends_on:
       - db
       - redis
+      - web
     volumes:
-      - ../:/app
+      - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      - DISPATCHARR_ENV=modular
       - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
       - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
-    command: >
-      bash -c "
-      cd /app &&
-      nice -n 5 celery -A dispatcharr worker -l info
-      "
+      - REDIS_PORT=6379
+      - DISPATCHARR_LOG_LEVEL=info
+      #- CELERY_NICE_LEVEL=5  #Celery/EPG/Background tasks (default:5, low priority; Range: -20 to 19)
+      - DJANGO_SETTINGS_MODULE=dispatcharr.settings
+      - PYTHONUNBUFFERED=1
+    # Uncomment to enable high priority for Celery (required if CELERY_NICE_LEVEL < 0)
+    #cap_add:
+    #  - SYS_NICE
+    entrypoint: ["/app/docker/entrypoint.celery.sh"]
 
   db:
-    image: postgres:14
+    image: postgres:17
     container_name: dispatcharr_db
     ports:
       - "5436:5432"
@@ -80,10 +87,20 @@ services:
       - POSTGRES_PASSWORD=secret
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatch -d dispatcharr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:latest
     container_name: dispatcharr_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
