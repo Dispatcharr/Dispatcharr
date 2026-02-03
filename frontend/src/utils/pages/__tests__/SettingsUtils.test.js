@@ -407,5 +407,131 @@ describe('SettingsUtils', () => {
       expect(changes.network_access).toBeUndefined();
       expect(changes.time_zone).toBe('America/New_York');
     });
+
+    it('should always include epg_match_mode', () => {
+      const values = {
+        epg_match_mode: 'advanced',
+        epg_match_ignore_prefixes: ['HD:'],
+      };
+      const settings = {};
+
+      const changes = SettingsUtils.getChangedSettings(values, settings);
+      expect(changes.epg_match_mode).toBe('advanced');
+    });
+
+    it('should default epg_match_mode to "default" if not provided', () => {
+      const values = {
+        epg_match_ignore_prefixes: ['HD:'],
+      };
+      const settings = {};
+
+      const changes = SettingsUtils.getChangedSettings(values, settings);
+      // epg_match_mode should not be included if not in values
+      expect(changes.epg_match_mode).toBeUndefined();
+    });
+
+    it('should always include EPG array fields even if empty', () => {
+      const values = {
+        epg_match_ignore_prefixes: [],
+        epg_match_ignore_suffixes: [],
+        epg_match_ignore_custom: [],
+      };
+      const settings = {};
+
+      const changes = SettingsUtils.getChangedSettings(values, settings);
+      expect(changes.epg_match_ignore_prefixes).toEqual([]);
+      expect(changes.epg_match_ignore_suffixes).toEqual([]);
+      expect(changes.epg_match_ignore_custom).toEqual([]);
+    });
+  });
+
+  describe('saveChangedSettings - EPG Mode', () => {
+    it('should save epg_match_mode to epg_settings group', async () => {
+      const settings = {
+        epg_settings: {
+          id: 3,
+          key: 'epg_settings',
+          value: {
+            epg_match_mode: 'default',
+            epg_match_ignore_prefixes: [],
+            epg_match_ignore_suffixes: [],
+            epg_match_ignore_custom: [],
+          }
+        }
+      };
+      const changedSettings = {
+        epg_match_mode: 'advanced',
+        epg_match_ignore_prefixes: ['HD:'],
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'epg_settings',
+        value: {
+          epg_match_mode: 'advanced',
+          epg_match_ignore_prefixes: ['HD:'],
+          epg_match_ignore_suffixes: [],
+          epg_match_ignore_custom: [],
+        }
+      });
+    });
+
+    it('should create epg_settings if it does not exist', async () => {
+      const settings = {};
+      const changedSettings = {
+        epg_match_mode: 'advanced',
+        epg_match_ignore_prefixes: ['Sling:'],
+      };
+
+      API.createSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.createSetting).toHaveBeenCalledWith({
+        key: 'epg_settings',
+        name: 'Epg Settings',
+        value: {
+          epg_match_mode: 'advanced',
+          epg_match_ignore_prefixes: ['Sling:'],
+        }
+      });
+    });
+
+    it('should preserve existing EPG settings when updating mode', async () => {
+      const settings = {
+        epg_settings: {
+          id: 3,
+          key: 'epg_settings',
+          value: {
+            epg_match_mode: 'advanced',
+            epg_match_ignore_prefixes: ['HD:'],
+            epg_match_ignore_suffixes: [' 4K'],
+            epg_match_ignore_custom: ['Plus'],
+          }
+        }
+      };
+      const changedSettings = {
+        epg_match_mode: 'default',
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 3,
+        key: 'epg_settings',
+        value: {
+          epg_match_mode: 'default',
+          epg_match_ignore_prefixes: ['HD:'],
+          epg_match_ignore_suffixes: [' 4K'],
+          epg_match_ignore_custom: ['Plus'],
+        }
+      });
+    });
   });
 });
