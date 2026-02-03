@@ -437,3 +437,76 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+
+
+def send_websocket_notification(notification):
+    """
+    Send a system notification to all connected WebSocket clients.
+
+    Args:
+        notification: A SystemNotification model instance or dict with notification data
+
+    Example:
+        from core.models import SystemNotification
+        notification = SystemNotification.create_version_notification('0.19.0', 'https://...')
+        send_websocket_notification(notification)
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        # Convert model instance to dict if needed
+        if hasattr(notification, 'id'):
+            notification_data = {
+                'id': notification.id,
+                'notification_key': notification.notification_key,
+                'notification_type': notification.notification_type,
+                'priority': notification.priority,
+                'title': notification.title,
+                'message': notification.message,
+                'action_data': notification.action_data,
+                'is_active': notification.is_active,
+                'admin_only': notification.admin_only,
+                'created_at': notification.created_at.isoformat() if notification.created_at else None,
+            }
+        else:
+            notification_data = notification
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'system_notification',
+                    'notification': notification_data,
+                }
+            }
+        )
+        logger.debug(f"Sent WebSocket notification: {notification_data.get('title', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Failed to send WebSocket notification: {e}")
+
+
+def send_notification_dismissed(notification_key):
+    """
+    Notify all connected clients that a notification was dismissed.
+    Useful for syncing dismissal state across multiple browser tabs/sessions.
+
+    Args:
+        notification_key: The unique key of the dismissed notification
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'notification_dismissed',
+                    'notification_key': notification_key,
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to send notification dismissed event: {e}")
+

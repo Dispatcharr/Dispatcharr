@@ -2890,4 +2890,107 @@ export default class API {
       errorNotification('Failed to retrieve system events', e);
     }
   }
+
+  // ─────────────────────────────
+  // System Notifications
+  // ─────────────────────────────
+
+  /**
+   * Get all active notifications for the current user
+   * @param {boolean} includeDismissed - Whether to include already dismissed notifications
+   */
+  static async getNotifications(includeDismissed = false) {
+    try {
+      const params = new URLSearchParams();
+      if (includeDismissed) {
+        params.append('include_dismissed', 'true');
+      }
+      const response = await request(
+        `${host}/api/core/notifications/?${params.toString()}`
+      );
+
+      // Update the store with fetched notifications
+      const { default: useNotificationsStore } = await import(
+        './store/notifications'
+      );
+      useNotificationsStore.getState().setNotifications(response.notifications);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve notifications', e);
+    }
+  }
+
+  // Get unread notification count
+  static async getNotificationCount() {
+    try {
+      const response = await request(`${host}/api/core/notifications/count/`);
+
+      // Update the store with the count
+      const { default: useNotificationsStore } = await import(
+        './store/notifications'
+      );
+      useNotificationsStore.getState().setUnreadCount(response.unread_count);
+
+      return response;
+    } catch (e) {
+      // Silent fail for count - not critical
+      console.error('Failed to get notification count:', e);
+      return { unread_count: 0 };
+    }
+  }
+
+  /**
+   * Dismiss a specific notification
+   * @param {number} notificationId - The notification ID to dismiss
+   * @param {string} actionTaken - Optional action taken (e.g., 'applied', 'ignored')
+   */
+  static async dismissNotification(notificationId, actionTaken = null) {
+    try {
+      const body = {};
+      if (actionTaken) {
+        body.action_taken = actionTaken;
+      }
+
+      const response = await request(
+        `${host}/api/core/notifications/${notificationId}/dismiss/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } = await import(
+        './store/notifications'
+      );
+      useNotificationsStore.getState().dismissNotification(response.notification_key);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss notification', e);
+    }
+  }
+
+  // Dismiss all notifications
+  static async dismissAllNotifications() {
+    try {
+      const response = await request(
+        `${host}/api/core/notifications/dismiss-all/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } = await import(
+        './store/notifications'
+      );
+      useNotificationsStore.getState().dismissAllNotifications();
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss all notifications', e);
+    }
+  }
 }

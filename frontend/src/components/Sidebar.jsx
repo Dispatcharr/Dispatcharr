@@ -36,6 +36,7 @@ import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
+import NotificationCenter from './NotificationCenter';
 
 const NavLink = ({ item, isActive, collapsed }) => {
   return (
@@ -232,7 +233,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {isAuthenticated && (
-          <Group>
+          <Stack gap="sm">
             {!collapsed && (
               <TextInput
                 label="Public IP"
@@ -262,34 +263,54 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               />
             )}
 
-            <Avatar src="" radius="xl" />
             {!collapsed && authUser && (
               <Group
-                style={{
-                  flex: 1,
-                  justifyContent: 'space-between',
-                  whiteSpace: 'nowrap',
-                }}
+                gap="xs"
+                style={{ justifyContent: 'space-between', width: '100%' }}
               >
-                <UnstyledButton onClick={() => setUserFormOpen(true)}>
-                  {authUser.first_name || authUser.username}
-                </UnstyledButton>
-
+                <Group gap="xs">
+                  <Avatar src="" radius="xl" />
+                  <UnstyledButton onClick={() => setUserFormOpen(true)}>
+                    {authUser.first_name || authUser.username}
+                  </UnstyledButton>
+                </Group>
                 <ActionIcon variant="transparent" color="white" size="sm">
                   <LogOut onClick={logout} />
                 </ActionIcon>
               </Group>
             )}
-          </Group>
+            {collapsed && (
+              <Group gap="xs">
+                <Avatar src="" radius="xl" />
+              </Group>
+            )}
+          </Stack>
         )}
       </Box>
 
-      {/* Version is always shown when sidebar is expanded, regardless of auth status */}
+      {/* Version and Notification */}
       {!collapsed && (
-        <Text size="xs" style={{ padding: '0 16px 16px' }} c="dimmed">
-          v{appVersion?.version || '0.0.0'}
-          {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-        </Text>
+        <Group
+          gap="xs"
+          style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
+        >
+          <Text size="xs" c="dimmed">
+            v{appVersion?.version || '0.0.0'}
+            {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
+          </Text>
+          {isAuthenticated && <NotificationCenter />}
+        </Group>
+      )}
+      {collapsed && isAuthenticated && (
+        <Box
+          style={{
+            padding: '0 16px 16px',
+            display: 'flex',
+            justifyContent: 'center',
+          }}
+        >
+          <NotificationCenter />
+        </Box>
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
