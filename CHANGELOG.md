@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `useVideoStore` tests for video player state management
   - `useWarningsStore` tests for warning suppression functionality
   - Code refactoring for improved readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
+- EPG auto-matching: Added advanced options to strip prefixes, suffixes, and custom text from channel names to assist matching; default matching behavior and settings remain unchanged (Closes #771) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 
 ### Changed
 
