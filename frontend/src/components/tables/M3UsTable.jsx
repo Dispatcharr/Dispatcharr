@@ -21,6 +21,7 @@ import {
   Switch,
   Group,
   Center,
+  Loader,
 } from '@mantine/core';
 import {
   SquareMinus,
@@ -223,7 +224,30 @@ const M3UTable = () => {
     }
 
     if (data.progress == 0) {
-      return 'Processing groups...';
+      // Show failover progress if available
+      if (data.failover_url && data.failover_total_urls > 1) {
+        return (
+          <Flex align="center" gap={6}>
+            <Loader size={12} />
+            <Text size="xs">{`Trying ${data.failover_url}/${data.failover_total_urls}...`}</Text>
+          </Flex>
+        );
+      }
+      // Show transferring with spinner when connected and fetching data
+      if (data.message) {
+        return (
+          <Flex align="center" gap={6}>
+            <Loader size={12} />
+            <Text size="xs">Transferring...</Text>
+          </Flex>
+        );
+      }
+      return (
+        <Flex align="center" gap={6}>
+          <Loader size={12} />
+          <Text size="xs">Connecting...</Text>
+        </Flex>
+      );
     }
 
     // Format time displays if available
@@ -336,15 +360,10 @@ const M3UTable = () => {
 
   const buildInitializingStats = () => {
     return (
-      <Box>
-        <Flex direction="column" gap={2}>
-          <Flex align="center">
-            <Text size="xs" fw={500}>
-              Initializing refresh...
-            </Text>
-          </Flex>
-        </Flex>
-      </Box>
+      <Flex align="center" gap={6}>
+        <Loader size={12} />
+        <Text size="xs">Starting...</Text>
+      </Flex>
     );
   };
 
@@ -479,7 +498,7 @@ const M3UTable = () => {
         header: 'Status Message',
         accessorKey: 'last_message',
         grow: true,
-        minSize: 250,
+        minSize: 180,
         cell: ({ cell, row }) => {
           const value = cell.getValue();
           const data = row.original;
@@ -567,7 +586,7 @@ const M3UTable = () => {
         header: 'Max Streams',
         accessorKey: 'max_streams',
         sortable: true,
-        size: 125,
+        size: 140,
       },
       {
         header: 'Updated',

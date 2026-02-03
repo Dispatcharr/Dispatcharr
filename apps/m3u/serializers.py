@@ -1,4 +1,4 @@
-from core.utils import validate_flexible_url
+from core.utils import validate_flexible_url, parse_failover_urls, format_failover_urls, validate_failover_urls
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
@@ -133,7 +133,6 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         required=False,
         allow_blank=True,
         allow_null=True,
-        validators=[validate_flexible_url],
     )
     enable_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
@@ -178,8 +177,31 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             },
         }
 
+    def to_internal_value(self, data):
+        # Validate failover URLs before processing
+        if 'server_url' in data and data['server_url']:
+            validate_failover_urls(data['server_url'])
+
+        # Let parent process the data (CharField validates string)
+        result = super().to_internal_value(data)
+
+        # Convert pipe-separated server_url string to array for storage
+        if 'server_url' in result and result['server_url']:
+            result['server_url'] = parse_failover_urls(result['server_url'])
+        elif 'server_url' in result:
+            # Handle empty/null values
+            result['server_url'] = []
+
+        return result
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
+
+        # Convert server_url array to pipe-separated string for display
+        if instance.server_url:
+            data['server_url'] = format_failover_urls(instance.server_url)
+        else:
+            data['server_url'] = ''
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}

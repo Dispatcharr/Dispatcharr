@@ -111,10 +111,12 @@ const usePlaylistsStore = create((set) => ({
       const existingProgress = state.refreshProgress[accountId];
 
       // Don't replace 'initializing' status with empty/early server messages
+      // BUT allow failover updates through (they have failover_url)
       if (
         existingProgress &&
         existingProgress.action === 'initializing' &&
-        accountIdOrData.progress === 0
+        accountIdOrData.progress === 0 &&
+        !accountIdOrData.failover_url
       ) {
         return state; // Keep showing 'initializing' until real progress comes
       }

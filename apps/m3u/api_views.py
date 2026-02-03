@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +18,8 @@ from rest_framework.decorators import action
 from django.conf import settings
 from .tasks import refresh_m3u_groups
 import json
+
+logger = logging.getLogger(__name__)
 
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
@@ -253,6 +257,136 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 {"error": f"Failed to initiate VOD refresh: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    @action(detail=False, methods=["post"], url_path="validate-urls")
+    def validate_urls(self, request):
+        """
+        Validate all URLs for an M3U account (tests each URL regardless of success).
+
+        Request body:
+        {
+            "account_type": "XC" or "M3U",
+            "server_url": "url1|url2|url3",
+            "username": "...",  # Required for XC
+            "password": "...",  # Required for XC
+            "user_agent": "..."  # Optional
+        }
+
+        Returns:
+        {
+            "results": [
+                {"url": "http://...", "success": true, "response_time_ms": 123},
+                {"url": "http://...", "success": false, "error": "Connection refused"}
+            ]
+        }
+        """
+        import time
+        import requests
+        from core.utils import parse_failover_urls
+
+        account_type = request.data.get("account_type", "M3U")
+        server_url = request.data.get("server_url", "")
+        username = request.data.get("username", "")
+        password = request.data.get("password", "")
+        user_agent_id = request.data.get("user_agent")
+
+        # Parse the pipe-separated URLs
+        urls = parse_failover_urls(server_url)
+
+        if not urls:
+            return Response(
+                {"error": "No URLs provided to validate"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Limit number of URLs to prevent resource exhaustion
+        MAX_URLS = 10
+        if len(urls) > MAX_URLS:
+            return Response(
+                {"error": f"Too many URLs. Maximum allowed: {MAX_URLS}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get user agent string
+        user_agent_string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        if user_agent_id:
+            try:
+                ua = UserAgent.objects.get(id=user_agent_id)
+                user_agent_string = ua.user_agent
+            except UserAgent.DoesNotExist:
+                pass
+
+        results = []
+
+        for url in urls:
+            result = {"url": url, "success": False, "error": None, "response_time_ms": None}
+            start_time = time.time()
+
+            try:
+                if account_type == M3UAccount.Types.XC:
+                    # For XC accounts, try to authenticate
+                    from core.xtream_codes import Client as XCClient
+
+                    # Normalize the URL like XCClient does
+                    normalized_url = url.rstrip('/')
+                    if '://' in normalized_url:
+                        protocol, rest = normalized_url.split('://', 1)
+                        domain = rest.split('/', 1)[0]
+                        normalized_url = f"{protocol}://{domain}"
+
+                    api_url = f"{normalized_url}/player_api.php"
+                    params = {"username": username, "password": password}
+
+                    response = requests.get(
+                        api_url,
+                        params=params,
+                        headers={"User-Agent": user_agent_string},
+                        timeout=(5, 5)  # 5s connect + 5s read = 10s max
+                    )
+                    response.raise_for_status()
+
+                    # Check if response is valid JSON with user_info
+                    data = response.json()
+                    if data.get("user_info"):
+                        result["success"] = True
+                    else:
+                        result["error"] = "Invalid response: no user_info"
+                else:
+                    # For M3U accounts, try a HEAD request or partial GET
+                    response = requests.head(
+                        url,
+                        headers={"User-Agent": user_agent_string},
+                        timeout=(5, 5),  # 5s connect + 5s read = 10s max
+                        allow_redirects=True
+                    )
+                    # Accept 2xx status codes, or 3xx (redirect) as "reachable"
+                    if response.status_code < 400:
+                        result["success"] = True
+                    else:
+                        result["error"] = f"HTTP {response.status_code}"
+
+            except requests.exceptions.Timeout:
+                result["error"] = "Connection timed out"
+            except requests.exceptions.ConnectionError as e:
+                error_str = str(e)
+                if "Name or service not known" in error_str or "getaddrinfo failed" in error_str:
+                    result["error"] = "DNS resolution failed"
+                elif "Connection refused" in error_str:
+                    result["error"] = "Connection refused"
+                else:
+                    result["error"] = "Connection error"
+            except requests.exceptions.JSONDecodeError:
+                result["error"] = "Invalid JSON response"
+            except Exception as e:
+                # Generic error message to avoid leaking internal details
+                # Log the actual error server-side for debugging
+                logger.exception(f"URL validation failed for {url}: {e}")
+                result["error"] = "Validation failed"
+
+            result["response_time_ms"] = int((time.time() - start_time) * 1000)
+            results.append(result)
+
+        return Response({"results": results})
 
     @action(detail=True, methods=["patch"], url_path="group-settings")
     def update_group_settings(self, request, pk=None):

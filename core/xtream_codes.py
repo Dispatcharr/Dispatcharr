@@ -2,17 +2,40 @@ import requests
 import logging
 import traceback
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
 class Client:
-    """Xtream Codes API Client with robust error handling"""
+    """Xtream Codes API Client with robust error handling and failover support"""
 
-    def __init__(self, server_url, username, password, user_agent=None):
-        self.server_url = self._normalize_url(server_url)
+    def __init__(self, server_url, username, password, user_agent=None, failover_callback=None):
+        """
+        Initialize XCClient.
+
+        Args:
+            server_url: Single URL string or list of URLs for failover
+            username: XC username
+            password: XC password
+            user_agent: User agent string or object with user_agent attribute
+            failover_callback: Optional callback function(url_num, total_urls, cycle_num, max_cycles, message)
+                              Called during failover events to notify UI of progress
+        """
+        # Handle both string and list inputs for server_url
+        if isinstance(server_url, list):
+            self.server_urls = [url for url in server_url if url]
+        else:
+            self.server_urls = [server_url] if server_url else []
+
+        if not self.server_urls:
+            raise ValueError("At least one server URL is required")
+
+        self.current_url_index = 0
+        self.server_url = self._normalize_url(self.server_urls[0])
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.failover_callback = failover_callback
 
         # Fix: Properly handle all possible user_agent input types
         if user_agent:
@@ -30,11 +53,11 @@ class Client:
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': user_agent_string})
 
-        # Configure connection pooling
+        # Configure connection pooling (no retries - we handle failover ourselves)
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=1,
             pool_maxsize=2,
-            max_retries=3,
+            max_retries=0,
             pool_block=False
         )
         self.session.mount('http://', adapter)
@@ -62,7 +85,7 @@ class Client:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
 
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=(5, 5))  # 5s connect + 5s read
             response.raise_for_status()
 
             # Check if response is empty
@@ -113,8 +136,114 @@ class Client:
             logger.error(traceback.format_exc())
             raise
 
+    def _make_request_with_failover(self, endpoint, params=None, timeout=10, max_cycles=3):
+        """
+        Make request with automatic failover to backup URLs.
+
+        Args:
+            endpoint: API endpoint to call
+            params: Request parameters
+            timeout: Seconds between attempts (default 10)
+            max_cycles: Number of times to cycle through all URLs (default 3)
+
+        Returns:
+            Response data from successful request
+
+        Raises:
+            Last exception if all attempts fail
+        """
+        total_urls = len(self.server_urls)
+        attempt = 0
+        last_exception = None
+
+        # Start from the last successful URL index (remembered from previous calls)
+        start_idx = self.current_url_index
+
+        for cycle in range(max_cycles):
+            for i in range(total_urls):
+                # Rotate through URLs starting from the last successful one
+                idx = (start_idx + i) % total_urls
+                url = self.server_urls[idx]
+                attempt += 1
+                url_num = idx + 1
+                cycle_num = cycle + 1
+                self.server_url = self._normalize_url(url)
+
+                # Log failover progress in user-friendly format
+                # Only notify UI if we're actually failing over (not on first attempt with known-good URL)
+                # i > 0 means we've already tried the first URL and are now trying others
+                # cycle > 0 means we're on a retry cycle
+                is_failover = i > 0 or cycle > 0
+
+                if total_urls > 1 and is_failover:
+                    failover_msg = (
+                        f"XC failover: Attempting Address {url_num} of {total_urls}, "
+                        f"Round {cycle_num} of {max_cycles}"
+                    )
+                    logger.warning(failover_msg)
+
+                    # Notify UI of failover progress
+                    if self.failover_callback:
+                        try:
+                            self.failover_callback(
+                                url_num=url_num,
+                                total_urls=total_urls,
+                                cycle_num=cycle_num,
+                                max_cycles=max_cycles,
+                                message=failover_msg
+                            )
+                        except Exception as cb_err:
+                            logger.warning(f"Failover callback error: {cb_err}")
+
+                try:
+                    logger.info(f"XC trying: {self.server_url}")
+                    result = self._make_request(endpoint, params)
+                    logger.info(f"XC success: {self.server_url}")
+                    # Remember this URL for next time
+                    self.current_url_index = idx
+                    return result
+                except Exception as e:
+                    last_exception = e
+                    error_short = str(e)[:100]
+                    logger.warning(
+                        f"XC server {url_num}/{total_urls} failed: {error_short}"
+                    )
+
+                    # Notify UI of failure and waiting
+                    if self.failover_callback and attempt < total_urls * max_cycles:
+                        try:
+                            self.failover_callback(
+                                url_num=url_num,
+                                total_urls=total_urls,
+                                cycle_num=cycle_num,
+                                max_cycles=max_cycles,
+                                message=f"Server {url_num} failed, trying next...",
+                                waiting=True
+                            )
+                        except Exception as cb_err:
+                            logger.warning(f"Failover callback error: {cb_err}")
+
+                    if attempt < total_urls * max_cycles:
+                        logger.info(f"Waiting {timeout}s before next XC attempt...")
+                        time.sleep(timeout)
+
+        raise last_exception
+
+    def _api_request(self, endpoint, params=None):
+        """
+        Make an API request, automatically using failover when multiple URLs are configured.
+
+        This is the preferred method for API calls. It uses:
+        - Direct request if only one URL is configured (faster)
+        - Failover logic if multiple URLs are configured (more resilient)
+        """
+        if len(self.server_urls) > 1:
+            return self._make_request_with_failover(endpoint, params)
+        else:
+            return self._make_request(endpoint, params)
+
     def authenticate(self):
-        """Authenticate and validate server response"""
+        """Authenticate and validate server response with failover support"""
         try:
             endpoint = "player_api.php"
             params = {
@@ -122,7 +251,7 @@ class Client:
                 'password': self.password
             }
 
-            self.server_info = self._make_request(endpoint, params)
+            self.server_info = self._api_request(endpoint, params)
 
             if not self.server_info or not self.server_info.get('user_info'):
                 error_msg = "Authentication failed: Invalid response from server"
@@ -190,7 +319,7 @@ class Client:
                 'action': 'get_live_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid categories response: {categories}"
@@ -219,7 +348,7 @@ class Client:
                 'category_id': category_id
             }
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for category {category_id}: {streams}"
@@ -247,7 +376,7 @@ class Client:
                 # No category_id = get all streams
             }
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for all live streams: {streams}"
@@ -286,7 +415,7 @@ class Client:
                 'action': 'get_vod_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid VOD categories response: {categories}"
@@ -316,7 +445,7 @@ class Client:
             if category_id:
                 params['category_id'] = category_id
 
-            streams = self._make_request(endpoint, params)
+            streams = self._api_request(endpoint, params)
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid VOD streams response for category {category_id}: {streams}"
@@ -344,7 +473,7 @@ class Client:
                 'vod_id': vod_id
             }
 
-            vod_info = self._make_request(endpoint, params)
+            vod_info = self._api_request(endpoint, params)
 
             if not isinstance(vod_info, dict):
                 error_msg = f"Invalid VOD info response for vod_id {vod_id}: {vod_info}"
@@ -371,7 +500,7 @@ class Client:
                 'action': 'get_series_categories'
             }
 
-            categories = self._make_request(endpoint, params)
+            categories = self._api_request(endpoint, params)
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid series categories response: {categories}"
@@ -401,7 +530,7 @@ class Client:
             if category_id:
                 params['category_id'] = category_id
 
-            series = self._make_request(endpoint, params)
+            series = self._api_request(endpoint, params)
 
             if not isinstance(series, list):
                 error_msg = f"Invalid series response for category {category_id}: {series}"
@@ -429,7 +558,7 @@ class Client:
                 'series_id': series_id
             }
 
-            series_info = self._make_request(endpoint, params)
+            series_info = self._api_request(endpoint, params)
 
             if not isinstance(series_info, dict):
                 error_msg = f"Invalid series info response for series_id {series_id}: {series_info}"

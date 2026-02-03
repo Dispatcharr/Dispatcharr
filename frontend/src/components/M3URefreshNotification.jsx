@@ -110,6 +110,32 @@ export default function M3URefreshNotification() {
 
     const taskProgress = data.progress;
 
+    // Show failover notifications with warning color
+    if (data.failover_url && data.failover_total_urls > 1) {
+      notifications.show({
+        id: `failover-${data.account}`,
+        title: `M3U Failover: ${playlist.name}`,
+        message: `Trying server ${data.failover_url} of ${data.failover_total_urls} (Round ${data.failover_cycle} of ${data.failover_max_cycles})`,
+        color: 'yellow',
+        autoClose: 8000,
+        loading: true,
+      });
+      return;
+    }
+
+    // Show waiting notification during failover
+    if (data.failover_waiting) {
+      notifications.show({
+        id: `failover-${data.account}`,
+        title: `M3U Failover: ${playlist.name}`,
+        message: data.message || 'Server failed, trying next...',
+        color: 'orange',
+        autoClose: 5000,
+        loading: true,
+      });
+      return;
+    }
+
     // Only show start and completion notifications for normal operation
     if (data.progress != 0 && data.progress != 100) {
       return;

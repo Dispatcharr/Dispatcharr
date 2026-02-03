@@ -1091,6 +1091,19 @@ export default class API {
     }
   }
 
+  static async validateM3UUrls(values) {
+    try {
+      const response = await request(`${host}/api/m3u/accounts/validate-urls/`, {
+        method: 'POST',
+        body: values,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to validate URLs', e);
+      return null;
+    }
+  }
+
   static async deletePlaylist(id) {
     try {
       await request(`${host}/api/m3u/accounts/${id}/`, {
