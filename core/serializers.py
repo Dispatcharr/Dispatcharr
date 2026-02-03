@@ -64,7 +64,12 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     }
                 )
 
-        return super().update(instance, validated_data)
+        result = super().update(instance, validated_data)
+
+        # Note: Cache invalidation and notification sync is handled by post_save signal
+        # in core/signals.py to ensure it happens even if settings are updated elsewhere
+
+        return result
 
 class ProxySettingsSerializer(serializers.Serializer):
     """Serializer for proxy settings stored as JSON in CoreSettings"""
@@ -98,3 +103,45 @@ class ProxySettingsSerializer(serializers.Serializer):
         if value < 0 or value > 60:
             raise serializers.ValidationError("Channel init grace period must be between 0 and 60 seconds")
         return value
+
+
+class SystemNotificationSerializer(serializers.ModelSerializer):
+    """Serializer for system notifications."""
+    is_dismissed = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import SystemNotification
+        model = SystemNotification
+        fields = [
+            'id',
+            'notification_key',
+            'notification_type',
+            'priority',
+            'title',
+            'message',
+            'action_data',
+            'is_active',
+            'admin_only',
+            'expires_at',
+            'created_at',
+            'is_dismissed',
+            'source',
+        ]
+        read_only_fields = ['created_at']
+
+    def get_is_dismissed(self, obj):
+        """Check if the current user has dismissed this notification."""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.dismissals.filter(user=request.user).exists()
+        return False
+
+
+class NotificationDismissalSerializer(serializers.ModelSerializer):
+    """Serializer for notification dismissals."""
+
+    class Meta:
+        from .models import NotificationDismissal
+        model = NotificationDismissal
+        fields = ['id', 'notification', 'dismissed_at', 'action_taken']
+        read_only_fields = ['dismissed_at']

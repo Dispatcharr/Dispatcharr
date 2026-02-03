@@ -1,0 +1,43 @@
+{
+  "_schema_documentation": {
+    "description": "Developer notification definitions. Each notification is evaluated at sync time.",
+    "fields": {
+      "id": "[REQUIRED] Unique identifier (notification_key in database).",
+      "notification_type": "[OPTIONAL] Type: 'version_update', 'setting_recommendation', 'announcement', 'warning', 'info'. Default: 'info'",
+      "priority": "[OPTIONAL] Priority level: 'low', 'normal', 'high', 'critical'. Default: 'normal'",
+      "title": "[REQUIRED] Notification title/heading.",
+      "message": "[REQUIRED] Detailed notification message body.",
+      "min_version": "[OPTIONAL] Minimum version (inclusive). null = no minimum. Example: '0.17.0'",
+      "max_version": "[OPTIONAL] Maximum version (inclusive). null = no maximum. Example: '0.18.1'",
+      "created_at": "[OPTIONAL] ISO timestamp when notification was created. For tracking only.",
+      "expires_at": "[OPTIONAL] ISO timestamp when notification expires. null = never expires. Example: '2026-12-31T23:59:59Z'",
+      "condition": "[OPTIONAL] Array of condition check names that must all pass. Empty/null = always show. Example: ['m3u_epg_network_insecure']",
+      "user_level": "[OPTIONAL] User level required: 'all' or 'admin'. Default: 'all'",
+      "action_url": "[OPTIONAL] Internal URL to navigate to when action button clicked. Example: '/settings#network-access'",
+      "action_text": "[OPTIONAL] Text for action button. Required if action_url is set. Example: 'Review Settings'"
+    },
+    "notes": [
+      "Notifications are synced from this file to database on startup and when relevant settings change",
+      "Out-of-range versions are automatically removed from database",
+      "Expired notifications are automatically removed from database",
+      "Conditions are evaluated per-user at display time (see CONDITION_CHECKS in developer_notifications.py)"
+    ]
+  },
+  "notifications": [
+    {
+      "id": "network_security_m3u_epg",
+      "notification_type": "warning",
+      "priority": "high",
+      "title": "Network Access Security Warning",
+      "message": "Your EPG/M3U output is accessible from any network. Consider restricting access to improve security.",
+      "min_version": null,
+      "max_version": null,
+      "created_at": "2026-02-02T00:00:00Z",
+      "expires_at": null,
+      "condition": ["m3u_epg_network_insecure"],
+      "user_level": "admin",
+      "action_url": "/settings#network-access",
+      "action_text": "Review Settings"
+    }
+  ]
+}

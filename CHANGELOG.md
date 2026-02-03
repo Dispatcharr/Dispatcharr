@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add system notifications and update checks
+  -Real-time notifications for system events and alerts
+  -Per-user notification management and dismissal
+  -Update check on startup and every 24 hours to notify users of available versions
+  -Notification center UI component
+  -Automatic cleanup of expired notifications
 - Network Access "Reset to Defaults" button: Added a "Reset to Defaults" button to the Network Access settings form, matching the functionality in Proxy Settings. Users can now quickly restore recommended network access settings with one click.
 - Streams table column visibility toggle: Added column menu to Streams table header allowing users to show/hide optional columns (TVG-ID, Stats) based on preference, with optional columns hidden by default for cleaner default view.
 - Streams table TVG-ID column with search filter and sort: Added TVG-ID column to streams table with search filtering and sort capability for better stream organization. (Closes #866) - Thanks [@CodeBormen](https://github.com/CodeBormen)

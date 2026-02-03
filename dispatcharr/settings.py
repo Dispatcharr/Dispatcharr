@@ -236,6 +236,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.channels.tasks.maintain_recurring_recordings",
         "schedule": 3600.0,  # Once an hour ensure recurring schedules stay ahead
     },
+    # Check for version updates daily
+    "check-version-updates": {
+        "task": "core.tasks.check_for_version_update",
+        "schedule": 86400.0,  # Once every 24 hours
+    },
 }
 
 MEDIA_ROOT = BASE_DIR / "media"
