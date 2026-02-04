@@ -1,9 +1,22 @@
 import logging
 import sys
+import os
 
 from django.apps import AppConfig
+import psutil
 
 logger = logging.getLogger(__name__)
+
+
+def _is_worker_process():
+    """Check if this process is a worker spawned by uwsgi/gunicorn."""
+    try:
+        parent = psutil.Process(os.getppid())
+        parent_name = parent.name()
+        return parent_name in ['uwsgi', 'gunicorn']
+    except Exception:
+        # If we can't determine, assume it's not a worker (safe default)
+        return False
 
 
 class BackupsConfig(AppConfig):
@@ -13,9 +26,21 @@ class BackupsConfig(AppConfig):
 
     def ready(self):
         """Initialize backup scheduler on app startup."""
-        # Only run in the main process (not in workers, beat, or management commands)
-        if 'runserver' in sys.argv or 'uwsgi' in sys.argv[0] if sys.argv else False:
-            self._sync_backup_scheduler()
+        # Skip management commands and celery
+        skip_commands = ['celery', 'beat', 'migrate', 'makemigrations', 'shell', 'dbshell', 'collectstatic', 'loaddata']
+        if any(cmd in sys.argv for cmd in skip_commands):
+            return
+
+        # Skip daphne dev server
+        if 'daphne' in sys.argv[0] if sys.argv else False:
+            return
+
+        # Skip if this is a worker process spawned by uwsgi/gunicorn
+        if _is_worker_process():
+            return
+
+        # Proceed with syncing the backup scheduler
+        self._sync_backup_scheduler()
 
     def _sync_backup_scheduler(self):
         """Sync backup scheduler task to database."""
