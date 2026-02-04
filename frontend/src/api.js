@@ -1205,7 +1205,13 @@ export default class API {
       );
 
       // The endpoint returns an array, get the first item
-      return response && response.length > 0 ? response[0] : null;
+      if (response && response.length > 0) {
+        if (response[0].parsing) {
+          return { parsing: true };
+        }
+        return response[0];
+      }
+      return null;
     } catch (e) {
       console.error('Failed to retrieve current program for EPG', e);
       return null;

@@ -439,24 +439,34 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     setIsLoadingProgram(true);
     setHasFetchedProgram(false);
 
-    API.getCurrentProgramForEpg(epgDataId)
-      .then((program) => {
-        if (!cancelled) {
-          setCurrentProgram(program);
+    const fetchWithRetry = async (retriesLeft = 3) => {
+      try {
+        const program = await API.getCurrentProgramForEpg(epgDataId);
+        if (cancelled) return;
+
+        if (program && program.parsing && retriesLeft > 0) {
+          // Programs are being parsed, retry after delay
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+          if (cancelled) return;
+          return fetchWithRetry(retriesLeft - 1);
         }
-      })
-      .catch((error) => {
+
         if (!cancelled) {
-          console.error('Failed to fetch current program:', error);
-          setCurrentProgram(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
+          setCurrentProgram(program && !program.parsing ? program : null);
           setIsLoadingProgram(false);
           setHasFetchedProgram(true);
         }
-      });
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to fetch current program:', error);
+          setCurrentProgram(null);
+          setIsLoadingProgram(false);
+          setHasFetchedProgram(true);
+        }
+      }
+    };
+
+    fetchWithRetry();
 
     return () => {
       cancelled = true;
