@@ -157,7 +157,7 @@ class EPGGridAPIView(APIView):
 
         # Get channels with custom dummy EPG sources (generate on-demand with patterns)
         channels_with_custom_dummy = Channel.objects.filter(
-            epg_data__epg_source__source_type="dummy"
+            epg_data__epg_source__source_type='dummy'
         ).distinct()
 
         # Log what we found
@@ -171,9 +171,7 @@ class EPGGridAPIView(APIView):
             )
 
         if custom_count > 0:
-            channel_names = [
-                f"{ch.name} (ID: {ch.id})" for ch in channels_with_custom_dummy
-            ]
+            channel_names = [f"{ch.name} (ID: {ch.id})" for ch in channels_with_custom_dummy]
             logger.debug(
                 f"EPGGridAPIView: Channels needing custom dummy EPG: {', '.join(channel_names)}"
             )
@@ -236,39 +234,28 @@ class EPGGridAPIView(APIView):
                 # Get the custom dummy EPG source
                 epg_source = channel.epg_data.epg_source if channel.epg_data else None
 
-                logger.debug(
-                    f"Generating custom dummy programs for channel: {channel.name} (ID: {channel.id})"
-                )
+                logger.debug(f"Generating custom dummy programs for channel: {channel.name} (ID: {channel.id})")
 
                 # Determine which name to parse based on custom properties
                 name_to_parse = channel.name
                 if epg_source and epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
-                    name_source = custom_props.get("name_source")
+                    name_source = custom_props.get('name_source')
 
-                    if name_source == "stream":
+                    if name_source == 'stream':
                         # Get the stream index (1-based from user, convert to 0-based)
-                        stream_index = custom_props.get("stream_index", 1) - 1
+                        stream_index = custom_props.get('stream_index', 1) - 1
 
                         # Get streams ordered by channelstream order
-                        channel_streams = channel.streams.all().order_by(
-                            "channelstream__order"
-                        )
+                        channel_streams = channel.streams.all().order_by('channelstream__order')
 
-                        if (
-                            channel_streams.exists()
-                            and 0 <= stream_index < channel_streams.count()
-                        ):
+                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
                             stream = list(channel_streams)[stream_index]
                             name_to_parse = stream.name
-                            logger.debug(
-                                f"Using stream name for parsing: {name_to_parse} (stream index: {stream_index})"
-                            )
+                            logger.debug(f"Using stream name for parsing: {name_to_parse} (stream index: {stream_index})")
                         else:
-                            logger.warning(
-                                f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name"
-                            )
-                    elif name_source == "channel":
+                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
+                    elif name_source == 'channel':
                         logger.debug(f"Using channel name for parsing: {name_to_parse}")
 
                 # Generate programs using custom patterns from the dummy EPG source
@@ -278,32 +265,28 @@ class EPGGridAPIView(APIView):
                     channel_name=name_to_parse,
                     num_days=1,
                     program_length_hours=4,
-                    epg_source=epg_source,
+                    epg_source=epg_source
                 )
 
                 # Custom dummy should always return data (either from patterns or fallback)
                 if generated:
-                    logger.debug(
-                        f"Generated {len(generated)} custom dummy programs for {channel.name}"
-                    )
+                    logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
                     # Convert generated programs to API format
                     for program in generated:
                         dummy_program = {
                             "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
                             "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
-                            "start_time": program["start_time"].isoformat(),
-                            "end_time": program["end_time"].isoformat(),
-                            "title": program["title"],
-                            "description": program["description"],
+                            "start_time": program['start_time'].isoformat(),
+                            "end_time": program['end_time'].isoformat(),
+                            "title": program['title'],
+                            "description": program['description'],
                             "tvg_id": dummy_tvg_id,
                             "sub_title": None,
                             "custom_properties": None,
                         }
                         dummy_programs.append(dummy_program)
                 else:
-                    logger.warning(
-                        f"No programs generated for custom dummy EPG channel: {channel.name}"
-                    )
+                    logger.warning(f"No programs generated for custom dummy EPG channel: {channel.name}")
 
             except Exception as e:
                 logger.error(
@@ -318,9 +301,7 @@ class EPGGridAPIView(APIView):
             dummy_tvg_id = str(channel.uuid)
 
             try:
-                logger.debug(
-                    f"Generating standard dummy programs for channel: {channel.name} (ID: {channel.id})"
-                )
+                logger.debug(f"Generating standard dummy programs for channel: {channel.name} (ID: {channel.id})")
 
                 # Create programs every 4 hours for the next 24 hours with humorous descriptions
                 for hour_offset in range(0, 24, 4):
@@ -400,17 +381,11 @@ class EPGImportAPIView(APIView):
         # Check if this is a dummy EPG source
         try:
             from .models import EPGSource
-
             epg_source = EPGSource.objects.get(id=epg_id)
-            if epg_source.source_type == "dummy":
-                logger.info(
-                    f"EPGImportAPIView: Skipping refresh for dummy EPG source {epg_id}"
-                )
+            if epg_source.source_type == 'dummy':
+                logger.info(f"EPGImportAPIView: Skipping refresh for dummy EPG source {epg_id}")
                 return Response(
-                    {
-                        "success": False,
-                        "message": "Dummy EPG sources do not require refreshing.",
-                    },
+                    {"success": False, "message": "Dummy EPG sources do not require refreshing."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         except EPGSource.DoesNotExist:
@@ -482,14 +457,14 @@ class CurrentProgramsAPIView(APIView):
     )
     def post(self, request, format=None):
         # Get IDs from request body
-        channel_ids = request.data.get("channel_ids", None)
-        epg_data_ids = request.data.get("epg_data_ids", None)
+        channel_ids = request.data.get('channel_ids', None)
+        epg_data_ids = request.data.get('epg_data_ids', None)
 
         # Validate that at most one type of ID is provided
         if channel_ids is not None and epg_data_ids is not None:
             return Response(
                 {"error": "Provide either channel_ids or epg_data_ids, not both"},
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         # Get current time
@@ -500,7 +475,7 @@ class CurrentProgramsAPIView(APIView):
             if not isinstance(epg_data_ids, list):
                 return Response(
                     {"error": "epg_data_ids must be an array of integers or null"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             try:
@@ -508,7 +483,7 @@ class CurrentProgramsAPIView(APIView):
             except (ValueError, TypeError):
                 return Response(
                     {"error": "epg_data_ids must contain valid integers"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             from apps.epg.models import EPGData
@@ -523,7 +498,7 @@ class CurrentProgramsAPIView(APIView):
 
                 if program:
                     program_data = ProgramDataSerializer(program).data
-                    program_data["epg_data_id"] = epg_data.id
+                    program_data['epg_data_id'] = epg_data.id
                     current_programs.append(program_data)
                 else:
                     # Check if ANY programs exist (vs none parsed yet)
@@ -542,7 +517,7 @@ class CurrentProgramsAPIView(APIView):
 
             return Response(current_programs, status=status.HTTP_200_OK)
 
-        # Otherwise, use channel-based query (existing behavior)
+        # Otherwise, use channel-based query
         # Import Channel model
         from apps.channels.models import Channel
 
@@ -554,7 +529,7 @@ class CurrentProgramsAPIView(APIView):
             if not isinstance(channel_ids, list):
                 return Response(
                     {"error": "channel_ids must be an array of integers or null"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             try:
@@ -562,13 +537,16 @@ class CurrentProgramsAPIView(APIView):
             except (ValueError, TypeError):
                 return Response(
                     {"error": "channel_ids must contain valid integers"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             query = query.filter(id__in=channel_ids)
 
         # Get channels with EPG data
-        channels = query.select_related("epg_data")
+        channels = query.select_related('epg_data')
+
+        # Get current time
+        now = timezone.now()
 
         # Build list of current programs
         current_programs = []
@@ -576,13 +554,16 @@ class CurrentProgramsAPIView(APIView):
         for channel in channels:
             # Query for current program
             program = ProgramData.objects.filter(
-                epg=channel.epg_data, start_time__lte=now, end_time__gt=now
+                epg=channel.epg_data,
+                start_time__lte=now,
+                end_time__gt=now
             ).first()
 
             if program:
                 # Serialize program and add channel_id for easy mapping
                 program_data = ProgramDataSerializer(program).data
-                program_data["channel_id"] = channel.id
+                program_data['channel_id'] = channel.id
                 current_programs.append(program_data)
 
         return Response(current_programs, status=status.HTTP_200_OK)
+
