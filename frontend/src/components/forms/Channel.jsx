@@ -33,9 +33,10 @@ import {
   NumberInput,
   UnstyledButton,
   Switch,
+  Progress,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
+import { ListOrdered, Radio, SquarePlus, SquareX, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
 
 import { FixedSizeList as List } from 'react-window';
@@ -84,6 +85,10 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const [selectedEPG, setSelectedEPG] = useState('');
   const [tvgFilter, setTvgFilter] = useState('');
   const [logoFilter, setLogoFilter] = useState('');
+  const [currentProgram, setCurrentProgram] = useState(null);
+  const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+  const [isLoadingProgram, setIsLoadingProgram] = useState(false);
+  const [hasFetchedProgram, setHasFetchedProgram] = useState(false);
 
   const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
   const [groupFilter, setGroupFilter] = useState('');
@@ -420,6 +425,32 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       setLogoFilter('');
     }
   }, [defaultValues, channel, reset, epgs, tvgsById]);
+
+  useEffect(() => {
+    const fetchCurrentProgram = async () => {
+      const epgDataId = watch('epg_data_id');
+      if (epgDataId && epgDataId !== '0' && epgDataId !== '') {
+        setIsLoadingProgram(true);
+        setHasFetchedProgram(false);
+        try {
+          const program = await API.getCurrentProgramForEpg(epgDataId);
+          setCurrentProgram(program);
+        } catch (error) {
+          console.error('Failed to fetch current program:', error);
+          setCurrentProgram(null);
+        } finally {
+          setIsLoadingProgram(false);
+          setHasFetchedProgram(true);
+        }
+      } else {
+        setCurrentProgram(null);
+        setIsLoadingProgram(false);
+        setHasFetchedProgram(false);
+      }
+    };
+
+    fetchCurrentProgram();
+  }, [watch('epg_data_id')]);
 
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
@@ -1017,13 +1048,111 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </div>
                       )}
                     </List>
-                  </ScrollArea>
-                </Popover.Dropdown>
-              </Popover>
-            </Stack>
-          </Group>
+                   </ScrollArea>
+                 </Popover.Dropdown>
+                </Popover>
 
-          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+                {isLoadingProgram && (
+                  <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
+                    <Group gap={5}>
+                      <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
+                      <Text size="xs" c="dimmed">Loading EPG data...</Text>
+                    </Group>
+                  </Box>
+                )}
+
+                {hasFetchedProgram && !currentProgram && !isLoadingProgram && (
+                  <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
+                    <Group gap={5}>
+                      <Radio size="14" style={{ color: '#6b7280', flexShrink: 0 }} />
+                      <Text size="xs" c="dimmed">No current program (EPG may need refresh)</Text>
+                    </Group>
+                  </Box>
+                )}
+
+                {currentProgram && (
+                   <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
+                    <Group gap={5} wrap="nowrap">
+                      <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
+                      <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
+                        Current Program:
+                      </Text>
+                      <Tooltip label={currentProgram.title}>
+                        <Text size="xs" c="dimmed" truncate>
+                          {currentProgram.title}
+                        </Text>
+                      </Tooltip>
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
+                        style={{ flexShrink: 0 }}
+                      >
+                        {isProgramDescExpanded ? '▼' : '▶'}
+                      </ActionIcon>
+                    </Group>
+
+                    {isProgramDescExpanded && currentProgram.description && (
+                      <Box mt={4} ml={24}>
+                        <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
+                          {currentProgram.description}
+                        </Text>
+                      </Box>
+                    )}
+
+                    {isProgramDescExpanded &&
+                      currentProgram.start_time &&
+                      currentProgram.end_time &&
+                      (() => {
+                        const now = new Date();
+                        const startTime = new Date(currentProgram.start_time);
+                        const endTime = new Date(currentProgram.end_time);
+                        const totalDuration = (endTime - startTime) / 1000;
+                        const elapsed = (now - startTime) / 1000;
+                        const remaining = (endTime - now) / 1000;
+                        const percentage = Math.min(
+                          100,
+                          Math.max(0, (elapsed / totalDuration) * 100)
+                        );
+
+                        const formatProgramTime = (seconds) => {
+                          const absSeconds = Math.abs(seconds);
+                          const hours = Math.floor(absSeconds / 3600);
+                          const minutes = Math.floor((absSeconds % 3600) / 60);
+                          const secs = Math.floor(absSeconds % 60);
+                          if (hours > 0) {
+                            return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                          }
+                          return `${minutes}:${secs.toString().padStart(2, '0')}`;
+                        };
+
+                        return (
+                          <Stack gap="xs" mt={4} ml={24}>
+                            <Group justify="space-between" align="center">
+                              <Text size="xs" c="dimmed">
+                                {formatProgramTime(elapsed)} elapsed
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {formatProgramTime(remaining)} remaining
+                              </Text>
+                            </Group>
+                            <Progress
+                              value={percentage}
+                              size="sm"
+                              color="#3BA882"
+                              style={{
+                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                              }}
+                            />
+                          </Stack>
+                        );
+                      })()}
+                  </Box>
+                )}
+              </Stack>
+            </Group>
+
+           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             <Button
               type="submit"
               variant="default"
