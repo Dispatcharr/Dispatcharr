@@ -21,6 +21,7 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 INSTALLED_APPS = [
     "apps.api",
     "apps.accounts",
+    "apps.backups.apps.BackupsConfig",
     "apps.channels.apps.ChannelsConfig",
     "apps.dashboard",
     "apps.epg",
