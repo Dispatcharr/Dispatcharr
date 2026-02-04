@@ -1194,6 +1194,24 @@ export default class API {
     }
   }
 
+  static async getCurrentProgramForEpg(epgId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/current-programs/`,
+        {
+          method: 'POST',
+          body: { epg_data_ids: [epgId] },
+        }
+      );
+
+      // The endpoint returns an array, get the first item
+      return response && response.length > 0 ? response[0] : null;
+    } catch (e) {
+      console.error('Failed to retrieve current program for EPG', e);
+      return null;
+    }
+  }
+
   // Notice there's a duplicated "refreshPlaylist" method above;
   // you might want to rename or remove one if it's not needed.
 
