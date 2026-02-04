@@ -11,7 +11,6 @@ import {
   Card,
   Center,
   Group,
-  Progress,
   Select,
   Stack,
   Text,
@@ -19,18 +18,16 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import {
-  ChevronDown,
-  ChevronRight,
   CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
-  Radio,
   SquareX,
   Timer,
   Users,
   Video,
 } from 'lucide-react';
+import ProgramPreview from '../ProgramPreview';
 import {
   toFriendlyDuration,
   formatExactDuration,
@@ -120,7 +117,7 @@ const StreamConnectionCard = ({
   const [currentM3UProfile, setCurrentM3UProfile] = useState(null); // Add state for current M3U profile
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
-  const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+
 
   const theme = useMantineTheme();
 
@@ -663,47 +660,10 @@ const StreamConnectionCard = ({
 
         {/* Display current program on its own line */}
         {currentProgram && (
-          <Group gap={5} mt={-9} wrap="nowrap">
-            <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
-            <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
-              Now Playing:
-            </Text>
-            <Text size="xs" c="dimmed" truncate>
-              {currentProgram.title}
-            </Text>
-            <ActionIcon
-              size="xs"
-              variant="subtle"
-              onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
-              style={{ flexShrink: 0 }}
-            >
-              {isProgramDescExpanded ? (
-                <ChevronDown size="14" />
-              ) : (
-                <ChevronRight size="14" />
-              )}
-            </ActionIcon>
-          </Group>
+          <Box mt={-9}>
+            <ProgramPreview program={currentProgram} />
+          </Box>
         )}
-
-        {/* Expandable program description */}
-        {currentProgram &&
-          isProgramDescExpanded &&
-          currentProgram.description && (
-            <Box mt={4} ml={24}>
-              <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
-                {currentProgram.description}
-              </Text>
-            </Box>
-          )}
-
-        {/* Program progress bar */}
-        {currentProgram &&
-          isProgramDescExpanded &&
-          currentProgram.start_time &&
-          currentProgram.end_time && (
-            <ProgramProgress currentProgram={currentProgram} />
-          )}
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (
