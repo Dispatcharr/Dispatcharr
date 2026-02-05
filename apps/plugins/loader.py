@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional
 
 from django.db import transaction
 
+from .manifest import detect_plugin_key
 from .models import PluginConfig
+from .storage import PluginStorage
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ class LoadedPlugin:
     instance: Any = None
     fields: List[Dict[str, Any]] = field(default_factory=list)
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    key_source: str = "directory"  # 'manifest' or 'directory'
 
 
 class PluginManager:
@@ -58,10 +61,11 @@ class PluginManager:
                 if not os.path.isdir(path):
                     continue
 
-                plugin_key = entry.replace(" ", "_").lower()
+                # Detect key from manifest or fall back to directory name
+                plugin_key, key_source = detect_plugin_key(path, entry)
 
                 try:
-                    self._load_plugin(plugin_key, path)
+                    self._load_plugin(plugin_key, path, key_source)
                 except Exception:
                     logger.exception(f"Failed to load plugin '{plugin_key}' from {path}")
 
@@ -78,7 +82,7 @@ class PluginManager:
                 logger.exception("Deferring plugin DB sync; database not ready yet")
         return self._registry
 
-    def _load_plugin(self, key: str, path: str):
+    def _load_plugin(self, key: str, path: str, key_source: str = "directory"):
         # Plugin can be a package and/or contain plugin.py. Prefer plugin.py when present.
         has_pkg = os.path.exists(os.path.join(path, "__init__.py"))
         has_pluginpy = os.path.exists(os.path.join(path, "plugin.py"))
@@ -132,6 +136,7 @@ class PluginManager:
             instance=instance,
             fields=fields,
             actions=actions,
+            key_source=key_source,
         )
 
     def _sync_db_with_registry(self):
@@ -235,6 +240,7 @@ class PluginManager:
             "settings": cfg.settings or {},
             "logger": logger,
             "actions": {a.get("id"): a for a in (lp.actions or [])},
+            "storage": PluginStorage(key),
         }
 
         # Run either via Celery if plugin provides a delayed method, or inline

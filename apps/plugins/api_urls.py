@@ -7,6 +7,9 @@ from .api_views import (
     PluginEnabledAPIView,
     PluginImportAPIView,
     PluginDeleteAPIView,
+    PluginStorageCollectionsAPIView,
+    PluginStorageListAPIView,
+    PluginStorageDetailAPIView,
 )
 
 app_name = "plugins"
@@ -19,4 +22,20 @@ urlpatterns = [
     path("plugins/<str:key>/settings/", PluginSettingsAPIView.as_view(), name="settings"),
     path("plugins/<str:key>/run/", PluginRunAPIView.as_view(), name="run"),
     path("plugins/<str:key>/enabled/", PluginEnabledAPIView.as_view(), name="enabled"),
+    # Plugin storage endpoints
+    path(
+        "plugins/<str:key>/storage/",
+        PluginStorageCollectionsAPIView.as_view(),
+        name="storage-collections",
+    ),
+    path(
+        "plugins/<str:key>/storage/<str:collection>/",
+        PluginStorageListAPIView.as_view(),
+        name="storage-list",
+    ),
+    path(
+        "plugins/<str:key>/storage/<str:collection>/<str:doc_id>/",
+        PluginStorageDetailAPIView.as_view(),
+        name="storage-detail",
+    ),
 ]
