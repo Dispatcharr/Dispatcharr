@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 from django.conf import settings
-import os, logging
+import logging
 
 # Define TRACE level (5 is below DEBUG which is 10)
 TRACE = 5
@@ -15,6 +15,7 @@ def trace(self, message, *args, **kwargs):
 # Add the trace method to the Logger class
 logging.Logger.trace = trace
 
+
 class CoreConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'core'
@@ -22,13 +23,15 @@ class CoreConfig(AppConfig):
     def ready(self):
         # Import signals to ensure they get registered
         import core.signals
+        from dispatcharr.app_initialization import should_skip_initialization
 
         # Sync developer notifications and check for version updates on startup
-        # Only run in the main process (not in management commands or migrations)
-        import sys
-        if 'runserver' in sys.argv or 'uwsgi' in sys.argv[0] if sys.argv else False:
-            self._sync_developer_notifications()
-            self._check_version_update()
+        # Only run in the main process (not in management commands, migrations, or workers)
+        if should_skip_initialization():
+            return
+
+        self._sync_developer_notifications()
+        self._check_version_update()
 
     def _sync_developer_notifications(self):
         """Sync developer notifications from JSON file to database."""
@@ -37,22 +40,6 @@ class CoreConfig(AppConfig):
 
         logger = logging.getLogger(__name__)
 
-        # Check if tables exist (avoid running during migrations)
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'core_systemnotification'"
-                )
-                if not cursor.fetchone():
-                    # For SQLite
-                    cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='core_systemnotification'"
-                    )
-                    if not cursor.fetchone():
-                        return
-        except Exception:
-            # If we can't check, the table might not exist yet
-            pass
 
         try:
             from core.developer_notifications import sync_developer_notifications
