@@ -1102,6 +1102,15 @@ const StreamsTable = ({ onReady }) => {
             className="table-input-header custom-multiselect"
             clearable
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('group');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
       }
