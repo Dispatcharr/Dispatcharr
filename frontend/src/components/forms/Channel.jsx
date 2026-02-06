@@ -36,6 +36,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
+import ProgramPreview from '../ProgramPreview';
 import useEPGsStore from '../../store/epgs';
 
 import { FixedSizeList as List } from 'react-window';
@@ -84,6 +85,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const [selectedEPG, setSelectedEPG] = useState('');
   const [tvgFilter, setTvgFilter] = useState('');
   const [logoFilter, setLogoFilter] = useState('');
+  const [currentProgram, setCurrentProgram] = useState(null);
+  const [isLoadingProgram, setIsLoadingProgram] = useState(false);
+  const [hasFetchedProgram, setHasFetchedProgram] = useState(false);
 
   const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
   const [groupFilter, setGroupFilter] = useState('');
@@ -420,6 +424,54 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       setLogoFilter('');
     }
   }, [defaultValues, channel, reset, epgs, tvgsById]);
+
+  const epgDataId = watch('epg_data_id');
+
+  useEffect(() => {
+    if (!epgDataId || epgDataId === '0' || epgDataId === '') {
+      setCurrentProgram(null);
+      setIsLoadingProgram(false);
+      setHasFetchedProgram(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingProgram(true);
+    setHasFetchedProgram(false);
+
+    const fetchWithRetry = async (retriesLeft = 3) => {
+      try {
+        const program = await API.getCurrentProgramForEpg(epgDataId);
+        if (cancelled) return;
+
+        if (program && program.parsing && retriesLeft > 0) {
+          // Programs are being parsed, retry after delay
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+          if (cancelled) return;
+          return fetchWithRetry(retriesLeft - 1);
+        }
+
+        if (!cancelled) {
+          setCurrentProgram(program && !program.parsing ? program : null);
+          setIsLoadingProgram(false);
+          setHasFetchedProgram(true);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to fetch current program:', error);
+          setCurrentProgram(null);
+          setIsLoadingProgram(false);
+          setHasFetchedProgram(true);
+        }
+      }
+    };
+
+    fetchWithRetry();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [epgDataId]);
 
   // Memoize logo options to prevent infinite re-renders during background loading
   const logoOptions = useMemo(() => {
@@ -1017,13 +1069,24 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </div>
                       )}
                     </List>
-                  </ScrollArea>
-                </Popover.Dropdown>
-              </Popover>
-            </Stack>
-          </Group>
+                   </ScrollArea>
+                 </Popover.Dropdown>
+                </Popover>
 
-          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+                {(isLoadingProgram || hasFetchedProgram || currentProgram) && (
+                  <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
+                    <ProgramPreview
+                      program={currentProgram}
+                      loading={isLoadingProgram}
+                      fetched={hasFetchedProgram}
+                      label="Current Program:"
+                    />
+                  </Box>
+                )}
+              </Stack>
+            </Group>
+
+           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             <Button
               type="submit"
               variant="default"

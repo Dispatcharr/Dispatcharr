@@ -1127,7 +1127,7 @@ def parse_channels_only(source):
 
 
 @shared_task
-def parse_programs_for_tvg_id(epg_id):
+def parse_programs_for_tvg_id(epg_id, force=False):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
@@ -1164,7 +1164,7 @@ def parse_programs_for_tvg_id(epg_id):
             release_task_lock('parse_epg_programs', epg_id)
             return
 
-        if not Channel.objects.filter(epg_data=epg).exists():
+        if not force and not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
             release_task_lock('parse_epg_programs', epg_id)
             return

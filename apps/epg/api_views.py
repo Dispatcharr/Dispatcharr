@@ -445,14 +445,79 @@ class CurrentProgramsAPIView(APIView):
                     allow_null=True,
                     help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
                 ),
+                "epg_data_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    allow_null=True,
+                    help_text="Array of EPG data IDs. Can be used instead of channel_ids.",
+                ),
             },
         ),
         responses={200: ProgramDataSerializer(many=True)},
     )
     def post(self, request, format=None):
-        # Get channel IDs from request body
+        # Get IDs from request body
         channel_ids = request.data.get('channel_ids', None)
+        epg_data_ids = request.data.get('epg_data_ids', None)
 
+        # Validate that at most one type of ID is provided
+        if channel_ids is not None and epg_data_ids is not None:
+            return Response(
+                {"error": "Provide either channel_ids or epg_data_ids, not both"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get current time
+        now = timezone.now()
+
+        # If epg_data_ids are provided, query directly by EPG data
+        if epg_data_ids is not None:
+            if not isinstance(epg_data_ids, list):
+                return Response(
+                    {"error": "epg_data_ids must be an array of integers or null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                epg_data_ids = [int(id) for id in epg_data_ids]
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "epg_data_ids must contain valid integers"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            from apps.epg.models import EPGData
+
+            epg_data_entries = EPGData.objects.filter(id__in=epg_data_ids)
+
+            current_programs = []
+            for epg_data in epg_data_entries:
+                program = ProgramData.objects.filter(
+                    epg=epg_data, start_time__lte=now, end_time__gt=now
+                ).first()
+
+                if program:
+                    program_data = ProgramDataSerializer(program).data
+                    program_data['epg_data_id'] = epg_data.id
+                    current_programs.append(program_data)
+                else:
+                    # Check if ANY programs exist (vs none parsed yet)
+                    has_any_programs = ProgramData.objects.filter(epg=epg_data).exists()
+                    if not has_any_programs and epg_data.epg_source.source_type != 'dummy':
+                        from core.utils import RedisClient
+                        redis_client = RedisClient.get_client()
+                        lock_id = f"task_lock_parse_epg_programs_{epg_data.id}"
+                        if not redis_client.exists(lock_id):
+                            from apps.epg.tasks import parse_programs_for_tvg_id
+                            parse_programs_for_tvg_id.delay(epg_data.id, force=True)
+                        current_programs.append({
+                            "epg_data_id": epg_data.id,
+                            "parsing": True,
+                        })
+
+            return Response(current_programs, status=status.HTTP_200_OK)
+
+        # Otherwise, use channel-based query
         # Import Channel model
         from apps.channels.models import Channel
 
