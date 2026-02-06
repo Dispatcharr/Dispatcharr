@@ -461,7 +461,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ChannelFilter
     search_fields = ["name", "channel_group__name"]
-    ordering_fields = ["channel_number", "name", "channel_group__name"]
+    ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
     ordering = ["-channel_number"]
 
     def create(self, request, *args, **kwargs):
