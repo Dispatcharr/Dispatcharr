@@ -1770,6 +1770,7 @@ export default class API {
       return response?.settings || {};
     } catch (e) {
       errorNotification('Failed to update plugin settings', e);
+      throw e;
     }
   }
 

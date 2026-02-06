@@ -27,6 +27,7 @@ import { usePluginStore } from '../store/plugins.jsx';
 import {
   deletePluginByKey,
   importPlugin,
+  reloadPlugins,
   runPluginAction,
   setPluginEnabled,
   updatePluginSettings,
@@ -52,11 +53,13 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
     const resp = await setPluginEnabled(key, next);
 
     if (resp?.success) {
-      usePluginStore.getState().updatePlugin(key, {
+      const updates = resp?.plugin || {
         enabled: next,
         ever_enabled: resp?.ever_enabled,
-      });
+      };
+      usePluginStore.getState().updatePlugin(key, updates);
     }
+    return resp;
   };
 
   if (loading && plugins.length === 0) {
@@ -120,7 +123,8 @@ export default function PluginsPage() {
     resolve: null,
   });
 
-  const handleReload = () => {
+  const handleReload = async () => {
+    await reloadPlugins();
     usePluginStore.getState().invalidatePlugins();
   };
 
@@ -212,7 +216,8 @@ export default function PluginsPage() {
       if (proceed) {
         const resp = await setPluginEnabled(imported.key, true);
         if (resp?.success) {
-          usePluginStore.getState().updatePlugin(imported.key, { enabled: true, ever_enabled: true });
+          const updates = resp?.plugin || { enabled: true, ever_enabled: true };
+          usePluginStore.getState().updatePlugin(imported.key, updates);
 
           showNotification({
             title: imported.name,

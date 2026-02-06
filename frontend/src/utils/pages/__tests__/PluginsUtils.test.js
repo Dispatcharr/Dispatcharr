@@ -8,6 +8,7 @@ vi.mock('../../../api.js', () => ({
     runPluginAction: vi.fn(),
     setPluginEnabled: vi.fn(),
     importPlugin: vi.fn(),
+    reloadPlugins: vi.fn(),
     deletePlugin: vi.fn()
   }
 }));
@@ -109,6 +110,23 @@ describe('PluginsUtils', () => {
       API.runPluginAction.mockRejectedValue(error);
 
       await expect(PluginsUtils.runPluginAction(key, actionId)).rejects.toThrow('Action not found');
+    });
+  });
+
+  describe('reloadPlugins', () => {
+    it('should call API reloadPlugins', async () => {
+      await PluginsUtils.reloadPlugins();
+
+      expect(API.reloadPlugins).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', async () => {
+      const mockResponse = { success: true };
+      API.reloadPlugins.mockResolvedValue(mockResponse);
+
+      const result = await PluginsUtils.reloadPlugins();
+
+      expect(result).toEqual(mockResponse);
     });
   });
 

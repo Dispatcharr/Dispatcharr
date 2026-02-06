@@ -5,6 +5,7 @@ import { showNotification, updateNotification } from '../../utils/notificationUt
 import {
   deletePluginByKey,
   importPlugin,
+  reloadPlugins,
   setPluginEnabled,
   updatePluginSettings,
 } from '../../utils/pages/PluginsUtils';
@@ -15,6 +16,7 @@ vi.mock('../../store/plugins');
 vi.mock('../../utils/pages/PluginsUtils', () => ({
   deletePluginByKey: vi.fn(),
   importPlugin: vi.fn(),
+  reloadPlugins: vi.fn(),
   setPluginEnabled: vi.fn(),
   updatePluginSettings: vi.fn(),
   runPluginAction: vi.fn(),
@@ -554,6 +556,7 @@ describe('PluginsPage', () => {
       fireEvent.click(reloadButton);
 
       await waitFor(() => {
+        expect(reloadPlugins).toHaveBeenCalled();
         expect(invalidatePlugins).toHaveBeenCalled();
       });
     });

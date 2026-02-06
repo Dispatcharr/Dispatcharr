@@ -3,6 +3,9 @@ import { showNotification } from '../../utils/notificationUtils.js';
 import { Field } from '../Field.jsx';
 import {
   ActionIcon,
+  Anchor,
+  Box,
+  Avatar,
   Button,
   Card,
   Divider,
@@ -10,8 +13,9 @@ import {
   Stack,
   Switch,
   Text,
+  UnstyledButton,
 } from '@mantine/core';
-import { Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
@@ -25,7 +29,7 @@ const PluginFieldList = ({ plugin, settings, updateField }) => {
   ));
 };
 
-const PluginActionList = ({ plugin, enabled, running, handlePluginRun }) => {
+const PluginActionList = ({ plugin, enabled, runningActionId, handlePluginRun }) => {
   return plugin.actions.map((action) => (
     <Group key={action.id} justify="space-between">
       <div>
@@ -37,12 +41,16 @@ const PluginActionList = ({ plugin, enabled, running, handlePluginRun }) => {
         )}
       </div>
       <Button
-        loading={running}
-        disabled={!enabled}
+        loading={runningActionId === action.id}
+        disabled={!enabled || runningActionId === action.id}
         onClick={() => handlePluginRun(action)}
         size="xs"
+        variant={action.button_variant || 'filled'}
+        color={action.button_color}
       >
-        {running ? 'Running…' : 'Run'}
+        {runningActionId === action.id
+          ? 'Running…'
+          : action.button_label || 'Run'}
       </Button>
     </Group>
   ));
@@ -81,18 +89,24 @@ const PluginCard = ({
 }) => {
   const [settings, setSettings] = useState(plugin.settings || {});
   const [saving, setSaving] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [runningActionId, setRunningActionId] = useState(null);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
   const [lastResult, setLastResult] = useState(null);
+  const [expanded, setExpanded] = useState(!!plugin.enabled);
 
   // Keep local enabled state in sync with props (e.g., after import + enable)
   React.useEffect(() => {
     setEnabled(!!plugin.enabled);
   }, [plugin.enabled]);
+  React.useEffect(() => {
+    if (!plugin.enabled) {
+      setExpanded(false);
+    }
+  }, [plugin.enabled]);
   // Sync settings if plugin changes identity
   React.useEffect(() => {
     setSettings(plugin.settings || {});
-  }, [plugin.key]);
+  }, [plugin.key, plugin.settings]);
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
@@ -101,11 +115,25 @@ const PluginCard = ({
   const save = async () => {
     setSaving(true);
     try {
-      await onSaveSettings(plugin.key, settings);
+      const result = await onSaveSettings(plugin.key, settings);
+      if (result) {
+        showNotification({
+          title: 'Saved',
+          message: `${plugin.name} settings updated`,
+          color: 'green',
+        });
+      } else {
+        showNotification({
+          title: `${plugin.name} error`,
+          message: 'Failed to update settings',
+          color: 'red',
+        });
+      }
+    } catch (e) {
       showNotification({
-        title: 'Saved',
-        message: `${plugin.name} settings updated`,
-        color: 'green',
+        title: `${plugin.name} error`,
+        message: e?.message || 'Failed to update settings',
+        color: 'red',
       });
     } finally {
       setSaving(false);
@@ -125,17 +153,21 @@ const PluginCard = ({
           return;
         }
       }
+      const previous = enabled;
       setEnabled(next);
-      const resp = await onToggleEnabled(plugin.key, next);
-      if (next && resp?.ever_enabled) {
-        plugin.ever_enabled = true;
+      try {
+        const resp = await onToggleEnabled(plugin.key, next);
+        if (!resp?.success) {
+          setEnabled(previous);
+          return;
+        }
+      } catch (e) {
+        setEnabled(previous);
       }
     };
   };
 
   const handlePluginRun = async (a) => {
-    setRunning(true);
-    setLastResult(null);
     try {
       // Determine if confirmation is required from action metadata or fallback field
       const { requireConfirm, confirmTitle, confirmMessage } =
@@ -149,6 +181,9 @@ const PluginCard = ({
           return;
         }
       }
+
+      setRunningActionId(a.id);
+      setLastResult(null);
 
       // Save settings before running to ensure backend uses latest values
       try {
@@ -175,8 +210,12 @@ const PluginCard = ({
         });
       }
     } finally {
-      setRunning(false);
+      setRunningActionId(null);
     }
+  };
+
+  const toggleExpanded = () => {
+    setExpanded((prev) => !prev);
   };
 
   return (
@@ -184,16 +223,59 @@ const PluginCard = ({
       shadow="sm"
       radius="md"
       withBorder
-      opacity={!missing && enabled ? 1 : 0.6}
+      style={{ opacity: !missing && enabled ? 1 : 0.6 }}
     >
-      <Group justify="space-between" mb="xs" align="center">
-        <div>
-          <Text fw={600}>{plugin.name}</Text>
-          <Text size="sm" c="dimmed">
-            {plugin.description}
-          </Text>
-        </div>
-        <Group gap="xs" align="center">
+      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+        <Group gap="sm" align="flex-start" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+          <ActionIcon
+            variant="subtle"
+            size="sm"
+            onClick={toggleExpanded}
+            title={expanded ? 'Collapse settings' : 'Expand settings'}
+          >
+            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </ActionIcon>
+          {plugin.logo_url && (
+            <Avatar
+              src={plugin.logo_url}
+              radius="sm"
+              size={44}
+              alt={`${plugin.name} logo`}
+            />
+          )}
+          <UnstyledButton
+            onClick={toggleExpanded}
+            style={{ minWidth: 0, flex: 1, textAlign: 'left' }}
+          >
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Text fw={600}>{plugin.name}</Text>
+              <Text size="sm" c="dimmed">
+                {plugin.description}
+              </Text>
+              {(plugin.author || plugin.help_url) && (
+                <Group gap="xs" mt={2}>
+                  {plugin.author && (
+                    <Text size="xs" c="dimmed">
+                      By {plugin.author}
+                    </Text>
+                  )}
+                  {plugin.help_url && (
+                    <Anchor
+                      href={plugin.help_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      size="xs"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Docs
+                    </Anchor>
+                  )}
+                </Group>
+              )}
+            </Box>
+          </UnstyledButton>
+        </Group>
+        <Group gap="xs" align="center" wrap="nowrap" style={{ flexShrink: 0 }}>
           <ActionIcon
             variant="subtle"
             color="red"
@@ -216,13 +298,15 @@ const PluginCard = ({
         </Group>
       </Group>
 
-      {missing && (
-        <Text size="sm" c="red">
-          Missing plugin files. Re-import or delete this entry.
+      {(missing || plugin.legacy) && (
+        <Text size="sm" c={missing ? 'red' : 'yellow'}>
+          {missing
+            ? 'Missing plugin files. Re-import or delete this entry.'
+            : 'Please update or ask the developer to add plugin.json.'}
         </Text>
       )}
 
-      {!missing && plugin.fields && plugin.fields.length > 0 && (
+      {expanded && !missing && enabled && plugin.fields && plugin.fields.length > 0 && (
         <Stack gap="xs" mt="sm">
           <PluginFieldList
             plugin={plugin}
@@ -237,17 +321,17 @@ const PluginCard = ({
         </Stack>
       )}
 
-      {!missing && plugin.actions && plugin.actions.length > 0 && (
+      {expanded && !missing && enabled && plugin.actions && plugin.actions.length > 0 && (
         <>
           <Divider my="sm" />
           <Stack gap="xs">
             <PluginActionList
               plugin={plugin}
               enabled={enabled}
-              running={running}
+              runningActionId={runningActionId}
               handlePluginRun={handlePluginRun}
             />
-            <PluginActionStatus running={running} lastResult={lastResult} />
+            <PluginActionStatus running={!!runningActionId} lastResult={lastResult} />
           </Stack>
         </>
       )}
