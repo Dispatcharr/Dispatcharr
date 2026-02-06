@@ -54,6 +54,7 @@ def stream_ts(request, channel_id):
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
+    connection_allocated = False  # Track if connection slot was allocated via get_stream()
 
     try:
         # Generate a unique client ID
@@ -219,9 +220,9 @@ def stream_ts(request, channel_id):
                     )
 
             if stream_url is None:
-                # Release the channel's stream lock if one was acquired
-                # Note: Only call this if get_stream() actually assigned a stream
-                # In our case, if stream_url is None, no stream was ever assigned, so don't release
+                # Release any connection slot that may have been allocated
+                # by the error-checking get_stream() call during retries
+                channel.release_stream()
 
                 # Get the specific error message if available
                 wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -236,6 +237,11 @@ def stream_ts(request, channel_id):
                 return JsonResponse(
                     {"error": error_msg, "waited": wait_duration}, status=503
                 )  # 503 Service Unavailable is appropriate here
+
+            # generate_stream_url() called get_stream() which allocated a connection
+            # slot (INCR'd profile_connections) - track this for cleanup on error
+            if needs_initialization:
+                connection_allocated = True
 
             # Get the stream ID from the channel
             stream_id, m3u_profile_id, _ = channel.get_stream()
@@ -344,9 +350,15 @@ def stream_ts(request, channel_id):
             )
 
             if not success:
+                if connection_allocated:
+                    channel.release_stream()
+                    connection_allocated = False
                 return JsonResponse(
                     {"error": "Failed to initialize channel"}, status=500
                 )
+
+            # Channel initialized - cleanup lifecycle now owns the connection release
+            connection_allocated = False
 
             # If we're the owner, wait for connection to establish
             if proxy_server.am_i_owner(channel_id):
@@ -507,6 +519,11 @@ def stream_ts(request, channel_id):
 
     except Exception as e:
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
+        if connection_allocated:
+            try:
+                channel.release_stream()
+            except Exception:
+                pass
         return JsonResponse({"error": str(e)}, status=500)
 
 
