@@ -148,7 +148,7 @@ const M3U = ({
         API.addEPG({
           name: values.name,
           source_type: 'xmltv',
-          url: `${values.server_url}/xmltv.php?username=${values.username}&password=${values.password}`,
+          url: `${new URL(values.server_url).origin}/xmltv.php?username=${values.username}&password=${values.password}`,
           api_key: '',
           is_active: true,
           refresh_interval: 24,

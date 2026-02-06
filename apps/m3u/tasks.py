@@ -2305,10 +2305,12 @@ def get_transformed_credentials(account, profile=None):
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
                 path_parts = [part for part in parsed_url.path.split('/') if part]
 
-                if len(path_parts) >= 2:
-                    # Extract username and password from path
-                    transformed_username = path_parts[1]
-                    transformed_password = path_parts[2]
+                if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
+                    # Extract username and password from the known structure:
+                    # .../{live}/{username}/{password}/1234.ts
+                    # Using negative indices so sub-paths in the server URL don't shift extraction
+                    transformed_username = path_parts[-3]
+                    transformed_password = path_parts[-2]
 
                     # Rebuild server URL without the username/password path
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
