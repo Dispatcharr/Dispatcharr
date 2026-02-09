@@ -65,6 +65,7 @@ services:
     #  - /dev/dri:/dev/dri  # For Intel/AMD GPU acceleration (VA-API)
 
     # NVIDIA GPU Support (requires NVIDIA Container Toolkit)
+    # Uncomment the following lines for NVIDIA GPU support
     #deploy:
     #  resources:
     #    reservations:
