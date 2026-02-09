@@ -29,7 +29,12 @@ const PluginFieldList = ({ plugin, settings, updateField }) => {
   ));
 };
 
-const PluginActionList = ({ plugin, enabled, runningActionId, handlePluginRun }) => {
+const PluginActionList = ({
+  plugin,
+  enabled,
+  runningActionId,
+  handlePluginRun,
+}) => {
   return plugin.actions.map((action) => (
     <Group key={action.id} justify="space-between">
       <div>
@@ -226,7 +231,12 @@ const PluginCard = ({
       style={{ opacity: !missing && enabled ? 1 : 0.6 }}
     >
       <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-        <Group gap="sm" align="flex-start" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+        <Group
+          gap="sm"
+          align="flex-start"
+          wrap="nowrap"
+          style={{ minWidth: 0, flex: 1 }}
+        >
           <ActionIcon
             variant="subtle"
             size="sm"
@@ -306,35 +316,51 @@ const PluginCard = ({
         </Text>
       )}
 
-      {expanded && !missing && enabled && plugin.fields && plugin.fields.length > 0 && (
-        <Stack gap="xs" mt="sm">
-          <PluginFieldList
-            plugin={plugin}
-            settings={settings}
-            updateField={updateField}
-          />
-          <Group>
-            <Button loading={saving} onClick={save} variant="default" size="xs">
-              Save Settings
-            </Button>
-          </Group>
-        </Stack>
-      )}
-
-      {expanded && !missing && enabled && plugin.actions && plugin.actions.length > 0 && (
-        <>
-          <Divider my="sm" />
-          <Stack gap="xs">
-            <PluginActionList
+      {expanded &&
+        !missing &&
+        enabled &&
+        plugin.fields &&
+        plugin.fields.length > 0 && (
+          <Stack gap="xs" mt="sm">
+            <PluginFieldList
               plugin={plugin}
-              enabled={enabled}
-              runningActionId={runningActionId}
-              handlePluginRun={handlePluginRun}
+              settings={settings}
+              updateField={updateField}
             />
-            <PluginActionStatus running={!!runningActionId} lastResult={lastResult} />
+            <Group>
+              <Button
+                loading={saving}
+                onClick={save}
+                variant="default"
+                size="xs"
+              >
+                Save Settings
+              </Button>
+            </Group>
           </Stack>
-        </>
-      )}
+        )}
+
+      {expanded &&
+        !missing &&
+        enabled &&
+        plugin.actions &&
+        plugin.actions.length > 0 && (
+          <>
+            <Divider my="sm" />
+            <Stack gap="xs">
+              <PluginActionList
+                plugin={plugin}
+                enabled={enabled}
+                runningActionId={runningActionId}
+                handlePluginRun={handlePluginRun}
+              />
+              <PluginActionStatus
+                running={!!runningActionId}
+                lastResult={lastResult}
+              />
+            </Stack>
+          </>
+        )}
     </Card>
   );
 };

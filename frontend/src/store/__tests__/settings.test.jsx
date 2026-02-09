@@ -190,7 +190,10 @@ describe('useSettingsStore', () => {
       result.current.updateSetting({ key: 'setting1', value: 'updated' });
     });
 
-    expect(result.current.settings.setting2).toEqual({ key: 'setting2', value: 'value2' });
+    expect(result.current.settings.setting2).toEqual({
+      key: 'setting2',
+      value: 'value2',
+    });
   });
 
   it('should handle empty settings array', async () => {
@@ -249,7 +252,10 @@ describe('useSettingsStore', () => {
       },
     });
 
-    api.getVersion.mockResolvedValue({ version: '2.0.0', timestamp: '2024-01-01T00:00:00Z' });
+    api.getVersion.mockResolvedValue({
+      version: '2.0.0',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
 
     const { result } = renderHook(() => useSettingsStore());
 
@@ -336,7 +342,10 @@ describe('useSettingsStore', () => {
 
     api.getSettings.mockResolvedValue(mockSettings);
     api.getEnvironmentSettings.mockResolvedValue(mockEnv);
-    api.getVersion.mockResolvedValue({ version: '2.0.0', timestamp: '2024-01-01T00:00:00Z' });
+    api.getVersion.mockResolvedValue({
+      version: '2.0.0',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
 
     const { result } = renderHook(() => useSettingsStore());
 

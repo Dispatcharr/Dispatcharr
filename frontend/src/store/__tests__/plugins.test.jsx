@@ -136,7 +136,11 @@ describe('usePluginStore', () => {
       result.current.updatePlugin('plugin1', { name: 'Updated Plugin' });
     });
 
-    expect(result.current.plugins[1]).toEqual({ key: 'plugin2', name: 'Plugin 2', enabled: false });
+    expect(result.current.plugins[1]).toEqual({
+      key: 'plugin2',
+      name: 'Plugin 2',
+      enabled: false,
+    });
   });
 
   it('should add plugin', () => {
@@ -152,7 +156,11 @@ describe('usePluginStore', () => {
 
   it('should add plugin to existing plugins', () => {
     const { result } = renderHook(() => usePluginStore());
-    const existingPlugin = { key: 'plugin1', name: 'Existing Plugin', enabled: true };
+    const existingPlugin = {
+      key: 'plugin1',
+      name: 'Existing Plugin',
+      enabled: true,
+    };
     const newPlugin = { key: 'plugin2', name: 'New Plugin', enabled: false };
 
     act(() => {
@@ -192,9 +200,7 @@ describe('usePluginStore', () => {
 
     act(() => {
       usePluginStore.setState({
-        plugins: [
-          { key: 'plugin1', name: 'Plugin 1', enabled: true },
-        ],
+        plugins: [{ key: 'plugin1', name: 'Plugin 1', enabled: true }],
       });
     });
 
@@ -208,9 +214,7 @@ describe('usePluginStore', () => {
   });
 
   it('should invalidate plugins and refetch', async () => {
-    const mockPlugins = [
-      { key: 'plugin1', name: 'Plugin 1', enabled: true },
-    ];
+    const mockPlugins = [{ key: 'plugin1', name: 'Plugin 1', enabled: true }];
 
     API.getPlugins.mockResolvedValue(mockPlugins);
 
@@ -218,9 +222,7 @@ describe('usePluginStore', () => {
 
     act(() => {
       usePluginStore.setState({
-        plugins: [
-          { key: 'old-plugin', name: 'Old Plugin', enabled: false },
-        ],
+        plugins: [{ key: 'old-plugin', name: 'Old Plugin', enabled: false }],
       });
     });
 

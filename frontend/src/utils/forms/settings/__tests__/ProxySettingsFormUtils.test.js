@@ -3,7 +3,7 @@ import * as ProxySettingsFormUtils from '../ProxySettingsFormUtils';
 import * as constants from '../../../../constants.js';
 
 vi.mock('../../../../constants.js', () => ({
-  PROXY_SETTINGS_OPTIONS: {}
+  PROXY_SETTINGS_OPTIONS: {},
 }));
 
 describe('ProxySettingsFormUtils', () => {
@@ -16,7 +16,7 @@ describe('ProxySettingsFormUtils', () => {
       vi.mocked(constants).PROXY_SETTINGS_OPTIONS = {
         'proxy-buffering-timeout': 'Buffering Timeout',
         'proxy-buffering-speed': 'Buffering Speed',
-        'proxy-redis-chunk-ttl': 'Redis Chunk TTL'
+        'proxy-redis-chunk-ttl': 'Redis Chunk TTL',
       };
 
       const result = ProxySettingsFormUtils.getProxySettingsFormInitialValues();
@@ -24,7 +24,7 @@ describe('ProxySettingsFormUtils', () => {
       expect(result).toEqual({
         'proxy-buffering-timeout': '',
         'proxy-buffering-speed': '',
-        'proxy-redis-chunk-ttl': ''
+        'proxy-redis-chunk-ttl': '',
       });
     });
 
@@ -38,11 +38,13 @@ describe('ProxySettingsFormUtils', () => {
 
     it('should return a new object each time', () => {
       vi.mocked(constants).PROXY_SETTINGS_OPTIONS = {
-        'proxy-setting': 'Proxy Setting'
+        'proxy-setting': 'Proxy Setting',
       };
 
-      const result1 = ProxySettingsFormUtils.getProxySettingsFormInitialValues();
-      const result2 = ProxySettingsFormUtils.getProxySettingsFormInitialValues();
+      const result1 =
+        ProxySettingsFormUtils.getProxySettingsFormInitialValues();
+      const result2 =
+        ProxySettingsFormUtils.getProxySettingsFormInitialValues();
 
       expect(result1).toEqual(result2);
       expect(result1).not.toBe(result2);

@@ -22,7 +22,10 @@ import {
   Text,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
-import { showNotification, updateNotification, } from '../utils/notificationUtils.js';
+import {
+  showNotification,
+  updateNotification,
+} from '../utils/notificationUtils.js';
 import { usePluginStore } from '../store/plugins.jsx';
 import {
   deletePluginByKey,
@@ -34,8 +37,9 @@ import {
 } from '../utils/pages/PluginsUtils.js';
 import { RefreshCcw } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
-const PluginCard = React.lazy(() =>
-  import('../components/cards/PluginCard.jsx'));
+const PluginCard = React.lazy(
+  () => import('../components/cards/PluginCard.jsx')
+);
 
 const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
   const plugins = usePluginStore((state) => state.plugins);
@@ -68,7 +72,7 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
 
   return (
     <>
-      {plugins.length > 0 &&
+      {plugins.length > 0 && (
         <SimpleGrid
           cols={2}
           spacing="md"
@@ -91,13 +95,13 @@ const PluginsList = ({ onRequestDelete, onRequireTrust, onRequestConfirm }) => {
             </Suspense>
           </ErrorBoundary>
         </SimpleGrid>
-      }
+      )}
 
       {plugins.length === 0 && (
         <Box>
           <Text c="dimmed">
-            No plugins found. Drop a plugin into <code>/data/plugins</code>{' '}
-            and reload.
+            No plugins found. Drop a plugin into <code>/data/plugins</code> and
+            reload.
           </Text>
         </Box>
       )}
@@ -255,12 +259,15 @@ export default function PluginsPage() {
     };
   };
 
-  const handleConfirm = useCallback((confirmed) => {
-    const resolver = confirmConfig.resolve;
-    setConfirmOpen(false);
-    setConfirmConfig({ title: '', message: '', resolve: null });
-    if (resolver) resolver(confirmed);
-  }, [confirmConfig.resolve]);
+  const handleConfirm = useCallback(
+    (confirmed) => {
+      const resolver = confirmConfig.resolve;
+      setConfirmOpen(false);
+      setConfirmConfig({ title: '', message: '', resolve: null });
+      if (resolver) resolver(confirmed);
+    },
+    [confirmConfig.resolve]
+  );
 
   return (
     <AppShellMain p={16}>

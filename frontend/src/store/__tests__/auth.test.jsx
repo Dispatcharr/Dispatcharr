@@ -54,36 +54,50 @@ describe('useAuthStore', () => {
     localStorageMock.clear();
 
     // Setup default store mocks
-    useSettingsStore.mockImplementation((selector) => selector({
-      fetchSettings: vi.fn().mockResolvedValue(),
-    }));
+    useSettingsStore.mockImplementation((selector) =>
+      selector({
+        fetchSettings: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    useChannelsStore.mockImplementation((selector) => selector({
-      fetchChannels: vi.fn().mockResolvedValue(),
-      fetchChannelGroups: vi.fn().mockResolvedValue(),
-      fetchChannelProfiles: vi.fn().mockResolvedValue(),
-    }));
+    useChannelsStore.mockImplementation((selector) =>
+      selector({
+        fetchChannels: vi.fn().mockResolvedValue(),
+        fetchChannelGroups: vi.fn().mockResolvedValue(),
+        fetchChannelProfiles: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    usePlaylistsStore.mockImplementation((selector) => selector({
-      fetchPlaylists: vi.fn().mockResolvedValue(),
-    }));
+    usePlaylistsStore.mockImplementation((selector) =>
+      selector({
+        fetchPlaylists: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    useEPGsStore.mockImplementation((selector) => selector({
-      fetchEPGs: vi.fn().mockResolvedValue(),
-      fetchEPGData: vi.fn().mockResolvedValue(),
-    }));
+    useEPGsStore.mockImplementation((selector) =>
+      selector({
+        fetchEPGs: vi.fn().mockResolvedValue(),
+        fetchEPGData: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    useStreamProfilesStore.mockImplementation((selector) => selector({
-      fetchProfiles: vi.fn().mockResolvedValue(),
-    }));
+    useStreamProfilesStore.mockImplementation((selector) =>
+      selector({
+        fetchProfiles: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    useUserAgentsStore.mockImplementation((selector) => selector({
-      fetchUserAgents: vi.fn().mockResolvedValue(),
-    }));
+    useUserAgentsStore.mockImplementation((selector) =>
+      selector({
+        fetchUserAgents: vi.fn().mockResolvedValue(),
+      })
+    );
 
-    useUsersStore.mockImplementation((selector) => selector({
-      fetchUsers: vi.fn().mockResolvedValue(),
-    }));
+    useUsersStore.mockImplementation((selector) =>
+      selector({
+        fetchUsers: vi.fn().mockResolvedValue(),
+      })
+    );
   });
 
   afterEach(() => {
@@ -140,13 +154,25 @@ describe('useAuthStore', () => {
       const { result } = renderHook(() => useAuthStore());
 
       await act(async () => {
-        await result.current.login({ username: 'testuser', password: 'password' });
+        await result.current.login({
+          username: 'testuser',
+          password: 'password',
+        });
       });
 
       expect(API.login).toHaveBeenCalledWith('testuser', 'password');
-      expect(localStorageMock.setItem).toHaveBeenCalledWith('accessToken', mockAccessToken);
-      expect(localStorageMock.setItem).toHaveBeenCalledWith('refreshToken', mockRefreshToken);
-      expect(localStorageMock.setItem).toHaveBeenCalledWith('tokenExpiration', expect.any(Number));
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'accessToken',
+        mockAccessToken
+      );
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'refreshToken',
+        mockRefreshToken
+      );
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'tokenExpiration',
+        expect.any(Number)
+      );
     });
 
     it('should handle login failure', async () => {
@@ -182,7 +208,10 @@ describe('useAuthStore', () => {
 
       expect(API.refreshToken).toHaveBeenCalledWith('old-refresh-token');
       expect(newToken).toBe(mockNewAccessToken);
-      expect(localStorageMock.setItem).toHaveBeenCalledWith('accessToken', mockNewAccessToken);
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'accessToken',
+        mockNewAccessToken
+      );
     });
 
     it('should return false if no refresh token exists', async () => {
@@ -213,7 +242,9 @@ describe('useAuthStore', () => {
       expect(result.current.isAuthenticated).toBe(false);
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('accessToken');
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('refreshToken');
-      expect(localStorageMock.removeItem).toHaveBeenCalledWith('tokenExpiration');
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        'tokenExpiration'
+      );
     });
   });
 
@@ -277,7 +308,9 @@ describe('useAuthStore', () => {
       expect(result.current.user).toBeNull();
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('accessToken');
       expect(localStorageMock.removeItem).toHaveBeenCalledWith('refreshToken');
-      expect(localStorageMock.removeItem).toHaveBeenCalledWith('tokenExpiration');
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(
+        'tokenExpiration'
+      );
     });
 
     it('should continue logout even if API call fails', async () => {
@@ -372,7 +405,6 @@ describe('useAuthStore', () => {
       expect(fetchUsers).toHaveBeenCalled();
     });
 
-
     it('should not fetch users for non-admin user', async () => {
       const mockUser = {
         username: 'reseller',
@@ -418,7 +450,9 @@ describe('useAuthStore', () => {
 
       API.me.mockResolvedValue(mockUser);
 
-      const fetchChannels = vi.fn().mockRejectedValue(new Error('Fetch failed'));
+      const fetchChannels = vi
+        .fn()
+        .mockRejectedValue(new Error('Fetch failed'));
 
       useChannelsStore.getState = vi.fn(() => ({
         fetchChannels,
@@ -437,7 +471,11 @@ describe('useAuthStore', () => {
   describe('setUser', () => {
     it('should update user state', () => {
       const { result } = renderHook(() => useAuthStore());
-      const newUser = { username: 'test', email: 'test@test.com', user_level: USER_LEVELS.ADMIN };
+      const newUser = {
+        username: 'test',
+        email: 'test@test.com',
+        user_level: USER_LEVELS.ADMIN,
+      };
 
       act(() => {
         result.current.setUser(newUser);
@@ -494,7 +532,10 @@ describe('useAuthStore', () => {
       const { result } = renderHook(() => useAuthStore());
 
       await act(async () => {
-        await result.current.login({ username: 'testuser', password: 'password' });
+        await result.current.login({
+          username: 'testuser',
+          password: 'password',
+        });
       });
 
       expect(result.current.accessToken).toBeNull();
@@ -577,7 +618,7 @@ describe('useAuthStore', () => {
       // Reset state before the test
       useAuthStore.setState({
         isInitializing: false,
-        isInitialized: false
+        isInitialized: false,
       });
 
       API.me.mockRejectedValue(new Error('API error'));
@@ -620,7 +661,7 @@ describe('useAuthStore', () => {
 
       // Wait for the background call to complete
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
       // The background fetchChannels is called synchronously without await

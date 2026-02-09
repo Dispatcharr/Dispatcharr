@@ -180,7 +180,6 @@ const ChannelTableHeader = ({
     }
   };
 
-  
   const assignChannels = async () => {
     try {
       // Call our custom API endpoint

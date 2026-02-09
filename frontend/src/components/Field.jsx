@@ -1,4 +1,11 @@
-import { NumberInput, Select, Switch, Text, Textarea, TextInput } from '@mantine/core';
+import {
+  NumberInput,
+  Select,
+  Switch,
+  Text,
+  Textarea,
+  TextInput,
+} from '@mantine/core';
 import React from 'react';
 
 export const Field = ({ field, value, onChange }) => {

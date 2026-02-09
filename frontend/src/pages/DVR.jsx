@@ -10,24 +10,23 @@ import {
   Title,
   useMantineTheme,
 } from '@mantine/core';
-import {
-  SquarePlus,
-} from 'lucide-react';
+import { SquarePlus } from 'lucide-react';
 import useChannelsStore from '../store/channels';
 import useSettingsStore from '../store/settings';
 import useVideoStore from '../store/useVideoStore';
 import RecordingForm from '../components/forms/Recording';
-import {
-  isAfter,
-  isBefore,
-  useTimeHelpers,
-} from '../utils/dateTimeUtils.js';
-const RecordingDetailsModal = lazy(() =>
-  import('../components/forms/RecordingDetailsModal'));
+import { isAfter, isBefore, useTimeHelpers } from '../utils/dateTimeUtils.js';
+const RecordingDetailsModal = lazy(
+  () => import('../components/forms/RecordingDetailsModal')
+);
 import RecurringRuleModal from '../components/forms/RecurringRuleModal.jsx';
 import RecordingCard from '../components/cards/RecordingCard.jsx';
 import { categorizeRecordings } from '../utils/pages/DVRUtils.js';
-import { getPosterUrl, getRecordingUrl, getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
+import {
+  getPosterUrl,
+  getRecordingUrl,
+  getShowVideoUrl,
+} from '../utils/cards/RecordingCardUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 const RecordingList = ({ list, onOpenDetails, onOpenRecurring }) => {
@@ -113,32 +112,35 @@ const DVRPage = () => {
     const now = userNow();
     const s = toUserTime(rec.start_time);
     const e = toUserTime(rec.end_time);
-    if(isAfter(now, s) && isBefore(now, e)) {
+    if (isAfter(now, s) && isBefore(now, e)) {
       // call into child RecordingCard behavior by constructing a URL like there
       const channel = channels[rec.channel];
       if (!channel) return;
-      const url = getShowVideoUrl(channel, useSettingsStore.getState().environment.env_mode);
+      const url = getShowVideoUrl(
+        channel,
+        useSettingsStore.getState().environment.env_mode
+      );
       useVideoStore.getState().showVideo(url, 'live');
     }
-  }
+  };
 
   const handleOnWatchRecording = () => {
     const url = getRecordingUrl(
-      detailsRecording.custom_properties, useSettingsStore.getState().environment.env_mode);
-    if(!url) return;
+      detailsRecording.custom_properties,
+      useSettingsStore.getState().environment.env_mode
+    );
+    if (!url) return;
     useVideoStore.getState().showVideo(url, 'vod', {
-      name:
-        detailsRecording.custom_properties?.program?.title ||
-        'Recording',
+      name: detailsRecording.custom_properties?.program?.title || 'Recording',
       logo: {
         url: getPosterUrl(
           detailsRecording.custom_properties?.poster_logo_id,
           undefined,
           channels[detailsRecording.channel]?.logo?.cache_url
-        )
+        ),
       },
     });
-  }
+  };
   return (
     <Box p={10}>
       <Button
@@ -170,11 +172,13 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList
-              list={inProgress}
-              onOpenDetails={openDetails}
-              onOpenRecurring={openRuleModal}
-            />}
+            {
+              <RecordingList
+                list={inProgress}
+                onOpenDetails={openDetails}
+                onOpenRecurring={openRuleModal}
+              />
+            }
             {inProgress.length === 0 && (
               <Text size="sm" c="dimmed">
                 Nothing recording right now.
@@ -196,11 +200,13 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList
-              list={upcoming}
-              onOpenDetails={openDetails}
-              onOpenRecurring={openRuleModal}
-            />}
+            {
+              <RecordingList
+                list={upcoming}
+                onOpenDetails={openDetails}
+                onOpenRecurring={openRuleModal}
+              />
+            }
             {upcoming.length === 0 && (
               <Text size="sm" c="dimmed">
                 No upcoming recordings.
@@ -222,11 +228,13 @@ const DVRPage = () => {
               { maxWidth: '36rem', cols: 1 },
             ]}
           >
-            {<RecordingList
-              list={completed}
-              onOpenDetails={openDetails}
-              onOpenRecurring={openRuleModal}
-            />}
+            {
+              <RecordingList
+                list={completed}
+                onOpenDetails={openDetails}
+                onOpenRecurring={openRuleModal}
+              />
+            }
             {completed.length === 0 && (
               <Text size="sm" c="dimmed">
                 No completed recordings yet.
