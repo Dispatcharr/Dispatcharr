@@ -11,6 +11,7 @@ import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import {
   getNetworkAccessFormInitialValues,
   getNetworkAccessFormValidation,
+  getNetworkAccessDefaults,
 } from '../../../utils/forms/settings/NetworkAccessFormUtils.js';
 
 const NetworkAccessForm = React.memo(({ active }) => {
@@ -37,13 +38,22 @@ const NetworkAccessForm = React.memo(({ active }) => {
 
   useEffect(() => {
     const networkAccessSettings = settings['network_access']?.value || {};
+    // M3U/EPG endpoints default to local networks only
+    const m3uEpgDefaults =
+      '127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7,fe80::/10';
     networkAccessForm.setValues(
       Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
-        acc[key] = networkAccessSettings[key] || '0.0.0.0/0,::/0';
+        const defaultValue =
+          key === 'M3U_EPG' ? m3uEpgDefaults : '0.0.0.0/0,::/0';
+        acc[key] = networkAccessSettings[key] || defaultValue;
         return acc;
       }, {})
     );
   }, [settings]);
+
+  const resetNetworkAccessToDefaults = () => {
+    networkAccessForm.setValues(getNetworkAccessDefaults());
+  };
 
   const onNetworkAccessSubmit = async () => {
     setSaved(false);
@@ -120,7 +130,14 @@ const NetworkAccessForm = React.memo(({ active }) => {
             />
           ))}
 
-          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+          <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
+            <Button
+              variant="subtle"
+              color="gray"
+              onClick={resetNetworkAccessToDefaults}
+            >
+              Reset to Defaults
+            </Button>
             <Button
               type="submit"
               disabled={networkAccessForm.submitting}

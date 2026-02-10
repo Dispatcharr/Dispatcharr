@@ -4,12 +4,15 @@ from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
+from django.db.models import Count, F
 from django.db.models import Q
-import os, json, requests, logging
+import os, json, requests, logging, mimetypes
+from django.utils.http import http_date
 from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
@@ -103,6 +106,7 @@ class StreamFilter(django_filters.FilterSet):
     m3u_account_is_active = django_filters.BooleanFilter(
         field_name="m3u_account__is_active"
     )
+    tvg_id = django_filters.CharFilter(lookup_expr="icontains")
 
     class Meta:
         model = Stream
@@ -112,6 +116,7 @@ class StreamFilter(django_filters.FilterSet):
             "m3u_account",
             "m3u_account_name",
             "m3u_account_is_active",
+            "tvg_id",
         ]
 
 
@@ -126,7 +131,7 @@ class StreamViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = StreamFilter
     search_fields = ["name", "channel_group__name"]
-    ordering_fields = ["name", "channel_group__name", "m3u_account__name"]
+    ordering_fields = ["name", "channel_group__name", "m3u_account__name", "tvg_id"]
     ordering = ["-name"]
 
     def get_permissions(self):
@@ -147,13 +152,19 @@ class StreamViewSet(viewsets.ModelViewSet):
             qs = qs.filter(channels__id=assigned)
 
         unassigned = self.request.query_params.get("unassigned")
-        if unassigned == "1":
-            qs = qs.filter(channels__isnull=True)
+        if unassigned and str(unassigned).lower() in ("1", "true", "yes", "on"):
+            # Use annotation with Count for better performance on large datasets
+            qs = qs.annotate(channel_count=Count('channels')).filter(channel_count=0)
 
         channel_group = self.request.query_params.get("channel_group")
         if channel_group:
             group_names = channel_group.split(",")
             qs = qs.filter(channel_group__name__in=group_names)
+
+        # Allow client to hide stale streams (streams marked as is_stale=True)
+        hide_stale = self.request.query_params.get("hide_stale")
+        if hide_stale and str(hide_stale).lower() in ("1", "true", "yes", "on"):
+            qs = qs.filter(is_stale=False)
 
         return qs
 
@@ -261,17 +272,15 @@ class StreamViewSet(viewsets.ModelViewSet):
             ]
         })
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Retrieve streams by a list of IDs using POST to avoid URL length limitations",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["ids"],
-            properties={
-                "ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="List of stream IDs to retrieve"
+    @extend_schema(
+        methods=["POST"],
+        description="Retrieve streams by a list of IDs using POST to avoid URL length limitations",
+        request=inline_serializer(
+            name="StreamByIdsRequest",
+            fields={
+                "ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="List of stream IDs to retrieve"
                 ),
             },
         ),
@@ -334,10 +343,9 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 
         return super().partial_update(request, *args, **kwargs)
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Delete all channel groups that have no associations (no channels or M3U accounts)",
-        responses={200: "Cleanup completed"},
+    @extend_schema(
+        methods=["POST"],
+        description="Delete all channel groups that have no associations (no channels or M3U accounts)",
     )
     @action(detail=False, methods=["post"], url_path="cleanup")
     def cleanup_unused_groups(self, request):
@@ -585,6 +593,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
+            # Hide adult content if user preference is set
+            custom_props = self.request.user.custom_properties or {}
+            if custom_props.get('hide_adult_content', False):
+                filters["is_adult"] = False
 
         if filters:
             qs = qs.filter(**filters)
@@ -819,25 +831,22 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Return the response with the list of IDs
         return Response(list(channel_ids))
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Auto-assign channel_number in bulk by an ordered list of channel IDs.",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["channel_ids"],
-            properties={
-                "starting_number": openapi.Schema(
-                    type=openapi.TYPE_NUMBER,
-                    description="Starting channel number to assign (can be decimal)",
+    @extend_schema(
+        methods=["POST"],
+        description="Auto-assign channel_number in bulk by an ordered list of channel IDs.",
+        request=inline_serializer(
+            name="AssignChannelsRequest",
+            fields={
+                "starting_number": serializers.FloatField(
+                    help_text="Starting channel number to assign (can be decimal)",
+                    required=False,
                 ),
-                "channel_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Channel IDs to assign",
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Channel IDs to assign",
                 ),
             },
         ),
-        responses={200: "Channels have been auto-assigned!"},
     )
     @action(detail=False, methods=["post"], url_path="assign")
     def assign(self, request):
@@ -857,33 +866,28 @@ class ChannelViewSet(viewsets.ModelViewSet):
             {"message": "Channels have been auto-assigned!"}, status=status.HTTP_200_OK
         )
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description=(
+    @extend_schema(
+        methods=["POST"],
+        description=(
             "Create a new channel from an existing stream. "
             "If 'channel_number' is provided, it will be used (if available); "
             "otherwise, the next available channel number is assigned. "
             "If 'channel_profile_ids' is provided, the channel will only be added to those profiles. "
             "Accepts either a single ID or an array of IDs."
         ),
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["stream_id"],
-            properties={
-                "stream_id": openapi.Schema(
-                    type=openapi.TYPE_INTEGER, description="ID of the stream to link"
+        request=inline_serializer(
+            name="FromStreamRequest",
+            fields={
+                "stream_id": serializers.IntegerField(help_text="ID of the stream to link"),
+                "channel_number": serializers.FloatField(
+                    help_text="(Optional) Desired channel number. Must not be in use.",
+                    required=False,
                 ),
-                "channel_number": openapi.Schema(
-                    type=openapi.TYPE_NUMBER,
-                    description="(Optional) Desired channel number. Must not be in use.",
-                ),
-                "name": openapi.Schema(
-                    type=openapi.TYPE_STRING, description="Desired channel name"
-                ),
-                "channel_profile_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
+                "name": serializers.CharField(help_text="Desired channel name", required=False),
+                "channel_profile_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles.",
+                    required=False,
                 ),
             },
         ),
@@ -905,18 +909,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if name is None:
             name = stream.name
 
-        # Check if client provided a channel_number; if not, auto-assign one.
-        stream_custom_props = stream.custom_properties or {}
+        # Check if client provided a channel_number; if not, use stream_chno or auto-assign
         channel_number = request.data.get("channel_number")
 
         if channel_number is None:
-            # Channel number not provided by client, check stream properties or auto-assign
-            if "tvg-chno" in stream_custom_props:
-                channel_number = float(stream_custom_props["tvg-chno"])
-            elif "channel-number" in stream_custom_props:
-                channel_number = float(stream_custom_props["channel-number"])
-            elif "num" in stream_custom_props:
-                channel_number = float(stream_custom_props["num"])
+            # Channel number not provided by client, check stream's channel number or auto-assign
+            if stream.stream_chno is not None:
+                channel_number = stream.stream_chno
         elif channel_number == 0:
             # Special case: 0 means ignore provider numbers and auto-assign
             channel_number = None
@@ -937,9 +936,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if Channel.objects.filter(channel_number=channel_number).exists():
             channel_number = Channel.get_next_available_channel_number(channel_number)
         # Get the tvc_guide_stationid from custom properties if it exists
-        tvc_guide_stationid = None
-        if "tvc-guide-stationid" in stream_custom_props:
-            tvc_guide_stationid = stream_custom_props["tvc-guide-stationid"]
+        stream_custom_props = stream.custom_properties or {}
+        tvc_guide_stationid = stream_custom_props.get("tvc-guide-stationid")
 
         channel_data = {
             "channel_number": channel_number,
@@ -947,6 +945,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "tvg_id": stream.tvg_id,
             "tvc_guide_stationid": tvc_guide_stationid,
             "streams": [stream_id],
+            "is_adult": stream.is_adult,
         }
 
         # Only add channel_group_id if the stream has a channel group
@@ -1042,34 +1041,31 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description=(
+    @extend_schema(
+        methods=["POST"],
+        description=(
             "Asynchronously bulk create channels from stream IDs. "
             "Returns a task ID to track progress via WebSocket. "
             "This is the recommended approach for large bulk operations."
         ),
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["stream_ids"],
-            properties={
-                "stream_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="List of stream IDs to create channels from"
+        request=inline_serializer(
+            name="FromStreamBulkRequest",
+            fields={
+                "stream_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="List of stream IDs to create channels from"
                 ),
-                "channel_profile_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles."
+                "channel_profile_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="(Optional) Channel profile ID(s). Behavior: omitted = add to ALL profiles (default); empty array [] = add to NO profiles; [0] = add to ALL profiles (explicit); [1,2,...] = add only to specified profiles.",
+                    required=False,
                 ),
-                "starting_channel_number": openapi.Schema(
-                    type=openapi.TYPE_INTEGER,
-                    description="(Optional) Starting channel number mode: null=use provider numbers, 0=lowest available, other=start from specified number"
+                "starting_channel_number": serializers.IntegerField(
+                    help_text="(Optional) Starting channel number mode: null=use provider numbers, 0=lowest available, other=start from specified number",
+                    required=False,
                 ),
             },
         ),
-        responses={202: "Task started successfully"},
     )
     @action(detail=False, methods=["post"], url_path="from-stream/bulk")
     def from_stream_bulk(self, request):
@@ -1109,20 +1105,19 @@ class ChannelViewSet(viewsets.ModelViewSet):
     # ─────────────────────────────────────────────────────────
     # 6) EPG Fuzzy Matching
     # ─────────────────────────────────────────────────────────
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Kick off a Celery task that tries to fuzzy-match channels with EPG data. If channel_ids are provided, only those channels will be processed.",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                'channel_ids': openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(type=openapi.TYPE_INTEGER),
-                    description='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.'
+    @extend_schema(
+        methods=["POST"],
+        description="Kick off a Celery task that tries to fuzzy-match channels with EPG data. If channel_ids are provided, only those channels will be processed.",
+        request=inline_serializer(
+            name="MatchEpgRequest",
+            fields={
+                'channel_ids': serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text='List of channel IDs to process. If empty or not provided, all channels without EPG will be processed.',
+                    required=False,
                 )
             }
         ),
-        responses={202: "EPG matching task initiated"},
     )
     @action(detail=False, methods=["post"], url_path="match-epg")
     def match_epg(self, request):
@@ -1143,10 +1138,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
             {"message": message}, status=status.HTTP_202_ACCEPTED
         )
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Try to auto-match this specific channel with EPG data.",
-        responses={200: "EPG matching completed", 202: "EPG matching task initiated"},
+    @extend_schema(
+        methods=["POST"],
+        description="Try to auto-match this specific channel with EPG data.",
     )
     @action(detail=True, methods=["post"], url_path="match-epg")
     def match_channel_epg(self, request, pk=None):
@@ -1173,16 +1167,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
     # ─────────────────────────────────────────────────────────
     # 7) Set EPG and Refresh
     # ─────────────────────────────────────────────────────────
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Set EPG data for a channel and refresh program data",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["epg_data_id"],
-            properties={
-                "epg_data_id": openapi.Schema(
-                    type=openapi.TYPE_INTEGER, description="EPG data ID to link"
-                )
+    @extend_schema(
+        methods=["POST"],
+        description="Set EPG data for a channel and refresh program data",
+        request=inline_serializer(
+            name="SetEpgRequest",
+            fields={
+                "epg_data_id": serializers.IntegerField(help_text="EPG data ID to link")
             },
         ),
         responses={200: "EPG data linked and refresh triggered"},
@@ -1238,25 +1229,106 @@ class ChannelViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
-    @swagger_auto_schema(
-        method="post",
-        operation_description="Associate multiple channels with EPG data without triggering a full refresh",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                "associations": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        properties={
-                            "channel_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "epg_data_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+    @extend_schema(
+        description=(
+            "Reorder a channel by moving it after another channel (or to the start if insert_after_id is null). "
+            "The channel will receive the next whole number after the target channel, and all subsequent "
+            "channels will be renumbered accordingly."
+        ),
+        request=inline_serializer(
+            name="ReorderChannelRequest",
+            fields={
+                "insert_after_id": serializers.IntegerField(
+                    help_text="ID of the channel to insert after. Use null to move to the beginning.",
+                    required=False,
+                    allow_null=True,
+                ),
+            },
+        ),
+    )
+    @action(detail=True, methods=["post"], url_path="reorder")
+    def reorder(self, request, pk=None):
+        """
+        Reorder a channel by moving it after another channel (or to the start if insert_after_id is null).
+        Shifts other channels as needed to maintain contiguous ordering.
+        """
+        channel = self.get_object()
+        insert_after_id = request.data.get("insert_after_id")
+        old_channel_number = channel.channel_number
+
+        with transaction.atomic():
+            if insert_after_id is None:
+                # Move to the beginning (channel_number = 1)
+                target_number = 0
+                desired_number = 1
+            else:
+                try:
+                    target_channel = Channel.objects.get(id=insert_after_id)
+                    target_number = target_channel.channel_number or 0
+                    desired_number = int(target_number) + 1
+                except Channel.DoesNotExist:
+                    return Response(
+                        {"error": "Target channel not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+            if desired_number == old_channel_number:
+                # No change needed
+                return Response(
+                    {
+                        "message": f"Channel {channel.name} already at position {desired_number}",
+                        "channel": self.get_serializer(channel).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            if desired_number < old_channel_number:
+                # Moving up: increment all channels between desired_number and old_channel_number-1
+                Channel.objects.filter(
+                    channel_number__gte=desired_number,
+                    channel_number__lt=old_channel_number
+                ).update(channel_number=F('channel_number') + 1)
+                channel.channel_number = desired_number
+                channel.save(update_fields=['channel_number'])
+            elif desired_number > old_channel_number:
+                # Moving down: shift down channels between old+1 and desired-1, then set to desired-1
+                if desired_number > old_channel_number + 1:
+                    Channel.objects.filter(
+                        channel_number__gt=old_channel_number,
+                        channel_number__lt=desired_number
+                    ).update(channel_number=F('channel_number') - 1)
+                channel.channel_number = desired_number - 1
+                channel.save(update_fields=['channel_number'])
+            else:
+                # No move or same position
+                channel.channel_number = desired_number
+                channel.save(update_fields=['channel_number'])
+
+        return Response(
+            {
+                "message": f"Channel {channel.name} moved to position {desired_number}",
+                "channel": self.get_serializer(channel).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        methods=["POST"],
+        description="Associate multiple channels with EPG data without triggering a full refresh",
+        request=inline_serializer(
+            name="BatchSetEpgRequest",
+            fields={
+                "associations": serializers.ListField(
+                    child=inline_serializer(
+                        name="EpgAssociation",
+                        fields={
+                            "channel_id": serializers.IntegerField(),
+                            "epg_data_id": serializers.IntegerField(),
                         },
                     ),
                 )
             },
         ),
-        responses={200: "EPG data linked for multiple channels"},
     )
     @action(detail=False, methods=["post"], url_path="batch-set-epg")
     def batch_set_epg(self, request):
@@ -1354,20 +1426,17 @@ class BulkDeleteStreamsAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Bulk delete streams by ID",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["stream_ids"],
-            properties={
-                "stream_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Stream IDs to delete",
+    @extend_schema(
+        description="Bulk delete streams by ID",
+        request=inline_serializer(
+            name="BulkDeleteStreamsRequest",
+            fields={
+                "stream_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Stream IDs to delete",
                 )
             },
         ),
-        responses={204: "Streams deleted"},
     )
     def delete(self, request, *args, **kwargs):
         stream_ids = request.data.get("stream_ids", [])
@@ -1390,20 +1459,17 @@ class BulkDeleteChannelsAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Bulk delete channels by ID",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["channel_ids"],
-            properties={
-                "channel_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Channel IDs to delete",
+    @extend_schema(
+        description="Bulk delete channels by ID",
+        request=inline_serializer(
+            name="BulkDeleteChannelsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Channel IDs to delete",
                 )
             },
         ),
-        responses={204: "Channels deleted"},
     )
     def delete(self, request):
         channel_ids = request.data.get("channel_ids", [])
@@ -1425,20 +1491,17 @@ class BulkDeleteLogosAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Bulk delete logos by ID",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["logo_ids"],
-            properties={
-                "logo_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Logo IDs to delete",
+    @extend_schema(
+        description="Bulk delete logos by ID",
+        request=inline_serializer(
+            name="BulkDeleteLogosRequest",
+            fields={
+                "logo_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Logo IDs to delete",
                 )
             },
         ),
-        responses={204: "Logos deleted"},
     )
     def delete(self, request):
         logo_ids = request.data.get("logo_ids", [])
@@ -1495,19 +1558,18 @@ class CleanupUnusedLogosAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Delete all channel logos that are not used by any channels",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                "delete_files": openapi.Schema(
-                    type=openapi.TYPE_BOOLEAN,
-                    description="Whether to delete local logo files from disk",
-                    default=False
+    @extend_schema(
+        description="Delete all channel logos that are not used by any channels",
+        request=inline_serializer(
+            name="CleanupUnusedLogosRequest",
+            fields={
+                "delete_files": serializers.BooleanField(
+                    help_text="Whether to delete local logo files from disk",
+                    default=False,
+                    required=False,
                 )
             },
         ),
-        responses={200: "Cleanup completed"},
     )
     def post(self, request):
         """Delete all channel logos with no channel associations"""
@@ -1720,11 +1782,10 @@ class LogoViewSet(viewsets.ModelViewSet):
         """Streams the logo file, whether it's local or remote."""
         logo = self.get_object()
         logo_url = logo.url
-
         if logo_url.startswith("/data"):  # Local file
             if not os.path.exists(logo_url):
                 raise Http404("Image not found")
-
+            stat = os.stat(logo_url)
             # Get proper mime type (first item of the tuple)
             content_type, _ = mimetypes.guess_type(logo_url)
             if not content_type:
@@ -1734,6 +1795,8 @@ class LogoViewSet(viewsets.ModelViewSet):
             response = StreamingHttpResponse(
                 open(logo_url, "rb"), content_type=content_type
             )
+            response["Cache-Control"] = "public, max-age=14400"  # Cache in browser for 4 hours
+            response["Last-Modified"] = http_date(stat.st_mtime)
             response["Content-Disposition"] = 'inline; filename="{}"'.format(
                 os.path.basename(logo_url)
             )
@@ -1773,6 +1836,10 @@ class LogoViewSet(viewsets.ModelViewSet):
                         remote_response.iter_content(chunk_size=8192),
                         content_type=content_type,
                     )
+                    if(remote_response.headers.get("Cache-Control")):
+                        response["Cache-Control"] = remote_response.headers.get("Cache-Control")
+                    if(remote_response.headers.get("Last-Modified")):
+                        response["Last-Modified"] = remote_response.headers.get("Last-Modified")
                     response["Content-Disposition"] = 'inline; filename="{}"'.format(
                         os.path.basename(logo_url)
                     )
@@ -1912,29 +1979,9 @@ class BulkUpdateChannelMembershipAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
-        request_body=BulkChannelProfileMembershipSerializer,
-        responses={
-            200: openapi.Response(
-                description="Channels updated successfully",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "status": openapi.Schema(type=openapi.TYPE_STRING, example="success"),
-                        "updated": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of channels updated"),
-                        "created": openapi.Schema(type=openapi.TYPE_INTEGER, description="Number of new memberships created"),
-                        "invalid_channels": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(type=openapi.TYPE_INTEGER),
-                            description="List of channel IDs that don't exist"
-                        ),
-                    },
-                ),
-            ),
-            400: "Invalid request data",
-            404: "Profile not found",
-        },
+    @extend_schema(
+        description="Bulk enable or disable channels for a specific profile. Creates membership records if they don't exist.",
+        request=BulkChannelProfileMembershipSerializer,
     )
     def patch(self, request, profile_id):
         """Bulk enable or disable channels for a specific profile"""
@@ -2299,9 +2346,25 @@ class SeriesRulesAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @extend_schema(
+        summary="List all series rules",
+        description="Retrieve all configured DVR series recording rules.",
+    )
     def get(self, request):
         return Response({"rules": CoreSettings.get_dvr_series_rules()})
 
+    @extend_schema(
+        summary="Create or update a series rule",
+        description="Add a new series recording rule or update an existing one. Rules will be evaluated immediately to find matching episodes.",
+        request=inline_serializer(
+            name="SeriesRuleRequest",
+            fields={
+                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', help_text='all: record all episodes, new: record only new episodes'),
+                'title': serializers.CharField(help_text='Series title', required=False),
+            },
+        ),
+    )
     def post(self, request):
         data = request.data or {}
         tvg_id = str(data.get("tvg_id") or "").strip()
@@ -2334,6 +2397,13 @@ class DeleteSeriesRuleAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @extend_schema(
+        summary="Delete a series rule",
+        description="Remove a series recording rule by TVG ID. This does not remove already scheduled recordings.",
+        parameters=[
+            OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
+        ],
+    )
     def delete(self, request, tvg_id):
         tvg_id = unquote(str(tvg_id or ""))
         rules = [r for r in CoreSettings.get_dvr_series_rules() if str(r.get("tvg_id")) != tvg_id]
@@ -2348,6 +2418,16 @@ class EvaluateSeriesRulesAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @extend_schema(
+        summary="Evaluate series rules",
+        description="Trigger evaluation of series recording rules to find and schedule matching episodes. Can evaluate all rules or a specific channel.",
+        request=inline_serializer(
+            name="EvaluateSeriesRulesRequest",
+            fields={
+                "tvg_id": serializers.CharField(required=False, help_text="Optional: evaluate only rules for this channel TVG ID. If omitted, all rules are evaluated."),
+            },
+        ),
+    )
     def post(self, request):
         tvg_id = request.data.get("tvg_id")
         # Run synchronously so UI sees results immediately
@@ -2369,6 +2449,18 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
+    @extend_schema(
+        summary="Bulk remove scheduled recordings for a series",
+        description="Delete future scheduled recordings for a series rule. Useful for stopping a rule without losing the configuration. Matches by channel and optionally by series title.",
+        request=inline_serializer(
+            name="BulkRemoveSeriesRecordingsRequest",
+            fields={
+                "tvg_id": serializers.CharField(required=True, help_text="Channel TVG ID (required)"),
+                "title": serializers.CharField(required=False, help_text="Series title - when scope=title, only recordings matching this title are removed"),
+                "scope": serializers.ChoiceField(choices=["title", "channel"], default="title", required=False, help_text="title: remove only matching title on channel, channel: remove all future recordings on channel"),
+            },
+        ),
+    )
     def post(self, request):
         from django.utils import timezone
         tvg_id = str(request.data.get("tvg_id") or "").strip()

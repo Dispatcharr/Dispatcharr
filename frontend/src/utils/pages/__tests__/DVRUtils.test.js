@@ -20,8 +20,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T11:00:00',
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -39,8 +39,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -58,8 +58,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T10:00:00',
           end_time: '2024-01-01T11:00:00',
           channel: 'ch1',
-          custom_properties: { status: 'completed' }
-        }
+          custom_properties: { status: 'completed' },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -77,8 +77,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T11:00:00',
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
-          custom_properties: { status: 'interrupted' }
-        }
+          custom_properties: { status: 'interrupted' },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -95,8 +95,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T09:00:00',
           end_time: '2024-01-01T10:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -114,8 +114,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { id: 100 }
-          }
+            program: { id: 100 },
+          },
         },
         {
           id: 2,
@@ -123,9 +123,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch2',
           custom_properties: {
-            program: { id: 100 }
-          }
-        }
+            program: { id: 100 },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -141,8 +141,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { title: 'Show A' }
-          }
+            program: { title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -150,9 +150,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { title: 'Show A' }
-          }
-        }
+            program: { title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -168,8 +168,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { title: 'Show A' }
-          }
+            program: { title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -177,9 +177,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T13:00:00',
           channel: 'ch2',
           custom_properties: {
-            program: { title: 'Show A' }
-          }
-        }
+            program: { title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -194,22 +194,22 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T10:00:00',
           end_time: '2024-01-01T13:00:00',
           channel: 'ch1',
-          custom_properties: { program: { id: 1 } }
+          custom_properties: { program: { id: 1 } },
         },
         {
           id: 2,
           start_time: '2024-01-01T11:30:00',
           end_time: '2024-01-01T13:00:00',
           channel: 'ch2',
-          custom_properties: { program: { id: 2 } }
+          custom_properties: { program: { id: 2 } },
         },
         {
           id: 3,
           start_time: '2024-01-01T11:00:00',
           end_time: '2024-01-01T13:00:00',
           channel: 'ch3',
-          custom_properties: { program: { id: 3 } }
-        }
+          custom_properties: { program: { id: 3 } },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -227,8 +227,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -236,8 +236,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T16:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 3,
@@ -245,9 +245,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T17:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -265,8 +265,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -274,9 +274,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T16:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'show a' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'show a' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -293,8 +293,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -302,9 +302,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T16:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show2', title: 'Show A' }
-          }
-        }
+            program: { tvg_id: 'show2', title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -321,22 +321,28 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T16:00:00',
           end_time: '2024-01-01T17:00:00',
           channel: 'ch1',
-          custom_properties: { program: { id: 1, tvg_id: 'show1', title: 'Show A' } }
+          custom_properties: {
+            program: { id: 1, tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 2,
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch2',
-          custom_properties: { program: { id: 2, tvg_id: 'show2', title: 'Show B' } }
+          custom_properties: {
+            program: { id: 2, tvg_id: 'show2', title: 'Show B' },
+          },
         },
         {
           id: 3,
           start_time: '2024-01-01T15:00:00',
           end_time: '2024-01-01T16:00:00',
           channel: 'ch3',
-          custom_properties: { program: { id: 3, tvg_id: 'show3', title: 'Show C' } }
-        }
+          custom_properties: {
+            program: { id: 3, tvg_id: 'show3', title: 'Show C' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -346,7 +352,6 @@ describe('DVRUtils', () => {
       expect(result.upcoming[2].id).toBe(1);
     });
 
-
     it('should sort completed by end_time descending', () => {
       const recordings = [
         {
@@ -354,22 +359,22 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T08:00:00',
           end_time: '2024-01-01T09:00:00',
           channel: 'ch1',
-          custom_properties: { status: 'completed' }
+          custom_properties: { status: 'completed' },
         },
         {
           id: 2,
           start_time: '2024-01-01T10:00:00',
           end_time: '2024-01-01T11:00:00',
           channel: 'ch2',
-          custom_properties: { status: 'completed' }
+          custom_properties: { status: 'completed' },
         },
         {
           id: 3,
           start_time: '2024-01-01T09:00:00',
           end_time: '2024-01-01T10:00:00',
           channel: 'ch3',
-          custom_properties: { status: 'completed' }
-        }
+          custom_properties: { status: 'completed' },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -386,8 +391,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       };
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -418,15 +423,15 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
+          custom_properties: {},
         },
         {
           id: 1,
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -440,8 +445,8 @@ describe('DVRUtils', () => {
           id: 1,
           start_time: '2024-01-01T11:00:00',
           end_time: '2024-01-01T13:00:00',
-          channel: 'ch1'
-        }
+          channel: 'ch1',
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -456,8 +461,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -472,8 +477,8 @@ describe('DVRUtils', () => {
           start_time: '2024-01-01T14:00:00',
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -489,8 +494,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { id: 100, tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { id: 100, tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 2,
@@ -498,8 +503,8 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch2',
           custom_properties: {
-            program: { id: 100, tvg_id: 'show1', title: 'Show A' }
-          }
+            program: { id: 100, tvg_id: 'show1', title: 'Show A' },
+          },
         },
         {
           id: 3,
@@ -507,9 +512,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T16:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { id: 101, tvg_id: 'show1', title: 'Show A' }
-          }
-        }
+            program: { id: 101, tvg_id: 'show1', title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
@@ -526,9 +531,9 @@ describe('DVRUtils', () => {
           end_time: '2024-01-01T15:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Show A' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Show A' },
+          },
+        },
       ];
 
       const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);

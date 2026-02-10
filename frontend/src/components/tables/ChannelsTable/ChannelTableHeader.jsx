@@ -30,10 +30,13 @@ import {
   SquareCheck,
   Pin,
   PinOff,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 import API from '../../../api';
 import { notifications } from '@mantine/notifications';
 import useChannelsStore from '../../../store/channels';
+import useChannelsTableStore from '../../../store/channelsTable';
 import useAuthStore from '../../../store/auth';
 import { USER_LEVELS } from '../../../constants';
 import AssignChannelNumbersForm from '../../forms/AssignChannelNumbers';
@@ -41,6 +44,7 @@ import GroupManager from '../../forms/GroupManager';
 import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
+import EPGMatchModal from '../../modals/EPGMatchModal';
 
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
@@ -118,6 +122,7 @@ const ChannelTableHeader = ({
   const [channelNumAssignmentStart, setChannelNumAssignmentStart] = useState(1);
   const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [epgMatchModalOpen, setEpgMatchModalOpen] = useState(false);
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
@@ -134,6 +139,8 @@ const ChannelTableHeader = ({
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const setIsUnlocked = useChannelsTableStore((s) => s.setIsUnlocked);
 
   const headerPinned = table?.headerPinned ?? false;
   const setHeaderPinned = table?.setHeaderPinned || (() => {});
@@ -170,26 +177,6 @@ const ChannelTableHeader = ({
     } finally {
       setDeletingProfile(false);
       setConfirmDeleteProfileOpen(false);
-    }
-  };
-
-  const matchEpg = async () => {
-    try {
-      // Hit our new endpoint that triggers the fuzzy matching Celery task
-      // If channels are selected, only match those; otherwise match all
-      if (selectedTableIds.length > 0) {
-        await API.matchEpg(selectedTableIds);
-        notifications.show({
-          title: `EPG matching task started for ${selectedTableIds.length} selected channel(s)!`,
-        });
-      } else {
-        await API.matchEpg();
-        notifications.show({
-          title: 'EPG matching task started for all channels without EPG!',
-        });
-      }
-    } catch (err) {
-      notifications.show(`Error: ${err.message}`);
     }
   };
 
@@ -239,6 +226,10 @@ const ChannelTableHeader = ({
     setHeaderPinned(!headerPinned);
   };
 
+  const toggleUnlock = () => {
+    setIsUnlocked(!isUnlocked);
+  };
+
   return (
     <Group justify="space-between">
       <Group gap={5} style={{ paddingLeft: 10 }}>
@@ -258,6 +249,23 @@ const ChannelTableHeader = ({
         <Tooltip label="Create Profile">
           <CreateProfilePopover />
         </Tooltip>
+
+        {isUnlocked && (
+          <Text
+            size="xs"
+            c="yellow.5"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              paddingLeft: 10,
+              fontWeight: 500,
+            }}
+          >
+            <LockOpen size={14} />
+            Editing Mode
+          </Text>
+        )}
       </Group>
 
       <Box
@@ -367,6 +375,18 @@ const ChannelTableHeader = ({
                 </Text>
               </Menu.Item>
 
+              <Menu.Item
+                leftSection={
+                  isUnlocked ? <LockOpen size={18} /> : <Lock size={18} />
+                }
+                onClick={toggleUnlock}
+                disabled={authUser.user_level != USER_LEVELS.ADMIN}
+              >
+                <Text size="xs">
+                  {isUnlocked ? 'Lock Table' : 'Unlock for Editing'}
+                </Text>
+              </Menu.Item>
+
               <Menu.Divider />
 
               <Menu.Item
@@ -383,7 +403,7 @@ const ChannelTableHeader = ({
               <Menu.Item
                 leftSection={<Binary size={18} />}
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
-                onClick={matchEpg}
+                onClick={() => setEpgMatchModalOpen(true)}
               >
                 <Text size="xs">
                   {selectedTableIds.length > 0
@@ -425,6 +445,12 @@ const ChannelTableHeader = ({
       <GroupManager
         isOpen={groupManagerOpen}
         onClose={() => setGroupManagerOpen(false)}
+      />
+
+      <EPGMatchModal
+        opened={epgMatchModalOpen}
+        onClose={() => setEpgMatchModalOpen(false)}
+        selectedChannelIds={selectedTableIds}
       />
 
       <ConfirmationDialog

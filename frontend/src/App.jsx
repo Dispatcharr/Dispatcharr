@@ -1,5 +1,4 @@
-// frontend/src/App.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   BrowserRouter as Router,
   Route,
@@ -41,11 +40,15 @@ const defaultRoute = '/channels';
 const App = () => {
   const [open, setOpen] = useState(true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isInitialized = useAuthStore((s) => s.isInitialized);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+
+  const authCheckStarted = useRef(false);
+  const superuserCheckStarted = useRef(false);
 
   const toggleDrawer = () => {
     setOpen(!open);
@@ -53,6 +56,9 @@ const App = () => {
 
   // Check if a superuser exists on first load.
   useEffect(() => {
+    if (superuserCheckStarted.current) return;
+    superuserCheckStarted.current = true;
+
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
@@ -70,10 +76,13 @@ const App = () => {
       }
     }
     checkSuperuser();
-  }, []);
+  }, [setSuperuserExists]);
 
   // Authentication check
   useEffect(() => {
+    if (authCheckStarted.current) return;
+    authCheckStarted.current = true;
+
     const checkAuth = async () => {
       try {
         const loggedIn = await initializeAuth();
@@ -106,14 +115,15 @@ const App = () => {
               height: 0,
             }}
             navbar={{
-              width: isAuthenticated
-                ? open
-                  ? drawerWidth
-                  : miniDrawerWidth
-                : 0,
+              width:
+                isAuthenticated && isInitialized
+                  ? open
+                    ? drawerWidth
+                    : miniDrawerWidth
+                  : 0,
             }}
           >
-            {isAuthenticated && (
+            {isAuthenticated && isInitialized && (
               <Sidebar
                 drawerWidth={drawerWidth}
                 miniDrawerWidth={miniDrawerWidth}
@@ -135,7 +145,7 @@ const App = () => {
               >
                 <Box sx={{ p: 2, flex: 1, overflow: 'auto' }}>
                   <Routes>
-                    {isAuthenticated ? (
+                    {isAuthenticated && isInitialized ? (
                       <>
                         <Route path="/channels" element={<Channels />} />
                         <Route path="/sources" element={<ContentSources />} />
@@ -156,7 +166,11 @@ const App = () => {
                       path="*"
                       element={
                         <Navigate
-                          to={isAuthenticated ? defaultRoute : '/login'}
+                          to={
+                            isAuthenticated && isInitialized
+                              ? defaultRoute
+                              : '/login'
+                          }
                           replace
                         />
                       }

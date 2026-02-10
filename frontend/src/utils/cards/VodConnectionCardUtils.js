@@ -24,7 +24,7 @@ export const formatTime = (seconds) => {
 
 export const getMovieDisplayTitle = (vodContent) => {
   return vodContent.content_name;
-}
+};
 
 export const getEpisodeDisplayTitle = (metadata) => {
   const season = metadata.season_number
@@ -34,18 +34,18 @@ export const getEpisodeDisplayTitle = (metadata) => {
     ? `E${metadata.episode_number.toString().padStart(2, '0')}`
     : 'E??';
   return `${metadata.series_name} - ${season}${episode}`;
-}
+};
 
 export const getMovieSubtitle = (metadata) => {
   const parts = [];
   if (metadata.genre) parts.push(metadata.genre);
   // We'll handle rating separately as a badge now
   return parts;
-}
+};
 
 export const getEpisodeSubtitle = (metadata) => {
   return [metadata.episode_name || 'Episode'];
-}
+};
 
 export const calculateProgress = (connection, duration_secs) => {
   if (!connection || !duration_secs) {
@@ -92,7 +92,7 @@ export const calculateProgress = (connection, duration_secs) => {
     currentTime: Math.max(0, currentTime), // Don't go negative
     totalTime: totalSeconds,
   };
-}
+};
 
 export const calculateConnectionDuration = (connection) => {
   // If duration is provided by API, use it
@@ -115,11 +115,14 @@ export const calculateConnectionDuration = (connection) => {
   }
 
   return 'Unknown duration';
-}
+};
 
-export const calculateConnectionStartTime = (connection, dateFormat) => {
+export const calculateConnectionStartTime = (
+  connection,
+  fullDateTimeFormat
+) => {
   if (connection.connected_at) {
-    return format(connection.connected_at * 1000, `${dateFormat} HH:mm:ss`);
+    return format(connection.connected_at * 1000, fullDateTimeFormat);
   }
 
   // Fallback: calculate from client_id timestamp
@@ -128,7 +131,7 @@ export const calculateConnectionStartTime = (connection, dateFormat) => {
       const parts = connection.client_id.split('_');
       if (parts.length >= 2) {
         const clientStartTime = parseInt(parts[1]);
-        return format(clientStartTime, `${dateFormat} HH:mm:ss`);
+        return format(clientStartTime, fullDateTimeFormat);
       }
     } catch {
       // Ignore parsing errors
@@ -136,4 +139,4 @@ export const calculateConnectionStartTime = (connection, dateFormat) => {
   }
 
   return 'Unknown';
-}
+};

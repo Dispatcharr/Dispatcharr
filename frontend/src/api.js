@@ -10,6 +10,7 @@ import useStreamProfilesStore from './store/streamProfiles';
 import useSettingsStore from './store/settings';
 import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
+import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 
 // If needed, you can set a base host or keep it empty if relative requests
@@ -170,7 +171,7 @@ export default class API {
 
   static async logout() {
     return await request(`${host}/api/accounts/auth/logout/`, {
-      auth: true,  // Send JWT token so backend can identify the user
+      auth: true, // Send JWT token so backend can identify the user
       method: 'POST',
     });
   }
@@ -197,6 +198,31 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(params);
+          newParams.set('page', '1');
+
+          const response = await request(
+            `${host}/api/channels/channels/?${newParams.toString()}`
+          );
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
@@ -217,6 +243,35 @@ export default class API {
 
       return response;
     } catch (e) {
+      // Handle invalid page error by resetting to page 1 and retrying
+      if (e.body?.detail === 'Invalid page.') {
+        const currentPagination = useChannelsTableStore.getState().pagination;
+
+        // Only retry if we're not already on page 1
+        if (currentPagination.pageIndex > 0) {
+          // Reset to page 1
+          useChannelsTableStore.getState().setPagination({
+            ...currentPagination,
+            pageIndex: 0,
+          });
+
+          // Update params to page 1 and retry
+          const newParams = new URLSearchParams(API.lastQueryParams);
+          newParams.set('page', '1');
+          API.lastQueryParams = newParams;
+
+          const [response, ids] = await Promise.all([
+            request(`${host}/api/channels/channels/?${newParams.toString()}`),
+            API.getAllChannelIds(newParams),
+          ]);
+
+          useChannelsTableStore.getState().queryChannels(response, newParams);
+          useChannelsTableStore.getState().setAllQueryIds(ids);
+
+          return response;
+        }
+      }
+
       errorNotification('Failed to fetch channels', e);
     }
   }
@@ -331,7 +386,8 @@ export default class API {
         channelData.channel_number === '' ||
         channelData.channel_number === null ||
         channelData.channel_number === undefined ||
-        (typeof channelData.channel_number === 'string' && channelData.channel_number.trim() === '')
+        (typeof channelData.channel_number === 'string' &&
+          channelData.channel_number.trim() === '')
       ) {
         delete channelData.channel_number;
       }
@@ -380,6 +436,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channel', e);
     }
@@ -394,6 +451,7 @@ export default class API {
       });
 
       useChannelsStore.getState().removeChannels(channel_ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete channels', e);
     }
@@ -447,6 +505,9 @@ export default class API {
       );
 
       useChannelsStore.getState().updateChannel(response);
+      if (Object.prototype.hasOwnProperty.call(payload, 'streams')) {
+        await API.requeryStreams();
+      }
       return response;
     } catch (e) {
       errorNotification('Failed to update channel', e);
@@ -501,6 +562,24 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  static async reorderChannel(channelId, insertAfterId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/${channelId}/reorder/`,
+        {
+          method: 'POST',
+          body: {
+            insert_after_id: insertAfterId,
+          },
+        }
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder channel', e);
     }
   }
 
@@ -630,13 +709,18 @@ export default class API {
         useChannelsStore.getState().addChannel(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to create channel', e);
     }
   }
 
-  static async createChannelsFromStreamsAsync(streamIds, channelProfileIds = null, startingChannelNumber = null) {
+  static async createChannelsFromStreamsAsync(
+    streamIds,
+    channelProfileIds = null,
+    startingChannelNumber = null
+  ) {
     try {
       const requestBody = {
         stream_ids: streamIds,
@@ -705,6 +789,46 @@ export default class API {
     }
   }
 
+  static async queryStreamsTable(params) {
+    try {
+      API.lastStreamQueryParams = params;
+      useStreamsTableStore.getState().setLastQueryParams(params);
+
+      const response = await request(
+        `${host}/api/channels/streams/?${params.toString()}`
+      );
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
+  static async requeryStreams() {
+    const params =
+      useStreamsTableStore.getState().lastQueryParams ||
+      API.lastStreamQueryParams;
+    if (!params) {
+      return null;
+    }
+
+    try {
+      const [response, ids] = await Promise.all([
+        request(`${host}/api/channels/streams/?${params.toString()}`),
+        API.getAllStreamIds(params),
+      ]);
+
+      useStreamsTableStore.getState().queryStreams(response, params);
+      useStreamsTableStore.getState().setAllQueryIds(ids);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch streams', e);
+    }
+  }
+
   static async getAllStreamIds(params) {
     try {
       const response = await request(
@@ -736,6 +860,8 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve filter options', e);
+      // Return safe defaults to prevent crashes during container startup
+      return { groups: [], m3u_accounts: [] };
     }
   }
 
@@ -750,6 +876,7 @@ export default class API {
         useStreamsStore.getState().addStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to add stream', e);
@@ -768,6 +895,7 @@ export default class API {
         useStreamsStore.getState().updateStream(response);
       }
 
+      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to update stream', e);
@@ -781,6 +909,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams([id]);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete stream', e);
     }
@@ -794,6 +923,7 @@ export default class API {
       });
 
       useStreamsStore.getState().removeStreams(ids);
+      await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete streams', e);
     }
@@ -1044,6 +1174,20 @@ export default class API {
     }
   }
 
+  static async getCurrentPrograms(channelIds = null) {
+    try {
+      const response = await request(`${host}/api/epg/current-programs/`, {
+        method: 'POST',
+        body: { channel_ids: channelIds },
+      });
+
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve current programs', e);
+      return [];
+    }
+  }
+
   // Notice there's a duplicated "refreshPlaylist" method above;
   // you might want to rename or remove one if it's not needed.
 
@@ -1168,9 +1312,15 @@ export default class API {
       errorNotification('Failed to retrieve timezones', e);
       // Return fallback data instead of throwing
       return {
-        timezones: ['UTC', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific'],
+        timezones: [
+          'UTC',
+          'US/Eastern',
+          'US/Central',
+          'US/Mountain',
+          'US/Pacific',
+        ],
         grouped: {},
-        count: 5
+        count: 5,
       };
     }
   }
@@ -1294,16 +1444,22 @@ export default class API {
 
   static async refreshAccountInfo(profileId) {
     try {
-      const response = await request(`${host}/api/m3u/refresh-account-info/${profileId}/`, {
-        method: 'POST',
-      });
+      const response = await request(
+        `${host}/api/m3u/refresh-account-info/${profileId}/`,
+        {
+          method: 'POST',
+        }
+      );
       return response;
     } catch (e) {
       // If it's a structured error response, return it instead of throwing
       if (e.body && typeof e.body === 'object') {
         return e.body;
       }
-      errorNotification(`Failed to refresh account info for profile ${profileId}`, e);
+      errorNotification(
+        `Failed to refresh account info for profile ${profileId}`,
+        e
+      );
       throw e;
     }
   }
@@ -1430,7 +1586,11 @@ export default class API {
       });
 
       // Wait for the task to complete using token for auth
-      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      const result = await API.waitForBackupTask(
+        response.task_id,
+        onProgress,
+        response.task_token
+      );
       return result;
     } catch (e) {
       errorNotification('Failed to create backup', e);
@@ -1443,13 +1603,10 @@ export default class API {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await request(
-        `${host}/api/backups/upload/`,
-        {
-          method: 'POST',
-          body: formData,
-        }
-      );
+      const response = await request(`${host}/api/backups/upload/`, {
+        method: 'POST',
+        body: formData,
+      });
       return response;
     } catch (e) {
       errorNotification('Failed to upload backup', e);
@@ -1472,7 +1629,9 @@ export default class API {
   static async getDownloadToken(filename) {
     // Get a download token from the server
     try {
-      const response = await request(`${host}/api/backups/${encodeURIComponent(filename)}/download-token/`);
+      const response = await request(
+        `${host}/api/backups/${encodeURIComponent(filename)}/download-token/`
+      );
       return response.token;
     } catch (e) {
       throw e;
@@ -1516,7 +1675,11 @@ export default class API {
 
       // Wait for the task to complete using token for auth
       // Token-based auth allows status polling even after DB restore invalidates user sessions
-      const result = await API.waitForBackupTask(response.task_id, onProgress, response.task_token);
+      const result = await API.waitForBackupTask(
+        response.task_id,
+        onProgress,
+        response.task_token
+      );
       return result;
     } catch (e) {
       errorNotification('Failed to restore backup', e);
@@ -1591,17 +1754,27 @@ export default class API {
       return response;
     } catch (e) {
       // Show only the concise error message for plugin import
-      const msg = (e?.body && (e.body.error || e.body.detail)) || e?.message || 'Failed to import plugin';
-      notifications.show({ title: 'Import failed', message: msg, color: 'red' });
+      const msg =
+        (e?.body && (e.body.error || e.body.detail)) ||
+        e?.message ||
+        'Failed to import plugin';
+      notifications.show({
+        title: 'Import failed',
+        message: msg,
+        color: 'red',
+      });
       throw e;
     }
   }
 
   static async deletePlugin(key) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/delete/`, {
-        method: 'DELETE',
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/delete/`,
+        {
+          method: 'DELETE',
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to delete plugin', e);
@@ -1620,15 +1793,19 @@ export default class API {
       return response?.settings || {};
     } catch (e) {
       errorNotification('Failed to update plugin settings', e);
+      throw e;
     }
   }
 
   static async runPluginAction(key, action, params = {}) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/run/`, {
-        method: 'POST',
-        body: { action, params },
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/run/`,
+        {
+          method: 'POST',
+          body: { action, params },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to run plugin action', e);
@@ -1637,10 +1814,13 @@ export default class API {
 
   static async setPluginEnabled(key, enabled) {
     try {
-      const response = await request(`${host}/api/plugins/plugins/${key}/enabled/`, {
-        method: 'POST',
-        body: { enabled },
-      });
+      const response = await request(
+        `${host}/api/plugins/plugins/${key}/enabled/`,
+        {
+          method: 'POST',
+          body: { enabled },
+        }
+      );
       return response;
     } catch (e) {
       errorNotification('Failed to update plugin enabled state', e);
@@ -1822,7 +2002,7 @@ export default class API {
       if (!logoIds || logoIds.length === 0) return [];
 
       const params = new URLSearchParams();
-      logoIds.forEach(id => params.append('ids', id));
+      logoIds.forEach((id) => params.append('ids', id));
       // Disable pagination for ID-based queries to get all matching logos
       params.append('no_pagination', 'true');
 
@@ -2289,10 +2469,13 @@ export default class API {
 
   static async updateRecurringRule(ruleId, payload) {
     try {
-      const response = await request(`${host}/api/channels/recurring-rules/${ruleId}/`, {
-        method: 'PATCH',
-        body: payload,
-      });
+      const response = await request(
+        `${host}/api/channels/recurring-rules/${ruleId}/`,
+        {
+          method: 'PATCH',
+          body: payload,
+        }
+      );
       return response;
     } catch (e) {
       errorNotification(`Failed to update recurring rule ${ruleId}`, e);
@@ -2311,9 +2494,13 @@ export default class API {
 
   static async deleteRecording(id) {
     try {
-      await request(`${host}/api/channels/recordings/${id}/`, { method: 'DELETE' });
+      await request(`${host}/api/channels/recordings/${id}/`, {
+        method: 'DELETE',
+      });
       // Optimistically remove locally for instant UI update
-      try { useChannelsStore.getState().removeRecording(id); } catch {}
+      try {
+        useChannelsStore.getState().removeRecording(id);
+      } catch {}
     } catch (e) {
       errorNotification(`Failed to delete recording ${id}`, e);
     }
@@ -2321,9 +2508,12 @@ export default class API {
 
   static async runComskip(recordingId) {
     try {
-      const resp = await request(`${host}/api/channels/recordings/${recordingId}/comskip/`, {
-        method: 'POST',
-      });
+      const resp = await request(
+        `${host}/api/channels/recordings/${recordingId}/comskip/`,
+        {
+          method: 'POST',
+        }
+      );
       // Refresh recordings list to reflect comskip status when done later
       // This endpoint just queues the task; the websocket/refresh will update eventually
       return resp;
@@ -2361,7 +2551,9 @@ export default class API {
   static async deleteSeriesRule(tvgId) {
     try {
       const encodedTvgId = encodeURIComponent(tvgId);
-      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, { method: 'DELETE' });
+      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, {
+        method: 'DELETE',
+      });
       notifications.show({ title: 'Series rule removed' });
     } catch (e) {
       errorNotification('Failed to remove series rule', e);
@@ -2371,9 +2563,12 @@ export default class API {
 
   static async deleteAllUpcomingRecordings() {
     try {
-      const resp = await request(`${host}/api/channels/recordings/bulk-delete-upcoming/`, {
-        method: 'POST',
-      });
+      const resp = await request(
+        `${host}/api/channels/recordings/bulk-delete-upcoming/`,
+        {
+          method: 'POST',
+        }
+      );
       notifications.show({ title: `Removed ${resp.removed || 0} upcoming` });
       useChannelsStore.getState().fetchRecordings();
       return resp;
@@ -2394,12 +2589,19 @@ export default class API {
     }
   }
 
-  static async bulkRemoveSeriesRecordings({ tvg_id, title = null, scope = 'title' }) {
+  static async bulkRemoveSeriesRecordings({
+    tvg_id,
+    title = null,
+    scope = 'title',
+  }) {
     try {
-      const resp = await request(`${host}/api/channels/series-rules/bulk-remove/`, {
-        method: 'POST',
-        body: { tvg_id, title, scope },
-      });
+      const resp = await request(
+        `${host}/api/channels/series-rules/bulk-remove/`,
+        {
+          method: 'POST',
+          body: { tvg_id, title, scope },
+        }
+      );
       notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });
       return resp;
     } catch (e) {
@@ -2561,13 +2763,10 @@ export default class API {
     try {
       // Use POST for large ID lists to avoid URL length limitations
       if (ids.length > 50) {
-        const response = await request(
-          `${host}/api/channels/streams/by-ids/`,
-          {
-            method: 'POST',
-            body: { ids },
-          }
-        );
+        const response = await request(`${host}/api/channels/streams/by-ids/`, {
+          method: 'POST',
+          body: { ids },
+        });
         return response;
       } else {
         // Use GET for small ID lists for backward compatibility
@@ -2884,8 +3083,9 @@ export default class API {
       return response;
     } catch (e) {
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve movies', e);
@@ -2902,8 +3102,9 @@ export default class API {
       return response;
     } catch (e) {
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve series', e);
@@ -2914,7 +3115,10 @@ export default class API {
 
   static async getAllContent(params = new URLSearchParams()) {
     try {
-      console.log('Calling getAllContent with URL:', `${host}/api/vod/all/?${params.toString()}`);
+      console.log(
+        'Calling getAllContent with URL:',
+        `${host}/api/vod/all/?${params.toString()}`
+      );
       const response = await request(
         `${host}/api/vod/all/?${params.toString()}`
       );
@@ -2927,8 +3131,9 @@ export default class API {
       console.error('Error message:', e.message);
 
       // Don't show error notification for "Invalid page" errors as they're handled gracefully
-      const isInvalidPage = e.body?.detail?.includes('Invalid page') ||
-                           e.message?.includes('Invalid page');
+      const isInvalidPage =
+        e.body?.detail?.includes('Invalid page') ||
+        e.message?.includes('Invalid page');
 
       if (!isInvalidPage) {
         errorNotification('Failed to retrieve content', e);
@@ -3029,6 +3234,107 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve system events', e);
+    }
+  }
+
+  // ─────────────────────────────
+  // System Notifications
+  // ─────────────────────────────
+
+  /**
+   * Get all active notifications for the current user
+   * @param {boolean} includeDismissed - Whether to include already dismissed notifications
+   */
+  static async getNotifications(includeDismissed = false) {
+    try {
+      const params = new URLSearchParams();
+      if (includeDismissed) {
+        params.append('include_dismissed', 'true');
+      }
+      const response = await request(
+        `${host}/api/core/notifications/?${params.toString()}`
+      );
+
+      // Update the store with fetched notifications
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().setNotifications(response.notifications);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve notifications', e);
+    }
+  }
+
+  // Get unread notification count
+  static async getNotificationCount() {
+    try {
+      const response = await request(`${host}/api/core/notifications/count/`);
+
+      // Update the store with the count
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().setUnreadCount(response.unread_count);
+
+      return response;
+    } catch (e) {
+      // Silent fail for count - not critical
+      console.error('Failed to get notification count:', e);
+      return { unread_count: 0 };
+    }
+  }
+
+  /**
+   * Dismiss a specific notification
+   * @param {number} notificationId - The notification ID to dismiss
+   * @param {string} actionTaken - Optional action taken (e.g., 'applied', 'ignored')
+   */
+  static async dismissNotification(notificationId, actionTaken = null) {
+    try {
+      const body = {};
+      if (actionTaken) {
+        body.action_taken = actionTaken;
+      }
+
+      const response = await request(
+        `${host}/api/core/notifications/${notificationId}/dismiss/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore
+        .getState()
+        .dismissNotification(response.notification_key);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss notification', e);
+    }
+  }
+
+  // Dismiss all notifications
+  static async dismissAllNotifications() {
+    try {
+      const response = await request(
+        `${host}/api/core/notifications/dismiss-all/`,
+        {
+          method: 'POST',
+        }
+      );
+
+      // Update the store
+      const { default: useNotificationsStore } =
+        await import('./store/notifications');
+      useNotificationsStore.getState().dismissAllNotifications();
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to dismiss all notifications', e);
     }
   }
 }

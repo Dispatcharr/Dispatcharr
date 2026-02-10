@@ -1,6 +1,8 @@
 import { Box, Center, Checkbox, Flex } from '@mantine/core';
 import { flexRender } from '@tanstack/react-table';
 import { useCallback, useMemo } from 'react';
+import MultiSelectHeaderWrapper from './MultiSelectHeaderWrapper';
+import useChannelsTableStore from '../../../store/channelsTable';
 
 const CustomTableHeader = ({
   getHeaderGroups,
@@ -10,35 +12,47 @@ const CustomTableHeader = ({
   onSelectAllChange,
   tableCellProps,
   headerPinned = true,
+  enableDragDrop = false,
 }) => {
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
+  const shouldEnableDrag = enableDragDrop && isUnlocked;
   const renderHeaderCell = (header) => {
+    let content;
+
     if (headerCellRenderFns[header.id]) {
-      return headerCellRenderFns[header.id](header);
+      content = headerCellRenderFns[header.id](header);
+    } else {
+      switch (header.id) {
+        case 'select':
+          content = (
+            <Center style={{ width: '100%' }}>
+              <Checkbox
+                size="xs"
+                checked={
+                  allRowIds.length == 0
+                    ? false
+                    : selectedTableIds.length == allRowIds.length
+                }
+                indeterminate={
+                  selectedTableIds.length > 0 &&
+                  selectedTableIds.length !== allRowIds.length
+                }
+                onChange={onSelectAllChange}
+              />
+            </Center>
+          );
+          break;
+
+        default:
+          content = flexRender(
+            header.column.columnDef.header,
+            header.getContext()
+          );
+      }
     }
 
-    switch (header.id) {
-      case 'select':
-        return (
-          <Center style={{ width: '100%' }}>
-            <Checkbox
-              size="xs"
-              checked={
-                allRowIds.length == 0
-                  ? false
-                  : selectedTableIds.length == allRowIds.length
-              }
-              indeterminate={
-                selectedTableIds.length > 0 &&
-                selectedTableIds.length !== allRowIds.length
-              }
-              onChange={onSelectAllChange}
-            />
-          </Center>
-        );
-
-      default:
-        return flexRender(header.column.columnDef.header, header.getContext());
-    }
+    // Automatically wrap content to enhance MultiSelect components
+    return <MultiSelectHeaderWrapper>{content}</MultiSelectHeaderWrapper>;
   };
 
   // Get header groups for dependency tracking
@@ -85,6 +99,7 @@ const CustomTableHeader = ({
             display: 'flex',
             width: '100%',
             minWidth: '100%', // Force full width
+            paddingLeft: shouldEnableDrag ? 28 : 0,
           }}
         >
           {headerGroup.headers.map((header) => {

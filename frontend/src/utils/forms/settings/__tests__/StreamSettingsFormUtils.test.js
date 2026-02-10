@@ -3,7 +3,7 @@ import * as StreamSettingsFormUtils from '../StreamSettingsFormUtils';
 import { isNotEmpty } from '@mantine/form';
 
 vi.mock('@mantine/form', () => ({
-  isNotEmpty: vi.fn((message) => message)
+  isNotEmpty: vi.fn((message) => message),
 }));
 
 describe('StreamSettingsFormUtils', () => {
@@ -13,42 +13,49 @@ describe('StreamSettingsFormUtils', () => {
 
   describe('getStreamSettingsFormInitialValues', () => {
     it('should return initial values with correct defaults', () => {
-      const result = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
       expect(result).toEqual({
-        'default_user_agent': '',
-        'default_stream_profile': '',
-        'preferred_region': '',
-        'auto_import_mapped_files': true,
-        'm3u_hash_key': []
+        default_user_agent: '',
+        default_stream_profile: '',
+        preferred_region: '',
+        auto_import_mapped_files: true,
+        m3u_hash_key: [],
       });
     });
 
     it('should return boolean true for auto-import-mapped-files', () => {
-      const result = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
       expect(result['auto_import_mapped_files']).toBe(true);
       expect(typeof result['auto_import_mapped_files']).toBe('boolean');
     });
 
     it('should return empty array for m3u-hash-key', () => {
-      const result = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
       expect(result['m3u_hash_key']).toEqual([]);
       expect(Array.isArray(result['m3u_hash_key'])).toBe(true);
     });
 
     it('should return a new object each time', () => {
-      const result1 = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
-      const result2 = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result1 =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result2 =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
       expect(result1).toEqual(result2);
       expect(result1).not.toBe(result2);
     });
 
     it('should return a new array instance for m3u-hash-key each time', () => {
-      const result1 = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
-      const result2 = StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result1 =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
+      const result2 =
+        StreamSettingsFormUtils.getStreamSettingsFormInitialValues();
 
       expect(result1['m3u_hash_key']).not.toBe(result2['m3u_hash_key']);
     });
@@ -61,7 +68,7 @@ describe('StreamSettingsFormUtils', () => {
       expect(Object.keys(result)).toEqual([
         'default_user_agent',
         'default_stream_profile',
-        'preferred_region'
+        'preferred_region',
       ]);
     });
 

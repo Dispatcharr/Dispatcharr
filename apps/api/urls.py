@@ -1,22 +1,7 @@
 from django.urls import path, include, re_path
-from drf_yasg.views import get_schema_view
-from drf_yasg import openapi
-from rest_framework.permissions import AllowAny
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 
 app_name = 'api'
-
-schema_view = get_schema_view(
-    openapi.Info(
-        title="Dispatcharr API",
-        default_version='v1',
-        description="API documentation for Dispatcharr",
-        terms_of_service="https://www.google.com/policies/terms/",
-        contact=openapi.Contact(email="support@dispatcharr.local"),
-        license=openapi.License(name="Unlicense"),
-    ),
-    public=True,
-    permission_classes=(AllowAny,),
-)
 
 urlpatterns = [
     path('accounts/', include(('apps.accounts.api_urls', 'accounts'), namespace='accounts')),
@@ -36,8 +21,9 @@ urlpatterns = [
 
 
 
-    # Swagger Documentation api_urls
-    re_path(r'^swagger/?$', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
-    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-    path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+    # OpenAPI Schema and Documentation (drf-spectacular)
+    path('schema/', SpectacularAPIView.as_view(), name='schema'),
+    re_path(r'^swagger/?$', SpectacularSwaggerView.as_view(url_name='api:schema'), name='swagger-ui'),
+    path('redoc/', SpectacularRedocView.as_view(url_name='api:schema'), name='redoc'),
+    path('swagger.json', SpectacularAPIView.as_view(), name='schema-json'),
 ]

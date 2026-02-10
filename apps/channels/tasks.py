@@ -139,6 +139,7 @@ COMMON_EXTRANEOUS_WORDS = [
 def normalize_name(name: str) -> str:
     """
     A more aggressive normalization that:
+      - Removes user-configured prefixes/suffixes/custom strings (only if mode is 'advanced')
       - Lowercases
       - Removes bracketed/parenthesized text
       - Removes punctuation
@@ -148,7 +149,76 @@ def normalize_name(name: str) -> str:
     if not name:
         return ""
 
-    norm = name.lower()
+    # Load user-configured EPG matching rules (fail gracefully)
+    prefixes = []
+    suffixes = []
+    custom_strings = []
+
+    try:
+        from core.models import CoreSettings
+        settings = CoreSettings.get_epg_settings()
+
+        # Check if user has enabled advanced mode
+        mode = settings.get("epg_match_mode", "default")
+
+        # Only use custom settings if mode is 'advanced'
+        if mode == "advanced":
+            prefixes = settings.get("epg_match_ignore_prefixes", [])
+            suffixes = settings.get("epg_match_ignore_suffixes", [])
+            custom_strings = settings.get("epg_match_ignore_custom", [])
+
+            # Ensure we have lists
+            if not isinstance(prefixes, list):
+                prefixes = []
+            if not isinstance(suffixes, list):
+                suffixes = []
+            if not isinstance(custom_strings, list):
+                custom_strings = []
+
+    except Exception as e:
+        # Settings unavailable or error - continue with empty lists (graceful degradation)
+        logger.debug(f"Could not load EPG matching settings: {e}")
+        prefixes = []
+        suffixes = []
+        custom_strings = []
+
+    result = name
+
+    # Step 1: Remove prefixes (from START only - exact string match)
+    for prefix in prefixes:
+        # Skip empty or non-string entries
+        if not prefix or not isinstance(prefix, str):
+            continue
+        # Exact match at start
+        if result.startswith(prefix):
+            result = result[len(prefix):]
+            break  # Only remove first matching prefix
+
+    # Step 2: Remove suffixes (from END only - exact string match)
+    for suffix in suffixes:
+        # Skip empty or non-string entries
+        if not suffix or not isinstance(suffix, str):
+            continue
+        # Exact match at end
+        if result.endswith(suffix):
+            result = result[:-len(suffix)]
+            break  # Only remove first matching suffix
+
+    # Step 3: Remove custom strings (from ANYWHERE - exact string match)
+    for custom in custom_strings:
+        # Skip empty or non-string entries
+        if not custom or not isinstance(custom, str):
+            continue
+        try:
+            # Exact string removal (replace with empty string)
+            result = result.replace(custom, "")
+        except Exception as e:
+            # If removal fails for any reason, skip this entry
+            logger.debug(f"Failed to remove custom string '{custom}': {e}")
+            continue
+
+    # Step 4: Existing normalization logic (unchanged)
+    norm = result.lower()
     norm = re.sub(r"\[.*?\]", "", norm)
 
     # Extract and preserve important call signs from parentheses before removing them
@@ -1874,18 +1944,97 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     remux_success = False
     try:
         if temp_ts_path and os.path.exists(temp_ts_path):
-            subprocess.run([
-                "ffmpeg", "-y", "-i", temp_ts_path, "-c", "copy", final_path
-            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            remux_success = os.path.exists(final_path)
-            # Clean up temp file on success
+            # First attempt: Direct TS to MKV remux
+            result = subprocess.run([
+                "ffmpeg", "-y",
+                "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
+                "-err_detect", "ignore_err",   # Ignore minor stream errors
+                "-i", temp_ts_path,
+                "-map", "0", # Map all streams
+                "-c", "copy",
+                final_path
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            # Check if FFmpeg succeeded (return code 0) and output file is valid
+            if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                remux_success = True
+                logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
+            else:
+                # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
+                logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
+
+                # Clean up partial/failed MKV
+                try:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                except Exception:
+                    pass
+
+                # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
+                temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
+                result_mp4 = subprocess.run([
+                    "ffmpeg", "-y",
+                    "-fflags", "+genpts+igndts+discardcorrupt",
+                    "-err_detect", "ignore_err",
+                    "-i", temp_ts_path,
+                    "-map", "0",
+                    "-c", "copy",
+                    temp_mp4_path
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
+                    logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
+
+                    # Step 2: MP4 → MKV (clean timestamps from MP4)
+                    result_mkv = subprocess.run([
+                        "ffmpeg", "-y",
+                        "-i", temp_mp4_path,
+                        "-map", "0",
+                        "-c", "copy",
+                        final_path
+                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                    if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                        remux_success = True
+                        logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
+                    else:
+                        logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
+
+                    # Clean up temp MP4
+                    try:
+                        if os.path.exists(temp_mp4_path):
+                            os.remove(temp_mp4_path)
+                    except Exception:
+                        pass
+                else:
+                    logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
+
+            # Clean up temp TS file only on successful remux
             if remux_success:
                 try:
                     os.remove(temp_ts_path)
+                    logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove temp TS file: {e}")
+            else:
+                # Keep TS file for debugging/manual recovery if remux failed
+                logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
+                # Clean up any partial MKV
+                try:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                        logger.debug(f"Cleaned up partial MKV file: {final_path}")
                 except Exception:
                     pass
+
     except Exception as e:
-        logger.warning(f"MKV remux failed: {e}")
+        logger.warning(f"MKV remux failed with exception: {e}")
+        # Clean up any partial files on exception
+        try:
+            if os.path.exists(final_path):
+                os.remove(final_path)
+        except Exception:
+            pass
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:
@@ -2550,13 +2699,9 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                     channel_number = None
 
                     if starting_channel_number is None:
-                        # Mode 1: Use provider numbers when available
-                        if "tvg-chno" in stream_custom_props:
-                            channel_number = float(stream_custom_props["tvg-chno"])
-                        elif "channel-number" in stream_custom_props:
-                            channel_number = float(stream_custom_props["channel-number"])
-                        elif "num" in stream_custom_props:
-                            channel_number = float(stream_custom_props["num"])
+                        # Mode 1: Use provider numbers when available (from stream_chno field)
+                        if stream.stream_chno is not None:
+                            channel_number = stream.stream_chno
 
                     # For modes 2 and 3 (starting_channel_number == 0 or specific number),
                     # ignore provider numbers and use sequential assignment
@@ -2585,6 +2730,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                         "name": name,
                         "tvc_guide_stationid": tvc_guide_stationid,
                         "tvg_id": stream.tvg_id,
+                        "is_adult": stream.is_adult,
                     }
 
                     # Only add channel_group_id if the stream has a channel group

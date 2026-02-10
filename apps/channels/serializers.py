@@ -104,7 +104,7 @@ class StreamSerializer(serializers.ModelSerializer):
         allow_null=True,
         required=False,
     )
-    read_only_fields = ["is_custom", "m3u_account", "stream_hash"]
+    read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
 
     class Meta:
         model = Stream
@@ -120,12 +120,15 @@ class StreamSerializer(serializers.ModelSerializer):
             "updated_at",
             "last_seen",
             "is_stale",
+            "is_adult",
             "stream_profile_id",
             "is_custom",
             "channel_group",
             "stream_hash",
             "stream_stats",
             "stream_stats_updated_at",
+            "stream_id",
+            "stream_chno",
         ]
 
     def get_fields(self):
@@ -293,6 +296,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "uuid",
             "logo_id",
             "user_level",
+            "is_adult",
             "auto_created",
             "auto_created_by",
             "auto_created_by_name",
@@ -330,6 +334,13 @@ class ChannelSerializer(serializers.ModelSerializer):
             "channel_number", Channel.get_next_available_channel_number()
         )
         validated_data["channel_number"] = channel_number
+
+        # Auto-assign Default Group if no channel_group is specified
+        if "channel_group" not in validated_data or validated_data.get("channel_group") is None:
+            from apps.channels.models import ChannelGroup
+            default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
+            validated_data["channel_group"] = default_group
+
         channel = Channel.objects.create(**validated_data)
 
         # Add streams in the specified order

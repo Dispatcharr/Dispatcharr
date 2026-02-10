@@ -700,6 +700,17 @@ export const WebsocketProvider = ({ children }) => {
                   withCloseButton: true, // Allow manual close
                   loading: false, // Remove loading indicator
                 });
+                // Requery streams and channels after rehash completes
+                try {
+                  await API.requeryChannels();
+                  await API.requeryStreams();
+                  await useChannelsStore.getState().fetchChannels();
+                } catch (error) {
+                  console.error(
+                    'Error refreshing channels/streams after rehash:',
+                    error
+                  );
+                }
               } else if (parsedEvent.data.action === 'blocked') {
                 // Handle blocked rehash attempt
                 notifications.show({
@@ -755,6 +766,7 @@ export const WebsocketProvider = ({ children }) => {
               // Refresh the channels table to show new channels
               try {
                 await API.requeryChannels();
+                await API.requeryStreams();
                 await useChannelsStore.getState().fetchChannels();
                 await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
@@ -830,6 +842,59 @@ export const WebsocketProvider = ({ children }) => {
 
               // Pass through to individual components for any additional handling
               setVal(parsedEvent);
+              break;
+            }
+
+            case 'system_notification': {
+              // Handle real-time system notifications (version updates, setting recommendations, etc.)
+              const notificationData = parsedEvent.data.notification;
+              if (notificationData) {
+                // Import and update the notifications store
+                const { default: useNotificationsStore } =
+                  await import('./store/notifications');
+                useNotificationsStore
+                  .getState()
+                  .addNotification(notificationData);
+
+                // Show a toast notification for high priority items
+                if (
+                  notificationData.priority === 'high' ||
+                  notificationData.priority === 'critical'
+                ) {
+                  const color =
+                    notificationData.notification_type === 'version_update'
+                      ? 'green'
+                      : notificationData.notification_type === 'warning'
+                        ? 'orange'
+                        : 'blue';
+
+                  notifications.show({
+                    title: notificationData.title,
+                    message: notificationData.message,
+                    color,
+                    autoClose: 10000,
+                  });
+                }
+              }
+              break;
+            }
+
+            case 'notification_dismissed': {
+              // Handle notification dismissed from another session
+              const { notification_key } = parsedEvent.data;
+              if (notification_key) {
+                const { default: useNotificationsStore } =
+                  await import('./store/notifications');
+                useNotificationsStore
+                  .getState()
+                  .dismissNotification(notification_key);
+              }
+              break;
+            }
+
+            case 'notifications_cleared': {
+              // Handle bulk notification clearing (e.g., when version is updated)
+              API.getNotifications();
               break;
             }
 

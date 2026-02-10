@@ -155,6 +155,7 @@ BACKUP_SETTINGS_KEY = "backup_settings"
 PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
+EPG_SETTINGS_KEY = "epg_settings"
 
 
 class CoreSettings(models.Model):
@@ -226,6 +227,29 @@ class CoreSettings(models.Model):
     @classmethod
     def get_auto_import_mapped_files(cls):
         return cls.get_stream_settings().get("auto_import_mapped_files")
+
+    # EPG Settings
+    @classmethod
+    def get_epg_settings(cls):
+        """Get all EPG-related settings."""
+        return cls._get_group(EPG_SETTINGS_KEY, {
+            "epg_match_mode": "default",
+            "epg_match_ignore_prefixes": [],
+            "epg_match_ignore_suffixes": [],
+            "epg_match_ignore_custom": [],
+        })
+
+    @classmethod
+    def get_epg_match_ignore_prefixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_prefixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_suffixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_suffixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_custom(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_custom", [])
 
     # DVR Settings
     @classmethod
@@ -391,3 +415,153 @@ class SystemEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} - {self.channel_name or 'N/A'} @ {self.timestamp}"
+
+
+class SystemNotification(models.Model):
+    """
+    Stores system notifications that users can view and dismiss.
+    Used for version updates, recommended settings, announcements, etc.
+    """
+    class NotificationType(models.TextChoices):
+        VERSION_UPDATE = 'version_update', 'Version Update Available'
+        SETTING_RECOMMENDATION = 'setting_recommendation', 'Recommended Setting Change'
+        ANNOUNCEMENT = 'announcement', 'System Announcement'
+        WARNING = 'warning', 'Warning'
+        INFO = 'info', 'Information'
+
+    class Priority(models.TextChoices):
+        LOW = 'low', 'Low'
+        NORMAL = 'normal', 'Normal'
+        HIGH = 'high', 'High'
+        CRITICAL = 'critical', 'Critical'
+
+    class Source(models.TextChoices):
+        SYSTEM = 'system', 'System Generated'
+        DEVELOPER = 'developer', 'Developer Notification'
+
+    # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
+    # This allows deduplication and targeted dismissals
+    notification_key = models.CharField(max_length=255, unique=True, db_index=True)
+
+    notification_type = models.CharField(
+        max_length=50,
+        choices=NotificationType.choices,
+        default=NotificationType.INFO,
+        db_index=True
+    )
+    priority = models.CharField(
+        max_length=20,
+        choices=Priority.choices,
+        default=Priority.NORMAL
+    )
+
+    # Source of the notification (system-generated vs developer-defined)
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.SYSTEM,
+        db_index=True
+    )
+
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+
+    # Optional action data (e.g., setting key/value for recommendations, release URL for versions)
+    action_data = models.JSONField(default=dict, blank=True)
+
+    # Whether this notification is currently active
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    # Admin-only notifications require admin privileges to view
+    admin_only = models.BooleanField(default=False)
+
+    # Auto-expire after this date (null = never expires)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-priority', '-created_at']
+        indexes = [
+            models.Index(fields=['is_active', '-created_at']),
+            models.Index(fields=['notification_type', 'is_active']),
+            models.Index(fields=['source', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"[{self.notification_type}] {self.title}"
+
+    @classmethod
+    def create_version_notification(cls, version, release_url=None, release_notes=None):
+        """Create or update a version update notification. Returns (notification, created) tuple."""
+        key = f"version-{version}"
+        notification, created = cls.objects.update_or_create(
+            notification_key=key,
+            defaults={
+                'notification_type': cls.NotificationType.VERSION_UPDATE,
+                'priority': cls.Priority.HIGH,
+                'title': f'Version {version} Available',
+                'message': f'A new version of Dispatcharr ({version}) is available.',
+                'action_data': {
+                    'version': version,
+                    'release_url': release_url,
+                    'release_notes': release_notes,
+                },
+                'is_active': True,
+                'admin_only': True,
+            }
+        )
+        return notification, created
+
+    @classmethod
+    def create_setting_recommendation(cls, setting_key, recommended_value, reason, current_value=None):
+        """Create a setting recommendation notification. Returns (notification, created) tuple."""
+        key = f"setting-{setting_key}"
+        notification, created = cls.objects.update_or_create(
+            notification_key=key,
+            defaults={
+                'notification_type': cls.NotificationType.SETTING_RECOMMENDATION,
+                'priority': cls.Priority.NORMAL,
+                'title': f'Recommended Setting: {setting_key}',
+                'message': reason,
+                'action_data': {
+                    'setting_key': setting_key,
+                    'recommended_value': recommended_value,
+                    'current_value': current_value,
+                },
+                'is_active': True,
+                'admin_only': True,
+            }
+        )
+        return notification, created
+
+
+class NotificationDismissal(models.Model):
+    """
+    Tracks which users have dismissed which notifications.
+    Allows users to dismiss notifications once without seeing them again.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='dismissed_notifications'
+    )
+    notification = models.ForeignKey(
+        SystemNotification,
+        on_delete=models.CASCADE,
+        related_name='dismissals'
+    )
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    # Optional: track if user accepted/applied the recommendation
+    action_taken = models.CharField(max_length=50, blank=True, null=True)
+
+    class Meta:
+        unique_together = ['user', 'notification']
+        indexes = [
+            models.Index(fields=['user', 'notification']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} dismissed {self.notification.notification_key}"

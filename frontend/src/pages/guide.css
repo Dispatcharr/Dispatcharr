@@ -7,22 +7,22 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   border-radius: 8px;
-  background: linear-gradient(to right, #2D2D2F, #1F1F20);
+  background: linear-gradient(to right, #2d2d2f, #1f1f20);
   /* Default background */
   color: #fff;
   transition: all 0.2s ease-out;
 }
 
 .tv-guide .guide-program-container .guide-program.live {
-  background: linear-gradient(to right, #3BA882, #245043);
+  background: linear-gradient(to right, #3ba882, #245043);
 }
 
 .tv-guide .guide-program-container .guide-program.live:hover {
-  background: linear-gradient(to right, #2E9E80, #206E5E);
+  background: linear-gradient(to right, #2e9e80, #206e5e);
 }
 
 .tv-guide .guide-program-container .guide-program.not-live:hover {
-  background: linear-gradient(to right, #2F3F3A, #1E2926);
+  background: linear-gradient(to right, #2f3f3a, #1e2926);
 }
 
 /* New styles for expanded programs */
@@ -33,15 +33,15 @@
 }
 
 .tv-guide .guide-program-container .guide-program.expanded.live {
-  background: linear-gradient(to right, #226F5D, #3BA882);
+  background: linear-gradient(to right, #226f5d, #3ba882);
 }
 
 .tv-guide .guide-program-container .guide-program.expanded.not-live {
-  background: linear-gradient(to right, #2C3F3A, #206E5E);
+  background: linear-gradient(to right, #2c3f3a, #206e5e);
 }
 
 .tv-guide .guide-program-container .guide-program.expanded.past {
-  background: linear-gradient(to right, #1F2423, #2F3A37);
+  background: linear-gradient(to right, #1f2423, #2f3a37);
 }
 
 /* Ensure channel logo is always on top */
