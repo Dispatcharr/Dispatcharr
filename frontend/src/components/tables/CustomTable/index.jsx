@@ -21,6 +21,7 @@ const useTable = ({
   state = [],
   columnSizing,
   setColumnSizing,
+  onColumnVisibilityChange,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
@@ -98,12 +99,13 @@ const useTable = ({
     },
     ...options,
     state: {
-      ...options.state,
+      ...state,
       selectedTableIds,
       ...(columnSizing && { columnSizing }),
     },
     onStateChange: options.onStateChange,
     ...(setColumnSizing && { onColumnSizingChange: setColumnSizing }),
+    ...(onColumnVisibilityChange && { onColumnVisibilityChange }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
     enableColumnResizing: true,
     columnResizeMode: 'onChange',

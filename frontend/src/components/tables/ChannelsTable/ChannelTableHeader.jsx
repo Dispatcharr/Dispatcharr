@@ -44,6 +44,7 @@ import GroupManager from '../../forms/GroupManager';
 import ConfirmationDialog from '../../ConfirmationDialog';
 import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
+import EPGMatchModal from '../../modals/EPGMatchModal';
 
 const CreateProfilePopover = React.memo(() => {
   const [opened, setOpened] = useState(false);
@@ -121,6 +122,7 @@ const ChannelTableHeader = ({
   const [channelNumAssignmentStart, setChannelNumAssignmentStart] = useState(1);
   const [assignNumbersModalOpen, setAssignNumbersModalOpen] = useState(false);
   const [groupManagerOpen, setGroupManagerOpen] = useState(false);
+  const [epgMatchModalOpen, setEpgMatchModalOpen] = useState(false);
   const [confirmDeleteProfileOpen, setConfirmDeleteProfileOpen] =
     useState(false);
   const [profileToDelete, setProfileToDelete] = useState(null);
@@ -175,26 +177,6 @@ const ChannelTableHeader = ({
     } finally {
       setDeletingProfile(false);
       setConfirmDeleteProfileOpen(false);
-    }
-  };
-
-  const matchEpg = async () => {
-    try {
-      // Hit our new endpoint that triggers the fuzzy matching Celery task
-      // If channels are selected, only match those; otherwise match all
-      if (selectedTableIds.length > 0) {
-        await API.matchEpg(selectedTableIds);
-        notifications.show({
-          title: `EPG matching task started for ${selectedTableIds.length} selected channel(s)!`,
-        });
-      } else {
-        await API.matchEpg();
-        notifications.show({
-          title: 'EPG matching task started for all channels without EPG!',
-        });
-      }
-    } catch (err) {
-      notifications.show(`Error: ${err.message}`);
     }
   };
 
@@ -421,7 +403,7 @@ const ChannelTableHeader = ({
               <Menu.Item
                 leftSection={<Binary size={18} />}
                 disabled={authUser.user_level != USER_LEVELS.ADMIN}
-                onClick={matchEpg}
+                onClick={() => setEpgMatchModalOpen(true)}
               >
                 <Text size="xs">
                   {selectedTableIds.length > 0
@@ -463,6 +445,12 @@ const ChannelTableHeader = ({
       <GroupManager
         isOpen={groupManagerOpen}
         onClose={() => setGroupManagerOpen(false)}
+      />
+
+      <EPGMatchModal
+        opened={epgMatchModalOpen}
+        onClose={() => setEpgMatchModalOpen(false)}
+        selectedChannelIds={selectedTableIds}
       />
 
       <ConfirmationDialog

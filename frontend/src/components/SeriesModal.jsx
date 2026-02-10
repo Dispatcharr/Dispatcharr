@@ -287,13 +287,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   const handleCopyEpisodeLink = async (episode) => {
     const streamUrl = getEpisodeStreamUrl(episode);
-    const success = await copyToClipboard(streamUrl);
-    notifications.show({
-      title: success ? 'Link Copied!' : 'Copy Failed',
-      message: success
-        ? 'Episode link copied to clipboard'
-        : 'Failed to copy link to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(streamUrl, {
+      successTitle: 'Link Copied!',
+      successMessage: 'Episode link copied to clipboard',
     });
   };
 

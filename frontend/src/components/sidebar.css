@@ -13,21 +13,21 @@
 
 /* Active state styles */
 .navlink.navlink-active {
-  color: #FFFFFF;
+  color: #ffffff;
   background-color: #245043;
-  border: 1px solid #3BA882;
+  border: 1px solid #3ba882;
 }
 
 /* Hover effect */
 .navlink:hover {
-  background-color: #2A2F34; /* Gray hover effect when not active */
-  border: 1px solid #3D3D42;
+  background-color: #2a2f34; /* Gray hover effect when not active */
+  border: 1px solid #3d3d42;
 }
 
 /* Hover effect for active state */
 .navlink.navlink-active:hover {
-  background-color: #3A3A40;
-  border: 1px solid #3BA882;
+  background-color: #3a3a40;
+  border: 1px solid #3ba882;
 }
 
 /* Collapse condition for justifyContent */

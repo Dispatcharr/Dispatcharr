@@ -55,6 +55,8 @@ class RedisClient:
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                     # Use standardized settings
                     socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
@@ -68,6 +70,8 @@ class RedisClient:
                         host=redis_host,
                         port=redis_port,
                         db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
                         socket_timeout=socket_timeout,
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
@@ -148,6 +152,8 @@ class RedisClient:
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                     # Use standardized settings but without socket timeouts for PubSub
                     # Important: socket_timeout is None for PubSub operations
@@ -161,6 +167,8 @@ class RedisClient:
                         host=redis_host,
                         port=redis_port,
                         db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
                         socket_timeout=None,  # Critical: No timeout for PubSub operations
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
@@ -437,3 +445,76 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+
+
+def send_websocket_notification(notification):
+    """
+    Send a system notification to all connected WebSocket clients.
+
+    Args:
+        notification: A SystemNotification model instance or dict with notification data
+
+    Example:
+        from core.models import SystemNotification
+        notification = SystemNotification.create_version_notification('0.19.0', 'https://...')
+        send_websocket_notification(notification)
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        # Convert model instance to dict if needed
+        if hasattr(notification, 'id'):
+            notification_data = {
+                'id': notification.id,
+                'notification_key': notification.notification_key,
+                'notification_type': notification.notification_type,
+                'priority': notification.priority,
+                'title': notification.title,
+                'message': notification.message,
+                'action_data': notification.action_data,
+                'is_active': notification.is_active,
+                'admin_only': notification.admin_only,
+                'created_at': notification.created_at.isoformat() if notification.created_at else None,
+            }
+        else:
+            notification_data = notification
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'system_notification',
+                    'notification': notification_data,
+                }
+            }
+        )
+        logger.debug(f"Sent WebSocket notification: {notification_data.get('title', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Failed to send WebSocket notification: {e}")
+
+
+def send_notification_dismissed(notification_key):
+    """
+    Notify all connected clients that a notification was dismissed.
+    Useful for syncing dismissal state across multiple browser tabs/sessions.
+
+    Args:
+        notification_key: The unique key of the dismissed notification
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'notification_dismissed',
+                    'notification_key': notification_key,
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to send notification dismissed event: {e}")
+

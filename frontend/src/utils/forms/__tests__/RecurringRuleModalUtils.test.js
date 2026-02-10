@@ -6,8 +6,8 @@ import dayjs from 'dayjs';
 vi.mock('../../../api.js', () => ({
   default: {
     updateRecurringRule: vi.fn(),
-    deleteRecurringRule: vi.fn()
-  }
+    deleteRecurringRule: vi.fn(),
+  },
 }));
 
 describe('RecurringRuleModalUtils', () => {
@@ -20,7 +20,7 @@ describe('RecurringRuleModalUtils', () => {
       const channels = {
         ch1: { id: 1, channel_number: '10', name: 'ABC' },
         ch2: { id: 2, channel_number: '5', name: 'NBC' },
-        ch3: { id: 3, channel_number: '15', name: 'CBS' }
+        ch3: { id: 3, channel_number: '15', name: 'CBS' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
@@ -28,7 +28,7 @@ describe('RecurringRuleModalUtils', () => {
       expect(result).toEqual([
         { value: '2', label: 'NBC' },
         { value: '1', label: 'ABC' },
-        { value: '3', label: 'CBS' }
+        { value: '3', label: 'CBS' },
       ]);
     });
 
@@ -36,7 +36,7 @@ describe('RecurringRuleModalUtils', () => {
       const channels = {
         ch1: { id: 1, channel_number: '10', name: 'ZBC' },
         ch2: { id: 2, channel_number: '10', name: 'ABC' },
-        ch3: { id: 3, channel_number: '10', name: 'MBC' }
+        ch3: { id: 3, channel_number: '10', name: 'MBC' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
@@ -44,35 +44,35 @@ describe('RecurringRuleModalUtils', () => {
       expect(result).toEqual([
         { value: '2', label: 'ABC' },
         { value: '3', label: 'MBC' },
-        { value: '1', label: 'ZBC' }
+        { value: '1', label: 'ZBC' },
       ]);
     });
 
     it('should handle missing channel numbers', () => {
       const channels = {
         ch1: { id: 1, name: 'ABC' },
-        ch2: { id: 2, channel_number: '5', name: 'NBC' }
+        ch2: { id: 2, channel_number: '5', name: 'NBC' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
 
       expect(result).toEqual([
         { value: '1', label: 'ABC' },
-        { value: '2', label: 'NBC' }
+        { value: '2', label: 'NBC' },
       ]);
     });
 
     it('should use fallback label when name is missing', () => {
       const channels = {
         ch1: { id: 1, channel_number: '10' },
-        ch2: { id: 2, channel_number: '5', name: '' }
+        ch2: { id: 2, channel_number: '5', name: '' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
 
       expect(result).toEqual([
         { value: '2', label: 'Channel 2' },
-        { value: '1', label: 'Channel 1' }
+        { value: '1', label: 'Channel 1' },
       ]);
     });
 
@@ -96,7 +96,7 @@ describe('RecurringRuleModalUtils', () => {
 
     it('should convert channel id to string value', () => {
       const channels = {
-        ch1: { id: 123, channel_number: '10', name: 'ABC' }
+        ch1: { id: 123, channel_number: '10', name: 'ABC' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
@@ -108,7 +108,7 @@ describe('RecurringRuleModalUtils', () => {
     it('should handle non-numeric channel numbers', () => {
       const channels = {
         ch1: { id: 1, channel_number: 'HD1', name: 'ABC' },
-        ch2: { id: 2, channel_number: '5', name: 'NBC' }
+        ch2: { id: 2, channel_number: '5', name: 'NBC' },
       };
 
       const result = RecurringRuleModalUtils.getChannelOptions(channels);
@@ -131,16 +131,16 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         {
           start_time: '2024-01-03T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         {
           start_time: '2024-01-04T12:00:00',
-          custom_properties: { rule: { id: 2 } }
-        }
+          custom_properties: { rule: { id: 2 } },
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -159,12 +159,12 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = [
         {
           start_time: '2023-12-31T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: { rule: { id: 1 } }
-        }
+          custom_properties: { rule: { id: 1 } },
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -182,16 +182,16 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-04T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         {
           start_time: '2024-01-03T12:00:00',
-          custom_properties: { rule: { id: 1 } }
-        }
+          custom_properties: { rule: { id: 1 } },
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -211,12 +211,12 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = {
         rec1: {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: { rule: { id: 1 } }
+          custom_properties: { rule: { id: 1 } },
         },
         rec2: {
           start_time: '2024-01-03T12:00:00',
-          custom_properties: { rule: { id: 1 } }
-        }
+          custom_properties: { rule: { id: 1 } },
+        },
       };
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -254,8 +254,8 @@ describe('RecurringRuleModalUtils', () => {
     it('should handle recordings without custom_properties', () => {
       const recordings = [
         {
-          start_time: '2024-01-02T12:00:00'
-        }
+          start_time: '2024-01-02T12:00:00',
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -272,8 +272,8 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: {}
-        }
+          custom_properties: {},
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -290,8 +290,8 @@ describe('RecurringRuleModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-02T12:00:00',
-          custom_properties: { rule: null }
-        }
+          custom_properties: { rule: null },
+        },
       ];
 
       const result = RecurringRuleModalUtils.getUpcomingOccurrences(
@@ -315,7 +315,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: '2024-01-01',
         end_date: '2024-12-31',
         rule_name: 'My Rule',
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -328,7 +328,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: '2024-01-01',
         end_date: '2024-12-31',
         name: 'My Rule',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -338,7 +338,7 @@ describe('RecurringRuleModalUtils', () => {
         days_of_week: ['0', '6'],
         start_time: '10:00',
         end_time: '11:00',
-        enabled: false
+        enabled: false,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -351,7 +351,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: '',
-        enabled: false
+        enabled: false,
       });
     });
 
@@ -360,7 +360,7 @@ describe('RecurringRuleModalUtils', () => {
         channel_id: '5',
         start_time: '10:00',
         end_time: '11:00',
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -373,7 +373,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: '',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -385,7 +385,7 @@ describe('RecurringRuleModalUtils', () => {
         end_time: '11:00',
         start_date: dayjs('2024-06-15'),
         end_date: dayjs('2024-12-25'),
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -398,7 +398,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: '2024-06-15',
         end_date: '2024-12-25',
         name: '',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -410,7 +410,7 @@ describe('RecurringRuleModalUtils', () => {
         end_time: '11:00',
         start_date: null,
         end_date: null,
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -423,7 +423,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: '',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -434,7 +434,7 @@ describe('RecurringRuleModalUtils', () => {
         start_time: '10:00',
         end_time: '11:00',
         rule_name: '  Trimmed Name  ',
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -447,7 +447,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: 'Trimmed Name',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -457,7 +457,7 @@ describe('RecurringRuleModalUtils', () => {
         days_of_week: [],
         start_time: '10:00',
         end_time: '11:00',
-        enabled: true
+        enabled: true,
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -470,7 +470,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: '',
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -480,7 +480,7 @@ describe('RecurringRuleModalUtils', () => {
         days_of_week: [],
         start_time: '10:00',
         end_time: '11:00',
-        enabled: 'true'
+        enabled: 'true',
       };
 
       await RecurringRuleModalUtils.updateRecurringRule(1, values);
@@ -493,7 +493,7 @@ describe('RecurringRuleModalUtils', () => {
         start_date: null,
         end_date: null,
         name: '',
-        enabled: true
+        enabled: true,
       });
     });
   });
@@ -518,7 +518,7 @@ describe('RecurringRuleModalUtils', () => {
       await RecurringRuleModalUtils.updateRecurringRuleEnabled(1, true);
 
       expect(API.updateRecurringRule).toHaveBeenCalledWith(1, {
-        enabled: true
+        enabled: true,
       });
     });
 
@@ -526,7 +526,7 @@ describe('RecurringRuleModalUtils', () => {
       await RecurringRuleModalUtils.updateRecurringRuleEnabled(1, false);
 
       expect(API.updateRecurringRule).toHaveBeenCalledWith(1, {
-        enabled: false
+        enabled: false,
       });
     });
   });

@@ -1,5 +1,6 @@
 // IPv4 CIDR regex - validates IP address and prefix length (0-32)
-export const IPV4_CIDR_REGEX = /^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\/(3[0-2]|[12]?[0-9])$/;
+export const IPV4_CIDR_REGEX =
+  /^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\/(3[0-2]|[12]?[0-9])$/;
 
 // IPv6 CIDR regex - validates IPv6 address and prefix length (0-128)
 export const IPV6_CIDR_REGEX =
