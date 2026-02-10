@@ -12,7 +12,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def wait_for_redis(host='localhost', port=6379, db=0, max_retries=30, retry_interval=2):
+def wait_for_redis(host='localhost', port=6379, db=0, password='', username='', max_retries=30, retry_interval=2):
     """Wait for Redis to become available"""
     redis_client = None
     retry_count = 0
@@ -25,6 +25,8 @@ def wait_for_redis(host='localhost', port=6379, db=0, max_retries=30, retry_inte
                 host=host,
                 port=port,
                 db=db,
+                password=password if password else None,
+                username=username if username else None,
                 socket_timeout=2,
                 socket_connect_timeout=2
             )
@@ -50,12 +52,14 @@ if __name__ == "__main__":
     host = os.environ.get('REDIS_HOST', 'localhost')
     port = int(os.environ.get('REDIS_PORT', 6379))
     db = int(os.environ.get('REDIS_DB', 0))
+    password = os.environ.get('REDIS_PASSWORD', '')
+    username = os.environ.get('REDIS_USER', '')
     max_retries = int(os.environ.get('REDIS_WAIT_RETRIES', 30))
     retry_interval = int(os.environ.get('REDIS_WAIT_INTERVAL', 2))
 
     logger.info(f"Starting Redis availability check at {host}:{port}/{db}")
 
-    if wait_for_redis(host, port, db, max_retries, retry_interval):
+    if wait_for_redis(host, port, db, password, username, max_retries, retry_interval):
         sys.exit(0)
     else:
         sys.exit(1)

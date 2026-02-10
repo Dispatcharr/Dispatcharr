@@ -5,6 +5,17 @@ import React, {
   useCallback,
   useRef,
 } from 'react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
@@ -52,6 +63,7 @@ import {
   Select,
   NumberInput,
   Tooltip,
+  Skeleton,
 } from '@mantine/core';
 import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
@@ -60,9 +72,18 @@ import ChannelTableStreams from './ChannelTableStreams';
 import LazyLogo from '../LazyLogo';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import useEPGsStore from '../../store/epgs';
+import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { CustomTable, useTable } from './CustomTable';
 import ChannelsTableOnboarding from './ChannelsTable/ChannelsTableOnboarding';
 import ChannelTableHeader from './ChannelsTable/ChannelTableHeader';
+import {
+  EditableTextCell,
+  EditableNumberCell,
+  EditableGroupCell,
+  EditableEPGCell,
+  EditableLogoCell,
+} from './ChannelsTable/EditableCell';
+import { DraggableRow } from './ChannelsTable/DraggableRow';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
@@ -113,6 +134,7 @@ const ChannelRowActions = React.memo(
   ({
     theme,
     row,
+    table,
     editChannel,
     deleteChannel,
     handleWatchStream,
@@ -122,7 +144,6 @@ const ChannelRowActions = React.memo(
     // Extract the channel ID once to ensure consistency
     const channelId = row.original.id;
     const channelUuid = row.original.uuid;
-    const [tableSize, _] = useLocalStorage('table-size', 'default');
 
     const authUser = useAuthStore((s) => s.user);
 
@@ -148,6 +169,7 @@ const ChannelRowActions = React.memo(
       createRecording(row.original);
     }, [channelId]);
 
+    const tableSize = table?.tableSize ?? 'default';
     const iconSize =
       tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
 
@@ -228,6 +250,11 @@ const ChannelsTable = ({ onReady }) => {
   // EPG data lookup
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
+  const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
+
+  // Get channel logos for logo selection
+  const { ensureLogosLoaded } = useChannelLogoSelection();
+
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
@@ -255,6 +282,7 @@ const ChannelsTable = ({ onReady }) => {
   const setChannelStreams = useChannelsTableStore((s) => s.setChannelStreams);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
+  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
 
   // store/channels
   const channels = useChannelsStore((s) => s.channels);
@@ -270,7 +298,6 @@ const ChannelsTable = ({ onReady }) => {
   // store/settings
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
 
   // store/warnings
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
@@ -314,8 +341,21 @@ const ChannelsTable = ({ onReady }) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const hasFetchedData = useRef(false);
+  const fetchVersionRef = useRef(0); // Track fetch version to prevent stale updates
+  const lastFetchParamsRef = useRef(null); // Track last fetch params to prevent duplicate requests
+  const fetchInProgressRef = useRef(false); // Track if a fetch is currently in progress
+
+  // Drag-and-drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px movement before dragging starts
+      },
+    })
+  );
 
   // Column sizing state for resizable columns
   // Store in localStorage but with empty object as default
@@ -364,6 +404,12 @@ const ChannelsTable = ({ onReady }) => {
   if (hasUnlinkedChannels) {
     epgOptions.unshift('No EPG');
   }
+  // Map for MultiSelect: value 'null' for 'No EPG', label for display
+  const epgSelectOptions = epgOptions.map((opt) =>
+    opt === 'No EPG'
+      ? { value: 'null', label: 'No EPG' }
+      : { value: opt, label: opt }
+  );
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
@@ -380,8 +426,7 @@ const ChannelsTable = ({ onReady }) => {
    * Functions
    */
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
-
+    // Build params first to check for duplicates
     const params = new URLSearchParams();
     params.append('page', pagination.pageIndex + 1);
     params.append('page_size', pagination.pageSize);
@@ -404,7 +449,7 @@ const ChannelsTable = ({ onReady }) => {
     }
 
     // Apply debounced filters
-    Object.entries(filters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
       if (value) {
         if (Array.isArray(value)) {
           // Convert null values to "null" string for URL parameter
@@ -418,30 +463,67 @@ const ChannelsTable = ({ onReady }) => {
       }
     });
 
-    const [results, ids] = await Promise.all([
-      await API.queryChannels(params),
-      await API.getAllChannelIds(params),
-    ]);
+    const paramsString = params.toString();
 
-    setIsLoading(false);
-    hasFetchedData.current = true;
+    // Skip if same fetch is already in progress (prevents StrictMode double-fetch)
+    if (
+      fetchInProgressRef.current &&
+      lastFetchParamsRef.current === paramsString
+    ) {
+      return;
+    }
 
-    setTablePrefs({
-      pageSize: pagination.pageSize,
-    });
-    setAllRowIds(ids);
+    // Increment fetch version to track this specific fetch request
+    const currentFetchVersion = ++fetchVersionRef.current;
+    lastFetchParamsRef.current = paramsString;
+    fetchInProgressRef.current = true;
 
-    // Signal ready after first successful data fetch
-    // EPG data is already loaded in initData before this component mounts
-    if (!hasSignaledReady.current && onReady) {
-      hasSignaledReady.current = true;
-      onReady();
+    setIsLoading(true);
+
+    try {
+      const [results, ids] = await Promise.all([
+        API.queryChannels(params),
+        API.getAllChannelIds(params),
+      ]);
+
+      fetchInProgressRef.current = false;
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
+
+      setIsLoading(false);
+      hasFetchedData.current = true;
+
+      setTablePrefs((prev) => ({
+        ...prev,
+        pageSize: pagination.pageSize,
+      }));
+      setAllRowIds(ids);
+
+      // Signal ready after first successful data fetch AND EPG data is loaded
+      // This prevents the EPG column from showing "Not Assigned" while EPG data is still loading
+      if (!hasSignaledReady.current && onReady && tvgsLoaded) {
+        hasSignaledReady.current = true;
+        onReady();
+      }
+    } catch (error) {
+      fetchInProgressRef.current = false;
+
+      // Skip state updates if a newer fetch has been initiated
+      if (currentFetchVersion !== fetchVersionRef.current) {
+        return;
+      }
+      setIsLoading(false);
+      // API layer handles "Invalid page" errors by resetting and retrying
+      // Just re-throw to show notification for actual errors
+      throw error;
     }
   }, [
     pagination,
     sorting,
     debouncedFilters,
-    onReady,
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
@@ -469,9 +551,9 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const handleEPGChange = (value) => {
-    // Convert "No EPG" to null for natural filtering
+    // Map 'null' (string) back to 'null' for backend, but keep UI label correct
     const processedValue = value
-      ? value.map((v) => (v === 'No EPG' ? null : v))
+      ? value.map((v) => (v === 'null' ? 'null' : v))
       : '';
     setFilters((prev) => ({
       ...prev,
@@ -542,9 +624,14 @@ const ChannelsTable = ({ onReady }) => {
   };
 
   const executeDeleteChannel = async (id) => {
-    await API.deleteChannel(id);
-    API.requeryChannels();
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannel(id);
+      API.requeryChannels();
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const deleteChannels = async () => {
@@ -559,12 +646,17 @@ const ChannelsTable = ({ onReady }) => {
 
   const executeDeleteChannels = async () => {
     setIsLoading(true);
-    await API.deleteChannels(table.selectedTableIds);
-    await API.requeryChannels();
-    setSelectedChannelIds([]);
-    table.setSelectedTableIds([]);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteChannels(table.selectedTableIds);
+      await API.requeryChannels();
+      setSelectedChannelIds([]);
+      table.setSelectedTableIds([]);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const createRecording = (channel) => {
@@ -635,14 +727,6 @@ const ChannelsTable = ({ onReady }) => {
     setRecordingModalOpen(false);
   };
 
-  const handleCopy = async (textToCopy, ref) => {
-    const success = await copyToClipboard(textToCopy);
-    notifications.show({
-      title: success ? 'Copied!' : 'Copy Failed',
-      message: success ? undefined : 'Failed to copy to clipboard',
-      color: success ? 'green' : 'red',
-    });
-  };
   // Build URLs with parameters
   const buildM3UUrl = () => {
     const params = new URLSearchParams();
@@ -667,35 +751,23 @@ const ChannelsTable = ({ onReady }) => {
   };
   // Example copy URLs
   const copyM3UUrl = async () => {
-    const success = await copyToClipboard(buildM3UUrl());
-    notifications.show({
-      title: success ? 'M3U URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The M3U URL has been copied to your clipboard.'
-        : 'Failed to copy M3U URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(buildM3UUrl(), {
+      successTitle: 'M3U URL Copied!',
+      successMessage: 'The M3U URL has been copied to your clipboard.',
     });
   };
 
   const copyEPGUrl = async () => {
-    const success = await copyToClipboard(buildEPGUrl());
-    notifications.show({
-      title: success ? 'EPG URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The EPG URL has been copied to your clipboard.'
-        : 'Failed to copy EPG URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(buildEPGUrl(), {
+      successTitle: 'EPG URL Copied!',
+      successMessage: 'The EPG URL has been copied to your clipboard.',
     });
   };
 
   const copyHDHRUrl = async () => {
-    const success = await copyToClipboard(hdhrUrl);
-    notifications.show({
-      title: success ? 'HDHR URL Copied!' : 'Copy Failed',
-      message: success
-        ? 'The HDHR URL has been copied to your clipboard.'
-        : 'Failed to copy HDHR URL to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(hdhrUrl, {
+      successTitle: 'HDHR URL Copied!',
+      successMessage: 'The HDHR URL has been copied to your clipboard.',
     });
   };
 
@@ -724,6 +796,47 @@ const ChannelsTable = ({ onReady }) => {
     }
   };
 
+  const handleDragEnd = async (event) => {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    const activeIndex = rows.findIndex((row) => row.id === active.id);
+    const overIndex = rows.findIndex((row) => row.id === over.id);
+
+    if (activeIndex === -1 || overIndex === -1) {
+      return;
+    }
+
+    const activeChannel = rows[activeIndex].original;
+    const overChannel = rows[overIndex].original;
+
+    try {
+      // Optimistically update the local state
+      const reorderedData = [...data];
+      const [movedItem] = reorderedData.splice(activeIndex, 1);
+      reorderedData.splice(overIndex, 0, movedItem);
+      useChannelsTableStore.setState({ channels: reorderedData });
+
+      // Call backend to reorder
+      await API.reorderChannel(
+        activeChannel.id,
+        overIndex > activeIndex
+          ? overChannel.id
+          : rows[overIndex - 1]?.original.id || null
+      );
+
+      // Refetch to get updated channel numbers
+      await API.requeryChannels();
+    } catch (error) {
+      // Revert on error
+      console.error('Failed to reorder channel:', error);
+      await API.requeryChannels();
+    }
+  };
+
   /**
    * useEffect
    */
@@ -749,6 +862,19 @@ const ChannelsTable = ({ onReady }) => {
     );
     setPaginationString(`${startItem} to ${endItem} of ${totalCount}`);
   }, [pagination.pageIndex, pagination.pageSize, totalCount]);
+
+  // Signal ready when EPG data finishes loading (if channels were already fetched)
+  useEffect(() => {
+    if (
+      hasFetchedData.current &&
+      !hasSignaledReady.current &&
+      onReady &&
+      tvgsLoaded
+    ) {
+      hasSignaledReady.current = true;
+      onReady();
+    }
+  }, [tvgsLoaded, onReady]);
 
   const columns = useMemo(
     () => [
@@ -782,22 +908,7 @@ const ChannelsTable = ({ onReady }) => {
         size: columnSizing.channel_number || 40,
         minSize: 30,
         maxSize: 100,
-        cell: ({ getValue }) => {
-          const value = getValue();
-          // Format as integer if no decimal component
-          const formattedValue =
-            value !== null && value !== undefined
-              ? value === Math.floor(value)
-                ? Math.floor(value)
-                : value
-              : '';
-
-          return (
-            <Flex justify="flex-end" style={{ width: '100%' }}>
-              {formattedValue}
-            </Flex>
-          );
-        },
+        cell: (props) => <EditableNumberCell {...props} />,
       },
       {
         id: 'name',
@@ -805,63 +916,20 @@ const ChannelsTable = ({ onReady }) => {
         size: columnSizing.name || 200,
         minSize: 100,
         grow: true,
-        cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
-        ),
+        cell: (props) => <EditableTextCell {...props} />,
       },
       {
         id: 'epg',
         header: 'EPG',
         accessorKey: 'epg_data_id',
-        cell: ({ getValue }) => {
-          const epgDataId = getValue();
-          const epgObj = epgDataId ? tvgsById[epgDataId] : null;
-          const tvgName = epgObj?.name;
-          const tvgId = epgObj?.tvg_id;
-          const epgName =
-            epgObj && epgObj.epg_source
-              ? epgs[epgObj.epg_source]?.name || epgObj.epg_source
-              : null;
-
-          const tooltip = epgObj
-            ? `${epgName ? `EPG Name: ${epgName}\n` : ''}${tvgName ? `TVG Name: ${tvgName}\n` : ''}${tvgId ? `TVG-ID: ${tvgId}` : ''}`.trim()
-            : '';
-          return (
-            <Box
-              style={{
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {epgObj && epgName ? (
-                <Tooltip
-                  label={
-                    <span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>
-                  }
-                  withArrow
-                  position="top"
-                >
-                  <span>
-                    {epgObj.epg_source} - {tvgId}
-                  </span>
-                </Tooltip>
-              ) : epgObj ? (
-                <span>{epgObj.name}</span>
-              ) : (
-                <span style={{ color: '#888' }}>Not Assigned</span>
-              )}
-            </Box>
-          );
-        },
+        cell: (props) => (
+          <EditableEPGCell
+            {...props}
+            tvgsById={tvgsById}
+            epgs={epgs}
+            tvgsLoaded={tvgsLoaded}
+          />
+        ),
         size: columnSizing.epg || 200,
         minSize: 80,
       },
@@ -871,16 +939,8 @@ const ChannelsTable = ({ onReady }) => {
           channelGroups[row.channel_group_id]
             ? channelGroups[row.channel_group_id].name
             : '',
-        cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
+        cell: (props) => (
+          <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
         size: columnSizing.channel_group || 175,
         minSize: 100,
@@ -896,29 +956,24 @@ const ChannelsTable = ({ onReady }) => {
         maxSize: 120,
         enableResizing: false,
         header: '',
-        cell: ({ getValue }) => {
-          const logoId = getValue();
-
-          return (
-            <Center style={{ width: '100%' }}>
-              <LazyLogo
-                logoId={logoId}
-                alt="logo"
-                style={{ maxHeight: 18, maxWidth: 55 }}
-              />
-            </Center>
-          );
-        },
+        cell: (props) => (
+          <EditableLogoCell
+            {...props}
+            LazyLogo={LazyLogo}
+            ensureLogosLoaded={ensureLogosLoaded}
+          />
+        ),
       },
       {
         id: 'actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: 100,
         enableResizing: false,
         header: '',
-        cell: ({ row }) => (
+        cell: ({ row, table }) => (
           <ChannelRowActions
             theme={theme}
             row={row}
+            table={table}
             editChannel={editChannel}
             deleteChannel={deleteChannel}
             handleWatchStream={handleWatchStream}
@@ -934,8 +989,9 @@ const ChannelsTable = ({ onReady }) => {
     // the actual sizes through its own state after initialization.
     // Note: logos is intentionally excluded - LazyLogo components handle their own logo data
     // from the store, so we don't need to recreate columns when logos load.
+    // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
   );
 
   const renderHeaderCell = (header) => {
@@ -954,13 +1010,20 @@ const ChannelsTable = ({ onReady }) => {
           <MultiSelect
             placeholder="EPG"
             variant="unstyled"
-            data={epgOptions}
+            data={epgSelectOptions}
             className="table-input-header"
             size="xs"
             searchable
             clearable
             onClick={stopPropagation}
             onChange={handleEPGChange}
+            value={
+              Array.isArray(filters.epg)
+                ? filters.epg
+                : filters.epg
+                  ? filters.epg.split(',').filter(Boolean)
+                  : []
+            }
             style={{ width: '100%' }}
           />
         );
@@ -1019,6 +1082,13 @@ const ChannelsTable = ({ onReady }) => {
             clearable
             onClick={stopPropagation}
             onChange={handleGroupChange}
+            value={
+              Array.isArray(filters.channel_group)
+                ? filters.channel_group
+                : filters.channel_group
+                  ? filters.channel_group.split(',').filter(Boolean)
+                  : []
+            }
             style={{ width: '100%' }}
           />
         );
@@ -1039,6 +1109,7 @@ const ChannelsTable = ({ onReady }) => {
     manualSorting: true,
     manualFiltering: true,
     enableRowSelection: true,
+    enableDragDrop: true,
     onRowSelectionChange: onRowSelectionChange,
     state: {
       pagination,
@@ -1380,12 +1451,13 @@ const ChannelsTable = ({ onReady }) => {
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 && (
-              <ChannelsTableOnboarding editChannel={editChannel} />
-            )}
+            {channelsTableLength === 0 &&
+              Object.keys(channels).length === 0 && (
+                <ChannelsTableOnboarding editChannel={editChannel} />
+              )}
           </Box>
 
-          {channelsTableLength > 0 && (
+          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
             <Box
               style={{
                 display: 'flex',
@@ -1402,7 +1474,18 @@ const ChannelsTable = ({ onReady }) => {
                   borderRadius: 'var(--mantine-radius-default)',
                 }}
               >
-                <CustomTable table={table} />
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={rows.map((row) => row.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <CustomTable table={table} />
+                  </SortableContext>
+                </DndContext>
               </Box>
 
               <Box
@@ -1471,6 +1554,7 @@ const ChannelsTable = ({ onReady }) => {
             ? executeDeleteChannels()
             : executeDeleteChannel(deleteTarget)
         }
+        loading={deleting}
         title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Channel Deletion`}
         message={
           isBulkDelete ? (

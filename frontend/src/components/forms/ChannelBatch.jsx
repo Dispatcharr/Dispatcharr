@@ -77,6 +77,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [confirmSetLogosOpen, setConfirmSetLogosOpen] = useState(false);
   const [confirmSetTvgIdsOpen, setConfirmSetTvgIdsOpen] = useState(false);
   const [confirmBatchUpdateOpen, setConfirmBatchUpdateOpen] = useState(false);
+  const [settingNames, setSettingNames] = useState(false);
+  const [settingLogos, setSettingLogos] = useState(false);
+  const [settingTvgIds, setSettingTvgIds] = useState(false);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -99,6 +102,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
+      is_adult: '-1',
     },
   });
 
@@ -148,6 +152,13 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       const userLevelLabel =
         USER_LEVEL_LABELS[values.user_level] || values.user_level;
       changes.push(`• User Level: ${userLevelLabel}`);
+    }
+
+    // Check mature content flag
+    if (values.is_adult && values.is_adult !== '-1') {
+      changes.push(
+        `• Mature Content: ${values.is_adult === 'true' ? 'Yes' : 'No'}`
+      );
     }
 
     // Check dummy EPG
@@ -218,6 +229,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
     if (values.user_level == '-1') {
       delete values.user_level;
+    }
+
+    if (values.is_adult === '-1') {
+      delete values.is_adult;
+    } else if (values.is_adult === 'true') {
+      values.is_adult = true;
+    } else if (values.is_adult === 'false') {
+      values.is_adult = false;
     }
 
     // Remove the channel_group field from form values as we use channel_group_id
@@ -328,6 +347,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetNamesFromEpg = async () => {
+    setSettingNames(true);
     try {
       // Start the backend task
       await API.setChannelNamesFromEpg(channelIds);
@@ -341,7 +361,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetNamesOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG name setting task:', error);
@@ -350,6 +369,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG name setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingNames(false);
       setConfirmSetNamesOpen(false);
     }
   };
@@ -373,6 +394,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetLogosFromEpg = async () => {
+    setSettingLogos(true);
     try {
       // Start the backend task
       await API.setChannelLogosFromEpg(channelIds);
@@ -386,7 +408,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetLogosOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG logo setting task:', error);
@@ -395,6 +416,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG logo setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingLogos(false);
       setConfirmSetLogosOpen(false);
     }
   };
@@ -418,6 +441,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetTvgIdsFromEpg = async () => {
+    setSettingTvgIds(true);
     try {
       // Start the backend task
       await API.setChannelTvgIdsFromEpg(channelIds);
@@ -431,7 +455,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetTvgIdsOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG TVG-ID setting task:', error);
@@ -440,6 +463,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG TVG-ID setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingTvgIds(false);
       setConfirmSetTvgIdsOpen(false);
     }
   };
@@ -922,6 +947,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   })
                 )}
               />
+
+              <Select
+                size="xs"
+                label="Mature Content"
+                {...form.getInputProps('is_adult')}
+                key={form.key('is_adult')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Yes' },
+                  { value: 'false', label: 'No' },
+                ]}
+              />
             </Stack>
           </Group>
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
@@ -947,6 +984,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         opened={confirmSetNamesOpen}
         onClose={() => setConfirmSetNamesOpen(false)}
         onConfirm={executeSetNamesFromEpg}
+        loading={settingNames}
         title="Confirm Set Names from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -968,6 +1006,7 @@ This action cannot be undone.`}
         opened={confirmSetLogosOpen}
         onClose={() => setConfirmSetLogosOpen(false)}
         onConfirm={executeSetLogosFromEpg}
+        loading={settingLogos}
         title="Confirm Set Logos from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -989,6 +1028,7 @@ This action cannot be undone.`}
         opened={confirmSetTvgIdsOpen}
         onClose={() => setConfirmSetTvgIdsOpen(false)}
         onConfirm={executeSetTvgIdsFromEpg}
+        loading={settingTvgIds}
         title="Confirm Set TVG-IDs from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -1010,6 +1050,7 @@ This action cannot be undone.`}
         opened={confirmBatchUpdateOpen}
         onClose={() => setConfirmBatchUpdateOpen(false)}
         onConfirm={onSubmit}
+        loading={isSubmitting}
         title="Confirm Batch Update"
         message={
           <div>

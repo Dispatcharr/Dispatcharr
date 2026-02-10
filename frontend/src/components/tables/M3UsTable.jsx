@@ -19,9 +19,6 @@ import {
   ActionIcon,
   Tooltip,
   Switch,
-  Progress,
-  Stack,
-  Badge,
   Group,
   Center,
 } from '@mantine/core';
@@ -29,16 +26,13 @@ import {
   SquareMinus,
   SquarePen,
   RefreshCcw,
-  Check,
-  X,
   ArrowUpDown,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   SquarePlus,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import useSettingsStore from '../../store/settings';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -131,15 +125,14 @@ const RowActions = ({
 const M3UTable = () => {
   const [playlist, setPlaylist] = useState(null);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
-  const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [rowSelection, setRowSelection] = useState([]);
-  const [activeFilterValue, setActiveFilterValue] = useState('all');
   const [playlistCreated, setPlaylistCreated] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
   const [data, setData] = useState([]);
   const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [deleting, setDeleting] = useState(false);
 
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
@@ -151,6 +144,7 @@ const M3UTable = () => {
 
   const theme = useMantineTheme();
   const [tableSize] = useLocalStorage('table-size', 'default');
+  const { fullDateTimeFormat } = useDateTimeFormat();
 
   const generateStatusString = (data) => {
     if (data.progress == 100) {
@@ -400,9 +394,14 @@ const M3UTable = () => {
 
   const executeDeletePlaylist = async (id) => {
     setIsLoading(true);
-    await API.deletePlaylist(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deletePlaylist(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const toggleActive = async (playlist) => {
@@ -576,11 +575,11 @@ const M3UTable = () => {
         size: 175,
         cell: ({ cell }) => {
           const value = cell.getValue();
-          return value ? (
-            <Text size="xs">{new Date(value).toLocaleString()}</Text>
-          ) : (
-            <Text size="xs">Never</Text>
-          );
+          if (!value) {
+            return <Text size="xs">Never</Text>;
+          }
+          const formatted = format(value, fullDateTimeFormat);
+          return <Text size="xs">{formatted}</Text>;
         },
       },
       {
@@ -605,7 +604,13 @@ const M3UTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshPlaylist, editPlaylist, deletePlaylist, toggleActive]
+    [
+      refreshPlaylist,
+      editPlaylist,
+      deletePlaylist,
+      toggleActive,
+      fullDateTimeFormat,
+    ]
   );
 
   //optionally access the underlying virtualizer instance
@@ -893,6 +898,7 @@ const M3UTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeletePlaylist(deleteTarget)}
+        loading={deleting}
         title="Confirm M3U Account Deletion"
         message={
           playlistToDelete ? (

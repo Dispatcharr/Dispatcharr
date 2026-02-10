@@ -7,7 +7,6 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from core.models import CoreSettings, NETWORK_ACCESS
 from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
@@ -129,13 +128,17 @@ def generate_m3u(request, profile_name=None, user=None):
             return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
 
     if user is not None:
-        if user.user_level == 0:
+        if user.user_level < 10:
             user_profile_count = user.channel_profiles.count()
 
             # If user has ALL profiles or NO profiles, give unrestricted access
             if user_profile_count == 0:
                 # No profile filtering - user sees all channels based on user_level
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                filters = {"user_level__lte": user.user_level}
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
+                channels = Channel.objects.filter(**filters).order_by("channel_number")
             else:
                 # User has specific limited profiles assigned
                 filters = {
@@ -143,6 +146,9 @@ def generate_m3u(request, profile_name=None, user=None):
                     "user_level__lte": user.user_level,
                     "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                 }
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
                 channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
         else:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -1197,7 +1203,7 @@ def generate_dummy_epg(
 
         # Create program entry with escaped channel name
         xml_lines.append(
-            f'  <programme start="{start_str}" stop="{stop_str}" channel="{program["channel_id"]}">'
+            f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(program["channel_id"])}">'
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
@@ -1259,13 +1265,17 @@ def generate_epg(request, profile_name=None, user=None):
 
         # Get channels based on user/profile
         if user is not None:
-            if user.user_level == 0:
+            if user.user_level < 10:
                 user_profile_count = user.channel_profiles.count()
 
                 # If user has ALL profiles or NO profiles, give unrestricted access
                 if user_profile_count == 0:
                     # No profile filtering - user sees all channels based on user_level
-                    channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                    filters = {"user_level__lte": user.user_level}
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
+                    channels = Channel.objects.filter(**filters).order_by("channel_number")
                 else:
                     # User has specific limited profiles assigned
                     filters = {
@@ -1273,6 +1283,9 @@ def generate_epg(request, profile_name=None, user=None):
                         "user_level__lte": user.user_level,
                         "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                     }
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
                     channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
                 channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -1435,7 +1448,7 @@ def generate_epg(request, profile_name=None, user=None):
                     else:
                         tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
             display_name = channel.name
-            xml_lines.append(f'  <channel id="{channel_id}">')
+            xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
             xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
             xml_lines.append("  </channel>")
@@ -1510,7 +1523,7 @@ def generate_epg(request, profile_name=None, user=None):
                     stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
                     # Create program entry with escaped channel name
-                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                     yield f"    <title>{html.escape(program['title'])}</title>\n"
                     yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
@@ -1559,7 +1572,7 @@ def generate_epg(request, profile_name=None, user=None):
                             start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
                             stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
-                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                             yield f"    <title>{html.escape(program['title'])}</title>\n"
                             yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
@@ -1621,7 +1634,7 @@ def generate_epg(request, profile_name=None, user=None):
                         start_str = prog.start_time.strftime("%Y%m%d%H%M%S %z")
                         stop_str = prog.end_time.strftime("%Y%m%d%H%M%S %z")
 
-                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">']
+                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">']
                         program_xml.append(f'    <title>{html.escape(prog.title)}</title>')
 
                         # Add subtitle if available
@@ -2080,7 +2093,7 @@ def xc_get_live_categories(user):
     from django.db.models import Min
     response = []
 
-    if user.user_level == 0:
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
@@ -2117,7 +2130,7 @@ def xc_get_live_categories(user):
 def xc_get_live_streams(request, user, category_id=None):
     streams = []
 
-    if user.user_level == 0:
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
@@ -2126,6 +2139,9 @@ def xc_get_live_streams(request, user, category_id=None):
             filters = {"user_level__lte": user.user_level}
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).order_by("channel_number")
         else:
             # User has specific limited profiles assigned
@@ -2136,6 +2152,9 @@ def xc_get_live_streams(request, user, category_id=None):
             }
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
     else:
         if not category_id:
@@ -2190,9 +2209,9 @@ def xc_get_live_streams(request, user, category_id=None):
                 ),
                 "epg_channel_id": str(channel_num_int),
                 "added": int(channel.created_at.timestamp()),
-                "is_adult": 0,
-                "category_id": str(channel.channel_group.id),
-                "category_ids": [channel.channel_group.id],
+                "is_adult": int(channel.is_adult),
+                "category_id": str(channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id),
+                "category_ids": [channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id],
                 "custom_sid": None,
                 "tv_archive": 0,
                 "direct_source": "",
@@ -2215,10 +2234,14 @@ def xc_get_epg(request, user, short=False):
         # If user has ALL profiles or NO profiles, give unrestricted access
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
-            channel = Channel.objects.filter(
-                id=channel_id,
-                user_level__lte=user.user_level
-            ).first()
+            filters = {
+                "id": channel_id,
+                "user_level__lte": user.user_level
+            }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2227,6 +2250,9 @@ def xc_get_epg(request, user, short=False):
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channel = Channel.objects.filter(**filters).distinct().first()
 
         if not channel:
@@ -2281,18 +2307,22 @@ def xc_get_epg(request, user, short=False):
                 # Has stored programs, use them
                 if short == False:
                     programs = channel.epg_data.programs.filter(
-                        start_time__gte=django_timezone.now()
+                        end_time__gt=django_timezone.now()
                     ).order_by('start_time')
                 else:
-                    programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                    programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
         else:
             # Regular EPG with stored programs
             if short == False:
                 programs = channel.epg_data.programs.filter(
-                    start_time__gte=django_timezone.now()
+                    end_time__gt=django_timezone.now()
                 ).order_by('start_time')
             else:
-                programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
     else:
         # No EPG data assigned, generate default dummy
         programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)

@@ -2,7 +2,7 @@ import useUserAgentsStore from '../store/userAgents';
 import M3UsTable from '../components/tables/M3UsTable';
 import EPGsTable from '../components/tables/EPGsTable';
 import { Box, Stack } from '@mantine/core';
-import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorBoundary from '../components/ErrorBoundary';
 
 const PageContent = () => {
   const error = useUserAgentsStore((state) => state.error);
@@ -28,14 +28,14 @@ const PageContent = () => {
       </Box>
     </Stack>
   );
-}
+};
 
 const M3UPage = () => {
   return (
     <ErrorBoundary>
-      <PageContent/>
+      <PageContent />
     </ErrorBoundary>
   );
-}
+};
 
 export default M3UPage;

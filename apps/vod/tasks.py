@@ -73,7 +73,9 @@ def refresh_vod_content(account_id):
         return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
 
     except Exception as e:
+        import traceback
         logger.error(f"Error refreshing VOD for account {account_id}: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
         # Send error notification
         send_m3u_update(account_id, "vod_refresh", 100, status="error",
@@ -410,10 +412,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
@@ -555,12 +557,19 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if movie.logo != new_logo:
-                    movie._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if movie.logo_id != new_logo.id:
+                        movie._logo_to_update = new_logo
+                        logo_updated = True
+                elif movie.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                    movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo:
+            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 movie._logo_to_update = None
                 logo_updated = True
@@ -614,26 +623,41 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # First, create new movies and get their IDs
             created_movies = {}
             if movies_to_create:
-                Movie.objects.bulk_create(movies_to_create, ignore_conflicts=True)
+                # Bulk query to check which movies already exist
+                tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
+                imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
+                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
 
-                # Get the newly created movies with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (movie.name, movie.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = movie
+
+                # Check each movie against the bulk query results
+                movies_actually_created = []
                 for movie in movies_to_create:
-                    # Find the movie by its unique identifiers
-                    if movie.tmdb_id:
-                        db_movie = Movie.objects.filter(tmdb_id=movie.tmdb_id).first()
-                    elif movie.imdb_id:
-                        db_movie = Movie.objects.filter(imdb_id=movie.imdb_id).first()
-                    else:
-                        db_movie = Movie.objects.filter(
-                            name=movie.name,
-                            year=movie.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[movie.tmdb_id]
+                    elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[movie.imdb_id]
+                    elif not movie.tmdb_id and not movie.imdb_id:
+                        existing = existing_by_name_year.get((movie.name, movie.year))
 
-                    if db_movie:
-                        created_movies[id(movie)] = db_movie
+                    if existing:
+                        created_movies[id(movie)] = existing
+                    else:
+                        movies_actually_created.append(movie)
+                        created_movies[id(movie)] = movie
+
+                # Bulk create only movies that don't exist
+                if movies_actually_created:
+                    Movie.objects.bulk_create(movies_actually_created)
 
             # Update existing movies
             if movies_to_update:
@@ -649,12 +673,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         movie.logo = movie._logo_to_update
                         movie.save(update_fields=['logo'])
 
-            # Update relations to reference the correct movie objects
+            # Update relations to reference the correct movie objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.movie) in created_movies:
                     relation.movie = created_movies[id(relation.movie)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.movie) in created_movies:
+                    relation.movie = created_movies[id(relation.movie)]
+
+            # All movies now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3UMovieRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -724,10 +752,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year)
@@ -886,12 +914,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if series.logo != new_logo:
-                    series._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if series.logo_id != new_logo.id:
+                        series._logo_to_update = new_logo
+                        logo_updated = True
+                elif series.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                    series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo:
+            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 series._logo_to_update = None
                 logo_updated = True
@@ -945,26 +980,41 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # First, create new series and get their IDs
             created_series = {}
             if series_to_create:
-                Series.objects.bulk_create(series_to_create, ignore_conflicts=True)
+                # Bulk query to check which series already exist
+                tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
+                imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
+                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
 
-                # Get the newly created series with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (series.name, series.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = series
+
+                # Check each series against the bulk query results
+                series_actually_created = []
                 for series in series_to_create:
-                    # Find the series by its unique identifiers
-                    if series.tmdb_id:
-                        db_series = Series.objects.filter(tmdb_id=series.tmdb_id).first()
-                    elif series.imdb_id:
-                        db_series = Series.objects.filter(imdb_id=series.imdb_id).first()
-                    else:
-                        db_series = Series.objects.filter(
-                            name=series.name,
-                            year=series.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[series.tmdb_id]
+                    elif series.imdb_id and series.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[series.imdb_id]
+                    elif not series.tmdb_id and not series.imdb_id:
+                        existing = existing_by_name_year.get((series.name, series.year))
 
-                    if db_series:
-                        created_series[id(series)] = db_series
+                    if existing:
+                        created_series[id(series)] = existing
+                    else:
+                        series_actually_created.append(series)
+                        created_series[id(series)] = series
+
+                # Bulk create only series that don't exist
+                if series_actually_created:
+                    Series.objects.bulk_create(series_actually_created)
 
             # Update existing series
             if series_to_update:
@@ -980,12 +1030,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         series.logo = series._logo_to_update
                         series.save(update_fields=['logo'])
 
-            # Update relations to reference the correct series objects
+            # Update relations to reference the correct series objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.series) in created_series:
                     relation.series = created_series[id(relation.series)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.series) in created_series:
+                    relation.series = created_series[id(relation.series)]
+
+            # All series now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3USeriesRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -2138,33 +2192,3 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     except Exception as e:
         logger.error(f"Error refreshing advanced movie data for relation {m3u_movie_relation_id}: {str(e)}")
         return f"Error: {str(e)}"
-
-
-def validate_logo_reference(obj, obj_type="object"):
-    """
-    Validate that a VOD logo reference exists in the database.
-    If not, set it to None to prevent foreign key constraint violations.
-
-    Args:
-        obj: Object with a logo attribute
-        obj_type: String description of the object type for logging
-
-    Returns:
-        bool: True if logo was valid or None, False if logo was invalid and cleared
-    """
-    if not hasattr(obj, 'logo') or not obj.logo:
-        return True
-
-    if not obj.logo.pk:
-        # Logo doesn't have a primary key, so it's not saved
-        obj.logo = None
-        return False
-
-    try:
-        # Verify the logo exists in the database
-        VODLogo.objects.get(pk=obj.logo.pk)
-        return True
-    except VODLogo.DoesNotExist:
-        logger.warning(f"VOD Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
-        obj.logo = None
-        return False

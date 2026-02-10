@@ -14,6 +14,8 @@ dayjs.extend(timezone);
 
 export const convertToMs = (dateTime) => dayjs(dateTime).valueOf();
 
+export const convertToSec = (dateTime) => dayjs(dateTime).unix();
+
 export const initializeTime = (dateTime) => dayjs(dateTime);
 
 export const startOfDay = (dateTime) => dayjs(dateTime).startOf('day');
@@ -27,6 +29,9 @@ export const isSame = (date1, date2, unit = 'day') =>
 
 export const add = (dateTime, value, unit) => dayjs(dateTime).add(value, unit);
 
+export const subtract = (dateTime, value, unit) =>
+  dayjs(dateTime).subtract(value, unit);
+
 export const diff = (date1, date2, unit = 'millisecond') =>
   dayjs(date1).diff(date2, unit);
 
@@ -34,6 +39,11 @@ export const format = (dateTime, formatStr) =>
   dayjs(dateTime).format(formatStr);
 
 export const getNow = () => dayjs();
+
+export const toFriendlyDuration = (dateTime, unit) =>
+  dayjs.duration(dateTime, unit).humanize();
+
+export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
 
 export const getNowMs = () => Date.now();
 
@@ -57,7 +67,7 @@ export const useUserTimeZone = () => {
   );
 
   useEffect(() => {
-    const tz = settings?.['system-time-zone']?.value;
+    const tz = settings?.['system_settings']?.value?.time_zone;
     if (tz && tz !== timeZone) {
       setTimeZone(tz);
     }
@@ -71,7 +81,7 @@ export const useTimeHelpers = () => {
 
   const toUserTime = useCallback(
     (value) => {
-      if (!value) return dayjs.invalid();
+      if (!value) return dayjs(null);
       try {
         return initializeTime(value).tz(timeZone);
       } catch (error) {
@@ -103,7 +113,22 @@ export const useDateTimeFormat = () => {
   const timeFormat = timeFormatSetting === '12h' ? 'h:mma' : 'HH:mm';
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
 
-  return [timeFormat, dateFormat];
+  // Full format strings for detailed date-time displays
+  const fullDateFormat =
+    dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+  const fullTimeFormat = timeFormatSetting === '12h' ? 'h:mm:ss A' : 'HH:mm:ss';
+  const fullDateTimeFormat = `${fullDateFormat}, ${fullTimeFormat}`;
+
+  return {
+    timeFormat,
+    dateFormat,
+    fullDateFormat,
+    fullTimeFormat,
+    fullDateTimeFormat,
+    // Also return raw settings for cases that need them
+    timeFormatSetting,
+    dateFormatSetting,
+  };
 };
 
 export const toTimeString = (value) => {

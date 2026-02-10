@@ -91,18 +91,13 @@ const ProxySettingsForm = React.memo(({ active }) => {
   });
 
   useEffect(() => {
-    if(!active) setSaved(false);
+    if (!active) setSaved(false);
   }, [active]);
 
   useEffect(() => {
     if (settings) {
-      if (settings['proxy-settings']?.value) {
-        try {
-          const proxySettings = JSON.parse(settings['proxy-settings'].value);
-          proxySettingsForm.setValues(proxySettings);
-        } catch (error) {
-          console.error('Error parsing proxy settings:', error);
-        }
+      if (settings['proxy_settings']?.value) {
+        proxySettingsForm.setValues(settings['proxy_settings'].value);
       }
     }
   }, [settings]);
@@ -116,8 +111,8 @@ const ProxySettingsForm = React.memo(({ active }) => {
 
     try {
       const result = await updateSetting({
-        ...settings['proxy-settings'],
-        value: JSON.stringify(proxySettingsForm.getValues()),
+        ...settings['proxy_settings'],
+        value: proxySettingsForm.getValues(), // Send as object
       });
       // API functions return undefined on error
       if (result) {

@@ -513,7 +513,19 @@ def check_field_lengths(streams_to_create):
 
 
 @shared_task
-def process_groups(account, groups):
+def process_groups(account, groups, scan_start_time=None):
+    """Process groups and update their relationships with the M3U account.
+
+    Args:
+        account: M3UAccount instance
+        groups: Dict of group names to custom properties
+        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
+    """
+    # Use scan_start_time if provided, otherwise current time
+    # This ensures consistency with stream processing and cleanup logic
+    if scan_start_time is None:
+        scan_start_time = timezone.now()
+
     existing_groups = {
         group.name: group
         for group in ChannelGroup.objects.filter(name__in=groups.keys())
@@ -553,24 +565,8 @@ def process_groups(account, groups):
         ).select_related('channel_group')
     }
 
-    # Get ALL existing relationships for this account to identify orphaned ones
-    all_existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account
-        ).select_related('channel_group')
-    }
-
     relations_to_create = []
     relations_to_update = []
-    relations_to_delete = []
-
-    # Find orphaned relationships (groups that no longer exist in the source)
-    current_group_names = set(groups.keys())
-    for group_name, rel in all_existing_relationships.items():
-        if group_name not in current_group_names:
-            relations_to_delete.append(rel)
-            logger.debug(f"Marking relationship for deletion: group '{group_name}' no longer exists in source for account {account.id}")
 
     for group in all_group_objs:
         custom_props = groups.get(group.name, {})
@@ -597,9 +593,15 @@ def process_groups(account, groups):
                     del updated_custom_props["xc_id"]
 
                 existing_rel.custom_properties = updated_custom_props
+                existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
                 logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
             else:
+                # Update last_seen even if xc_id hasn't changed
+                existing_rel.last_seen = scan_start_time
+                existing_rel.is_stale = False
+                relations_to_update.append(existing_rel)
                 logger.debug(f"xc_id unchanged for group '{group.name}' - account {account.id}")
         else:
             # Create new relationship - this group is new to this M3U account
@@ -613,6 +615,8 @@ def process_groups(account, groups):
                     m3u_account=account,
                     custom_properties=custom_props,
                     enabled=auto_enable_new_groups_live,
+                    last_seen=scan_start_time,
+                    is_stale=False,
                 )
             )
 
@@ -623,15 +627,38 @@ def process_groups(account, groups):
 
     # Bulk update existing relationships
     if relations_to_update:
-        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties'])
-        logger.info(f"Updated {len(relations_to_update)} existing group relationships with new xc_id values for account {account.id}")
+        ChannelGroupM3UAccount.objects.bulk_update(relations_to_update, ['custom_properties', 'last_seen', 'is_stale'])
+        logger.info(f"Updated {len(relations_to_update)} existing group relationships for account {account.id}")
 
-    # Delete orphaned relationships
-    if relations_to_delete:
-        ChannelGroupM3UAccount.objects.filter(
-            id__in=[rel.id for rel in relations_to_delete]
-        ).delete()
-        logger.info(f"Deleted {len(relations_to_delete)} orphaned group relationships for account {account.id}: {[rel.channel_group.name for rel in relations_to_delete]}")
+
+def cleanup_stale_group_relationships(account, scan_start_time):
+    """
+    Remove group relationships that haven't been seen since the stale retention period.
+    This follows the same logic as stream cleanup for consistency.
+    """
+    # Calculate cutoff date for stale group relationships
+    stale_cutoff = scan_start_time - timezone.timedelta(days=account.stale_stream_days)
+    logger.info(
+        f"Removing group relationships not seen since {stale_cutoff} for M3U account {account.id}"
+    )
+
+    # Find stale relationships
+    stale_relationships = ChannelGroupM3UAccount.objects.filter(
+        m3u_account=account,
+        last_seen__lt=stale_cutoff
+    ).select_related('channel_group')
+
+    relations_to_delete = list(stale_relationships)
+    deleted_count = len(relations_to_delete)
+
+    if deleted_count > 0:
+        logger.info(
+            f"Found {deleted_count} stale group relationships for account {account.id}: "
+            f"{[rel.channel_group.name for rel in relations_to_delete]}"
+        )
+
+        # Delete the stale relationships
+        stale_relationships.delete()
 
         # Check if any of the deleted relationships left groups with no remaining associations
         orphaned_group_ids = []
@@ -656,6 +683,10 @@ def process_groups(account, groups):
             deleted_groups = list(ChannelGroup.objects.filter(id__in=orphaned_group_ids).values_list('name', flat=True))
             ChannelGroup.objects.filter(id__in=orphaned_group_ids).delete()
             logger.info(f"Deleted {len(orphaned_group_ids)} orphaned groups that had no remaining associations: {deleted_groups}")
+    else:
+        logger.debug(f"No stale group relationships found for account {account.id}")
+
+    return deleted_count
 
 
 def collect_xc_streams(account_id, enabled_groups):
@@ -710,6 +741,7 @@ def collect_xc_streams(account_id, enabled_groups):
                             "group-title": group_info["name"],
                             # Preserve all XC stream properties as custom attributes
                             "stream_id": str(stream.get("stream_id", "")),
+                            "num": stream.get("num"),
                             "category_id": category_id,
                             "stream_type": stream.get("stream_type", ""),
                             "added": stream.get("added", ""),
@@ -718,7 +750,7 @@ def collect_xc_streams(account_id, enabled_groups):
                             # Include any other properties that might be present
                             **{k: str(v) for k, v in stream.items() if k not in [
                                 "name", "stream_id", "epg_channel_id", "stream_icon",
-                                "category_id", "stream_type", "added", "is_adult", "custom_sid"
+                                "category_id", "stream_type", "added", "is_adult", "custom_sid", "num"
                             ] and v is not None}
                         }
                     }
@@ -786,13 +818,28 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
 
                     for stream in streams:
                         name = stream["name"]
+                        raw_stream_id = stream.get("stream_id", "")
+                        provider_stream_id = None
+                        if raw_stream_id:
+                            try:
+                                provider_stream_id = int(raw_stream_id)
+                            except (ValueError, TypeError):
+                                pass
                         url = xc_client.get_stream_url(stream["stream_id"])
                         tvg_id = stream.get("epg_channel_id", "")
                         tvg_logo = stream.get("stream_icon", "")
                         group_title = group_name
+                        stream_chno = stream.get("num")
+                        # Convert stream_chno to float if valid, otherwise None
+                        if stream_chno is not None:
+                            try:
+                                stream_chno = float(stream_chno)
+                            except (ValueError, TypeError):
+                                stream_chno = None
 
                         stream_hash = Stream.generate_hash_key(
-                            name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title
+                            name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
+                            account_type='XC', stream_id=provider_stream_id
                         )
                         stream_props = {
                             "name": name,
@@ -803,6 +850,10 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
+                            "is_adult": int(stream.get("is_adult", 0)) == 1,
+                            "is_stale": False,
+                            "stream_id": provider_stream_id,
+                            "stream_chno": stream_chno,
                         }
 
                         if stream_hash not in stream_hashes:
@@ -817,7 +868,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
             )
         }
 
@@ -830,7 +881,10 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.url != stream_props["url"] or
                     obj.logo_url != stream_props["logo_url"] or
                     obj.tvg_id != stream_props["tvg_id"] or
-                    obj.custom_properties != stream_props["custom_properties"]
+                    obj.custom_properties != stream_props["custom_properties"] or
+                    obj.is_adult != stream_props["is_adult"] or
+                    obj.stream_id != stream_props["stream_id"] or
+                    obj.stream_chno != stream_props["stream_chno"]
                 )
 
                 if changed:
@@ -838,10 +892,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         setattr(obj, key, value)
                     obj.last_seen = timezone.now()
                     obj.updated_at = timezone.now()  # Update timestamp only for changed streams
+                    obj.is_stale = False
                     streams_to_update.append(obj)
                 else:
                     # Always update last_seen, even if nothing else changed
                     obj.last_seen = timezone.now()
+                    obj.is_stale = False
                     # Don't update updated_at for unchanged streams
                     streams_to_update.append(obj)
 
@@ -852,6 +908,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 stream_props["updated_at"] = (
                     timezone.now()
                 )  # Set initial updated_at for new streams
+                stream_props["is_stale"] = False
                 streams_to_create.append(Stream(**stream_props))
 
         try:
@@ -863,7 +920,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -966,7 +1023,42 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 )
                 continue
 
-            stream_hash = Stream.generate_hash_key(name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title)
+            # Determine provider-specific fields first
+            provider_stream_id = None
+            channel_num = None
+            account_type_for_hash = None
+
+            if account.account_type == M3UAccount.Types.XC:
+                account_type_for_hash = 'XC'
+                raw_stream_id = stream_info["attributes"].get("stream_id", "")
+                if raw_stream_id:
+                    try:
+                        provider_stream_id = int(raw_stream_id)
+                    except (ValueError, TypeError):
+                        pass
+                raw_num = stream_info["attributes"].get("num")
+                if raw_num is not None:
+                    try:
+                        channel_num = float(raw_num)
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                # For standard M3U accounts, check for tvg-chno or channel-number
+                tvg_chno = get_case_insensitive_attr(stream_info["attributes"], "tvg-chno", None)
+                if tvg_chno is None:
+                    tvg_chno = get_case_insensitive_attr(stream_info["attributes"], "channel-number", None)
+                if tvg_chno is not None:
+                    try:
+                        channel_num = float(tvg_chno)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Generate hash once with all parameters
+            stream_hash = Stream.generate_hash_key(
+                name, url, tvg_id, hash_keys, m3u_id=account_id, group=group_title,
+                account_type=account_type_for_hash, stream_id=provider_stream_id
+            )
+
             stream_props = {
                 "name": name,
                 "url": url,
@@ -976,6 +1068,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
+                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
+                "is_stale": False,
+                "stream_id": provider_stream_id,
+                "stream_chno": channel_num,
             }
 
             if stream_hash not in stream_hashes:
@@ -987,7 +1083,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
         )
     }
 
@@ -1000,7 +1096,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.url != stream_props["url"] or
                 obj.logo_url != stream_props["logo_url"] or
                 obj.tvg_id != stream_props["tvg_id"] or
-                obj.custom_properties != stream_props["custom_properties"]
+                obj.custom_properties != stream_props["custom_properties"] or
+                obj.is_adult != stream_props["is_adult"] or
+                obj.stream_id != stream_props["stream_id"] or
+                obj.stream_chno != stream_props["stream_chno"]
             )
 
             # Always update last_seen
@@ -1013,13 +1112,20 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.logo_url = stream_props["logo_url"]
                 obj.tvg_id = stream_props["tvg_id"]
                 obj.custom_properties = stream_props["custom_properties"]
+                obj.is_adult = stream_props["is_adult"]
+                obj.stream_id = stream_props["stream_id"]
+                obj.stream_chno = stream_props["stream_chno"]
                 obj.updated_at = timezone.now()
+
+            # Always mark as not stale since we saw it in this refresh
+            obj.is_stale = False
 
             streams_to_update.append(obj)
         else:
             # New stream
             stream_props["last_seen"] = timezone.now()
             stream_props["updated_at"] = timezone.now()
+            stream_props["is_stale"] = False
             streams_to_create.append(Stream(**stream_props))
 
     try:
@@ -1031,7 +1137,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
                     batch_size=200
                 )
     except Exception as e:
@@ -1092,7 +1198,15 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
 
 
 @shared_task
-def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
+def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_start_time=None):
+    """Refresh M3U groups for an account.
+
+    Args:
+        account_id: ID of the M3U account
+        use_cache: Whether to use cached M3U file
+        full_refresh: Whether this is part of a full refresh
+        scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
+    """
     if not acquire_task_lock("refresh_m3u_account_groups", account_id):
         return f"Task already running for account_id={account_id}.", None
 
@@ -1212,36 +1326,14 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                 ) as xc_client:
                     logger.info(f"XCClient instance created successfully")
 
-                    # Authenticate with detailed error handling
+                    # Queue async profile refresh task to run in background
+                    # This prevents any delay in the main refresh process
                     try:
-                        logger.debug(f"Authenticating with XC server {server_url}")
-                        auth_result = xc_client.authenticate()
-                        logger.debug(f"Authentication response: {auth_result}")
-
-                        # Queue async profile refresh task to run in background
-                        # This prevents any delay in the main refresh process
-                        try:
-                            logger.info(f"Queueing background profile refresh for account {account.name}")
-                            refresh_account_profiles.delay(account.id)
-                        except Exception as e:
-                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
-                            # Don't fail the main refresh if profile refresh can't be queued
-
+                        logger.info(f"Queueing background profile refresh for account {account.name}")
+                        refresh_account_profiles.delay(account.id)
                     except Exception as e:
-                        error_msg = f"Failed to authenticate with XC server: {str(e)}"
-                        logger.error(error_msg)
-                        account.status = M3UAccount.Status.ERROR
-                        account.last_message = error_msg
-                        account.save(update_fields=["status", "last_message"])
-                        send_m3u_update(
-                            account_id,
-                            "processing_groups",
-                            100,
-                            status="error",
-                            error=error_msg,
-                        )
-                        release_task_lock("refresh_m3u_account_groups", account_id)
-                        return error_msg, None
+                        logger.warning(f"Failed to queue profile refresh task: {str(e)}")
+                        # Don't fail the main refresh if profile refresh can't be queued
 
                     # Get categories with detailed error handling
                     try:
@@ -1281,7 +1373,19 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                                 "xc_id": cat_id,
                             }
                     except Exception as e:
-                        error_msg = f"Failed to get categories from XC server: {str(e)}"
+                        # Determine if this is an authentication error or category retrieval error
+                        error_str = str(e).lower()
+                        # Check for authentication-related keywords or HTTP status codes commonly used for auth failures
+                        is_auth_error = any(keyword in error_str for keyword in [
+                            'auth', 'credential', 'login', 'unauthorized', 'forbidden',
+                            '401', '403', '512', '513'  # HTTP status codes: 401 Unauthorized, 403 Forbidden, 512-513 (non-standard auth failure)
+                        ])
+
+                        if is_auth_error:
+                            error_msg = f"Failed to authenticate with XC server: {str(e)}"
+                        else:
+                            error_msg = f"Failed to get categories from XC server: {str(e)}"
+
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
@@ -1419,7 +1523,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
 
     send_m3u_update(account_id, "processing_groups", 0)
 
-    process_groups(account, groups)
+    process_groups(account, groups, scan_start_time)
 
     release_task_lock("refresh_m3u_account_groups", account_id)
 
@@ -2526,7 +2630,7 @@ def refresh_single_m3u_account(account_id):
     if not extinf_data:
         try:
             logger.info(f"Calling refresh_m3u_groups for account {account_id}")
-            result = refresh_m3u_groups(account_id, full_refresh=True)
+            result = refresh_m3u_groups(account_id, full_refresh=True, scan_start_time=refresh_start_timestamp)
             logger.trace(f"refresh_m3u_groups result: {result}")
 
             # Check for completely empty result or missing groups
@@ -2806,8 +2910,25 @@ def refresh_single_m3u_account(account_id):
             id=-1
         ).exists()  # This will never find anything but ensures DB sync
 
+        # Mark streams that weren't seen in this refresh as stale (pending deletion)
+        stale_stream_count = Stream.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_stream_count} streams as stale for account {account_id}")
+
+        # Mark group relationships that weren't seen in this refresh as stale (pending deletion)
+        stale_group_count = ChannelGroupM3UAccount.objects.filter(
+            m3u_account=account,
+            last_seen__lt=refresh_start_timestamp
+        ).update(is_stale=True)
+        logger.info(f"Marked {stale_group_count} group relationships as stale for account {account_id}")
+
         # Now run cleanup
         streams_deleted = cleanup_streams(account_id, refresh_start_timestamp)
+
+        # Cleanup stale group relationships (follows same retention policy as streams)
+        cleanup_stale_group_relationships(account, refresh_start_timestamp)
 
         # Run auto channel sync after successful refresh
         auto_sync_message = ""

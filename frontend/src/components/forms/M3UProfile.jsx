@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { useFormik } from 'formik';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import API from '../../api';
 import {
@@ -30,6 +31,89 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const [debouncedPatterns, setDebouncedPatterns] = useState({});
   const [sampleInput, setSampleInput] = useState('');
   const isDefaultProfile = profile?.is_default;
+
+  const defaultValues = useMemo(
+    () => ({
+      name: profile?.name || '',
+      max_streams: profile?.max_streams || 0,
+      search_pattern: profile?.search_pattern || '',
+      replace_pattern: profile?.replace_pattern || '',
+      notes: profile?.custom_properties?.notes || '',
+    }),
+    [profile]
+  );
+
+  const schema = Yup.object({
+    name: Yup.string().required('Name is required'),
+    search_pattern: Yup.string().when([], {
+      is: () => !isDefaultProfile,
+      then: (schema) => schema.required('Search pattern is required'),
+      otherwise: (schema) => schema.notRequired(),
+    }),
+    replace_pattern: Yup.string().when([], {
+      is: () => !isDefaultProfile,
+      then: (schema) => schema.required('Replace pattern is required'),
+      otherwise: (schema) => schema.notRequired(),
+    }),
+    notes: Yup.string(), // Optional field
+  });
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+    reset,
+    setValue,
+    watch,
+  } = useForm({
+    defaultValues,
+    resolver: yupResolver(schema),
+  });
+
+  const onSubmit = async (values) => {
+    console.log('submiting');
+
+    // For default profiles, only send name and custom_properties (notes)
+    let submitValues;
+    if (isDefaultProfile) {
+      submitValues = {
+        name: values.name,
+        custom_properties: {
+          // Preserve existing custom_properties and add/update notes
+          ...(profile?.custom_properties || {}),
+          notes: values.notes || '',
+        },
+      };
+    } else {
+      // For regular profiles, send all fields
+      submitValues = {
+        name: values.name,
+        max_streams: values.max_streams,
+        search_pattern: values.search_pattern,
+        replace_pattern: values.replace_pattern,
+        custom_properties: {
+          // Preserve existing custom_properties and add/update notes
+          ...(profile?.custom_properties || {}),
+          notes: values.notes || '',
+        },
+      };
+    }
+
+    if (profile?.id) {
+      await API.updateM3UProfile(m3u.id, {
+        id: profile.id,
+        ...submitValues,
+      });
+    } else {
+      await API.addM3UProfile(m3u.id, submitValues);
+    }
+
+    reset();
+    // Reset local state to sync with form reset
+    setSearchPattern('');
+    setReplacePattern('');
+    onClose();
+  };
 
   useEffect(() => {
     async function fetchStreamUrl() {
@@ -79,99 +163,22 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   }, [searchPattern, replacePattern]);
 
   const onSearchPatternUpdate = (e) => {
-    formik.handleChange(e);
-    setSearchPattern(e.target.value);
+    const value = e.target.value;
+    setSearchPattern(value);
+    setValue('search_pattern', value);
   };
 
   const onReplacePatternUpdate = (e) => {
-    formik.handleChange(e);
-    setReplacePattern(e.target.value);
+    const value = e.target.value;
+    setReplacePattern(value);
+    setValue('replace_pattern', value);
   };
 
-  const formik = useFormik({
-    initialValues: {
-      name: '',
-      max_streams: 0,
-      search_pattern: '',
-      replace_pattern: '',
-      notes: '',
-    },
-    validationSchema: Yup.object({
-      name: Yup.string().required('Name is required'),
-      search_pattern: Yup.string().when([], {
-        is: () => !isDefaultProfile,
-        then: (schema) => schema.required('Search pattern is required'),
-        otherwise: (schema) => schema.notRequired(),
-      }),
-      replace_pattern: Yup.string().when([], {
-        is: () => !isDefaultProfile,
-        then: (schema) => schema.required('Replace pattern is required'),
-        otherwise: (schema) => schema.notRequired(),
-      }),
-      notes: Yup.string(), // Optional field
-    }),
-    onSubmit: async (values, { setSubmitting, resetForm }) => {
-      console.log('submiting');
-
-      // For default profiles, only send name and custom_properties (notes)
-      let submitValues;
-      if (isDefaultProfile) {
-        submitValues = {
-          name: values.name,
-          custom_properties: {
-            // Preserve existing custom_properties and add/update notes
-            ...(profile?.custom_properties || {}),
-            notes: values.notes || '',
-          },
-        };
-      } else {
-        // For regular profiles, send all fields
-        submitValues = {
-          name: values.name,
-          max_streams: values.max_streams,
-          search_pattern: values.search_pattern,
-          replace_pattern: values.replace_pattern,
-          custom_properties: {
-            // Preserve existing custom_properties and add/update notes
-            ...(profile?.custom_properties || {}),
-            notes: values.notes || '',
-          },
-        };
-      }
-
-      if (profile?.id) {
-        await API.updateM3UProfile(m3u.id, {
-          id: profile.id,
-          ...submitValues,
-        });
-      } else {
-        await API.addM3UProfile(m3u.id, submitValues);
-      }
-
-      resetForm();
-      // Reset local state to sync with formik reset
-      setSearchPattern('');
-      setReplacePattern('');
-      setSubmitting(false);
-      onClose();
-    },
-  });
-
   useEffect(() => {
-    if (profile) {
-      setSearchPattern(profile.search_pattern);
-      setReplacePattern(profile.replace_pattern);
-      formik.setValues({
-        name: profile.name,
-        max_streams: profile.max_streams,
-        search_pattern: profile.search_pattern,
-        replace_pattern: profile.replace_pattern,
-        notes: profile.custom_properties?.notes || '',
-      });
-    } else {
-      formik.resetForm();
-    }
-  }, [profile]); // eslint-disable-line react-hooks/exhaustive-deps
+    reset(defaultValues);
+    setSearchPattern(profile?.search_pattern || '');
+    setReplacePattern(profile?.replace_pattern || '');
+  }, [defaultValues, profile, reset]);
 
   const handleSampleInputChange = (e) => {
     setSampleInput(e.target.value);
@@ -212,27 +219,21 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       }
       size="lg"
     >
-      <form onSubmit={formik.handleSubmit}>
+      <form onSubmit={handleSubmit(onSubmit)}>
         <TextInput
-          id="name"
-          name="name"
           label="Name"
-          value={formik.values.name}
-          onChange={formik.handleChange}
-          error={formik.errors.name ? formik.touched.name : ''}
+          {...register('name')}
+          error={errors.name?.message}
         />
 
         {/* Only show max streams field for non-default profiles */}
         {!isDefaultProfile && (
           <NumberInput
-            id="max_streams"
-            name="max_streams"
             label="Max Streams"
-            value={formik.values.max_streams}
-            onChange={(value) =>
-              formik.setFieldValue('max_streams', value || 0)
-            }
-            error={formik.errors.max_streams ? formik.touched.max_streams : ''}
+            {...register('max_streams')}
+            value={watch('max_streams')}
+            onChange={(value) => setValue('max_streams', value || 0)}
+            error={errors.max_streams?.message}
             min={0}
             placeholder="0 = unlimited"
           />
@@ -242,40 +243,25 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         {!isDefaultProfile && (
           <>
             <TextInput
-              id="search_pattern"
-              name="search_pattern"
               label="Search Pattern (Regex)"
               value={searchPattern}
               onChange={onSearchPatternUpdate}
-              error={
-                formik.errors.search_pattern
-                  ? formik.touched.search_pattern
-                  : ''
-              }
+              error={errors.search_pattern?.message}
             />
             <TextInput
-              id="replace_pattern"
-              name="replace_pattern"
               label="Replace Pattern"
               value={replacePattern}
               onChange={onReplacePatternUpdate}
-              error={
-                formik.errors.replace_pattern
-                  ? formik.touched.replace_pattern
-                  : ''
-              }
+              error={errors.replace_pattern?.message}
             />
           </>
         )}
 
         <Textarea
-          id="notes"
-          name="notes"
           label="Notes"
           placeholder="Add any notes or comments about this profile..."
-          value={formik.values.notes}
-          onChange={formik.handleChange}
-          error={formik.errors.notes ? formik.touched.notes : ''}
+          {...register('notes')}
+          error={errors.notes?.message}
           minRows={2}
           maxRows={4}
           autosize
@@ -290,9 +276,9 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         >
           <Button
             type="submit"
-            disabled={formik.isSubmitting}
+            disabled={isSubmitting}
             size="xs"
-            style={{ width: formik.isSubmitting ? 'auto' : 'auto' }}
+            style={{ width: isSubmitting ? 'auto' : 'auto' }}
           >
             Submit
           </Button>

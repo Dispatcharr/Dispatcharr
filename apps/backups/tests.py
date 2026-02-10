@@ -765,11 +765,12 @@ class BackupSchedulerTestCase(TestCase):
 
         settings = scheduler.get_schedule_settings()
 
-        self.assertEqual(settings['enabled'], False)
+        # These should match the DEFAULTS in scheduler.py
+        self.assertEqual(settings['enabled'], True)
         self.assertEqual(settings['frequency'], 'daily')
         self.assertEqual(settings['time'], '03:00')
         self.assertEqual(settings['day_of_week'], 0)
-        self.assertEqual(settings['retention_count'], 0)
+        self.assertEqual(settings['retention_count'], 3)
         self.assertEqual(settings['cron_expression'], '')
 
     def test_update_schedule_settings_stores_values(self):
