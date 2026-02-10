@@ -40,7 +40,8 @@ export const format = (dateTime, formatStr) =>
 
 export const getNow = () => dayjs();
 
-export const toFriendlyDuration = (dateTime, unit) => dayjs.duration(dateTime, unit).humanize();
+export const toFriendlyDuration = (dateTime, unit) =>
+  dayjs.duration(dateTime, unit).humanize();
 
 export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
 
@@ -113,7 +114,8 @@ export const useDateTimeFormat = () => {
   const dateFormat = dateFormatSetting === 'mdy' ? 'MMM D' : 'D MMM';
 
   // Full format strings for detailed date-time displays
-  const fullDateFormat = dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+  const fullDateFormat =
+    dateFormatSetting === 'mdy' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
   const fullTimeFormat = timeFormatSetting === '12h' ? 'h:mm:ss A' : 'HH:mm:ss';
   const fullDateTimeFormat = `${fullDateFormat}, ${fullTimeFormat}`;
 

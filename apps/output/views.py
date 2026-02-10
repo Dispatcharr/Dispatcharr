@@ -2307,18 +2307,22 @@ def xc_get_epg(request, user, short=False):
                 # Has stored programs, use them
                 if short == False:
                     programs = channel.epg_data.programs.filter(
-                        start_time__gte=django_timezone.now()
+                        end_time__gt=django_timezone.now()
                     ).order_by('start_time')
                 else:
-                    programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                    programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
         else:
             # Regular EPG with stored programs
             if short == False:
                 programs = channel.epg_data.programs.filter(
-                    start_time__gte=django_timezone.now()
+                    end_time__gt=django_timezone.now()
                 ).order_by('start_time')
             else:
-                programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
     else:
         # No EPG data assigned, generate default dummy
         programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)

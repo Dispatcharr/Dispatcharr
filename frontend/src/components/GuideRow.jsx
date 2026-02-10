@@ -1,13 +1,13 @@
-import React from "react";
+import React from 'react';
 import {
   CHANNEL_WIDTH,
   EXPANDED_PROGRAM_HEIGHT,
   HOUR_WIDTH,
   PROGRAM_HEIGHT,
 } from '../pages/guideUtils.js';
-import {Box, Flex, Text} from "@mantine/core";
-import {Play} from "lucide-react";
-import logo from "../images/logo.png";
+import { Box, Flex, Text } from '@mantine/core';
+import { Play } from 'lucide-react';
+import logo from '../images/logo.png';
 
 const GuideRow = React.memo(({ index, style, data }) => {
   const {
@@ -36,31 +36,33 @@ const GuideRow = React.memo(({ index, style, data }) => {
       : PROGRAM_HEIGHT);
 
   const PlaceholderProgram = () => {
-      return <>
-          {Array.from({length: Math.ceil(24 / 2)}).map(
-              (_, placeholderIndex) => (
-                  <Box
-                      key={`placeholder-${channel.id}-${placeholderIndex}`}
-                      style={{
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                      }}
-                      pos='absolute'
-                      left={placeholderIndex * (HOUR_WIDTH * 2)}
-                      top={0}
-                      w={HOUR_WIDTH * 2}
-                      h={rowHeight - 4}
-                      bd={'1px dashed #2D3748'}
-                      bdrs={4}
-                      display={'flex'}
-                      c='#4A5568'
-                  >
-                      <Text size="sm">No program data</Text>
-                  </Box>
-              )
-          )}
-      </>;
-  }
+    return (
+      <>
+        {Array.from({ length: Math.ceil(24 / 2) }).map(
+          (_, placeholderIndex) => (
+            <Box
+              key={`placeholder-${channel.id}-${placeholderIndex}`}
+              style={{
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              pos="absolute"
+              left={placeholderIndex * (HOUR_WIDTH * 2)}
+              top={0}
+              w={HOUR_WIDTH * 2}
+              h={rowHeight - 4}
+              bd={'1px dashed #2D3748'}
+              bdrs={4}
+              display={'flex'}
+              c="#4A5568"
+            >
+              <Text size="sm">No program data</Text>
+            </Box>
+          )
+        )}
+      </>
+    );
+  };
 
   return (
     <div
@@ -75,7 +77,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
         }}
         display={'flex'}
         h={'100%'}
-        pos='relative'
+        pos="relative"
       >
         <Box
           className="channel-logo"
@@ -96,7 +98,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
           display={'flex'}
           left={0}
           h={'100%'}
-          pos='relative'
+          pos="relative"
           onClick={(event) => handleLogoClick(channel, event)}
           onMouseEnter={() => setHoveredChannelId(channel.id)}
           onMouseLeave={() => setHoveredChannelId(null)}
@@ -110,7 +112,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
                 zIndex: 10,
                 animation: 'fadeIn 0.2s',
               }}
-              pos='absolute'
+              pos="absolute"
               top={0}
               left={0}
               right={0}
@@ -133,7 +135,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
             w={'100%'}
             h={'100%'}
             p={'4px'}
-            pos='relative'
+            pos="relative"
           >
             <Box
               style={{
@@ -167,7 +169,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
-              pos='absolute'
+              pos="absolute"
               bottom={4}
               left={'50%'}
               p={'2px 8px'}
@@ -188,7 +190,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
             transition: 'height 0.2s ease',
           }}
           flex={1}
-          pos='relative'
+          pos="relative"
           h={'100%'}
           pl={0}
         >
@@ -196,7 +198,9 @@ const GuideRow = React.memo(({ index, style, data }) => {
             channelPrograms.map((program) =>
               renderProgram(program, undefined, channel)
             )
-          ) : <PlaceholderProgram />}
+          ) : (
+            <PlaceholderProgram />
+          )}
         </Box>
       </Box>
     </div>

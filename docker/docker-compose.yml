@@ -1,4 +1,11 @@
+# Dispatcharr - Modular Deployment Configuration
+# This compose file runs Dispatcharr in modular mode with separate containers
+# for web, celery workers, PostgreSQL database, and Redis cache.
+
 services:
+  # ============================================================================
+  # Web Service
+  # ============================================================================
   web:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_web
@@ -9,44 +16,67 @@ services:
     depends_on:
       - db
       - redis
+
+    # --- Environment Configuration ---
     environment:
+      # Deployment Mode
       - DISPATCHARR_ENV=modular
+
+      # PostgreSQL Connection
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
+
+      # Redis Connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+
+      # Redis Authentication (Optional)
+      # Uncomment and set if your Redis requires authentication:
+      #- REDIS_PASSWORD=your_strong_redis_password
+      #- REDIS_USER=your_redis_username  # For Redis 6+ ACL - see Redis service below
+
+      # Logging
       - DISPATCHARR_LOG_LEVEL=info
+
       # Legacy CPU Support (Optional)
       # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
-      # that lack support for newer baseline CPU features
+      # that lack support for newer baseline CPU features:
       #- USE_LEGACY_NUMPY=true
+
       # Process Priority Configuration (Optional)
       # Lower values = higher priority. Range: -20 (highest) to 19 (lowest)
-      # Negative values require cap_add: SYS_NICE (uncomment below)
+      # Negative values require cap_add: SYS_NICE (see below)
       #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
-    #
+
+    # --- Advanced Configuration ---
     # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
     #cap_add:
     #  - SYS_NICE
-    # Optional for hardware acceleration
+
+    # --- Hardware Acceleration (Optional) ---
+    # Uncomment for GPU access (transcoding acceleration)
     #group_add:
     #  - video
-    #  #- render # Uncomment if your GPU requires it
+    #  #- render  # Uncomment if your GPU requires it
     #devices:
     #  - /dev/dri:/dev/dri  # For Intel/AMD GPU acceleration (VA-API)
+
+    # NVIDIA GPU Support (requires NVIDIA Container Toolkit)
     # Uncomment the following lines for NVIDIA GPU support
-    # NVidia GPU support (requires NVIDIA Container Toolkit)
     #deploy:
     #  resources:
-    #      reservations:
-    #          devices:
-    #              - driver: nvidia
-    #                count: all
-    #                capabilities: [gpu]
+    #    reservations:
+    #      devices:
+    #        - driver: nvidia
+    #          count: all
+    #          capabilities: [gpu]
 
+  # ============================================================================
+  # Celery Service - Background task worker
+  # ============================================================================
   celery:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_celery
@@ -58,24 +88,47 @@ services:
       - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    entrypoint: ["/app/docker/entrypoint.celery.sh"]
+
+    # --- Environment Configuration ---
     environment:
+      # Deployment Mode
       - DISPATCHARR_ENV=modular
+
+      # PostgreSQL Connection
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
+
+      # Redis Connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+
+      # Redis Authentication (Optional)
+      # Uncomment and set if your Redis requires authentication:
+      #- REDIS_PASSWORD=your_strong_redis_password
+      #- REDIS_USER=your_redis_username  # For Redis 6+ ACL - see Redis service below
+
+      # Logging
       - DISPATCHARR_LOG_LEVEL=info
-      #- CELERY_NICE_LEVEL=5  #Celery/EPG/Background tasks (default:5, low priority; Range: -20 to 19)
+
+      # Process Priority Configuration (Optional)
+      #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
+
+      # Django Configuration
       - DJANGO_SETTINGS_MODULE=dispatcharr.settings
       - PYTHONUNBUFFERED=1
+
+    # --- Advanced Configuration ---
     # Uncomment to enable high priority for Celery (required if CELERY_NICE_LEVEL < 0)
     #cap_add:
     #  - SYS_NICE
-    entrypoint: ["/app/docker/entrypoint.celery.sh"]
 
+  # ============================================================================
+  # PostgreSQL
+  # ============================================================================
   db:
     image: postgres:17
     container_name: dispatcharr_db
@@ -93,14 +146,42 @@ services:
       timeout: 5s
       retries: 5
 
+  # ============================================================================
+  # Redis
+  # ============================================================================
   redis:
     image: redis:latest
     container_name: dispatcharr_redis
+
+    # --- Authentication Configuration (Optional) ---
+    # By default, Redis runs without authentication.
+    # Choose ONE of the following options if authentication is required:
+
+    # Option 1: Password-only authentication (Redis <6 or default user)
+    #command: ["redis-server", "--requirepass", "your_strong_redis_password"]
+
+    # Option 2: Redis 6+ ACL with username + password (requires custom config file - see Redis documentation for configuration)
+    #command: ["redis-server", "/etc/redis/redis.conf"]
+    #volumes:
+    #  - ./redis.conf:/etc/redis/redis.conf:ro
+
+    # --- Health Check Configuration ---
     healthcheck:
+      # Default: No authentication
       test: ["CMD", "redis-cli", "ping"]
+
+      # If using Option 1 (password-only), uncomment this instead:
+      #test: ["CMD", "redis-cli", "-a", "your_strong_redis_password", "ping"]
+
+      # If using Option 2 (Redis 6+ ACL), uncomment this instead:
+      #test: ["CMD", "redis-cli", "--user", "your_redis_username", "-a", "your_strong_redis_password", "ping"]
+
       interval: 5s
       timeout: 5s
       retries: 5
 
+# ==============================================================================
+# Volumes
+# ==============================================================================
 volumes:
   postgres_data:

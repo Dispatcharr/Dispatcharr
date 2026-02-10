@@ -8,8 +8,8 @@ import {
   Stack,
   Text,
 } from '@mantine/core';
-import {Calendar, Play, Star} from "lucide-react";
-import React from "react";
+import { Calendar, Play, Star } from 'lucide-react';
+import React from 'react';
 
 const SeriesCard = ({ series, onClick }) => {
   return (

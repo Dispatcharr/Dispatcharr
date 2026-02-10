@@ -7,8 +7,7 @@ const useStreamsTableStore = create((set) => ({
   sorting: [{ id: 'name', desc: false }],
   pagination: {
     pageIndex: 0,
-    pageSize:
-      JSON.parse(localStorage.getItem('streams-page-size')) || 50,
+    pageSize: JSON.parse(localStorage.getItem('streams-page-size')) || 50,
   },
   selectedStreamIds: [],
   allQueryIds: [],
