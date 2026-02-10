@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-02-10
+
 ### Added
 
 - Add system notifications and update checks
@@ -32,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `useWarningsStore` tests for warning suppression functionality
   - Code refactoring for improved readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
 - EPG auto-matching: Added advanced options to strip prefixes, suffixes, and custom text from channel names to assist matching; default matching behavior and settings remain unchanged (Closes #771) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Redis authentication support for modular deployments: Added support for authentication when connecting to external Redis instances using either password-only authentication (Redis <6) or username + password authentication (Redis 6+ ACL). REDIS_PASSWORD and REDIS_USER environment variables with URL encoding for special characters. (Closes #937) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Plugin logos: if a plugin ZIP includes `logo.png`, it is surfaced in the Plugins UI and shown next to the plugin name.
+- Plugin manifests (`plugin.json`) for safe metadata discovery, plus legacy warnings and folder-name fallbacks when a manifest is missing.
+- Plugin stop hooks: Dispatcharr now calls a plugin's optional `stop()` method (or `run("stop")` action) when disabling, deleting, or reloading plugins to allow graceful shutdown.
+- Plugin action buttons can define `button_label`, `button_variant`, and `button_color` (e.g., Stop in red), falling back to “Run” for older plugins.
+- Plugin card metadata: plugins can specify `author` and `help_url` in `plugin.json` to show author and docs link in the UI.
+- Plugin cards can now be expanded/collapsed by clicking the header or chevron to hide settings and actions.
 
 ### Changed
 
@@ -58,6 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Fixed NumPy baseline detection in Docker entrypoint. Now properly detects when NumPy crashes on import due to CPU baseline incompatibility and installs legacy NumPy version. Previously, if NumPy failed to import, the script would skip legacy installation assuming it was already compatible.
 - Backup Scheduler Test: Fixed test to correctly validate that automatic backups are enabled by default with a retention count of 3, matching the actual scheduler defaults. - Thanks [@jcasimir](https://github.com/jcasimir)
+- Hardened plugin loading to avoid executing plugin code unless the plugin is enabled.
+- Prevented plugin package names from shadowing standard library or installed modules by namespacing plugin imports with safe aliases.
+- Added safety limits to plugin ZIP imports (file count and size caps) and sanitized plugin keys derived from uploads.
+- Enforced strict boolean parsing for plugin enable/disable requests to avoid accidental enables from truthy strings.
+- Applied plugin field defaults server-side when running actions so plugins receive expected settings even before a user saves.
+- Plugin settings UI improvements: render `info`/`text` fields, support `input_type: password`, show descriptions/placeholders, surface save failures, and keep settings in sync after refresh.
+- Disabled plugins now collapse settings/actions to match the closed state before first enable.
+- Plugin card header controls (delete/version/toggle) now stay right-aligned even with long descriptions.
+- Improved plugin logo resolution (case-insensitive paths + absolute URLs), fixing dev UI logo loading without a Vite proxy.
+- Plugin reload now hits the backend, clears module caches across workers, and refreshes the UI so code changes apply without a full backend restart.
+- Plugin loader now supports `plugin.py` without `__init__.py`, including folders with non-identifier names, by loading modules directly from file paths.
+- Plugin action handling stabilized: avoids registry race conditions and only shows loading on the active action.
+- Plugin enable/disable toggles now update immediately without requiring a full page refresh.
 
 ## [0.18.1] - 2026-01-27
 

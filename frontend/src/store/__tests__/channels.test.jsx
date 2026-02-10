@@ -243,7 +243,11 @@ describe('useChannelsStore', () => {
       const { result } = renderHook(() => useChannelsStore());
 
       act(() => {
-        result.current.updateProfile({ id: '1', name: 'Updated', channels: [3] });
+        result.current.updateProfile({
+          id: '1',
+          name: 'Updated',
+          channels: [3],
+        });
       });
 
       expect(result.current.profiles['1'].name).toBe('Updated');
@@ -254,7 +258,7 @@ describe('useChannelsStore', () => {
 
       act(() => {
         useChannelsStore.setState({
-          profiles: { '1': { id: '1' }, '2': { id: '2' } },
+          profiles: { 1: { id: '1' }, 2: { id: '2' } },
           selectedProfileId: '1',
         });
       });
@@ -274,7 +278,7 @@ describe('useChannelsStore', () => {
 
       act(() => {
         useChannelsStore.setState({
-          profiles: { '1': { id: '1', channels: new Set([1]) } },
+          profiles: { 1: { id: '1', channels: new Set([1]) } },
         });
       });
 
@@ -291,7 +295,7 @@ describe('useChannelsStore', () => {
 
       act(() => {
         useChannelsStore.setState({
-          profiles: { '1': { id: '1', channels: new Set([1, 2, 3]) } },
+          profiles: { 1: { id: '1', channels: new Set([1, 2, 3]) } },
         });
       });
 
@@ -316,9 +320,7 @@ describe('useChannelsStore', () => {
       });
 
       const newStats = {
-        channels: [
-          { channel_id: 'uuid-1', clients: [] },
-        ],
+        channels: [{ channel_id: 'uuid-1', clients: [] }],
       };
 
       act(() => {

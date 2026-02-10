@@ -8,8 +8,8 @@ vi.mock('../../../api.js', () => ({
     stopClient: vi.fn(),
     stopVODClient: vi.fn(),
     fetchActiveChannelStats: vi.fn(),
-    getVODStats: vi.fn()
-  }
+    getVODStats: vi.fn(),
+  },
 }));
 
 describe('StatsUtils', () => {
@@ -41,7 +41,9 @@ describe('StatsUtils', () => {
 
       API.stopChannel.mockRejectedValue(error);
 
-      await expect(StatsUtils.stopChannel(id)).rejects.toThrow('Failed to stop channel');
+      await expect(StatsUtils.stopChannel(id)).rejects.toThrow(
+        'Failed to stop channel'
+      );
     });
   });
 
@@ -72,7 +74,9 @@ describe('StatsUtils', () => {
 
       API.stopClient.mockRejectedValue(error);
 
-      await expect(StatsUtils.stopClient(channelId, clientId)).rejects.toThrow('Failed to stop client');
+      await expect(StatsUtils.stopClient(channelId, clientId)).rejects.toThrow(
+        'Failed to stop client'
+      );
     });
   });
 
@@ -100,7 +104,9 @@ describe('StatsUtils', () => {
 
       API.stopVODClient.mockRejectedValue(error);
 
-      await expect(StatsUtils.stopVODClient(clientId)).rejects.toThrow('Failed to stop VOD client');
+      await expect(StatsUtils.stopVODClient(clientId)).rejects.toThrow(
+        'Failed to stop VOD client'
+      );
     });
   });
 
@@ -122,7 +128,9 @@ describe('StatsUtils', () => {
 
       API.fetchActiveChannelStats.mockRejectedValue(error);
 
-      await expect(StatsUtils.fetchActiveChannelStats()).rejects.toThrow('Failed to fetch stats');
+      await expect(StatsUtils.fetchActiveChannelStats()).rejects.toThrow(
+        'Failed to fetch stats'
+      );
     });
   });
 
@@ -144,26 +152,29 @@ describe('StatsUtils', () => {
 
       API.getVODStats.mockRejectedValue(error);
 
-      await expect(StatsUtils.getVODStats()).rejects.toThrow('Failed to fetch VOD stats');
+      await expect(StatsUtils.getVODStats()).rejects.toThrow(
+        'Failed to fetch VOD stats'
+      );
     });
   });
 
   describe('getCombinedConnections', () => {
     it('should combine channel history and VOD connections', () => {
       const channelHistory = {
-        'ch1': { channel_id: 'ch1', uptime: 100 }
+        ch1: { channel_id: 'ch1', uptime: 100 },
       };
       const vodConnections = [
         {
           content_type: 'movie',
           content_uuid: 'uuid1',
-          connections: [
-            { client_id: 'client1', connected_at: 50 }
-          ]
-        }
+          connections: [{ client_id: 'client1', connected_at: 50 }],
+        },
       ];
 
-      const result = StatsUtils.getCombinedConnections(channelHistory, vodConnections);
+      const result = StatsUtils.getCombinedConnections(
+        channelHistory,
+        vodConnections
+      );
 
       expect(result).toHaveLength(2);
       expect(result[0].type).toBe('stream');
@@ -172,19 +183,20 @@ describe('StatsUtils', () => {
 
     it('should sort by sortKey descending (newest first)', () => {
       const channelHistory = {
-        'ch1': { channel_id: 'ch1', uptime: 50 }
+        ch1: { channel_id: 'ch1', uptime: 50 },
       };
       const vodConnections = [
         {
           content_type: 'movie',
           content_uuid: 'uuid1',
-          connections: [
-            { client_id: 'client1', connected_at: 100 }
-          ]
-        }
+          connections: [{ client_id: 'client1', connected_at: 100 }],
+        },
       ];
 
-      const result = StatsUtils.getCombinedConnections(channelHistory, vodConnections);
+      const result = StatsUtils.getCombinedConnections(
+        channelHistory,
+        vodConnections
+      );
 
       expect(result[0].sortKey).toBe(100);
       expect(result[1].sortKey).toBe(50);
@@ -197,9 +209,9 @@ describe('StatsUtils', () => {
           content_uuid: 'uuid1',
           connections: [
             { client_id: 'client1', connected_at: 100 },
-            { client_id: 'client2', connected_at: 200 }
-          ]
-        }
+            { client_id: 'client2', connected_at: 200 },
+          ],
+        },
       ];
 
       const result = StatsUtils.getCombinedConnections({}, vodConnections);
@@ -218,9 +230,9 @@ describe('StatsUtils', () => {
           content_uuid: 'uuid1',
           connections: [
             { client_id: 'client1', connected_at: 100 },
-            { client_id: 'client2', connected_at: 200 }
-          ]
-        }
+            { client_id: 'client2', connected_at: 200 },
+          ],
+        },
       ];
 
       const result = StatsUtils.getCombinedConnections({}, vodConnections);
@@ -231,7 +243,7 @@ describe('StatsUtils', () => {
 
     it('should use uptime for stream sortKey', () => {
       const channelHistory = {
-        'ch1': { channel_id: 'ch1', uptime: 150 }
+        ch1: { channel_id: 'ch1', uptime: 150 },
       };
 
       const result = StatsUtils.getCombinedConnections(channelHistory, []);
@@ -241,7 +253,7 @@ describe('StatsUtils', () => {
 
     it('should default to 0 for missing uptime', () => {
       const channelHistory = {
-        'ch1': { channel_id: 'ch1' }
+        ch1: { channel_id: 'ch1' },
       };
 
       const result = StatsUtils.getCombinedConnections(channelHistory, []);
@@ -254,10 +266,8 @@ describe('StatsUtils', () => {
         {
           content_type: 'movie',
           content_uuid: 'uuid1',
-          connections: [
-            { client_id: 'client1', connected_at: 250 }
-          ]
-        }
+          connections: [{ client_id: 'client1', connected_at: 250 }],
+        },
       ];
 
       const result = StatsUtils.getCombinedConnections({}, vodConnections);
@@ -270,8 +280,8 @@ describe('StatsUtils', () => {
         {
           content_type: 'movie',
           content_uuid: 'uuid1',
-          connections: []
-        }
+          connections: [],
+        },
       ];
 
       const result = StatsUtils.getCombinedConnections({}, vodConnections);
@@ -290,8 +300,8 @@ describe('StatsUtils', () => {
         {
           content_type: 'movie',
           content_uuid: 'uuid1',
-          connections: null
-        }
+          connections: null,
+        },
       ];
 
       const result = StatsUtils.getCombinedConnections({}, vodConnections);
@@ -303,13 +313,10 @@ describe('StatsUtils', () => {
   describe('getClientStats', () => {
     it('should extract clients from channel stats', () => {
       const stats = {
-        'ch1': {
+        ch1: {
           channel_id: 'ch1',
-          clients: [
-            { client_id: 'client1' },
-            { client_id: 'client2' }
-          ]
-        }
+          clients: [{ client_id: 'client1' }, { client_id: 'client2' }],
+        },
       };
 
       const result = StatsUtils.getClientStats(stats);
@@ -321,13 +328,11 @@ describe('StatsUtils', () => {
 
     it('should attach channel reference to each client', () => {
       const stats = {
-        'ch1': {
+        ch1: {
           channel_id: 'ch1',
           name: 'Channel 1',
-          clients: [
-            { client_id: 'client1' }
-          ]
-        }
+          clients: [{ client_id: 'client1' }],
+        },
       };
 
       const result = StatsUtils.getClientStats(stats);
@@ -335,14 +340,14 @@ describe('StatsUtils', () => {
       expect(result[0].channel).toEqual({
         channel_id: 'ch1',
         name: 'Channel 1',
-        clients: [{ client_id: 'client1' }]
+        clients: [{ client_id: 'client1' }],
       });
     });
 
     it('should handle channels without clients array', () => {
       const stats = {
-        'ch1': { channel_id: 'ch1' },
-        'ch2': { channel_id: 'ch2', clients: null }
+        ch1: { channel_id: 'ch1' },
+        ch2: { channel_id: 'ch2', clients: null },
       };
 
       const result = StatsUtils.getClientStats(stats);
@@ -352,10 +357,10 @@ describe('StatsUtils', () => {
 
     it('should handle empty clients array', () => {
       const stats = {
-        'ch1': {
+        ch1: {
           channel_id: 'ch1',
-          clients: []
-        }
+          clients: [],
+        },
       };
 
       const result = StatsUtils.getClientStats(stats);
@@ -365,14 +370,14 @@ describe('StatsUtils', () => {
 
     it('should combine clients from multiple channels', () => {
       const stats = {
-        'ch1': {
+        ch1: {
           channel_id: 'ch1',
-          clients: [{ client_id: 'client1' }]
+          clients: [{ client_id: 'client1' }],
         },
-        'ch2': {
+        ch2: {
           channel_id: 'ch2',
-          clients: [{ client_id: 'client2' }]
-        }
+          clients: [{ client_id: 'client2' }],
+        },
       };
 
       const result = StatsUtils.getClientStats(stats);
@@ -392,9 +397,7 @@ describe('StatsUtils', () => {
   describe('getStatsByChannelId', () => {
     it('should create stats indexed by channel_id', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', total_bytes: 1000 }
-        ]
+        channels: [{ channel_id: 'ch1', total_bytes: 1000 }],
       };
       const prevChannelHistory = {};
       const channelsByUUID = {};
@@ -415,15 +418,13 @@ describe('StatsUtils', () => {
 
     it('should calculate bitrates from previous history', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', total_bytes: 2000 }
-        ]
+        channels: [{ channel_id: 'ch1', total_bytes: 2000 }],
       };
       const prevChannelHistory = {
-        'ch1': {
+        ch1: {
           total_bytes: 1000,
-          bitrates: [500]
-        }
+          bitrates: [500],
+        },
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -440,15 +441,13 @@ describe('StatsUtils', () => {
     it('should limit bitrates array to 15 entries', () => {
       const prevBitrates = new Array(15).fill(100);
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', total_bytes: 2000 }
-        ]
+        channels: [{ channel_id: 'ch1', total_bytes: 2000 }],
       };
       const prevChannelHistory = {
-        'ch1': {
+        ch1: {
           total_bytes: 1000,
-          bitrates: prevBitrates
-        }
+          bitrates: prevBitrates,
+        },
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -466,15 +465,13 @@ describe('StatsUtils', () => {
 
     it('should skip negative bitrates', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', total_bytes: 500 }
-        ]
+        channels: [{ channel_id: 'ch1', total_bytes: 500 }],
       };
       const prevChannelHistory = {
-        'ch1': {
+        ch1: {
           total_bytes: 1000,
-          bitrates: []
-        }
+          bitrates: [],
+        },
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -490,18 +487,16 @@ describe('StatsUtils', () => {
 
     it('should merge channel data from channelsByUUID', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'uuid1', total_bytes: 1000 }
-        ]
+        channels: [{ channel_id: 'uuid1', total_bytes: 1000 }],
       };
       const channelsByUUID = {
-        'uuid1': 'channel-key-1'
+        uuid1: 'channel-key-1',
       };
       const channels = {
         'channel-key-1': {
           name: 'Channel 1',
-          logo: 'logo.png'
-        }
+          logo: 'logo.png',
+        },
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -518,13 +513,11 @@ describe('StatsUtils', () => {
 
     it('should find and attach stream profile', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', stream_profile: '1' }
-        ]
+        channels: [{ channel_id: 'ch1', stream_profile: '1' }],
       };
       const streamProfiles = [
         { id: 1, name: 'HD Profile' },
-        { id: 2, name: 'SD Profile' }
+        { id: 2, name: 'SD Profile' },
       ];
 
       const result = StatsUtils.getStatsByChannelId(
@@ -540,13 +533,9 @@ describe('StatsUtils', () => {
 
     it('should default to Unknown for missing stream profile', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', stream_profile: '999' }
-        ]
+        channels: [{ channel_id: 'ch1', stream_profile: '999' }],
       };
-      const streamProfiles = [
-        { id: 1, name: 'HD Profile' }
-      ];
+      const streamProfiles = [{ id: 1, name: 'HD Profile' }];
 
       const result = StatsUtils.getStatsByChannelId(
         channelStats,
@@ -561,9 +550,7 @@ describe('StatsUtils', () => {
 
     it('should preserve stream_id from channel stats', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', stream_id: 'stream-123' }
-        ]
+        channels: [{ channel_id: 'ch1', stream_id: 'stream-123' }],
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -579,9 +566,7 @@ describe('StatsUtils', () => {
 
     it('should set stream_id to null if missing', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1' }
-        ]
+        channels: [{ channel_id: 'ch1' }],
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -600,8 +585,8 @@ describe('StatsUtils', () => {
       const channelStats = {
         channels: [
           { total_bytes: 1000 },
-          { channel_id: 'ch1', total_bytes: 2000 }
-        ]
+          { channel_id: 'ch1', total_bytes: 2000 },
+        ],
       };
 
       const result = StatsUtils.getStatsByChannelId(
@@ -614,7 +599,10 @@ describe('StatsUtils', () => {
 
       expect(result).not.toHaveProperty('undefined');
       expect(result).toHaveProperty('ch1');
-      expect(consoleSpy).toHaveBeenCalledWith('Found channel without channel_id:', { total_bytes: 1000 });
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Found channel without channel_id:',
+        { total_bytes: 1000 }
+      );
 
       consoleSpy.mockRestore();
     });
@@ -635,9 +623,7 @@ describe('StatsUtils', () => {
 
     it('should initialize empty bitrates array for new channels', () => {
       const channelStats = {
-        channels: [
-          { channel_id: 'ch1', total_bytes: 1000 }
-        ]
+        channels: [{ channel_id: 'ch1', total_bytes: 1000 }],
       };
 
       const result = StatsUtils.getStatsByChannelId(

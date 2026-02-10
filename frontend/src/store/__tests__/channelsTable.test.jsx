@@ -40,7 +40,9 @@ describe('useChannelsTableStore', () => {
       expect(result.current.channels).toEqual([]);
       expect(result.current.pageCount).toBe(0);
       expect(result.current.totalCount).toBe(0);
-      expect(result.current.sorting).toEqual([{ id: 'channel_number', desc: false }]);
+      expect(result.current.sorting).toEqual([
+        { id: 'channel_number', desc: false },
+      ]);
       expect(result.current.pagination.pageIndex).toBe(0);
       expect(result.current.pagination.pageSize).toBe(50);
       expect(result.current.selectedChannelIds).toEqual([]);
@@ -187,9 +189,7 @@ describe('useChannelsTableStore', () => {
     it('should return empty array for channel without streams', () => {
       const { result } = renderHook(() => useChannelsTableStore());
 
-      const mockChannels = [
-        { id: 1, name: 'Channel 1' },
-      ];
+      const mockChannels = [{ id: 1, name: 'Channel 1' }];
 
       act(() => {
         useChannelsTableStore.setState({ channels: mockChannels });
@@ -203,9 +203,7 @@ describe('useChannelsTableStore', () => {
     it('should return empty array for non-existent channel', () => {
       const { result } = renderHook(() => useChannelsTableStore());
 
-      const mockChannels = [
-        { id: 1, name: 'Channel 1', streams: ['stream1'] },
-      ];
+      const mockChannels = [{ id: 1, name: 'Channel 1', streams: ['stream1'] }];
 
       act(() => {
         useChannelsTableStore.setState({ channels: mockChannels });
@@ -343,7 +341,11 @@ describe('useChannelsTableStore', () => {
         useChannelsTableStore.setState({ channels: mockChannels });
       });
 
-      const updatedChannel = { id: 2, name: 'Updated Channel 2', channel_number: 22 };
+      const updatedChannel = {
+        id: 2,
+        name: 'Updated Channel 2',
+        channel_number: 22,
+      };
 
       act(() => {
         result.current.updateChannel(updatedChannel);
@@ -368,7 +370,11 @@ describe('useChannelsTableStore', () => {
         useChannelsTableStore.setState({ channels: mockChannels });
       });
 
-      const updatedChannel = { id: 999, name: 'Non-existent', channel_number: 999 };
+      const updatedChannel = {
+        id: 999,
+        name: 'Non-existent',
+        channel_number: 999,
+      };
 
       act(() => {
         result.current.updateChannel(updatedChannel);
@@ -389,7 +395,11 @@ describe('useChannelsTableStore', () => {
         useChannelsTableStore.setState({ channels: mockChannels });
       });
 
-      const updatedChannel = { id: 1, name: 'Updated Channel 1', channel_number: 10 };
+      const updatedChannel = {
+        id: 1,
+        name: 'Updated Channel 1',
+        channel_number: 10,
+      };
 
       act(() => {
         result.current.updateChannel(updatedChannel);

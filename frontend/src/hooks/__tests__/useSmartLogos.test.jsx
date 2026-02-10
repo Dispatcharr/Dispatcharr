@@ -1,6 +1,10 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useLogoSelection, useChannelLogoSelection, useLogosById } from '../useSmartLogos';
+import {
+  useLogoSelection,
+  useChannelLogoSelection,
+  useLogosById,
+} from '../useSmartLogos';
 import useLogosStore from '../../store/logos';
 
 // Mock the logos store
@@ -13,10 +17,12 @@ describe('useSmartLogos', () => {
     });
 
     it('should initialize with empty state', () => {
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogos: vi.fn(),
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogos: vi.fn(),
+        })
+      );
 
       const { result } = renderHook(() => useLogoSelection());
 
@@ -27,10 +33,12 @@ describe('useSmartLogos', () => {
 
     it('should load logos when ensureLogosLoaded is called', async () => {
       const mockFetchLogos = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogos: mockFetchLogos,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogos: mockFetchLogos,
+        })
+      );
 
       const { result } = renderHook(() => useLogoSelection());
 
@@ -43,10 +51,12 @@ describe('useSmartLogos', () => {
 
     it('should not reload logos if already loaded', async () => {
       const mockFetchLogos = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: { logo1: { id: 'logo1' } },
-        fetchLogos: mockFetchLogos,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: { logo1: { id: 'logo1' } },
+          fetchLogos: mockFetchLogos,
+        })
+      );
 
       const { result } = renderHook(() => useLogoSelection());
 
@@ -62,12 +72,18 @@ describe('useSmartLogos', () => {
     });
 
     it('should handle errors when fetching logos', async () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const mockFetchLogos = vi.fn().mockRejectedValue(new Error('Fetch failed'));
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogos: mockFetchLogos,
-      }));
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const mockFetchLogos = vi
+        .fn()
+        .mockRejectedValue(new Error('Fetch failed'));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogos: mockFetchLogos,
+        })
+      );
 
       const { result } = renderHook(() => useLogoSelection());
 
@@ -84,10 +100,12 @@ describe('useSmartLogos', () => {
     });
 
     it('should indicate hasLogos when logos are present', () => {
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: { logo1: { id: 'logo1' }, logo2: { id: 'logo2' } },
-        fetchLogos: vi.fn(),
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: { logo1: { id: 'logo1' }, logo2: { id: 'logo2' } },
+          fetchLogos: vi.fn(),
+        })
+      );
 
       const { result } = renderHook(() => useLogoSelection());
 
@@ -101,12 +119,14 @@ describe('useSmartLogos', () => {
     });
 
     it('should initialize with channel logos state', () => {
-      useLogosStore.mockImplementation((selector) => selector({
-        channelLogos: {},
-        hasLoadedChannelLogos: false,
-        backgroundLoading: false,
-        fetchChannelAssignableLogos: vi.fn(),
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          channelLogos: {},
+          hasLoadedChannelLogos: false,
+          backgroundLoading: false,
+          fetchChannelAssignableLogos: vi.fn(),
+        })
+      );
 
       const { result } = renderHook(() => useChannelLogoSelection());
 
@@ -117,12 +137,14 @@ describe('useSmartLogos', () => {
 
     it('should load channel logos when ensureLogosLoaded is called', async () => {
       const mockFetchChannelLogos = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        channelLogos: {},
-        hasLoadedChannelLogos: false,
-        backgroundLoading: false,
-        fetchChannelAssignableLogos: mockFetchChannelLogos,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          channelLogos: {},
+          hasLoadedChannelLogos: false,
+          backgroundLoading: false,
+          fetchChannelAssignableLogos: mockFetchChannelLogos,
+        })
+      );
 
       const { result } = renderHook(() => useChannelLogoSelection());
 
@@ -135,12 +157,14 @@ describe('useSmartLogos', () => {
 
     it('should not reload if already loaded', async () => {
       const mockFetchChannelLogos = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        channelLogos: { logo1: { id: 'logo1' } },
-        hasLoadedChannelLogos: true,
-        backgroundLoading: false,
-        fetchChannelAssignableLogos: mockFetchChannelLogos,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          channelLogos: { logo1: { id: 'logo1' } },
+          hasLoadedChannelLogos: true,
+          backgroundLoading: false,
+          fetchChannelAssignableLogos: mockFetchChannelLogos,
+        })
+      );
 
       const { result } = renderHook(() => useChannelLogoSelection());
 
@@ -153,12 +177,14 @@ describe('useSmartLogos', () => {
 
     it('should not load if backgroundLoading is true', async () => {
       const mockFetchChannelLogos = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        channelLogos: {},
-        hasLoadedChannelLogos: false,
-        backgroundLoading: true,
-        fetchChannelAssignableLogos: mockFetchChannelLogos,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          channelLogos: {},
+          hasLoadedChannelLogos: false,
+          backgroundLoading: true,
+          fetchChannelAssignableLogos: mockFetchChannelLogos,
+        })
+      );
 
       const { result } = renderHook(() => useChannelLogoSelection());
 
@@ -170,14 +196,20 @@ describe('useSmartLogos', () => {
     });
 
     it('should handle errors when fetching channel logos', async () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const mockFetchChannelLogos = vi.fn().mockRejectedValue(new Error('Fetch failed'));
-      useLogosStore.mockImplementation((selector) => selector({
-        channelLogos: {},
-        hasLoadedChannelLogos: false,
-        backgroundLoading: false,
-        fetchChannelAssignableLogos: mockFetchChannelLogos,
-      }));
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const mockFetchChannelLogos = vi
+        .fn()
+        .mockRejectedValue(new Error('Fetch failed'));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          channelLogos: {},
+          hasLoadedChannelLogos: false,
+          backgroundLoading: false,
+          fetchChannelAssignableLogos: mockFetchChannelLogos,
+        })
+      );
 
       const { result } = renderHook(() => useChannelLogoSelection());
 
@@ -200,10 +232,12 @@ describe('useSmartLogos', () => {
     });
 
     it('should initialize with empty logos', () => {
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogosByIds: vi.fn(),
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogosByIds: vi.fn(),
+        })
+      );
 
       const { result } = renderHook(() => useLogosById([]));
 
@@ -214,10 +248,12 @@ describe('useSmartLogos', () => {
 
     it('should fetch missing logos by IDs', async () => {
       const mockFetchLogosByIds = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogosByIds: mockFetchLogosByIds,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogosByIds: mockFetchLogosByIds,
+        })
+      );
 
       renderHook(() => useLogosById(['logo1', 'logo2']));
 
@@ -228,10 +264,12 @@ describe('useSmartLogos', () => {
 
     it('should not fetch logos that are already loaded', async () => {
       const mockFetchLogosByIds = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: { logo1: { id: 'logo1' } },
-        fetchLogosByIds: mockFetchLogosByIds,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: { logo1: { id: 'logo1' } },
+          fetchLogosByIds: mockFetchLogosByIds,
+        })
+      );
 
       renderHook(() => useLogosById(['logo1', 'logo2']));
 
@@ -241,12 +279,18 @@ describe('useSmartLogos', () => {
     });
 
     it('should handle errors when fetching logos by IDs', async () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const mockFetchLogosByIds = vi.fn().mockRejectedValue(new Error('Fetch failed'));
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogosByIds: mockFetchLogosByIds,
-      }));
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const mockFetchLogosByIds = vi
+        .fn()
+        .mockRejectedValue(new Error('Fetch failed'));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogosByIds: mockFetchLogosByIds,
+        })
+      );
 
       renderHook(() => useLogosById(['logo1']));
 
@@ -262,10 +306,12 @@ describe('useSmartLogos', () => {
 
     it('should filter out null/undefined IDs', async () => {
       const mockFetchLogosByIds = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogosByIds: mockFetchLogosByIds,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogosByIds: mockFetchLogosByIds,
+        })
+      );
 
       renderHook(() => useLogosById(['logo1', null, undefined, 'logo2']));
 
@@ -276,10 +322,12 @@ describe('useSmartLogos', () => {
 
     it('should not refetch the same IDs multiple times', async () => {
       const mockFetchLogosByIds = vi.fn().mockResolvedValue();
-      useLogosStore.mockImplementation((selector) => selector({
-        logos: {},
-        fetchLogosByIds: mockFetchLogosByIds,
-      }));
+      useLogosStore.mockImplementation((selector) =>
+        selector({
+          logos: {},
+          fetchLogosByIds: mockFetchLogosByIds,
+        })
+      );
 
       const { rerender } = renderHook(() => useLogosById(['logo1']));
 

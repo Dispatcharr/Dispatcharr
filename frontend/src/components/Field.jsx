@@ -1,17 +1,40 @@
-import { NumberInput, Select, Switch, TextInput } from '@mantine/core';
+import {
+  NumberInput,
+  Select,
+  Switch,
+  Text,
+  Textarea,
+  TextInput,
+} from '@mantine/core';
 import React from 'react';
 
 export const Field = ({ field, value, onChange }) => {
-  const common = { label: field.label, description: field.help_text };
+  const description = field.help_text ?? field.description ?? field.value;
+  const common = { label: field.label, description };
   const effective = value ?? field.default;
   switch (field.type) {
+    case 'info':
+      return (
+        <div>
+          {field.label && (
+            <Text fw={600} size="sm">
+              {field.label}
+            </Text>
+          )}
+          {description && (
+            <Text size="sm" c="dimmed">
+              {description}
+            </Text>
+          )}
+        </div>
+      );
     case 'boolean':
       return (
         <Switch
           checked={!!effective}
           onChange={(e) => onChange(field.id, e.currentTarget.checked)}
           label={field.label}
-          description={field.help_text}
+          description={description}
         />
       );
     case 'number':
@@ -19,6 +42,7 @@ export const Field = ({ field, value, onChange }) => {
         <NumberInput
           value={value ?? field.default ?? 0}
           onChange={(v) => onChange(field.id, v)}
+          placeholder={field.placeholder}
           {...common}
         />
       );
@@ -31,6 +55,16 @@ export const Field = ({ field, value, onChange }) => {
             label: o.label,
           }))}
           onChange={(v) => onChange(field.id, v)}
+          placeholder={field.placeholder}
+          {...common}
+        />
+      );
+    case 'text':
+      return (
+        <Textarea
+          value={value ?? field.default ?? ''}
+          onChange={(e) => onChange(field.id, e.currentTarget.value)}
+          placeholder={field.placeholder}
           {...common}
         />
       );
@@ -40,6 +74,8 @@ export const Field = ({ field, value, onChange }) => {
         <TextInput
           value={value ?? field.default ?? ''}
           onChange={(e) => onChange(field.id, e.currentTarget.value)}
+          type={field.input_type === 'password' ? 'password' : 'text'}
+          placeholder={field.placeholder}
           {...common}
         />
       );

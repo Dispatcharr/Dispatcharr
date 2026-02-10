@@ -14,7 +14,7 @@ const getFetchContentParams = (state) => {
     params.append('category', state.filters.category);
   }
   return params;
-}
+};
 
 const getMovieDetails = (response, movieId) => {
   return {
@@ -35,7 +35,7 @@ const getMovieDetails = (response, movieId) => {
     imdb_id: response.imdb_id || '',
     m3u_account: response.m3u_account || '',
   };
-}
+};
 
 const getMovieDetailsWithProvider = (response, movieId) => {
   return {
@@ -65,7 +65,7 @@ const getMovieDetailsWithProvider = (response, movieId) => {
     video: response.video || {},
     audio: response.audio || {},
   };
-}
+};
 
 const getSeriesDetails = (response, seriesId) => {
   return {
@@ -92,7 +92,7 @@ const getSeriesDetails = (response, seriesId) => {
     m3u_account: response.m3u_account || '',
     youtube_trailer: response.custom_properties?.youtube_trailer || '',
   };
-}
+};
 
 const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
   return {
@@ -117,7 +117,7 @@ const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
     tmdb_id: episode.tmdb_id || '',
     imdb_id: episode.imdb_id || '',
   };
-}
+};
 
 const useVODStore = create((set, get) => ({
   content: {}, // Store for individual content details (when fetching movie/series details)
