@@ -256,7 +256,7 @@ describe('dateTimeUtils', () => {
       const setTimeZone = vi.fn();
       useLocalStorage.mockReturnValue(['America/New_York', setTimeZone]);
       useSettingsStore.mockReturnValue({
-        'system_settings': { value: { time_zone: 'America/Los_Angeles' } }
+        system_settings: { value: { time_zone: 'America/Los_Angeles' } },
       });
 
       renderHook(() => dateTimeUtils.useUserTimeZone());
@@ -321,18 +321,25 @@ describe('dateTimeUtils', () => {
     });
 
     it('should start with Sunday', () => {
-      expect(dateTimeUtils.RECURRING_DAY_OPTIONS[0]).toEqual({ value: 6, label: 'Sun' });
+      expect(dateTimeUtils.RECURRING_DAY_OPTIONS[0]).toEqual({
+        value: 6,
+        label: 'Sun',
+      });
     });
 
     it('should include all weekdays', () => {
-      const labels = dateTimeUtils.RECURRING_DAY_OPTIONS.map(opt => opt.label);
+      const labels = dateTimeUtils.RECURRING_DAY_OPTIONS.map(
+        (opt) => opt.label
+      );
       expect(labels).toEqual(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
     });
   });
 
   describe('useDateTimeFormat', () => {
     it('should return 12h format and mdy date format by default', () => {
-      useLocalStorage.mockReturnValueOnce(['12h', vi.fn()]).mockReturnValueOnce(['mdy', vi.fn()]);
+      useLocalStorage
+        .mockReturnValueOnce(['12h', vi.fn()])
+        .mockReturnValueOnce(['mdy', vi.fn()]);
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
@@ -341,7 +348,9 @@ describe('dateTimeUtils', () => {
     });
 
     it('should return 24h format when set', () => {
-      useLocalStorage.mockReturnValueOnce(['24h', vi.fn()]).mockReturnValueOnce(['mdy', vi.fn()]);
+      useLocalStorage
+        .mockReturnValueOnce(['24h', vi.fn()])
+        .mockReturnValueOnce(['mdy', vi.fn()]);
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
@@ -349,7 +358,9 @@ describe('dateTimeUtils', () => {
     });
 
     it('should return dmy date format when set', () => {
-      useLocalStorage.mockReturnValueOnce(['12h', vi.fn()]).mockReturnValueOnce(['dmy', vi.fn()]);
+      useLocalStorage
+        .mockReturnValueOnce(['12h', vi.fn()])
+        .mockReturnValueOnce(['dmy', vi.fn()]);
 
       const { result } = renderHook(() => dateTimeUtils.useDateTimeFormat());
 
@@ -428,26 +439,28 @@ describe('dateTimeUtils', () => {
     it('should sort by offset then name', () => {
       const result = dateTimeUtils.buildTimeZoneOptions();
       for (let i = 1; i < result.length; i++) {
-        expect(result[i].numericOffset).toBeGreaterThanOrEqual(result[i - 1].numericOffset);
+        expect(result[i].numericOffset).toBeGreaterThanOrEqual(
+          result[i - 1].numericOffset
+        );
       }
     });
 
     it('should include DST information when applicable', () => {
       const result = dateTimeUtils.buildTimeZoneOptions();
-      const dstZone = result.find(opt => opt.label.includes('DST range'));
+      const dstZone = result.find((opt) => opt.label.includes('DST range'));
       expect(dstZone).toBeDefined();
     });
 
     it('should add preferred zone if not in list', () => {
       const preferredZone = 'Custom/Zone';
       const result = dateTimeUtils.buildTimeZoneOptions(preferredZone);
-      const found = result.find(opt => opt.value === preferredZone);
+      const found = result.find((opt) => opt.value === preferredZone);
       expect(found).toBeDefined();
     });
 
     it('should not duplicate existing zones', () => {
       const result = dateTimeUtils.buildTimeZoneOptions('UTC');
-      const utcOptions = result.filter(opt => opt.value === 'UTC');
+      const utcOptions = result.filter((opt) => opt.value === 'UTC');
       expect(utcOptions).toHaveLength(1);
     });
   });

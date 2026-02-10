@@ -1,4 +1,4 @@
-import { Text, } from '@mantine/core';
+import { Text } from '@mantine/core';
 
 // Short preview that triggers the details modal when clicked
 const RecordingSynopsis = ({ description, onOpen }) => {

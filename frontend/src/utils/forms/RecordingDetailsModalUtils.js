@@ -33,7 +33,7 @@ const filterByUpcoming = (arr, tvid, titleKey, toUserTime, userNow) => {
     const st = toUserTime(r.start_time);
     return st.isAfter(userNow());
   });
-}
+};
 
 const dedupeByProgram = (filtered) => {
   // Deduplicate by program.id if present, else by time+title
@@ -62,7 +62,7 @@ const dedupeByProgram = (filtered) => {
     deduped.push(r);
   }
   return deduped;
-}
+};
 
 export const getUpcomingEpisodes = (
   isSeriesGroup,

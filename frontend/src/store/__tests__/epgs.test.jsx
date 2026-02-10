@@ -65,7 +65,9 @@ describe('useEPGsStore', () => {
     });
 
     it('should set loading state while fetching', async () => {
-      api.getEPGs.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve([]), 100)));
+      api.getEPGs.mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve([]), 100))
+      );
 
       const { result } = renderHook(() => useEPGsStore());
 
@@ -87,7 +89,9 @@ describe('useEPGsStore', () => {
       const mockError = new Error('Network error');
       api.getEPGs.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       await act(async () => {
@@ -96,7 +100,10 @@ describe('useEPGsStore', () => {
 
       expect(result.current.error).toBe('Failed to load epgs.');
       expect(result.current.isLoading).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch epgs:', mockError);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Failed to fetch epgs:',
+        mockError
+      );
 
       consoleSpy.mockRestore();
     });
@@ -142,7 +149,9 @@ describe('useEPGsStore', () => {
     });
 
     it('should set loading state while fetching', async () => {
-      api.getEPGData.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve([]), 100)));
+      api.getEPGData.mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve([]), 100))
+      );
 
       const { result } = renderHook(() => useEPGsStore());
 
@@ -163,7 +172,9 @@ describe('useEPGsStore', () => {
       const mockError = new Error('API error');
       api.getEPGData.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       await act(async () => {
@@ -173,7 +184,10 @@ describe('useEPGsStore', () => {
       expect(result.current.error).toBe('Failed to load tvgs.');
       expect(result.current.tvgsLoaded).toBe(true);
       expect(result.current.isLoading).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch tvgs:', mockError);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Failed to fetch tvgs:',
+        mockError
+      );
 
       consoleSpy.mockRestore();
     });
@@ -274,7 +288,9 @@ describe('useEPGsStore', () => {
     });
 
     it('should not update state when called with invalid epg (null)', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       const initialEPGs = { epg1: { id: 'epg1', name: 'Test' } };
@@ -287,13 +303,18 @@ describe('useEPGsStore', () => {
       });
 
       expect(result.current.epgs).toEqual(initialEPGs);
-      expect(consoleSpy).toHaveBeenCalledWith('updateEPG called with invalid epg:', null);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'updateEPG called with invalid epg:',
+        null
+      );
 
       consoleSpy.mockRestore();
     });
 
     it('should not update state when called with invalid epg (missing id)', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       const initialEPGs = { epg1: { id: 'epg1', name: 'Test' } };
@@ -308,13 +329,18 @@ describe('useEPGsStore', () => {
       });
 
       expect(result.current.epgs).toEqual(initialEPGs);
-      expect(consoleSpy).toHaveBeenCalledWith('updateEPG called with invalid epg:', invalidEPG);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'updateEPG called with invalid epg:',
+        invalidEPG
+      );
 
       consoleSpy.mockRestore();
     });
 
     it('should not update state when called with invalid epg (non-object)', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       const initialEPGs = { epg1: { id: 'epg1', name: 'Test' } };
@@ -327,7 +353,10 @@ describe('useEPGsStore', () => {
       });
 
       expect(result.current.epgs).toEqual(initialEPGs);
-      expect(consoleSpy).toHaveBeenCalledWith('updateEPG called with invalid epg:', 'invalid');
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'updateEPG called with invalid epg:',
+        'invalid'
+      );
 
       consoleSpy.mockRestore();
     });
@@ -518,7 +547,9 @@ describe('useEPGsStore', () => {
         });
       });
 
-      expect(result.current.epgs.source1.last_message).toBe('Connection failed');
+      expect(result.current.epgs.source1.last_message).toBe(
+        'Connection failed'
+      );
     });
 
     it('should use default error message if error is not provided', () => {
@@ -535,7 +566,9 @@ describe('useEPGsStore', () => {
     });
 
     it('should not update state when called with invalid data (null)', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       const initialEPGs = { ...result.current.epgs };
@@ -547,13 +580,18 @@ describe('useEPGsStore', () => {
 
       expect(result.current.epgs).toEqual(initialEPGs);
       expect(result.current.refreshProgress).toEqual(initialProgress);
-      expect(consoleSpy).toHaveBeenCalledWith('updateEPGProgress called with invalid data:', null);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'updateEPGProgress called with invalid data:',
+        null
+      );
 
       consoleSpy.mockRestore();
     });
 
     it('should not update state when called with invalid data (missing source)', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useEPGsStore());
 
       const initialEPGs = { ...result.current.epgs };
@@ -565,7 +603,10 @@ describe('useEPGsStore', () => {
 
       expect(result.current.epgs).toEqual(initialEPGs);
       expect(result.current.refreshProgress).toEqual(initialProgress);
-      expect(consoleSpy).toHaveBeenCalledWith('updateEPGProgress called with invalid data:', { progress: 50 });
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'updateEPGProgress called with invalid data:',
+        { progress: 50 }
+      );
 
       consoleSpy.mockRestore();
     });
@@ -667,7 +708,11 @@ describe('useEPGsStore', () => {
       act(() => {
         useEPGsStore.setState({
           epgs: {
-            source1: { id: 'source1', status: 'parsing', last_message: 'Processing' },
+            source1: {
+              id: 'source1',
+              status: 'parsing',
+              last_message: 'Processing',
+            },
           },
         });
       });

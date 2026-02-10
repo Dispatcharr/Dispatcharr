@@ -7,10 +7,10 @@ import ChannelsPage from '../Channels';
 vi.mock('../../store/auth');
 vi.mock('../../hooks/useLocalStorage');
 vi.mock('../../components/tables/ChannelsTable', () => ({
-  default: () => <div data-testid="channels-table">ChannelsTable</div>
+  default: () => <div data-testid="channels-table">ChannelsTable</div>,
 }));
 vi.mock('../../components/tables/StreamsTable', () => ({
-  default: () => <div data-testid="streams-table">StreamsTable</div>
+  default: () => <div data-testid="streams-table">StreamsTable</div>,
 }));
 vi.mock('@mantine/core', () => ({
   Box: ({ children, ...props }) => <div {...props}>{children}</div>,
