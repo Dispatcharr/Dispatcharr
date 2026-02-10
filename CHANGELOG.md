@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-02-10
+
 ### Added
 
 - Add system notifications and update checks
@@ -32,10 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `useWarningsStore` tests for warning suppression functionality
   - Code refactoring for improved readability and maintainability - Thanks [@nick4810](https://github.com/nick4810)
 - EPG auto-matching: Added advanced options to strip prefixes, suffixes, and custom text from channel names to assist matching; default matching behavior and settings remain unchanged (Closes #771) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Redis authentication support for modular deployments: Added support for authentication when connecting to external Redis instances using either password-only authentication (Redis <6) or username + password authentication (Redis 6+ ACL). REDIS_PASSWORD and REDIS_USER environment variables with URL encoding for special characters. (Closes #937) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Plugin logos: if a plugin ZIP includes `logo.png`, it is surfaced in the Plugins UI and shown next to the plugin name.
+- Plugin manifests (`plugin.json`) for safe metadata discovery, plus legacy warnings and folder-name fallbacks when a manifest is missing.
+- Plugin stop hooks: Dispatcharr now calls a plugin's optional `stop()` method (or `run("stop")` action) when disabling, deleting, or reloading plugins to allow graceful shutdown.
+- Plugin action buttons can define `button_label`, `button_variant`, and `button_color` (e.g., Stop in red), falling back to “Run” for older plugins.
+- Plugin card metadata: plugins can specify `author` and `help_url` in `plugin.json` to show author and docs link in the UI.
+- Plugin cards can now be expanded/collapsed by clicking the header or chevron to hide settings and actions.
 
 ### Changed
 
 - XtreamCodes Authentication Optimization: Reduced API calls during XC refresh by 50% by eliminating redundant authentication step. This should help reduce rate-limiting errors.
+- App initialization efficiency: Refactored app initialization to prevent redundant execution across multiple worker processes. Created `dispatcharr.app_initialization` utility module with `should_skip_initialization()` function that prevents custom initialization tasks (backup scheduler sync, developer notifications sync) from running during management commands, in worker processes, or in development servers. This significantly reduces startup overhead in multi-worker deployments (e.g., uWSGI with 10 workers now syncs the scheduler once instead of 10 times). Applied to both `CoreConfig` and `BackupsConfig` apps.
 - M3U/EPG Network Access Defaults: Updated default network access settings for M3U and EPG endpoints to only allow local/private networks by default (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7, fe80::/10). This improves security by preventing public internet access to these endpoints unless explicitly configured. Other endpoints (Streams, XC API, UI) remain open by default.
 - Modular deployments: Bumped modular Postgres image to 17 and added compatibility checks (PostgreSQL version and UTF-8 database encoding) when using external databases to prevent migration/encoding issues.
 - Stream Identity Stability: Added `stream_id` (provider stream identifier) and `stream_chno` (provider channel number) fields to Stream model. For XC accounts, the stream hash now uses the stable `stream_id` instead of the URL when hashing, ensuring XC streams maintain their identity and channel associations even when account credentials or server URLs change. Supports both XC `num` and M3U `tvg-chno`/`channel-number` attributes.
@@ -49,12 +59,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- XC EPG Logic: Fixed EPG filtering issues where short EPG requests had no time-based filtering (returning expired programs) and regular EPG requests used `start_time__gte` (missing the currently playing program). Both now correctly use `end_time__gt` to show programs that haven't ended yet, with short EPG additionally limiting results. (Fixes #915)
 - Automatic backups not enabled by default on new installations: Added backups app to `INSTALLED_APPS` and implemented automatic scheduler initialization in `BackupsConfig.ready()`. The backup scheduler now properly syncs the periodic task on startup, ensuring automatic daily backups are enabled and scheduled immediately on fresh database creation without requiring manual user intervention.
 - Fixed modular Docker Compose deployment and entrypoint/init scripts to properly support `DISPATCHARR_ENV=modular`, use external PostgreSQL/Redis services, and handle port, version, and encoding validation (Closes #324, Fixes #61, #445, #731) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Stream rehash/merge logic now guarantees unique stream_hash and always preserves the stream with the best channel ordering and relationships. This prevents duplicate key errors and ensures the correct stream is retained when merging. (Fixes #892)
 - Admin URL Conflict with XC Streams: Updated nginx configuration to only redirect exact `/admin` and `/admin/` paths to login in production, preventing interference with stream URLs that use "admin" as a username (e.g., `/admin/password/stream_id` now properly routes to stream handling instead of being redirected).
 - EPG Channel ID XML Escaping: Fixed XML parsing errors in EPG output when channel IDs contain special characters (&, <, >, \") by properly escaping them in XML attributes. (Fixes #765) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Fixed NumPy baseline detection in Docker entrypoint. Now properly detects when NumPy crashes on import due to CPU baseline incompatibility and installs legacy NumPy version. Previously, if NumPy failed to import, the script would skip legacy installation assuming it was already compatible.
+- Backup Scheduler Test: Fixed test to correctly validate that automatic backups are enabled by default with a retention count of 3, matching the actual scheduler defaults. - Thanks [@jcasimir](https://github.com/jcasimir)
+- Hardened plugin loading to avoid executing plugin code unless the plugin is enabled.
+- Prevented plugin package names from shadowing standard library or installed modules by namespacing plugin imports with safe aliases.
+- Added safety limits to plugin ZIP imports (file count and size caps) and sanitized plugin keys derived from uploads.
+- Enforced strict boolean parsing for plugin enable/disable requests to avoid accidental enables from truthy strings.
+- Applied plugin field defaults server-side when running actions so plugins receive expected settings even before a user saves.
+- Plugin settings UI improvements: render `info`/`text` fields, support `input_type: password`, show descriptions/placeholders, surface save failures, and keep settings in sync after refresh.
+- Disabled plugins now collapse settings/actions to match the closed state before first enable.
+- Plugin card header controls (delete/version/toggle) now stay right-aligned even with long descriptions.
+- Improved plugin logo resolution (case-insensitive paths + absolute URLs), fixing dev UI logo loading without a Vite proxy.
+- Plugin reload now hits the backend, clears module caches across workers, and refreshes the UI so code changes apply without a full backend restart.
+- Plugin loader now supports `plugin.py` without `__init__.py`, including folders with non-identifier names, by loading modules directly from file paths.
+- Plugin action handling stabilized: avoids registry race conditions and only shows loading on the active action.
+- Plugin enable/disable toggles now update immediately without requiring a full page refresh.
 
 ## [0.18.1] - 2026-01-27
 

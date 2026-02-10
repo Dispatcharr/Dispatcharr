@@ -43,7 +43,14 @@ vi.mock('../../../store/settings', () => ({
 vi.mock('@mantine/core', () => {
   const React = require('react');
 
-  const RadioComponent = ({ label, value, checked, description, groupValue, groupOnChange }) => {
+  const RadioComponent = ({
+    label,
+    value,
+    checked,
+    description,
+    groupValue,
+    groupOnChange,
+  }) => {
     const isChecked = checked !== undefined ? checked : groupValue === value;
     const handleChange = groupOnChange || (() => {});
 
@@ -67,17 +74,26 @@ vi.mock('@mantine/core', () => {
     const enhancedChildren = React.Children.map(children, (child) => {
       if (React.isValidElement(child)) {
         // If it's a Stack or other container, recursively enhance its children
-        if (child.type?.name === 'Stack' || child.props['data-testid'] === 'stack') {
+        if (
+          child.type?.name === 'Stack' ||
+          child.props['data-testid'] === 'stack'
+        ) {
           return React.cloneElement(child, {
-            children: React.Children.map(child.props.children, (nestedChild) => {
-              if (React.isValidElement(nestedChild) && nestedChild.type === RadioComponent) {
-                return React.cloneElement(nestedChild, {
-                  groupValue: value,
-                  groupOnChange: onChange,
-                });
+            children: React.Children.map(
+              child.props.children,
+              (nestedChild) => {
+                if (
+                  React.isValidElement(nestedChild) &&
+                  nestedChild.type === RadioComponent
+                ) {
+                  return React.cloneElement(nestedChild, {
+                    groupValue: value,
+                    groupOnChange: onChange,
+                  });
+                }
+                return nestedChild;
               }
-              return nestedChild;
-            }),
+            ),
           });
         }
         // If it's a Radio component, inject props directly
@@ -157,7 +173,9 @@ describe('EPGMatchModal', () => {
 
     it('should not show advanced fields in default mode', () => {
       render(<EPGMatchModal {...defaultProps} />);
-      expect(screen.queryByLabelText('Ignore Prefixes')).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText('Ignore Prefixes')
+      ).not.toBeInTheDocument();
     });
 
     it('should show advanced fields when advanced mode is selected', async () => {
@@ -169,7 +187,9 @@ describe('EPGMatchModal', () => {
       await waitFor(() => {
         expect(screen.getByLabelText('Ignore Prefixes')).toBeInTheDocument();
         expect(screen.getByLabelText('Ignore Suffixes')).toBeInTheDocument();
-        expect(screen.getByLabelText('Ignore Custom Strings')).toBeInTheDocument();
+        expect(
+          screen.getByLabelText('Ignore Custom Strings')
+        ).toBeInTheDocument();
       });
     });
   });
@@ -199,7 +219,9 @@ describe('EPGMatchModal', () => {
 
   describe('Form Submission', () => {
     it('should save mode and trigger auto-match', async () => {
-      SettingsUtils.getChangedSettings.mockReturnValue({ epg_match_mode: 'default' });
+      SettingsUtils.getChangedSettings.mockReturnValue({
+        epg_match_mode: 'default',
+      });
       SettingsUtils.saveChangedSettings.mockResolvedValue();
       API.matchEpg.mockResolvedValue();
 
@@ -220,7 +242,9 @@ describe('EPGMatchModal', () => {
       SettingsUtils.getChangedSettings.mockReturnValue({});
       API.matchEpg.mockResolvedValue();
 
-      render(<EPGMatchModal {...defaultProps} selectedChannelIds={selectedIds} />);
+      render(
+        <EPGMatchModal {...defaultProps} selectedChannelIds={selectedIds} />
+      );
 
       const submitButton = screen.getByText('Start Auto-Match');
       fireEvent.click(submitButton);
@@ -232,7 +256,9 @@ describe('EPGMatchModal', () => {
 
     it('should handle save errors gracefully', async () => {
       const error = new Error('Save failed');
-      SettingsUtils.getChangedSettings.mockReturnValue({ epg_match_mode: 'default' });
+      SettingsUtils.getChangedSettings.mockReturnValue({
+        epg_match_mode: 'default',
+      });
       SettingsUtils.saveChangedSettings.mockRejectedValue(error);
 
       render(<EPGMatchModal {...defaultProps} />);
@@ -270,13 +296,23 @@ describe('EPGMatchModal', () => {
 
   describe('UI Text', () => {
     it('should show correct text for selected channels', () => {
-      render(<EPGMatchModal {...defaultProps} selectedChannelIds={[1, 2, 3]} />);
-      expect(screen.getByText(/Match channels to EPG data for 3 selected channel\(s\)/)).toBeInTheDocument();
+      render(
+        <EPGMatchModal {...defaultProps} selectedChannelIds={[1, 2, 3]} />
+      );
+      expect(
+        screen.getByText(
+          /Match channels to EPG data for 3 selected channel\(s\)/
+        )
+      ).toBeInTheDocument();
     });
 
     it('should show correct text for all channels', () => {
       render(<EPGMatchModal {...defaultProps} selectedChannelIds={[]} />);
-      expect(screen.getByText(/Match channels to EPG data for all channels without EPG/)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Match channels to EPG data for all channels without EPG/
+        )
+      ).toBeInTheDocument();
     });
   });
 });

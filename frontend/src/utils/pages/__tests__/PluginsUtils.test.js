@@ -8,8 +8,9 @@ vi.mock('../../../api.js', () => ({
     runPluginAction: vi.fn(),
     setPluginEnabled: vi.fn(),
     importPlugin: vi.fn(),
-    deletePlugin: vi.fn()
-  }
+    reloadPlugins: vi.fn(),
+    deletePlugin: vi.fn(),
+  },
 }));
 
 describe('PluginsUtils', () => {
@@ -65,7 +66,9 @@ describe('PluginsUtils', () => {
 
       API.updatePluginSettings.mockRejectedValue(error);
 
-      await expect(PluginsUtils.updatePluginSettings(key, settings)).rejects.toThrow('API error');
+      await expect(
+        PluginsUtils.updatePluginSettings(key, settings)
+      ).rejects.toThrow('API error');
     });
   });
 
@@ -108,7 +111,26 @@ describe('PluginsUtils', () => {
 
       API.runPluginAction.mockRejectedValue(error);
 
-      await expect(PluginsUtils.runPluginAction(key, actionId)).rejects.toThrow('Action not found');
+      await expect(PluginsUtils.runPluginAction(key, actionId)).rejects.toThrow(
+        'Action not found'
+      );
+    });
+  });
+
+  describe('reloadPlugins', () => {
+    it('should call API reloadPlugins', async () => {
+      await PluginsUtils.reloadPlugins();
+
+      expect(API.reloadPlugins).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return API response', async () => {
+      const mockResponse = { success: true };
+      API.reloadPlugins.mockResolvedValue(mockResponse);
+
+      const result = await PluginsUtils.reloadPlugins();
+
+      expect(result).toEqual(mockResponse);
     });
   });
 
@@ -169,13 +191,17 @@ describe('PluginsUtils', () => {
 
       API.setPluginEnabled.mockRejectedValue(error);
 
-      await expect(PluginsUtils.setPluginEnabled(key, next)).rejects.toThrow('Plugin not found');
+      await expect(PluginsUtils.setPluginEnabled(key, next)).rejects.toThrow(
+        'Plugin not found'
+      );
     });
   });
 
   describe('importPlugin', () => {
     it('should call API importPlugin with importFile', async () => {
-      const importFile = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const importFile = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
 
       await PluginsUtils.importPlugin(importFile);
 
@@ -184,7 +210,9 @@ describe('PluginsUtils', () => {
     });
 
     it('should return API response', async () => {
-      const importFile = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const importFile = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       const mockResponse = { key: 'imported-plugin', success: true };
 
       API.importPlugin.mockResolvedValue(mockResponse);
@@ -212,12 +240,16 @@ describe('PluginsUtils', () => {
     });
 
     it('should propagate API errors', async () => {
-      const importFile = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const importFile = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       const error = new Error('Invalid plugin format');
 
       API.importPlugin.mockRejectedValue(error);
 
-      await expect(PluginsUtils.importPlugin(importFile)).rejects.toThrow('Invalid plugin format');
+      await expect(PluginsUtils.importPlugin(importFile)).rejects.toThrow(
+        'Invalid plugin format'
+      );
     });
   });
 

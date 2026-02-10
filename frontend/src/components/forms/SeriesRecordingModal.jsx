@@ -2,14 +2,17 @@ import React from 'react';
 import { Modal, Stack, Text, Flex, Group, Button } from '@mantine/core';
 import useChannelsStore from '../../store/channels.jsx';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
-import { evaluateSeriesRulesByTvgId, fetchRules } from '../../pages/guideUtils.js';
+import {
+  evaluateSeriesRulesByTvgId,
+  fetchRules,
+} from '../../pages/guideUtils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
 
 export default function SeriesRecordingModal({
- opened,
- onClose,
- rules,
- onRulesUpdate
+  opened,
+  onClose,
+  rules,
+  onRulesUpdate,
 }) {
   const handleEvaluateNow = async (r) => {
     await evaluateSeriesRulesByTvgId(r.tvg_id);
@@ -56,35 +59,36 @@ export default function SeriesRecordingModal({
             No series rules configured
           </Text>
         )}
-        {rules && rules.map((r) => (
-          <Flex
-            key={`${r.tvg_id}-${r.mode}`}
-            justify="space-between"
-            align="center"
-          >
-            <Text size="sm">
-              {r.title || r.tvg_id} —{' '}
-              {r.mode === 'new' ? 'New episodes' : 'Every episode'}
-            </Text>
-            <Group gap="xs">
-              <Button
-                size="xs"
-                variant="subtle"
-                onClick={() => handleEvaluateNow(r)}
-              >
-                Evaluate Now
-              </Button>
-              <Button
-                size="xs"
-                variant="light"
-                color="orange"
-                onClick={() => handleRemoveSeries(r)}
-              >
-                Remove this series (scheduled)
-              </Button>
-            </Group>
-          </Flex>
-        ))}
+        {rules &&
+          rules.map((r) => (
+            <Flex
+              key={`${r.tvg_id}-${r.mode}`}
+              justify="space-between"
+              align="center"
+            >
+              <Text size="sm">
+                {r.title || r.tvg_id} —{' '}
+                {r.mode === 'new' ? 'New episodes' : 'Every episode'}
+              </Text>
+              <Group gap="xs">
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => handleEvaluateNow(r)}
+                >
+                  Evaluate Now
+                </Button>
+                <Button
+                  size="xs"
+                  variant="light"
+                  color="orange"
+                  onClick={() => handleRemoveSeries(r)}
+                >
+                  Remove this series (scheduled)
+                </Button>
+              </Group>
+            </Flex>
+          ))}
       </Stack>
     </Modal>
   );
