@@ -1036,9 +1036,10 @@ class MultiWorkerVODConnectionManager:
                 self._decrement_profile_connections(m3u_profile.id)
 
                 # Also clean up the Redis connection state since we won't be using it
+                # Pass connection_manager=None since we already decremented above
                 if redis_connection:
                     try:
-                        redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                        redis_connection.cleanup(current_worker_id=self.worker_id)
                     except Exception as cleanup_error:
                         logger.error(f"[{client_id}] Error during cleanup after connection failure: {cleanup_error}")
 
