@@ -1263,12 +1263,14 @@ class MultiWorkerVODConnectionManager:
                 profile_id = connection_data.get('m3u_profile_id')
                 if profile_id:
                     profile_connections_key = f"profile_connections:{profile_id}"
+                    current_count = int(self.redis_client.get(profile_connections_key) or 0)
 
                     # Use pipeline for atomic operations
                     pipe = self.redis_client.pipeline()
                     pipe.delete(connection_key)
                     pipe.srem(content_connections_key, client_id)
-                    pipe.decr(profile_connections_key)
+                    if current_count > 0:
+                        pipe.decr(profile_connections_key)
                     pipe.execute()
 
                     logger.info(f"Removed Redis-backed connection: {client_id}")
