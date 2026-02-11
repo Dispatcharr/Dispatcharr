@@ -472,8 +472,7 @@ class StreamGenerator:
                 logger.error(f"Could not log client disconnect event: {e}")
 
             # Schedule channel shutdown if no clients left
-            if not stream_released:  # Only if we haven't already released the stream
-                self._schedule_channel_shutdown_if_needed(local_clients)
+            self._schedule_channel_shutdown_if_needed(local_clients)
 
     def _schedule_channel_shutdown_if_needed(self, local_clients):
         """
