@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Modular mode PostgreSQL/Redis connection checks: Replaced raw Python socket checks with native tools (`pg_isready` for PostgreSQL and `socket.create_connection` for Redis) in modular deployment mode to prevent indefinite hangs in Docker environments with non-standard networking or DNS configurations. Now properly supports IPv4 and IPv6 configurations. (Fixes #952) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+
 ## [0.19.0] - 2026-02-10
 
 ### Added
