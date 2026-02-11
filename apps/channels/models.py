@@ -566,18 +566,18 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
-        # Decrement connection count for old profile
+        # Use pipeline for atomic profile switch to prevent counter drift
+        # if an exception occurs between DECR and INCR
         old_profile_connections_key = f"profile_connections:{current_profile_id}"
-        old_count = int(redis_client.get(old_profile_connections_key) or 0)
-        if old_count > 0:
-            redis_client.decr(old_profile_connections_key)
-
-        # Update the profile mapping
-        redis_client.set(f"stream_profile:{stream_id}", new_profile_id)
-
-        # Increment connection count for new profile
         new_profile_connections_key = f"profile_connections:{new_profile_id}"
-        redis_client.incr(new_profile_connections_key)
+        old_count = int(redis_client.get(old_profile_connections_key) or 0)
+
+        pipe = redis_client.pipeline()
+        if old_count > 0:
+            pipe.decr(old_profile_connections_key)
+        pipe.set(f"stream_profile:{stream_id}", new_profile_id)
+        pipe.incr(new_profile_connections_key)
+        pipe.execute()
         logger.info(
             f"Updated stream {stream_id} profile from {current_profile_id} to {new_profile_id}"
         )
