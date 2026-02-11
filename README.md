@@ -133,7 +133,7 @@ Here's how you can join the party:
 
 - 📖 **Documentation:** [Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/)
 
-**Upcoming Features:**
+**Upcoming Features (in no particular order):**
 
 - 🎬 **VOD Management Enhancements** — Granular metadata control and cleanup of unwanted VOD content
 - 📁 **Media Library** — Import local files and serve them over XC API
