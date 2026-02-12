@@ -222,7 +222,8 @@ def stream_ts(request, channel_id):
             if stream_url is None:
                 # Release any connection slot that may have been allocated
                 # by the error-checking get_stream() call during retries
-                channel.release_stream()
+                if not channel.release_stream():
+                    logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                 # Get the specific error message if available
                 wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -314,7 +315,8 @@ def stream_ts(request, channel_id):
                                 f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                             )
                 # Release stream lock before redirecting
-                channel.release_stream()
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream before redirect")
                 # Final decision based on validation results
                 if is_valid:
                     logger.info(
@@ -351,7 +353,8 @@ def stream_ts(request, channel_id):
 
             if not success:
                 if connection_allocated:
-                    channel.release_stream()
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream after init failure")
                     connection_allocated = False
                 return JsonResponse(
                     {"error": "Failed to initialize channel"}, status=500
@@ -521,7 +524,8 @@ def stream_ts(request, channel_id):
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
         if connection_allocated:
             try:
-                channel.release_stream()
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream in exception handler")
             except Exception:
                 pass
         return JsonResponse({"error": str(e)}, status=500)

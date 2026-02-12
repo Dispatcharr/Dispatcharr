@@ -162,7 +162,8 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             return stream_url, stream_user_agent, transcode, stream_profile_id
         except Exception as e:
             logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
-            channel.release_stream()
+            if not channel.release_stream():
+                logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
             return None, None, False, None
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
