@@ -204,6 +204,52 @@ class Stream(models.Model):
 
         return stream_profile
 
+    def get_stream(self):
+        """
+        Finds an available profile for this stream and reserves a connection slot.
+
+        Returns:
+            Tuple[Optional[int], Optional[int], Optional[str]]: (stream_id, profile_id, error_reason)
+        """
+        redis_client = RedisClient.get_client()
+        profile_id = redis_client.get(f"stream_profile:{self.id}")
+        if profile_id:
+            profile_id = int(profile_id)
+            return self.id, profile_id, None
+
+        # Retrieve the M3U account associated with the stream.
+        m3u_account = self.m3u_account
+        m3u_profiles = m3u_account.profiles.all()
+        default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+        profiles = [default_profile] + [
+            obj for obj in m3u_profiles if not obj.is_default
+        ]
+
+        for profile in profiles:
+            logger.info(profile)
+            # Skip inactive profiles
+            if profile.is_active == False:
+                continue
+
+            # Atomic slot reservation: INCR first, check, rollback if over capacity
+            if profile.max_streams == 0:
+                reserved = True
+            else:
+                profile_connections_key = f"profile_connections:{profile.id}"
+                new_count = redis_client.incr(profile_connections_key)
+                if new_count <= profile.max_streams:
+                    reserved = True
+                else:
+                    redis_client.decr(profile_connections_key)
+                    reserved = False
+
+            if reserved:
+                redis_client.set(f"channel_stream:{self.id}", self.id)
+                redis_client.set(f"stream_profile:{self.id}", profile.id)
+                return self.id, profile.id, None
+
+        return None, None, "All active M3U profiles have reached maximum connection limits"
+
     def release_stream(self):
         """
         Called when a stream is finished to release the lock.
