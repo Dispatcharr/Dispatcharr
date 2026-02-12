@@ -8,7 +8,7 @@ import logging
 import threading
 import gevent  # Add this import at the top of your file
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel
+from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from .server import ProxyServer
 from .utils import create_ts_packet, get_logger
@@ -438,9 +438,12 @@ class StreamGenerator:
                             # Only the last client or owner should release the stream
                             if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
                                 try:
-                                    # Get the channel by UUID
-                                    channel = Channel.objects.get(uuid=self.channel_id)
-                                    stream_released = channel.release_stream()
+                                    # Try Channel first (normal flow), fall back to Stream (preview flow)
+                                    try:
+                                        obj = Channel.objects.get(uuid=self.channel_id)
+                                    except (Channel.DoesNotExist, Exception):
+                                        obj = Stream.objects.get(stream_hash=self.channel_id)
+                                    stream_released = obj.release_stream()
                                     if stream_released:
                                         logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
                                     else:
