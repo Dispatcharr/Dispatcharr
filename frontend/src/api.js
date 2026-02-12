@@ -179,9 +179,34 @@ export default class API {
 
   static async getChannels() {
     try {
-      const response = await request(`${host}/api/channels/channels/`);
+      // Paginate through channels to avoid heavy single response
+      const pageSize = 200;
+      let page = 1;
+      let allChannels = [];
 
-      return response;
+      while (true) {
+        const data = await request(
+          `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+        );
+
+        // Backward compatibility: if endpoint returns an array (legacy), just return it
+        if (Array.isArray(data)) {
+          allChannels = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        allChannels = allChannels.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) {
+          break;
+        }
+
+        page += 1;
+      }
+
+      return allChannels;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
     }

@@ -121,7 +121,6 @@ function IntegrationRow({ integration, editConnection, deleteConnection }) {
         backgroundColor: '#27272A',
       }}
       color="#fff"
-      maw={400}
       w={'100%'}
     >
       <Stack gap="xs">

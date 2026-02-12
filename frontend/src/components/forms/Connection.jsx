@@ -129,8 +129,8 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
 
   return (
     <Modal opened={isOpen} onClose={handleClose} title="Connection">
-      <Stack>
-        <form onSubmit={form.onSubmit(onSubmit)}>
+      <form onSubmit={form.onSubmit(onSubmit)}>
+        <Stack gap="md">
           <TextInput
             label="Name"
             {...form.getInputProps('name')}
@@ -180,8 +180,8 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
               Save
             </Button>
           </Flex>
-        </form>
-      </Stack>
+        </Stack>
+      </form>
     </Modal>
   );
 };
