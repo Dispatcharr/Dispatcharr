@@ -4,7 +4,8 @@ import api from '../api';
 const determineEPGStatus = (data, currentEpg) => {
   if (data.status) return data.status;
   if (data.action === 'downloading') return 'fetching';
-  if (data.action === 'parsing_channels' || data.action === 'parsing_programs') return 'parsing';
+  if (data.action === 'parsing_channels' || data.action === 'parsing_programs')
+    return 'parsing';
   if (data.progress === 100) return 'success';
   return currentEpg?.status || 'idle';
 };
@@ -118,23 +119,26 @@ const useEPGsStore = create((set) => ({
 
       // Only update epgs object if status or last_message actually changed
       // This prevents unnecessary re-renders on every progress update
-      const lastMessage = data.status === 'error'
-        ? (data.error || 'Unknown error')
-        : state.epgs[data.source]?.last_message;
+      const lastMessage =
+        data.status === 'error'
+          ? data.error || 'Unknown error'
+          : state.epgs[data.source]?.last_message;
 
       const currentEpg = state.epgs[data.source];
-      const shouldUpdateEpg = currentEpg &&
-        (currentEpg.status !== status || currentEpg.last_message !== lastMessage);
+      const shouldUpdateEpg =
+        currentEpg &&
+        (currentEpg.status !== status ||
+          currentEpg.last_message !== lastMessage);
 
       const epgs = shouldUpdateEpg
         ? {
-          ...state.epgs,
-          [data.source]: {
-            ...currentEpg,
-            status,
-            last_message: lastMessage,
-          },
-        }
+            ...state.epgs,
+            [data.source]: {
+              ...currentEpg,
+              status,
+              last_message: lastMessage,
+            },
+          }
         : state.epgs;
 
       return { refreshProgress, epgs };

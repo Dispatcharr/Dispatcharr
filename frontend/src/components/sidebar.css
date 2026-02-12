@@ -14,9 +14,9 @@
 
 /* Active state styles */
 .navlink.navlink-active {
-  color: #FFFFFF;
+  color: #ffffff;
   background-color: #245043;
-  border: 1px solid #3BA882;
+  border: 1px solid #3ba882;
 }
 
 /* Hover effect */
@@ -27,8 +27,8 @@
 
 /* Hover effect for active state */
 .navlink.navlink-active:hover {
-  background-color: #3A3A40;
-  border: 1px solid #3BA882;
+  background-color: #3a3a40;
+  border: 1px solid #3ba882;
 }
 
 /* Collapse condition for justifyContent */

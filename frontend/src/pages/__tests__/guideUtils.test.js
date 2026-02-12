@@ -63,9 +63,7 @@ describe('guideUtils', () => {
     });
 
     it('should use tvg_id from EPG data for regular sources', () => {
-      const channels = [
-        { id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' },
-      ];
+      const channels = [{ id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' }];
       const tvgsById = {
         'epg-1': { tvg_id: 'tvg-123', epg_source: 'source-1' },
       };
@@ -79,9 +77,7 @@ describe('guideUtils', () => {
     });
 
     it('should use channel UUID for dummy EPG sources', () => {
-      const channels = [
-        { id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' },
-      ];
+      const channels = [{ id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' }];
       const tvgsById = {
         'epg-1': { tvg_id: 'tvg-123', epg_source: 'source-1' },
       };
@@ -113,9 +109,7 @@ describe('guideUtils', () => {
     });
 
     it('should fall back to UUID when tvg_id is null', () => {
-      const channels = [
-        { id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' },
-      ];
+      const channels = [{ id: 1, uuid: 'uuid-1', epg_data_id: 'epg-1' }];
       const tvgsById = {
         'epg-1': { tvg_id: null, epg_source: 'source-1' },
       };
@@ -160,7 +154,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)).toHaveLength(1);
       expect(result.get(1)[0]).toMatchObject({
@@ -185,7 +182,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)[0]).toHaveProperty('startMs');
       expect(result.get(1)[0]).toHaveProperty('endMs');
@@ -209,7 +209,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)[0].isLive).toBe(true);
       expect(result.get(1)[0].isPast).toBe(false);
@@ -233,7 +236,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)[0].isLive).toBe(false);
       expect(result.get(1)[0].isPast).toBe(true);
@@ -252,7 +258,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1, 2, 3]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)).toHaveLength(1);
       expect(result.get(2)).toHaveLength(1);
@@ -282,7 +291,10 @@ describe('guideUtils', () => {
       ];
       const channelIdByTvgId = new Map([['tvg-1', [1]]]);
 
-      const result = guideUtils.mapProgramsByChannel(programs, channelIdByTvgId);
+      const result = guideUtils.mapProgramsByChannel(
+        programs,
+        channelIdByTvgId
+      );
 
       expect(result.get(1)[0].id).toBe(1);
       expect(result.get(1)[1].id).toBe(2);
@@ -300,9 +312,16 @@ describe('guideUtils', () => {
       const channels = [{ id: 1 }, { id: 2 }];
       const programsByChannelId = new Map();
 
-      const result = guideUtils.computeRowHeights(channels, programsByChannelId, null);
+      const result = guideUtils.computeRowHeights(
+        channels,
+        programsByChannelId,
+        null
+      );
 
-      expect(result).toEqual([guideUtils.PROGRAM_HEIGHT, guideUtils.PROGRAM_HEIGHT]);
+      expect(result).toEqual([
+        guideUtils.PROGRAM_HEIGHT,
+        guideUtils.PROGRAM_HEIGHT,
+      ]);
     });
 
     it('should return expanded height for channel with expanded program', () => {
@@ -312,9 +331,16 @@ describe('guideUtils', () => {
         [2, [{ id: 'program-2' }]],
       ]);
 
-      const result = guideUtils.computeRowHeights(channels, programsByChannelId, 'program-1');
+      const result = guideUtils.computeRowHeights(
+        channels,
+        programsByChannelId,
+        'program-1'
+      );
 
-      expect(result).toEqual([guideUtils.EXPANDED_PROGRAM_HEIGHT, guideUtils.PROGRAM_HEIGHT]);
+      expect(result).toEqual([
+        guideUtils.EXPANDED_PROGRAM_HEIGHT,
+        guideUtils.PROGRAM_HEIGHT,
+      ]);
     });
 
     it('should use custom heights when provided', () => {
@@ -393,7 +419,13 @@ describe('guideUtils', () => {
         { id: 2, name: 'Channel 2' },
       ];
 
-      const result = guideUtils.filterGuideChannels(channels, '', 'all', 'all', {});
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        '',
+        'all',
+        'all',
+        {}
+      );
 
       expect(result).toHaveLength(2);
     });
@@ -404,7 +436,13 @@ describe('guideUtils', () => {
         { id: 2, name: 'CNN' },
       ];
 
-      const result = guideUtils.filterGuideChannels(channels, 'espn', 'all', 'all', {});
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        'espn',
+        'all',
+        'all',
+        {}
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('ESPN');
@@ -416,7 +454,13 @@ describe('guideUtils', () => {
         { id: 2, name: 'Channel 2', channel_group_id: 2 },
       ];
 
-      const result = guideUtils.filterGuideChannels(channels, '', '1', 'all', {});
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        '',
+        '1',
+        'all',
+        {}
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].channel_group_id).toBe(1);
@@ -436,7 +480,13 @@ describe('guideUtils', () => {
         },
       };
 
-      const result = guideUtils.filterGuideChannels(channels, '', 'all', 'profile1', profiles);
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        '',
+        'all',
+        'profile1',
+        profiles
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe(1);
@@ -453,7 +503,13 @@ describe('guideUtils', () => {
         },
       };
 
-      const result = guideUtils.filterGuideChannels(channels, '', 'all', 'profile1', profiles);
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        '',
+        'all',
+        'profile1',
+        profiles
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe(1);
@@ -474,7 +530,13 @@ describe('guideUtils', () => {
         },
       };
 
-      const result = guideUtils.filterGuideChannels(channels, 'espn', '1', 'profile1', profiles);
+      const result = guideUtils.filterGuideChannels(
+        channels,
+        'espn',
+        '1',
+        'profile1',
+        profiles
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe(1);
@@ -491,8 +553,12 @@ describe('guideUtils', () => {
     });
 
     it('should return earliest program start', () => {
-      dateTimeUtils.initializeTime.mockImplementation((time) => dayjs.utc(time));
-      dateTimeUtils.isBefore.mockImplementation((a, b) => dayjs(a).isBefore(dayjs(b)));
+      dateTimeUtils.initializeTime.mockImplementation((time) =>
+        dayjs.utc(time)
+      );
+      dateTimeUtils.isBefore.mockImplementation((a, b) =>
+        dayjs(a).isBefore(dayjs(b))
+      );
 
       const programs = [
         { start_time: '2024-01-15T12:00:00Z' },
@@ -501,7 +567,10 @@ describe('guideUtils', () => {
       ];
       const defaultStart = dayjs.utc('2024-01-16T00:00:00Z');
 
-      const result = guideUtils.calculateEarliestProgramStart(programs, defaultStart);
+      const result = guideUtils.calculateEarliestProgramStart(
+        programs,
+        defaultStart
+      );
 
       expect(result.hour()).toBe(10);
     });
@@ -517,8 +586,12 @@ describe('guideUtils', () => {
     });
 
     it('should return latest program end', () => {
-      dateTimeUtils.initializeTime.mockImplementation((time) => dayjs.utc(time));
-      dateTimeUtils.isAfter.mockImplementation((a, b) => dayjs(a).isAfter(dayjs(b)));
+      dateTimeUtils.initializeTime.mockImplementation((time) =>
+        dayjs.utc(time)
+      );
+      dateTimeUtils.isAfter.mockImplementation((a, b) =>
+        dayjs(a).isAfter(dayjs(b))
+      );
 
       const programs = [
         { end_time: '2024-01-15T12:00:00Z' },
@@ -638,8 +711,12 @@ describe('guideUtils', () => {
     it('should return "Today" for today', () => {
       const today = dayjs();
       dateTimeUtils.getNow.mockReturnValue(today);
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.isSame.mockReturnValueOnce(true);
 
       const result = guideUtils.formatTime(today, 'MM/DD');
@@ -651,8 +728,12 @@ describe('guideUtils', () => {
       const today = dayjs();
       const tomorrow = today.add(1, 'day');
       dateTimeUtils.getNow.mockReturnValue(today);
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.isSame.mockReturnValueOnce(false).mockReturnValueOnce(true);
 
       const result = guideUtils.formatTime(tomorrow, 'MM/DD');
@@ -664,8 +745,12 @@ describe('guideUtils', () => {
       const today = dayjs();
       const future = today.add(3, 'day');
       dateTimeUtils.getNow.mockReturnValue(today);
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.isSame.mockReturnValue(false);
       dateTimeUtils.isBefore.mockReturnValue(true);
       dateTimeUtils.format.mockReturnValue('Wednesday');
@@ -679,8 +764,12 @@ describe('guideUtils', () => {
       const today = dayjs();
       const future = today.add(10, 'day');
       dateTimeUtils.getNow.mockReturnValue(today);
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.isSame.mockReturnValue(false);
       dateTimeUtils.isBefore.mockReturnValue(false);
       dateTimeUtils.format.mockReturnValue('01/25');
@@ -695,13 +784,23 @@ describe('guideUtils', () => {
     it('should generate hours between start and end', () => {
       const start = dayjs('2024-01-15T10:00:00Z');
       const end = dayjs('2024-01-15T13:00:00Z');
-      dateTimeUtils.isBefore.mockImplementation((a, b) => dayjs(a).isBefore(dayjs(b)));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
+      dateTimeUtils.isBefore.mockImplementation((a, b) =>
+        dayjs(a).isBefore(dayjs(b))
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
       dateTimeUtils.isSame.mockReturnValue(true);
 
       const formatDayLabel = vi.fn((time) => 'Today');
-      const result = guideUtils.calculateHourTimeline(start, end, formatDayLabel);
+      const result = guideUtils.calculateHourTimeline(
+        start,
+        end,
+        formatDayLabel
+      );
 
       expect(result).toHaveLength(3);
       expect(formatDayLabel).toHaveBeenCalledTimes(3);
@@ -710,13 +809,25 @@ describe('guideUtils', () => {
     it('should mark new day transitions', () => {
       const start = dayjs('2024-01-15T23:00:00Z');
       const end = dayjs('2024-01-16T02:00:00Z');
-      dateTimeUtils.isBefore.mockImplementation((a, b) => dayjs(a).isBefore(dayjs(b)));
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
-      dateTimeUtils.startOfDay.mockImplementation((time) => dayjs(time).startOf('day'));
-      dateTimeUtils.isSame.mockImplementation((a, b, unit) => dayjs(a).isSame(dayjs(b), unit));
+      dateTimeUtils.isBefore.mockImplementation((a, b) =>
+        dayjs(a).isBefore(dayjs(b))
+      );
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
+      dateTimeUtils.startOfDay.mockImplementation((time) =>
+        dayjs(time).startOf('day')
+      );
+      dateTimeUtils.isSame.mockImplementation((a, b, unit) =>
+        dayjs(a).isSame(dayjs(b), unit)
+      );
 
       const formatDayLabel = vi.fn((time) => 'Day');
-      const result = guideUtils.calculateHourTimeline(start, end, formatDayLabel);
+      const result = guideUtils.calculateHourTimeline(
+        start,
+        end,
+        formatDayLabel
+      );
 
       expect(result[0].isNewDay).toBe(true);
     });
@@ -791,7 +902,11 @@ describe('guideUtils', () => {
       const channelIdByTvgId = new Map();
       const channelById = new Map();
 
-      const result = guideUtils.matchChannelByTvgId(channelIdByTvgId, channelById, 'tvg-1');
+      const result = guideUtils.matchChannelByTvgId(
+        channelIdByTvgId,
+        channelById,
+        'tvg-1'
+      );
 
       expect(result).toBeNull();
     });
@@ -801,7 +916,11 @@ describe('guideUtils', () => {
       const channelIdByTvgId = new Map([['tvg-1', [1, 2, 3]]]);
       const channelById = new Map([[1, channel]]);
 
-      const result = guideUtils.matchChannelByTvgId(channelIdByTvgId, channelById, 'tvg-1');
+      const result = guideUtils.matchChannelByTvgId(
+        channelIdByTvgId,
+        channelById,
+        'tvg-1'
+      );
 
       expect(result).toBe(channel);
     });
@@ -810,7 +929,11 @@ describe('guideUtils', () => {
       const channelIdByTvgId = new Map([['tvg-1', [999]]]);
       const channelById = new Map();
 
-      const result = guideUtils.matchChannelByTvgId(channelIdByTvgId, channelById, 'tvg-1');
+      const result = guideUtils.matchChannelByTvgId(
+        channelIdByTvgId,
+        channelById,
+        'tvg-1'
+      );
 
       expect(result).toBeNull();
     });
@@ -933,7 +1056,9 @@ describe('guideUtils', () => {
         start_time: '2024-01-15T10:30:00Z',
       };
       const start = '2024-01-15T10:00:00Z';
-      dateTimeUtils.convertToMs.mockImplementation((time) => dayjs(time).valueOf());
+      dateTimeUtils.convertToMs.mockImplementation((time) =>
+        dayjs(time).valueOf()
+      );
 
       const result = guideUtils.calculateLeftScrollPosition(program, start);
 
@@ -965,10 +1090,16 @@ describe('guideUtils', () => {
       };
       const clickedTime = dayjs('2024-01-15T10:00:00Z');
       const start = dayjs('2024-01-15T09:00:00Z');
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.diff.mockReturnValue(60);
 
-      const result = guideUtils.calculateScrollPositionByTimeClick(event, clickedTime, start);
+      const result = guideUtils.calculateScrollPositionByTimeClick(
+        event,
+        clickedTime,
+        start
+      );
 
       expect(result).toBeGreaterThanOrEqual(0);
     });
@@ -982,7 +1113,9 @@ describe('guideUtils', () => {
       };
       const clickedTime = dayjs('2024-01-15T10:00:00Z');
       const start = dayjs('2024-01-15T09:00:00Z');
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.diff.mockReturnValue(75);
 
       guideUtils.calculateScrollPositionByTimeClick(event, clickedTime, start);
@@ -999,12 +1132,22 @@ describe('guideUtils', () => {
       };
       const clickedTime = dayjs('2024-01-15T10:00:00Z');
       const start = dayjs('2024-01-15T09:00:00Z');
-      dateTimeUtils.add.mockImplementation((time, amount, unit) => dayjs(time).add(amount, unit));
+      dateTimeUtils.add.mockImplementation((time, amount, unit) =>
+        dayjs(time).add(amount, unit)
+      );
       dateTimeUtils.diff.mockReturnValue(120);
 
-      const result = guideUtils.calculateScrollPositionByTimeClick(event, clickedTime, start);
+      const result = guideUtils.calculateScrollPositionByTimeClick(
+        event,
+        clickedTime,
+        start
+      );
 
-      expect(dateTimeUtils.add).toHaveBeenCalledWith(expect.anything(), 1, 'hour');
+      expect(dateTimeUtils.add).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        'hour'
+      );
     });
   });
 
@@ -1037,9 +1180,7 @@ describe('guideUtils', () => {
         1: { id: 1, name: 'Sports' },
         2: { id: 2, name: 'News' },
       };
-      const channels = [
-        { id: 1, channel_group_id: 1 },
-      ];
+      const channels = [{ id: 1, channel_group_id: 1 }];
 
       const result = guideUtils.getGroupOptions(channelGroups, channels);
 

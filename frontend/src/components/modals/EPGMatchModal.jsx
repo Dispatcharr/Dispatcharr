@@ -22,10 +22,14 @@ const getEpgSettingsFromStore = (settings) => {
   const epgSettings = settings?.['epg_settings']?.value;
   return {
     epg_match_mode: epgSettings?.epg_match_mode || 'default',
-    epg_match_ignore_prefixes: Array.isArray(epgSettings?.epg_match_ignore_prefixes)
+    epg_match_ignore_prefixes: Array.isArray(
+      epgSettings?.epg_match_ignore_prefixes
+    )
       ? epgSettings.epg_match_ignore_prefixes
       : [],
-    epg_match_ignore_suffixes: Array.isArray(epgSettings?.epg_match_ignore_suffixes)
+    epg_match_ignore_suffixes: Array.isArray(
+      epgSettings?.epg_match_ignore_suffixes
+    )
       ? epgSettings.epg_match_ignore_suffixes
       : [],
     epg_match_ignore_custom: Array.isArray(epgSettings?.epg_match_ignore_custom)
@@ -34,11 +38,7 @@ const getEpgSettingsFromStore = (settings) => {
   };
 };
 
-const EPGMatchModal = ({
-  opened,
-  onClose,
-  selectedChannelIds = [],
-}) => {
+const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
   const settings = useSettingsStore((s) => s.settings);
 
   const [loading, setLoading] = useState(false);
@@ -107,9 +107,10 @@ const EPGMatchModal = ({
     }
   };
 
-  const scopeText = selectedChannelIds.length > 0
-    ? `${selectedChannelIds.length} selected channel(s)`
-    : 'all channels without EPG';
+  const scopeText =
+    selectedChannelIds.length > 0
+      ? `${selectedChannelIds.length} selected channel(s)`
+      : 'all channels without EPG';
 
   return (
     <Modal
@@ -191,8 +192,8 @@ const EPGMatchModal = ({
             />
 
             <Text size="xs" c="dimmed">
-              Channel display names are never modified. These settings only affect
-              the matching algorithm.
+              Channel display names are never modified. These settings only
+              affect the matching algorithm.
             </Text>
           </>
         )}

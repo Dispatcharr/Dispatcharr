@@ -5,10 +5,10 @@ import useUserAgentsStore from '../../store/userAgents';
 
 vi.mock('../../store/userAgents');
 vi.mock('../../components/tables/M3UsTable', () => ({
-  default: () => <div data-testid="m3us-table">M3UsTable</div>
+  default: () => <div data-testid="m3us-table">M3UsTable</div>,
 }));
 vi.mock('../../components/tables/EPGsTable', () => ({
-  default: () => <div data-testid="epgs-table">EPGsTable</div>
+  default: () => <div data-testid="epgs-table">EPGsTable</div>,
 }));
 vi.mock('@mantine/core', () => ({
   Box: ({ children, ...props }) => <div {...props}>{children}</div>,

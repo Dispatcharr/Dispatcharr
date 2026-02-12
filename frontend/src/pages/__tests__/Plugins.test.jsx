@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import PluginsPage from '../Plugins';
-import { showNotification, updateNotification } from '../../utils/notificationUtils.js';
+import {
+  showNotification,
+  updateNotification,
+} from '../../utils/notificationUtils.js';
 import {
   deletePluginByKey,
   importPlugin,
@@ -47,7 +50,16 @@ vi.mock('@mantine/core', async () => {
         {children}
       </span>
     ),
-    Button: ({ children, onClick, leftSection, variant, color, loading, disabled, fullWidth }) => (
+    Button: ({
+      children,
+      onClick,
+      leftSection,
+      variant,
+      color,
+      loading,
+      disabled,
+      fullWidth,
+    }) => (
       <button
         onClick={onClick}
         disabled={loading || disabled}
@@ -73,13 +85,16 @@ vi.mock('@mantine/core', async () => {
     ),
     Divider: ({ my }) => <hr data-my={my} />,
     ActionIcon: ({ children, onClick, color, variant, title }) => (
-      <button onClick={onClick} data-color={color} data-variant={variant} title={title}>
+      <button
+        onClick={onClick}
+        data-color={color}
+        data-variant={variant}
+        title={title}
+      >
         {children}
       </button>
     ),
-    SimpleGrid: ({ children, cols }) => (
-      <div data-cols={cols}>{children}</div>
-    ),
+    SimpleGrid: ({ children, cols }) => <div data-cols={cols}>{children}</div>,
     Modal: ({ opened, onClose, title, children, size, centered }) =>
       opened ? (
         <div data-testid="modal" data-size={size} data-centered={centered}>
@@ -109,7 +124,9 @@ vi.mock('@mantine/dropzone', () => ({
       data-accept={accept}
       data-max-size={maxSize}
       onClick={() => {
-        const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+        const file = new File(['content'], 'plugin.zip', {
+          type: 'application/zip',
+        });
         onDrop([file]);
       }}
     >
@@ -188,7 +205,11 @@ describe('PluginsPage', () => {
     });
 
     it('shows loader when loading and no plugins', () => {
-      const loadingState = { plugins: [], loading: true, fetchPlugins: vi.fn() };
+      const loadingState = {
+        plugins: [],
+        loading: true,
+        fetchPlugins: vi.fn(),
+      };
       usePluginStore.mockImplementation((selector) => {
         return selector ? selector(loadingState) : loadingState;
       });
@@ -219,7 +240,9 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       expect(screen.getByTestId('modal')).toBeInTheDocument();
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Import Plugin');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Import Plugin'
+      );
     });
 
     it('shows dropzone and file input in import modal', () => {
@@ -228,7 +251,9 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       expect(screen.getByTestId('dropzone')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText('Select plugin .zip')).toBeInTheDocument();
+      expect(
+        screen.getByPlaceholderText('Select plugin .zip')
+      ).toBeInTheDocument();
     });
 
     it('closes import modal when close button is clicked', () => {
@@ -245,7 +270,11 @@ describe('PluginsPage', () => {
     it('handles file upload via dropzone', async () => {
       importPlugin.mockResolvedValue({
         success: true,
-        plugin: { key: 'new-plugin', name: 'New Plugin', description: 'New Description' },
+        plugin: {
+          key: 'new-plugin',
+          name: 'New Plugin',
+          description: 'New Description',
+        },
       });
 
       render(<PluginsPage />);
@@ -255,9 +284,9 @@ describe('PluginsPage', () => {
       fireEvent.click(dropzone);
 
       await waitFor(() => {
-        const uploadButton = screen.getAllByText('Upload').find(btn =>
-          btn.tagName === 'BUTTON'
-        );
+        const uploadButton = screen
+          .getAllByText('Upload')
+          .find((btn) => btn.tagName === 'BUTTON');
         expect(uploadButton).not.toBeDisabled();
       });
     });
@@ -279,12 +308,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -305,12 +336,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -340,12 +373,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -372,12 +407,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -387,9 +424,9 @@ describe('PluginsPage', () => {
       const enableSwitch = screen.getByRole('checkbox');
       fireEvent.click(enableSwitch);
 
-      const enableButton = screen.getAllByText('Enable').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const enableButton = screen
+        .getAllByText('Enable')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(enableButton);
 
       await waitFor(() => {
@@ -417,12 +454,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -432,13 +471,15 @@ describe('PluginsPage', () => {
       const enableSwitch = screen.getByRole('checkbox');
       fireEvent.click(enableSwitch);
 
-      const enableButton = screen.getAllByText('Enable').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const enableButton = screen
+        .getAllByText('Enable')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(enableButton);
 
       await waitFor(() => {
-        expect(screen.getByText('Enable third-party plugins?')).toBeInTheDocument();
+        expect(
+          screen.getByText('Enable third-party plugins?')
+        ).toBeInTheDocument();
       });
     });
 
@@ -460,12 +501,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -475,9 +518,9 @@ describe('PluginsPage', () => {
       const enableSwitch = screen.getByRole('checkbox');
       fireEvent.click(enableSwitch);
 
-      const enableButton = screen.getAllByText('Enable').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const enableButton = screen
+        .getAllByText('Enable')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(enableButton);
 
       await waitFor(() => {
@@ -508,12 +551,14 @@ describe('PluginsPage', () => {
       fireEvent.click(screen.getByText('Import Plugin'));
 
       const fileInput = screen.getByPlaceholderText('Select plugin .zip');
-      const file = new File(['content'], 'plugin.zip', { type: 'application/zip' });
+      const file = new File(['content'], 'plugin.zip', {
+        type: 'application/zip',
+      });
       fireEvent.change(fileInput, { target: { files: [file] } });
 
-      const uploadButton = screen.getAllByText('Upload').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const uploadButton = screen
+        .getAllByText('Upload')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
@@ -523,9 +568,9 @@ describe('PluginsPage', () => {
       const enableSwitch = screen.getByRole('checkbox');
       fireEvent.click(enableSwitch);
 
-      const enableButton = screen.getAllByText('Enable').find(btn =>
-        btn.tagName === 'BUTTON'
-      );
+      const enableButton = screen
+        .getAllByText('Enable')
+        .find((btn) => btn.tagName === 'BUTTON');
       fireEvent.click(enableButton);
 
       await waitFor(() => {

@@ -37,7 +37,6 @@ const PluginActionList = ({
   runningActionId,
   handlePluginRun,
 }) => {
-  console.log(plugin);
   return plugin.actions.map((action) => (
     <Group key={action.id} justify="space-between">
       <div>

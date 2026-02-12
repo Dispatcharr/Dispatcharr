@@ -65,13 +65,17 @@ describe('usePlaylistsStore', () => {
 
     expect(api.getPlaylist).toHaveBeenCalledWith('playlist1');
     expect(result.current.playlists).toEqual([mockPlaylist]);
-    expect(result.current.profiles).toEqual({ playlist1: ['profile1', 'profile2'] });
+    expect(result.current.profiles).toEqual({
+      playlist1: ['profile1', 'profile2'],
+    });
     expect(result.current.isLoading).toBe(false);
     expect(result.current.error).toBe(null);
   });
 
   it('should handle fetch playlist error', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     api.getPlaylist.mockRejectedValue(new Error('Network error'));
 
     const { result } = renderHook(() => usePlaylistsStore());
@@ -110,7 +114,9 @@ describe('usePlaylistsStore', () => {
   });
 
   it('should handle fetch playlists error', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     api.getPlaylists.mockRejectedValue(new Error('Network error'));
 
     const { result } = renderHook(() => usePlaylistsStore());
@@ -142,8 +148,16 @@ describe('usePlaylistsStore', () => {
 
   it('should update playlist', () => {
     const { result } = renderHook(() => usePlaylistsStore());
-    const existingPlaylist = { id: 'playlist1', name: 'Old Name', profiles: ['profile1'] };
-    const updatedPlaylist = { id: 'playlist1', name: 'New Name', profiles: ['profile1', 'profile2'] };
+    const existingPlaylist = {
+      id: 'playlist1',
+      name: 'Old Name',
+      profiles: ['profile1'],
+    };
+    const updatedPlaylist = {
+      id: 'playlist1',
+      name: 'New Name',
+      profiles: ['profile1', 'profile2'],
+    };
 
     act(() => {
       result.current.playlists = [existingPlaylist];
@@ -155,7 +169,9 @@ describe('usePlaylistsStore', () => {
     });
 
     expect(result.current.playlists).toEqual([updatedPlaylist]);
-    expect(result.current.profiles).toEqual({ playlist1: ['profile1', 'profile2'] });
+    expect(result.current.profiles).toEqual({
+      playlist1: ['profile1', 'profile2'],
+    });
   });
 
   it('should update profiles', () => {
@@ -166,10 +182,16 @@ describe('usePlaylistsStore', () => {
     });
 
     act(() => {
-      result.current.updateProfiles('playlist1', ['profile1', 'profile2', 'profile3']);
+      result.current.updateProfiles('playlist1', [
+        'profile1',
+        'profile2',
+        'profile3',
+      ]);
     });
 
-    expect(result.current.profiles).toEqual({ playlist1: ['profile1', 'profile2', 'profile3'] });
+    expect(result.current.profiles).toEqual({
+      playlist1: ['profile1', 'profile2', 'profile3'],
+    });
   });
 
   it('should remove playlists', () => {
@@ -187,7 +209,9 @@ describe('usePlaylistsStore', () => {
       result.current.removePlaylists(['playlist1', 'playlist3']);
     });
 
-    expect(result.current.playlists).toEqual([{ id: 'playlist2', name: 'Playlist 2' }]);
+    expect(result.current.playlists).toEqual([
+      { id: 'playlist2', name: 'Playlist 2' },
+    ]);
   });
 
   it('should set refresh progress with two parameters', () => {
@@ -228,7 +252,11 @@ describe('usePlaylistsStore', () => {
     expect(result.current.refreshProgress.account1.action).toBe('initializing');
 
     act(() => {
-      result.current.setRefreshProgress({ account: 'account1', action: 'refreshing', progress: 25 });
+      result.current.setRefreshProgress({
+        account: 'account1',
+        action: 'refreshing',
+        progress: 25,
+      });
     });
 
     expect(result.current.refreshProgress.account1.action).toBe('refreshing');
