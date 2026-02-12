@@ -202,54 +202,6 @@ class Stream(models.Model):
 
         return stream_profile
 
-    def get_stream(self):
-        """
-        Finds an available stream for the requested channel and returns the selected stream and profile.
-        """
-        redis_client = RedisClient.get_client()
-        profile_id = redis_client.get(f"stream_profile:{self.id}")
-        if profile_id:
-            profile_id = int(profile_id)
-            return self.id, profile_id, None
-
-        # Retrieve the M3U account associated with the stream.
-        m3u_account = self.m3u_account
-        m3u_profiles = m3u_account.profiles.all()
-        default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
-        profiles = [default_profile] + [
-            obj for obj in m3u_profiles if not obj.is_default
-        ]
-
-        for profile in profiles:
-            logger.info(profile)
-            # Skip inactive profiles
-            if profile.is_active == False:
-                continue
-
-            profile_connections_key = f"profile_connections:{profile.id}"
-            current_connections = int(redis_client.get(profile_connections_key) or 0)
-
-            # Check if profile has available slots (or unlimited connections)
-            if profile.max_streams == 0 or current_connections < profile.max_streams:
-                # Start a new stream
-                redis_client.set(f"channel_stream:{self.id}", self.id)
-                redis_client.set(
-                    f"stream_profile:{self.id}", profile.id
-                )  # Store only the matched profile
-
-                # Increment connection count for profiles with limits
-                if profile.max_streams > 0:
-                    redis_client.incr(profile_connections_key)
-
-                return (
-                    self.id,
-                    profile.id,
-                    None,
-                )  # Return newly assigned stream and matched profile
-
-        # 4. No available streams
-        return None, None, None
-
     def release_stream(self):
         """
         Called when a stream is finished to release the lock.
