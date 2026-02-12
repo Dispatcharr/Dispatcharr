@@ -541,15 +541,33 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         movie_data = data['movie_data']
         logo_url = data.get('logo_url')
 
-        if movie_key in existing_movies:
-            # Update existing movie
+        # Determine which movie to use:
+        # 1. If this stream already has a relation, preserve its movie to maintain
+        #    stable IDs for external references (STRM files, XC-compat URLs, etc.)
+        # 2. Otherwise, look up by TMDB/IMDB/name+year key
+        # 3. If no match, create a new movie
+        has_existing_relation = stream_id in existing_relations
+        if has_existing_relation:
+            movie = existing_relations[stream_id].movie
+        elif movie_key in existing_movies:
             movie = existing_movies[movie_key]
+        else:
+            movie = None
+
+        if movie is not None:
+            # Update existing movie metadata
             updated = False
 
             for field, value in movie_props.items():
                 if field == 'custom_properties':
                     if value != movie.custom_properties:
                         movie.custom_properties = value
+                        updated = True
+                elif field in ('tmdb_id', 'imdb_id') and has_existing_relation:
+                    # For movies from existing relations, only fill in external IDs
+                    # if currently NULL to avoid creating mismatched duplicates
+                    if getattr(movie, field) is None and value is not None:
+                        setattr(movie, field, value)
                         updated = True
                 elif getattr(movie, field) != value:
                     setattr(movie, field, value)
@@ -587,10 +605,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             movies_to_create.append(movie)
 
         # Handle relation
-        if stream_id in existing_relations:
-            # Update existing relation
+        if has_existing_relation:
+            # Update existing relation metadata — do NOT reassign relation.movie
+            # to preserve stable movie IDs for external references
             relation = existing_relations[stream_id]
-            relation.movie = movie
             relation.category = category
             relation.container_extension = movie_data.get('container_extension', 'mp4')
             relation.custom_properties = {
@@ -898,15 +916,29 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         series_data = data['series_data']
         logo_url = data.get('logo_url')
 
-        if series_key in existing_series:
-            # Update existing series
+        # Same stable-ID logic as movies: prefer existing relation's series
+        has_existing_relation = series_id in existing_relations
+        if has_existing_relation:
+            series = existing_relations[series_id].series
+        elif series_key in existing_series:
             series = existing_series[series_key]
+        else:
+            series = None
+
+        if series is not None:
+            # Update existing series metadata
             updated = False
 
             for field, value in series_props.items():
                 if field == 'custom_properties':
                     if value != series.custom_properties:
                         series.custom_properties = value
+                        updated = True
+                elif field in ('tmdb_id', 'imdb_id') and has_existing_relation:
+                    # For series from existing relations, only fill in external IDs
+                    # if currently NULL to avoid creating mismatched duplicates
+                    if getattr(series, field) is None and value is not None:
+                        setattr(series, field, value)
                         updated = True
                 elif getattr(series, field) != value:
                     setattr(series, field, value)
@@ -944,10 +976,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             series_to_create.append(series)
 
         # Handle relation
-        if series_id in existing_relations:
-            # Update existing relation
+        if has_existing_relation:
+            # Update existing relation metadata — do NOT reassign relation.series
+            # to preserve stable series IDs for external references
             relation = existing_relations[series_id]
-            relation.series = series
             relation.category = category
             relation.custom_properties = {
                 'basic_data': series_data,
