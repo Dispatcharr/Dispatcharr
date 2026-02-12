@@ -766,7 +766,10 @@ class ProxyServer:
                 if self.redis_client.exists(key):
                     # Found orphaned keys without metadata - clean them up
                     logger.warning(f"Found orphaned keys for channel {channel_id} without metadata - cleaning up")
-                    self._clean_redis_keys(channel_id)
+                    try:
+                        self._clean_redis_keys(channel_id)
+                    except Exception as e:
+                        logger.error(f"Error cleaning redis keys for channel {channel_id}: {e}")
                     return False
 
         return False
