@@ -3,6 +3,8 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient
+from apps.proxy.ts_proxy.redis_keys import RedisKeys
+from apps.proxy.ts_proxy.constants import ChannelMetadataField
 import logging
 import uuid
 from datetime import datetime
@@ -476,32 +478,74 @@ class Channel(models.Model):
     def release_stream(self):
         """
         Called when a stream is finished to release the lock.
+
+        Returns:
+            bool: True if stream was successfully released, False if
+                  no stream/profile info could be found for cleanup.
         """
         redis_client = RedisClient.get_client()
 
         stream_id = redis_client.get(f"channel_stream:{self.id}")
         if not stream_id:
-            logger.debug("Invalid stream ID pulled from channel index")
-            return
+            # Primary key missing — try metadata hash fallback.
+            # The proxy may have already cleaned up channel_stream/stream_profile
+            # keys, but the metadata hash can still have the stream_id and profile.
+            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+            meta_stream_id = redis_client.hget(
+                metadata_key, ChannelMetadataField.STREAM_ID
+            )
+            meta_profile_id = redis_client.hget(
+                metadata_key, ChannelMetadataField.M3U_PROFILE
+            )
+
+            if meta_stream_id and meta_profile_id:
+                stream_id = int(meta_stream_id)
+                profile_id = int(meta_profile_id)
+                logger.debug(
+                    f"Channel {self.uuid}: recovered stream_id={stream_id}, "
+                    f"profile_id={profile_id} from metadata fallback"
+                )
+                # Clean up any remaining keys
+                redis_client.delete(f"channel_stream:{self.id}")
+                redis_client.delete(f"stream_profile:{stream_id}")
+
+                profile_connections_key = f"profile_connections:{profile_id}"
+                current_count = int(
+                    redis_client.get(profile_connections_key) or 0
+                )
+                if current_count > 0:
+                    redis_client.decr(profile_connections_key)
+                return True
+
+            logger.debug(
+                f"Channel {self.uuid}: no stream info found in primary keys "
+                f"or metadata fallback"
+            )
+            return False
 
         redis_client.delete(f"channel_stream:{self.id}")  # Remove active stream
 
         stream_id = int(stream_id)
         logger.debug(
-            f"Found stream ID {stream_id} associated with channel stream {self.id}"
+            f"Channel {self.uuid}: found stream_id={stream_id} for "
+            f"channel_stream:{self.id}"
         )
 
         # Get the matched profile for cleanup
         profile_id = redis_client.get(f"stream_profile:{stream_id}")
         if not profile_id:
-            logger.debug("Invalid profile ID pulled from stream index")
-            return
+            logger.debug(
+                f"Channel {self.uuid}: no profile found for "
+                f"stream_profile:{stream_id}"
+            )
+            return False
 
         redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
 
         profile_id = int(profile_id)
         logger.debug(
-            f"Found profile ID {profile_id} associated with stream {stream_id}"
+            f"Channel {self.uuid}: found profile_id={profile_id} for "
+            f"stream {stream_id}"
         )
 
         profile_connections_key = f"profile_connections:{profile_id}"
@@ -510,6 +554,8 @@ class Channel(models.Model):
         current_count = int(redis_client.get(profile_connections_key) or 0)
         if current_count > 0:
             redis_client.decr(profile_connections_key)
+
+        return True
 
     def update_stream_profile(self, new_profile_id):
         """
