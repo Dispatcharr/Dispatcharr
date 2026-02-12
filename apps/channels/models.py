@@ -391,6 +391,38 @@ class Channel(models.Model):
 
         return stream_profile
 
+    def _check_and_reserve_profile_slot(self, profile, redis_client):
+        """
+        Atomically check and reserve a connection slot for the given profile.
+
+        Uses an INCR-first-then-check pattern to eliminate the TOCTOU race
+        condition where separate GET + check + INCR operations could allow
+        concurrent requests to both pass the capacity check.
+
+        For profiles with max_streams=0 (unlimited), no reservation is needed.
+
+        Args:
+            profile: M3UAccountProfile instance
+            redis_client: Redis client instance
+
+        Returns:
+            tuple: (reserved: bool, current_count: int)
+        """
+        if profile.max_streams == 0:
+            return (True, 0)
+
+        profile_connections_key = f"profile_connections:{profile.id}"
+
+        # Atomically increment first — this is a single Redis command
+        new_count = redis_client.incr(profile_connections_key)
+
+        if new_count <= profile.max_streams:
+            return (True, new_count)
+
+        # Over capacity — roll back the increment
+        redis_client.decr(profile_connections_key)
+        return (False, new_count - 1)
+
     def get_stream(self):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
@@ -456,23 +488,15 @@ class Channel(models.Model):
             for profile in profiles:
                 has_active_profiles = True
 
-                profile_connections_key = f"profile_connections:{profile.id}"
-                current_connections = int(
-                    redis_client.get(profile_connections_key) or 0
+                # Atomically check and reserve a slot (INCR-first pattern)
+                reserved, current_count = self._check_and_reserve_profile_slot(
+                    profile, redis_client
                 )
 
-                # Check if profile has available slots (or unlimited connections)
-                if (
-                    profile.max_streams == 0
-                    or current_connections < profile.max_streams
-                ):
-                    # Start a new stream
+                if reserved:
+                    # Slot reserved — assign stream to this channel
                     redis_client.set(f"channel_stream:{self.id}", stream.id)
                     redis_client.set(f"stream_profile:{stream.id}", profile.id)
-
-                    # Increment connection count for profiles with limits
-                    if profile.max_streams > 0:
-                        redis_client.incr(profile_connections_key)
 
                     return (
                         stream.id,
@@ -483,7 +507,8 @@ class Channel(models.Model):
                     # This profile is at max connections
                     has_streams_but_maxed_out = True
                     logger.debug(
-                        f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}"
+                        f"Profile {profile.id} at max connections: "
+                        f"{current_count}/{profile.max_streams}"
                     )
 
         # No available streams - determine specific reason
