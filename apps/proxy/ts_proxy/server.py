@@ -1348,12 +1348,12 @@ class ProxyServer:
             channel = Channel.objects.get(uuid=channel_id)
             if not channel.release_stream():
                 logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
+        except (Channel.DoesNotExist, Exception):
             try:
                 stream = Stream.objects.get(stream_hash=channel_id)
                 if not stream.release_stream():
                     logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-            except Stream.DoesNotExist:
+            except (Stream.DoesNotExist, Exception):
                 logger.debug(f"No Channel or Stream found for {channel_id}")
 
         if not self.redis_client:

@@ -270,7 +270,7 @@ class ChannelService:
                 logger.info(f"Released channel {channel_id} stream allocation")
             else:
                 logger.warning(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
+        except (Channel.DoesNotExist, Exception):
             logger.warning(f"Could not find Channel model for UUID {channel_id}, attempting stream hash")
             try:
                 stream = Stream.objects.get(stream_hash=channel_id)
@@ -279,12 +279,9 @@ class ChannelService:
                     logger.info(f"Released stream {channel_id} stream allocation")
                 else:
                     logger.warning(f"Stream {channel_id}: release_stream found no keys to clean")
-            except Stream.DoesNotExist:
-                logger.error(f"No Channel or Stream found for {channel_id}")
+            except (Stream.DoesNotExist, Exception) as e:
+                logger.error(f"No Channel or Stream found for {channel_id}: {e}")
                 model_released = False
-        except Exception as e:
-            logger.error(f"Error releasing channel stream: {e}")
-            model_released = False
 
         return {
             'status': 'success',
