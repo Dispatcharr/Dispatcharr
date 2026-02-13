@@ -1665,6 +1665,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
             stream_profile_id = None
             custom_logo_id = None
             custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
+            channel_numbering_mode = "fixed"  # Default mode
+            channel_numbering_fallback = 1  # Default fallback for provider mode
             if group_relation.custom_properties:
                 group_custom_props = group_relation.custom_properties
                 force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
@@ -1682,6 +1684,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
                 stream_profile_id = group_custom_props.get("stream_profile_id")
                 custom_logo_id = group_custom_props.get("custom_logo_id")
+                channel_numbering_mode = group_custom_props.get("channel_numbering_mode", "fixed")
+                channel_numbering_fallback = group_custom_props.get("channel_numbering_fallback", 1)
 
             # Determine which group to use for created channels
             target_group = channel_group
@@ -1697,7 +1701,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     )
 
             logger.info(
-                f"Processing auto sync for group: {channel_group.name} (start: {start_number})"
+                f"Processing auto sync for group: {channel_group.name} (mode: {channel_numbering_mode}, start: {start_number})"
             )
 
             # Get all current streams in this group for this M3U account, filter out stale streams
@@ -1848,10 +1852,31 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 if stream.id in existing_channel_map:
                     channel = existing_channel_map[stream.id]
 
-                    # Find next available number starting from temp_channel_number
-                    target_number = temp_channel_number
-                    while target_number in used_numbers:
-                        target_number += 1
+                    # Determine target number based on numbering mode
+                    if channel_numbering_mode == "provider":
+                        # Use provider number if available, otherwise use fallback with next available logic
+                        if stream.stream_chno is not None:
+                            target_number = stream.stream_chno
+                            # If provider number is already used, find next available
+                            if target_number in used_numbers:
+                                target_number = channel_numbering_fallback
+                                while target_number in used_numbers:
+                                    target_number += 1
+                        else:
+                            # No provider number, use fallback and find next available
+                            target_number = channel_numbering_fallback
+                            while target_number in used_numbers:
+                                target_number += 1
+                    elif channel_numbering_mode == "next_available":
+                        # Find next available starting from 1
+                        target_number = 1
+                        while target_number in used_numbers:
+                            target_number += 1
+                    else:  # fixed mode (default)
+                        # Find next available number starting from temp_channel_number
+                        target_number = temp_channel_number
+                        while target_number in used_numbers:
+                            target_number += 1
 
                     # Add this number to used_numbers so we don't reuse it in this batch
                     used_numbers.add(target_number)
@@ -1863,9 +1888,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             f"Will renumber channel '{channel.name}' to {target_number}"
                         )
 
-                    temp_channel_number += 1.0
-                    if temp_channel_number % 1 != 0:  # Has decimal
-                        temp_channel_number = int(temp_channel_number) + 1.0
+                    # Only increment temp_channel_number in fixed mode
+                    if channel_numbering_mode == "fixed":
+                        temp_channel_number += 1.0
+                        if temp_channel_number % 1 != 0:  # Has decimal
+                            temp_channel_number = int(temp_channel_number) + 1.0
 
             # Bulk update channel numbers if any need renumbering
             if channels_to_renumber:
@@ -2060,10 +2087,31 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                     else:
                         # Create new channel
-                        # Find next available channel number
-                        target_number = current_channel_number
-                        while target_number in used_numbers:
-                            target_number += 1
+                        # Determine channel number based on numbering mode
+                        if channel_numbering_mode == "provider":
+                            # Use provider number if available, otherwise use fallback with next available logic
+                            if stream.stream_chno is not None:
+                                target_number = stream.stream_chno
+                                # If provider number is already used, find next available from fallback
+                                if target_number in used_numbers:
+                                    target_number = channel_numbering_fallback
+                                    while target_number in used_numbers:
+                                        target_number += 1
+                            else:
+                                # No provider number, use fallback and find next available
+                                target_number = channel_numbering_fallback
+                                while target_number in used_numbers:
+                                    target_number += 1
+                        elif channel_numbering_mode == "next_available":
+                            # Find next available starting from 1
+                            target_number = 1
+                            while target_number in used_numbers:
+                                target_number += 1
+                        else:  # fixed mode (default)
+                            # Find next available channel number starting from current_channel_number
+                            target_number = current_channel_number
+                            while target_number in used_numbers:
+                                target_number += 1
 
                         # Add this number to used_numbers
                         used_numbers.add(target_number)
@@ -2190,10 +2238,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             f"Created auto channel: {channel.channel_number} - {channel.name}"
                         )
 
-                    # Increment channel number for next iteration
-                    current_channel_number += 1.0
-                    if current_channel_number % 1 != 0:  # Has decimal
-                        current_channel_number = int(current_channel_number) + 1.0
+                    # Increment channel number for next iteration (only in fixed mode)
+                    if channel_numbering_mode == "fixed":
+                        current_channel_number += 1.0
+                        if current_channel_number % 1 != 0:  # Has decimal
+                            current_channel_number = int(current_channel_number) + 1.0
 
                 except Exception as e:
                     logger.error(
