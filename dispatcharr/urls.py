@@ -3,6 +3,7 @@ from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.generic import TemplateView, RedirectView
+from django.views.static import serve
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.ts_proxy.views import stream_xc
@@ -57,6 +58,18 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 
     # VOD proxy is now handled by the main proxy URLs above
+    # Frontend static assets from Vite build output
+    re_path(
+        r"^assets/(?P<path>.*)$",
+        serve,
+        {"document_root": settings.BASE_DIR / "frontend" / "dist" / "assets"},
+    ),
+    re_path(
+        r"^(?P<path>logo\.png)$",
+        serve,
+        {"document_root": settings.BASE_DIR / "frontend" / "dist"},
+    ),
+
     # Catch-all routes should always be last
     path("", TemplateView.as_view(template_name="index.html")),  # React entry point
     path("<path:unused_path>", TemplateView.as_view(template_name="index.html")),
