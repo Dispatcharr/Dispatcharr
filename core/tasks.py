@@ -388,8 +388,38 @@ def scan_and_process_files():
             }
         )
 
+    # Rebuild EPG programme indices on first run (Redis is ephemeral)
+    if not _first_scan_completed:
+        _rebuild_programme_indices()
+
     # Mark that the first scan is complete
     _first_scan_completed = True
+
+def _rebuild_programme_indices():
+    """Queue index builds for active EPG sources that are missing their Redis index."""
+    try:
+        from apps.epg.tasks import build_programme_index_task
+        redis_client = RedisClient.get_client()
+
+        sources = EPGSource.objects.filter(
+            is_active=True,
+        ).exclude(source_type='dummy')
+
+        count = 0
+        for source in sources:
+            redis_key = f"epg_programme_index_{source.id}"
+            if redis_client.exists(redis_key):
+                continue
+            lock_key = f"building_programme_index_{source.id}"
+            if redis_client.set(lock_key, "1", nx=True, ex=300):
+                build_programme_index_task.delay(source.id)
+                count += 1
+
+        if count:
+            logger.info(f"Queued programme index rebuild for {count} EPG source(s)")
+    except Exception as e:
+        logger.warning(f"Failed to queue programme index rebuilds: {e}")
+
 
 def fetch_channel_stats():
     redis_client = RedisClient.get_client()

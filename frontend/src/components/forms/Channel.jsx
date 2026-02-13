@@ -439,30 +439,48 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     setIsLoadingProgram(true);
     setHasFetchedProgram(false);
 
-    const fetchWithRetry = async (retriesLeft = 3) => {
-      try {
-        const program = await API.getCurrentProgramForEpg(epgDataId);
-        if (cancelled) return;
+    const fetchWithRetry = async () => {
+      const maxRetries = 5;
+      const deadlineMs = 3 * 60 * 1000; // 3 minutes
+      const startTime = Date.now();
+      let delay = 3000; // 3s initial
 
-        if (program && program.parsing && retriesLeft > 0) {
-          // Programs are being parsed, retry after delay
-          await new Promise((resolve) => setTimeout(resolve, 10000));
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (cancelled || Date.now() - startTime > deadlineMs) break;
+
+        try {
+          const program = await API.getCurrentProgramForEpg(epgDataId);
           if (cancelled) return;
-          return fetchWithRetry(retriesLeft - 1);
-        }
 
-        if (!cancelled) {
-          setCurrentProgram(program && !program.parsing ? program : null);
-          setIsLoadingProgram(false);
-          setHasFetchedProgram(true);
+          if (program && program.parsing && attempt < maxRetries) {
+            // Index still building, retry with backoff
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            delay = Math.min(delay * 1.5, 15000); // 1.5x multiplier, 15s cap
+            continue;
+          }
+
+          if (!cancelled) {
+            setCurrentProgram(program && !program.parsing ? program : null);
+            setIsLoadingProgram(false);
+            setHasFetchedProgram(true);
+          }
+          return;
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch current program:', error);
+          }
+          if (attempt < maxRetries) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            delay = Math.min(delay * 1.5, 15000);
+          }
         }
-      } catch (error) {
-        if (!cancelled) {
-          console.error('Failed to fetch current program:', error);
-          setCurrentProgram(null);
-          setIsLoadingProgram(false);
-          setHasFetchedProgram(true);
-        }
+      }
+
+      // Exhausted retries or deadline
+      if (!cancelled) {
+        setCurrentProgram(null);
+        setIsLoadingProgram(false);
+        setHasFetchedProgram(true);
       }
     };
 
