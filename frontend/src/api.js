@@ -227,6 +227,44 @@ export default class API {
     }
   }
 
+  /**
+   * Retrieve channels matching the provided query params, paging until complete.
+   * Does NOT touch any table/store state; returns a plain array.
+   */
+  static async getChannelsForParams(params) {
+    try {
+      const pageSize = 200;
+      const query = new URLSearchParams(params);
+      let page = 1;
+      let all = [];
+
+      while (true) {
+        query.set('page', String(page));
+        query.set('page_size', String(pageSize));
+        const url = `${host}/api/channels/channels/?${query.toString()}`;
+        const data = await request(url);
+
+        if (Array.isArray(data)) {
+          // Legacy array response
+          all = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        all = all.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) break;
+        page += 1;
+      }
+
+      return all;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels for query', e);
+      throw e;
+    }
+  }
+
   static async requeryChannels() {
     try {
       const [response, ids] = await Promise.all([
@@ -276,7 +314,7 @@ export default class API {
     }
   }
 
-  static async getAllChannelIds(params) {
+  static async getAllChannelIds(params = new URLSearchParams()) {
     try {
       const response = await request(
         `${host}/api/channels/channels/ids/?${params.toString()}`
@@ -562,6 +600,43 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  // Server-side regex rename of channel names for selected IDs
+  static async bulkRegexRenameChannels(
+    channelIds,
+    find,
+    replace = '',
+    flags = 'g'
+  ) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/edit/bulk-regex/`,
+        {
+          method: 'POST',
+          body: {
+            channel_ids: channelIds,
+            find,
+            replace,
+            flags,
+          },
+        }
+      );
+
+      // Optional success notification
+      if (response?.success) {
+        notifications.show({
+          title: 'Channel Names Updated',
+          message: `Renamed ${response.updated_count} channel(s) via regex`,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply regex renames', e);
     }
   }
 
@@ -1095,9 +1170,6 @@ export default class API {
       });
 
       usePlaylistsStore.getState().removePlaylists([id]);
-      // @TODO: MIGHT need to optimize this later if someone has thousands of channels
-      // but I'm feeling laze right now
-      // useChannelsStore.getState().fetchChannels();
     } catch (e) {
       errorNotification(`Failed to delete playlist ${id}`, e);
     }
@@ -2668,8 +2740,6 @@ export default class API {
           color: 'blue',
         });
 
-        // First fetch the complete channel data
-        await useChannelsStore.getState().fetchChannels();
         // Then refresh the current table view
         this.requeryChannels();
       }
@@ -2780,6 +2850,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve streams by IDs', e);
       throw e; // Re-throw to allow proper error handling in calling code
+    }
+  }
+
+  static async getChannelsByUUIDs(uuids) {
+    try {
+      // Use POST for large lists
+      const response = await request(
+        `${host}/api/channels/channels/by-uuids/`,
+        {
+          method: 'POST',
+          body: { uuids },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels by UUIDs', e);
+      throw e;
     }
   }
 

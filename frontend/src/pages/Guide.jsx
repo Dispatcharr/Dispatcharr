@@ -52,11 +52,9 @@ import {
   fetchRules,
   filterGuideChannels,
   formatTime,
-  getGroupOptions,
   getProfileOptions,
   getRuleByProgram,
   HOUR_WIDTH,
-  mapChannelsById,
   mapProgramsByChannel,
   mapRecordingsByProgramId,
   matchChannelByTvgId,
@@ -65,6 +63,7 @@ import {
   PROGRAM_HEIGHT,
   sortChannels,
 } from './guideUtils';
+import API from '../api';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import {
   add,
@@ -87,7 +86,10 @@ import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 export default function TVChannelGuide({ startDate, endDate }) {
-  const channels = useChannelsStore((s) => s.channels);
+  const [isChannelsLoading, setIsChannelsLoading] = useState(false);
+  const [allowAllGroups, setAllowAllGroups] = useState(true);
+  const MAX_ALL_CHANNELS = 500;
+
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
@@ -133,28 +135,96 @@ export default function TVChannelGuide({ startDate, endDate }) {
   // Add new state to track hovered logo
   const [hoveredChannelId, setHoveredChannelId] = useState(null);
 
-  // Load program data once
+  // Decide if 'All Channel Groups' should be enabled (based on total channel count)
   useEffect(() => {
-    if (Object.keys(channels).length === 0) {
-      console.warn('No channels provided or empty channels array');
-      showNotification({ title: 'No channels available', color: 'red.5' });
-      setIsProgramsLoading(false);
-      return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        const ids = await API.getAllChannelIds(params);
+        if (cancelled) return;
+        const total = Array.isArray(ids)
+          ? ids.length
+          : (ids?.length ?? ids?.count ?? 0);
+        setAllowAllGroups(total <= MAX_ALL_CHANNELS);
+      } catch (e) {
+        // If we cannot determine, keep current default (true)
+        console.error('Failed to get total channel IDs', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If 'All' is not allowed, default to the first available group
+  useEffect(() => {
+    if (!allowAllGroups && selectedGroupId === 'all') {
+      const firstGroup = Object.values(channelGroups).find(
+        (g) => g?.hasChannels
+      );
+      if (firstGroup) {
+        setSelectedGroupId(String(firstGroup.id));
+      }
     }
+  }, [allowAllGroups, channelGroups, selectedGroupId]);
 
-    const sortedChannels = sortChannels(channels);
-    setGuideChannels(sortedChannels);
+  // Fetch channels on demand based on filters
+  useEffect(() => {
+    let cancelled = false;
+    const fetchGuideChannels = async () => {
+      try {
+        setIsChannelsLoading(true);
+        const params = new URLSearchParams();
+        // Group filter by name, if not 'all'
+        if (selectedGroupId !== 'all') {
+          const group = channelGroups[Number(selectedGroupId)];
+          if (group?.name) params.set('channel_group', group.name);
+        } else if (!allowAllGroups) {
+          // If 'all' is not allowed, fall back to first available group
+          const firstGroup = Object.values(channelGroups).find(
+            (g) => g?.hasChannels
+          );
+          if (firstGroup?.name) params.set('channel_group', firstGroup.name);
+        }
+        // Profile filter
+        if (selectedProfileId && selectedProfileId !== 'all') {
+          params.set('channel_profile_id', String(selectedProfileId));
+        }
+        // Search filter
+        if (searchQuery && searchQuery.trim() !== '') {
+          params.set('search', searchQuery.trim());
+        }
 
-    fetchPrograms()
-      .then((data) => {
-        setPrograms(data);
+        const chans = await API.getChannelsForParams(params);
+        if (cancelled) return;
+
+        const sorted = sortChannels(chans || []);
+        setGuideChannels(sorted);
+
+        // Load program data after channels are available
+        fetchPrograms()
+          .then((data) => {
+            setPrograms(data);
+            setIsProgramsLoading(false);
+          })
+          .catch((error) => {
+            console.error('Failed to fetch programs:', error);
+            setIsProgramsLoading(false);
+          });
+      } catch (e) {
+        if (cancelled) return;
         setIsProgramsLoading(false);
-      })
-      .catch((error) => {
-        console.error('Failed to fetch programs:', error);
-        setIsProgramsLoading(false);
-      });
-  }, [channels]);
+      } finally {
+        if (!cancelled) setIsChannelsLoading(false);
+      }
+    };
+
+    fetchGuideChannels();
+    return () => {
+      cancelled = true;
+    };
+  }, [channelGroups, searchQuery, selectedGroupId, selectedProfileId]);
 
   // Apply filters when search, group, or profile changes
   const filteredChannels = useMemo(() => {
@@ -198,11 +268,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const channelIdByTvgId = useMemo(
     () => buildChannelIdMap(guideChannels, tvgsById, epgs),
     [guideChannels, tvgsById, epgs]
-  );
-
-  const channelById = useMemo(
-    () => mapChannelsById(guideChannels),
-    [guideChannels]
   );
 
   const programsByChannelId = useMemo(
@@ -967,11 +1032,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
   }, [searchQuery, selectedGroupId, selectedProfileId]);
 
-  // Create group options for dropdown - but only include groups used by guide channels
-  const groupOptions = useMemo(
-    () => getGroupOptions(channelGroups, guideChannels),
-    [channelGroups, guideChannels]
-  );
+  // Group options: show all groups; gate 'All' if too many channels
+  const groupOptions = useMemo(() => {
+    const opts = [];
+    if (allowAllGroups) {
+      opts.push({ value: 'all', label: 'All Channel Groups' });
+    }
+    const groupsArr = Object.values(channelGroups).sort((a, b) =>
+      (a?.name || '').localeCompare(b?.name || '')
+    );
+    groupsArr.forEach((g) => {
+      opts.push({ value: String(g.id), label: g.name });
+    });
+    return opts;
+  }, [channelGroups, allowAllGroups]);
 
   // Create profile options for dropdown
   const profileOptions = useMemo(() => getProfileOptions(profiles), [profiles]);
@@ -1194,7 +1268,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
           }}
           pos="relative"
         >
-          <LoadingOverlay visible={isLoading || isProgramsLoading} />
+          <LoadingOverlay
+            visible={isLoading || isProgramsLoading || isChannelsLoading}
+          />
           {nowPosition >= 0 && (
             <Box
               style={{

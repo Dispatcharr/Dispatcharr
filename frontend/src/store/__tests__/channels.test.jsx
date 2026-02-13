@@ -30,7 +30,7 @@ describe('useChannelsStore', () => {
     });
   });
 
-  describe('fetchChannels', () => {
+  describe('fetchChannelIds', () => {
     it('should fetch and store channels successfully', async () => {
       const mockChannels = [
         { id: 1, uuid: 'uuid-1', name: 'Channel 1' },
@@ -41,13 +41,13 @@ describe('useChannelsStore', () => {
       const { result } = renderHook(() => useChannelsStore());
 
       await act(async () => {
-        await result.current.fetchChannels();
+        await result.current.fetchChannelIds();
       });
 
-      expect(api.getChannels).toHaveBeenCalledOnce();
+      expect(api.getAllChannelIds).toHaveBeenCalledOnce();
       expect(result.current.channels).toEqual({
-        1: mockChannels[0],
-        2: mockChannels[1],
+        1: mockChannels[0].id,
+        2: mockChannels[1].id,
       });
       expect(result.current.channelsByUUID).toEqual({
         'uuid-1': 1,
@@ -62,10 +62,6 @@ describe('useChannelsStore', () => {
       api.getChannels.mockRejectedValue(new Error(errorMessage));
 
       const { result } = renderHook(() => useChannelsStore());
-
-      await act(async () => {
-        await result.current.fetchChannels();
-      });
 
       expect(result.current.error).toBe(errorMessage);
       expect(result.current.isLoading).toBe(false);

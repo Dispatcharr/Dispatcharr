@@ -724,6 +724,104 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channels": serialized_channels
         })
 
+    @extend_schema(
+        methods=["POST"],
+        description=(
+            "Bulk rename channel names using a regex find/replace executed server-side. "
+            "Accepts JavaScript-style named groups (e.g., (?<name>...)) and converts them to Python syntax. "
+            "Supports flags: 'i' (IGNORECASE). Replacement tokens like $1, $& and $<name> are translated to Python."
+        ),
+        request=inline_serializer(
+            name="BulkRegexRenameRequest",
+            fields={
+                "channel_ids": serializers.ListField(child=serializers.IntegerField()),
+                "find": serializers.CharField(),
+                "replace": serializers.CharField(required=False, allow_blank=True),
+                "flags": serializers.CharField(required=False, allow_blank=True),
+            },
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="edit/bulk-regex")
+    def bulk_regex_rename(self, request):
+        """
+        Efficiently apply a regex find/replace to the `name` field of multiple channels.
+        """
+        import regex as re
+
+        channel_ids = request.data.get("channel_ids", [])
+        pattern = request.data.get("find", "")
+        replace = request.data.get("replace", "")
+        flags_str = request.data.get("flags", "") or ""
+
+        if not isinstance(channel_ids, list) or len(channel_ids) == 0:
+            return Response({"error": "channel_ids must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(pattern, str) or pattern.strip() == "":
+            return Response({"error": "find (regex pattern) is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(replace, str):
+            return Response({"error": "replace must be a string"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Convert JS-style named groups to Python (?<name>...) -> (?P<name>...)
+        try:
+            converted_pattern = re.sub(r"\(\?<([^>]+)>", r"(?P<\1>", pattern)
+        except Exception as e:
+            return Response({"error": f"Failed to normalize pattern: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Compile flags
+        re_flags = 0
+        if "i" in flags_str:
+            re_flags |= re.IGNORECASE
+        # Note: 'g' (global) is the default behavior of re.sub; no action needed.
+
+        # Translate common JS replacement tokens to Python
+        def translate_js_replacement(rep: str) -> str:
+            # $$ -> $
+            rep = rep.replace("$$", "$")
+            # $& -> \g<0>
+            rep = rep.replace("$&", r"\g<0>")
+            # $<name> -> \g<name>
+            rep = re.sub(r"\$<([A-Za-z_][A-Za-z0-9_]*)>", r"\\g<\1>", rep)
+            # $1 -> \g<1>, $2 -> \g<2>, etc.
+            rep = re.sub(r"\$(\d+)", r"\\g<\1>", rep)
+            return rep
+
+        try:
+            replacement_py = translate_js_replacement(replace)
+            compiled = re.compile(converted_pattern, flags=re_flags)
+        except Exception as e:
+            return Response({"error": f"Invalid regex pattern: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Fetch channels in one query
+        channels = list(Channel.objects.filter(id__in=channel_ids))
+        if not channels:
+            return Response({"error": "No matching channels found for provided IDs"}, status=status.HTTP_404_NOT_FOUND)
+
+        changed = []
+        for ch in channels:
+            current = ch.name or ""
+            try:
+                new_name = compiled.sub(replacement_py, current)
+            except Exception as e:
+                # Skip problematic replacements but continue processing others
+                logger.warning(f"Regex replacement failed for channel {ch.id}: {e}")
+                continue
+
+            # Only update if name actually changes and remains non-empty
+            if new_name != current and new_name.strip():
+                ch.name = new_name
+                changed.append(ch)
+
+        # Apply updates in bulk
+        updated_count = 0
+        if changed:
+            with transaction.atomic():
+                Channel.objects.bulk_update(changed, fields=["name"], batch_size=100)
+                updated_count = len(changed)
+
+        return Response({
+            "success": True,
+            "updated_count": updated_count,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=["post"], url_path="set-names-from-epg")
     def set_names_from_epg(self, request):
         """
@@ -830,6 +928,33 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         # Return the response with the list of IDs
         return Response(list(channel_ids))
+
+    @extend_schema(
+        methods=["POST"],
+        description="Retrieve channels by a list of UUIDs using POST to avoid URL length limitations",
+        request=inline_serializer(
+            name="ChannelByUUIDsRequest",
+            fields={
+                "uuids": serializers.ListField(
+                    child=serializers.CharField(),
+                    help_text="List of channel UUIDs to retrieve",
+                )
+            },
+        ),
+        responses={200: ChannelSerializer(many=True)},
+    )
+    @action(detail=False, methods=["post"], url_path="by-uuids")
+    def get_by_uuids(self, request, *args, **kwargs):
+        uuids = request.data.get("uuids", [])
+        if not isinstance(uuids, list):
+            return Response(
+                {"error": "uuids must be a list of strings"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        channels = Channel.objects.filter(uuid__in=uuids)
+        serializer = self.get_serializer(channels, many=True)
+        return Response(serializer.data)
 
     @extend_schema(
         methods=["POST"],

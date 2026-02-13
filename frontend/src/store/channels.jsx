@@ -104,6 +104,7 @@ const showNotificationIfClientStopped = (
 
 const useChannelsStore = create((set, get) => ({
   channels: [],
+  channelIds: [],
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
@@ -120,6 +121,18 @@ const useChannelsStore = create((set, get) => ({
 
   triggerUpdate: () => {
     set({ forceUpdate: new Date() });
+  },
+
+  fetchChannelIds: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const channelIds = await api.getAllChannelIds();
+      set({
+        channelIds,
+      });
+    } catch (error) {
+      set({ error: error.message, isLoading: false });
+    }
   },
 
   fetchChannels: async () => {
@@ -263,8 +276,10 @@ const useChannelsStore = create((set, get) => ({
     set((state) => {
       const updatedChannels = { ...state.channels };
       const channelsByUUID = { ...state.channelsByUUID };
+      const channelIdsSet = new Set(state.channelIds); // Convert to Set for O(1) lookups
       for (const id of channelIds) {
         delete updatedChannels[id];
+        channelIdsSet.delete(id);
 
         for (const uuid in channelsByUUID) {
           if (channelsByUUID[uuid] == id) {
@@ -274,7 +289,12 @@ const useChannelsStore = create((set, get) => ({
         }
       }
 
-      return { channels: updatedChannels, channelsByUUID };
+      console.log(channelIdsSet);
+      return {
+        channels: updatedChannels,
+        channelsByUUID,
+        channelIds: Array.from(channelIdsSet),
+      };
     });
   },
 
