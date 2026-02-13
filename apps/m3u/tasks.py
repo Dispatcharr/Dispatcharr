@@ -1648,6 +1648,13 @@ def sync_auto_channels(account_id, scan_start_time=None):
         channels_updated = 0
         channels_deleted = 0
 
+        # Get all channel numbers that are already in use by other channels (not auto-created by this account)
+        used_numbers = set(
+            Channel.objects.exclude(
+                auto_created=True, auto_created_by=account
+            ).values_list("channel_number", flat=True)
+        )
+
         for group_relation in auto_sync_groups:
             channel_group = group_relation.channel_group
             start_number = group_relation.auto_sync_channel_start or 1.0
@@ -1840,13 +1847,6 @@ def sync_auto_channels(account_id, scan_start_time=None):
             # This ensures channels are always in the correct sequence
             channels_to_renumber = []
             temp_channel_number = start_number
-
-            # Get all channel numbers that are already in use by other channels (not auto-created by this account)
-            used_numbers = set(
-                Channel.objects.exclude(
-                    auto_created=True, auto_created_by=account
-                ).values_list("channel_number", flat=True)
-            )
 
             for stream in current_streams:
                 if stream.id in existing_channel_map:
