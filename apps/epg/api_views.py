@@ -18,7 +18,7 @@ from .serializers import (
     EPGDataSerializer,
     ProgramSearchResultSerializer,
 )
-from .tasks import refresh_epg_data
+from .tasks import refresh_epg_data, find_current_program_for_tvg_id
 from .query_utils import parse_text_query
 from apps.accounts.permissions import (
     Authenticated,
@@ -772,12 +772,14 @@ class CurrentProgramsAPIView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            from apps.epg.models import EPGData
+            # Limit to 50 IDs per request
+            epg_data_ids = epg_data_ids[:50]
 
-            epg_data_entries = EPGData.objects.filter(id__in=epg_data_ids)
+            epg_data_entries = EPGData.objects.select_related('epg_source').filter(id__in=epg_data_ids)
 
             current_programs = []
             for epg_data in epg_data_entries:
+                # Check DB first (already-parsed channels)
                 program = ProgramData.objects.filter(
                     epg=epg_data, start_time__lte=now, end_time__gt=now
                 ).first()
@@ -786,20 +788,23 @@ class CurrentProgramsAPIView(APIView):
                     program_data = ProgramDataSerializer(program).data
                     program_data['epg_data_id'] = epg_data.id
                     current_programs.append(program_data)
-                else:
-                    # Check if ANY programs exist (vs none parsed yet)
-                    has_any_programs = ProgramData.objects.filter(epg=epg_data).exists()
-                    if not has_any_programs and epg_data.epg_source.source_type != 'dummy':
-                        from core.utils import RedisClient
-                        redis_client = RedisClient.get_client()
-                        lock_id = f"task_lock_parse_epg_programs_{epg_data.id}"
-                        if not redis_client.exists(lock_id):
-                            from apps.epg.tasks import parse_programs_for_tvg_id
-                            parse_programs_for_tvg_id.delay(epg_data.id, force=True)
-                        current_programs.append({
-                            "epg_data_id": epg_data.id,
-                            "parsing": True,
-                        })
+                    continue
+
+                # Skip dummy sources
+                if epg_data.epg_source and epg_data.epg_source.source_type == 'dummy':
+                    continue
+
+                # Fall back to byte-offset index lookup
+                result = find_current_program_for_tvg_id(epg_data.id)
+
+                if result == "timeout":
+                    current_programs.append({
+                        "epg_data_id": epg_data.id,
+                        "parsing": True,
+                    })
+                elif result is not None:
+                    result['epg_data_id'] = epg_data.id
+                    current_programs.append(result)
 
             return Response(current_programs, status=status.HTTP_200_OK)
 
