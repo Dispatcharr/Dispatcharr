@@ -2128,7 +2128,17 @@ def xc_get_live_categories(user):
 
 
 def xc_get_live_streams(request, user, category_id=None):
+    from django.db.models import Prefetch
+    from apps.channels.models import Stream
+
     streams = []
+
+    # Prefetch primary stream (lowest order) with stats for each channel
+    stream_prefetch = Prefetch(
+        'streams',
+        queryset=Stream.objects.order_by('channelstream__order'),
+        to_attr='ordered_streams'
+    )
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2142,7 +2152,7 @@ def xc_get_live_streams(request, user, category_id=None):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).order_by("channel_number")
+            channels = Channel.objects.filter(**filters).prefetch_related(stream_prefetch).order_by("channel_number")
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2155,14 +2165,14 @@ def xc_get_live_streams(request, user, category_id=None):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+            channels = Channel.objects.filter(**filters).prefetch_related(stream_prefetch).distinct().order_by("channel_number")
     else:
         if not category_id:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+            channels = Channel.objects.filter(user_level__lte=user.user_level).prefetch_related(stream_prefetch).order_by("channel_number")
         else:
             channels = Channel.objects.filter(
                 channel_group__id=category_id, user_level__lte=user.user_level
-            ).order_by("channel_number")
+            ).prefetch_related(stream_prefetch).order_by("channel_number")
 
     # Build collision-free mapping for XC clients (which require integers)
     # This ensures channels with float numbers don't conflict with existing integers
@@ -2192,6 +2202,8 @@ def xc_get_live_streams(request, user, category_id=None):
     # Build the streams list with the collision-free channel numbers
     for channel in channels:
         channel_num_int = channel_num_map[channel.id]
+        primary_stream = channel.ordered_streams[0] if channel.ordered_streams else None
+        stream_stats = primary_stream.stream_stats if primary_stream else None
 
         streams.append(
             {
@@ -2216,6 +2228,7 @@ def xc_get_live_streams(request, user, category_id=None):
                 "tv_archive": 0,
                 "direct_source": "",
                 "tv_archive_duration": 0,
+                "stream_stats": stream_stats,
             }
         )
 
