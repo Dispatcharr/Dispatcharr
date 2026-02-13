@@ -1,7 +1,7 @@
 # connect/utils.py
 import logging, json
 from django.template import Template, Context
-from .models import EventSubscription, DeliveryLog
+from .models import EventSubscription, DeliveryLog, SUPPORTED_EVENTS
 from .handlers.webhook import WebhookHandler
 from .handlers.script import ScriptHandler
 from apps.plugins.loader import PluginManager
@@ -11,21 +11,6 @@ logger = logging.getLogger(__name__)
 HANDLERS = {
     "webhook": WebhookHandler,
     "script": ScriptHandler,
-}
-
-SUPPORTED_EVENTS = {
-    "channel_start": "Channel Started",
-    "channel_stop": "Channel Stopped",
-    "channel_reconnect": "Channel Reconnected",
-    "channel_error": "Channel Error",
-    "channel_failover": "Channel Failover",
-    "stream_switch": "Stream Switch",
-    "recording_start": "Recording Started",
-    "recording_end": "Recording Ended",
-    "epg_refresh": "EPG Refreshed",
-    "m3u_refresh": "M3U Refreshed",
-    "client_connect": "Client Connected",
-    "client_disconnect": "Client Disconnected",
 }
 
 
