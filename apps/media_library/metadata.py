@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from core.models import CoreSettings
 from apps.media_library.models import ArtworkAsset, MediaItem
+from apps.media_library.file_utils import media_files_for_item, primary_media_file_for_item
 from apps.media_library.utils import normalize_title
 
 logger = logging.getLogger(__name__)
@@ -433,6 +434,16 @@ def _nfo_trailer(root: ET.Element) -> Optional[str]:
 
 
 _NFO_ROOT_TAGS = ("movie", "tvshow", "episodedetails", "episode")
+_XML_DECLARATION_RE = re.compile(r"<\?xml[^>]*\?>", re.IGNORECASE)
+_DOCTYPE_RE = re.compile(r"<!DOCTYPE[^>]*>", re.IGNORECASE)
+
+
+def _strip_xml_preamble(payload: str) -> str:
+    if not payload:
+        return ""
+    cleaned = _XML_DECLARATION_RE.sub("", payload)
+    cleaned = _DOCTYPE_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _extract_nfo_root_xml(payload: str) -> Optional[str]:
@@ -457,6 +468,13 @@ def _extract_nfo_root_xml(payload: str) -> Optional[str]:
 
 
 def _parse_nfo_root(nfo_path: str) -> tuple[Optional[ET.Element], Optional[str]]:
+    roots, error = _parse_nfo_roots(nfo_path)
+    if error:
+        return None, error
+    return roots[0] if roots else None, None
+
+
+def _parse_nfo_roots(nfo_path: str) -> tuple[list[ET.Element], Optional[str]]:
     try:
         tree = ET.parse(nfo_path)
     except (ET.ParseError, OSError) as exc:
@@ -464,26 +482,114 @@ def _parse_nfo_root(nfo_path: str) -> tuple[Optional[ET.Element], Optional[str]]
     else:
         root = tree.getroot()
         if root is None:
-            return None, "NFO did not contain metadata."
-        return root, None
+            return [], "NFO did not contain metadata."
+        return [root], None
 
     try:
         with open(nfo_path, "r", encoding="utf-8-sig", errors="replace") as handle:
             payload = handle.read()
     except OSError as exc:
-        return None, f"Failed to parse NFO: {exc}"
+        return [], f"Failed to parse NFO: {exc}"
 
     extracted = _extract_nfo_root_xml(payload)
-    if not extracted:
-        return None, f"Failed to parse NFO: {parse_error}"
+    if extracted:
+        try:
+            root = ET.fromstring(extracted)
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            return [root], None
+
+    cleaned = _strip_xml_preamble(payload)
+    if not cleaned:
+        return [], f"Failed to parse NFO: {parse_error}"
 
     try:
-        root = ET.fromstring(extracted)
+        wrapped = ET.fromstring(f"<nfo>{cleaned}</nfo>")
     except ET.ParseError as exc:
-        return None, f"Failed to parse NFO: {exc}"
-    if root is None:
-        return None, "NFO did not contain metadata."
-    return root, None
+        return [], f"Failed to parse NFO: {exc}"
+
+    roots = [
+        node
+        for node in list(wrapped)
+        if _normalize_xml_tag(node.tag) in _NFO_ROOT_TAGS
+    ]
+    if not roots:
+        return [], f"Failed to parse NFO: {parse_error}"
+    return roots, None
+
+
+def _select_nfo_root(
+    roots: list[ET.Element],
+    media_item: MediaItem,
+) -> Optional[ET.Element]:
+    if not roots:
+        return None
+    if len(roots) == 1:
+        return roots[0]
+
+    if media_item.item_type == MediaItem.TYPE_MOVIE:
+        target_tags = {"movie"}
+    elif media_item.item_type == MediaItem.TYPE_SHOW:
+        target_tags = {"tvshow"}
+    elif media_item.item_type == MediaItem.TYPE_EPISODE:
+        target_tags = {"episodedetails", "episode"}
+    else:
+        target_tags = set(_NFO_ROOT_TAGS)
+
+    candidates = [
+        root for root in roots if _normalize_xml_tag(root.tag) in target_tags
+    ] or roots
+
+    if media_item.item_type != MediaItem.TYPE_EPISODE:
+        return candidates[0]
+
+    target_season = media_item.season_number
+    target_episode = media_item.episode_number
+    target_title = normalize_title(media_item.title or "")
+
+    if target_season is not None or target_episode is not None:
+        for root in candidates:
+            season = _parse_xml_int(_find_child_text(root, "season", "displayseason"))
+            episode = _parse_xml_int(_find_child_text(root, "episode", "displayepisode"))
+            if target_season is not None and season != target_season:
+                continue
+            if target_episode is not None and episode != target_episode:
+                continue
+            return root
+
+    if target_title:
+        for root in candidates:
+            title = _find_child_text(root, "title", "originaltitle")
+            if title and normalize_title(title) == target_title:
+                return root
+
+    return candidates[0]
+
+
+def parse_nfo_episode_entries(
+    nfo_path: str,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    roots, error = _parse_nfo_roots(nfo_path)
+    if error:
+        return [], error
+    entries: list[dict[str, Any]] = []
+    for root in roots:
+        if _normalize_xml_tag(root.tag) not in {"episodedetails", "episode"}:
+            continue
+        season = _parse_xml_int(_find_child_text(root, "season", "displayseason"))
+        episode = _parse_xml_int(_find_child_text(root, "episode", "displayepisode"))
+        title = _find_child_text(root, "title", "originaltitle")
+        plot = _find_child_text(root, "plot", "outline")
+        entries.append(
+            {
+                "season": season,
+                "episode": episode,
+                "title": title,
+                "plot": plot,
+            }
+        )
+    return entries, None
 
 
 def _find_library_base_path(file_path: str, library) -> Optional[str]:
@@ -602,7 +708,7 @@ def find_local_artwork_path(media_item: MediaItem, asset_type: str) -> Optional[
     nfo_path = _find_local_nfo_path(media_item)
     directory = os.path.dirname(nfo_path) if nfo_path else None
     if not directory:
-        file = media_item.files.filter(is_primary=True).first() or media_item.files.first()
+        file = primary_media_file_for_item(media_item)
         if file and file.path:
             directory = os.path.dirname(file.path)
             logger.debug(
@@ -645,7 +751,7 @@ def find_local_artwork_path(media_item: MediaItem, asset_type: str) -> Optional[
 
 def _find_local_nfo_path(media_item: MediaItem) -> Optional[str]:
     # Locate the most likely NFO for movies, shows, or episodes.
-    files = list(media_item.files.all())
+    files = list(media_files_for_item(media_item))
     if not files and media_item.item_type == MediaItem.TYPE_SHOW:
         episodes = list(
             MediaItem.objects.filter(parent=media_item, item_type=MediaItem.TYPE_EPISODE)
@@ -654,7 +760,7 @@ def _find_local_nfo_path(media_item: MediaItem) -> Optional[str]:
         )
         files = []
         for episode in episodes:
-            files.extend(list(episode.files.all()))
+            files.extend(list(media_files_for_item(episode)))
 
     for media_file in files:
         file_path = media_file.path
@@ -699,9 +805,12 @@ def fetch_local_nfo_metadata(
     if not nfo_path:
         return None, "No NFO file found."
 
-    root, error = _parse_nfo_root(nfo_path)
+    roots, error = _parse_nfo_roots(nfo_path)
     if error:
         return None, error
+    root = _select_nfo_root(roots, media_item)
+    if root is None:
+        return None, "NFO did not contain metadata."
 
     imdb_id, tmdb_id = _nfo_unique_ids(root)
     title = _safe_xml_text(root.find("title")) or _safe_xml_text(

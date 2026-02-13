@@ -171,6 +171,32 @@ class MediaFile(models.Model):
         return self.path
 
 
+class MediaFileLink(models.Model):
+    media_item = models.ForeignKey(
+        MediaItem, on_delete=models.CASCADE, related_name="file_links"
+    )
+    media_file = models.ForeignKey(
+        MediaFile, on_delete=models.CASCADE, related_name="item_links"
+    )
+    is_primary = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("media_item", "media_file")]
+        indexes = [
+            models.Index(fields=["media_item"], name="media_libra_media_i_3a0f5e_idx"),
+            models.Index(fields=["media_file"], name="media_libra_media_f_1a08ab_idx"),
+            models.Index(
+                fields=["media_item", "is_primary"],
+                name="media_libra_media_i_65c73b_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.media_item.title} -> {self.media_file.path}"
+
+
 class MediaItemVODLink(models.Model):
     media_item = models.OneToOneField(
         MediaItem, on_delete=models.CASCADE, related_name="vod_link"

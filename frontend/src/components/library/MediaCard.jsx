@@ -1,10 +1,11 @@
-import React, { memo, useEffect, useMemo, useState } from 'react';
+import React, { memo, useMemo } from 'react';
 import {
   Badge,
   Box,
   Card,
+  CardSection,
   Image,
-  RingProgress,
+  Group,
   Stack,
   Text,
 } from '@mantine/core';
@@ -17,8 +18,21 @@ const typeIcon = {
   show: <LibraryIcon size={18} />,
 };
 
+const typeLabel = {
+  movie: 'Movie',
+  episode: 'Episode',
+  show: 'Series',
+};
+
+const typeColor = {
+  movie: 'green',
+  episode: 'blue',
+  show: 'violet',
+};
+
 const POSTER_ASPECT_RATIO = 2 / 3;
-const CARD_PADDING = 10;
+const CARD_PADDING = 16;
+const TMDB_CARD_POSTER_SIZE = 'w342';
 
 const POSTER_HEIGHT = {
   sm: 180,
@@ -27,15 +41,15 @@ const POSTER_HEIGHT = {
 };
 
 const TITLE_BAR_HEIGHT = {
-  sm: 28,
-  md: 30,
-  lg: 32,
+  sm: 0,
+  md: 0,
+  lg: 0,
 };
 
 const FOOTER_HEIGHT = {
-  sm: 30,
-  md: 32,
-  lg: 34,
+  sm: 124,
+  md: 128,
+  lg: 132,
 };
 
 export const getMediaCardDimensions = (size = 'md') => {
@@ -44,7 +58,9 @@ export const getMediaCardDimensions = (size = 'md') => {
   const footerHeight = FOOTER_HEIGHT[size] ?? FOOTER_HEIGHT.md;
   const posterWidth = Math.round(posterHeight * POSTER_ASPECT_RATIO);
   const cardWidth = posterWidth + CARD_PADDING * 2;
-  const cardHeight = posterHeight + footerHeight;
+  // Account for Mantine Card vertical padding so virtualization row heights align
+  // with the true rendered card box and rows do not overlap.
+  const cardHeight = posterHeight + titleBarHeight + footerHeight + CARD_PADDING * 2;
   return {
     posterHeight,
     titleBarHeight,
@@ -72,6 +88,17 @@ const resolveArtworkUrl = (url, envMode) => {
   return url;
 };
 
+const toCardPosterUrl = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  if (!/^https?:\/\/image\.tmdb\.org\/t\/p\//i.test(url)) {
+    return url;
+  }
+  return url.replace(
+    /\/t\/p\/(?:original|w\d+)\//i,
+    `/t/p/${TMDB_CARD_POSTER_SIZE}/`
+  );
+};
+
 const MediaCard = ({
   item,
   onClick,
@@ -81,54 +108,15 @@ const MediaCard = ({
   style = {},
 }) => {
   const envMode = useSettingsStore((s) => s.environment.env_mode);
-  const [isTouch, setIsTouch] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isFocused, setIsFocused] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mediaQuery = window.matchMedia('(hover: none)');
-    const updateTouchState = () => {
-      setIsTouch(mediaQuery.matches || navigator.maxTouchPoints > 0);
-    };
-    updateTouchState();
-    if (mediaQuery.addEventListener) {
-      mediaQuery.addEventListener('change', updateTouchState);
-      return () => mediaQuery.removeEventListener('change', updateTouchState);
-    }
-    mediaQuery.addListener(updateTouchState);
-    return () => mediaQuery.removeListener(updateTouchState);
-  }, []);
-
-  const handleClick = (event) => {
-    if (isTouch && !isExpanded) {
-      event.preventDefault();
-      event.stopPropagation();
-      setIsExpanded(true);
-      return;
-    }
-    setIsExpanded(false);
+  const handleClick = () => {
     onClick?.(item);
   };
 
   const handleKeyDown = (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      handleClick(event);
-    }
-  };
-
-  const handleBlur = () => {
-    setIsFocused(false);
-    if (!isTouch) return;
-    setIsExpanded(false);
-  };
-
-  const handleMouseLeave = () => {
-    setIsHovered(false);
-    if (!isTouch) {
-      setIsExpanded(false);
+      handleClick();
     }
   };
 
@@ -139,70 +127,64 @@ const MediaCard = ({
     }
   };
 
-  const { posterHeight, titleBarHeight, cardWidth, cardHeight } =
+  const { posterHeight, footerHeight, cardWidth, cardHeight } =
     getMediaCardDimensions(size);
-  const minCardHeight = cardHeight;
   const progress = item.watch_progress;
   const watchSummary = item.watch_summary;
   const status = watchSummary?.status;
   const runtimeText = formatRuntime(item.runtime_ms);
   const posterUrl = useMemo(
-    () => resolveArtworkUrl(item.poster_url, envMode),
+    () => resolveArtworkUrl(toCardPosterUrl(item.poster_url), envMode),
     [item.poster_url, envMode]
   );
   const hasGenres = Array.isArray(item.genres) && item.genres.length > 0;
   const hasPoster = Boolean(posterUrl);
   const showEpisodeBadge =
     item.item_type === 'show' && watchSummary?.total_episodes;
-  const isActive = isExpanded || (!isTouch && isHovered) || isFocused;
-  const titleBarExpandedHeight = Math.round(posterHeight * 0.55);
+  const progressPercent = Number.isFinite(progress?.percentage)
+    ? Math.max(0, Math.min(100, Math.round(progress.percentage * 100)))
+    : null;
+  const progressLabel = progress?.completed ? 'Watched' : 'In progress';
+  const statusText =
+    status === 'in_progress' ? 'In progress' : status === 'watched' ? 'Watched' : null;
   const metaText = useMemo(() => {
     const parts = [];
     if (hasGenres) {
       parts.push(item.genres[0]);
-    }
-    if (runtimeText) {
-      parts.push(runtimeText);
     }
     if (showEpisodeBadge) {
       parts.push(
         `${watchSummary?.completed_episodes || 0}/${watchSummary?.total_episodes} eps`
       );
     }
-    if (status === 'in_progress') {
-      parts.push('In progress');
-    } else if (status === 'watched') {
-      parts.push('Watched');
+    if (statusText) {
+      parts.push(statusText);
     }
-    if (showTypeBadge && item.item_type) {
-      parts.push(item.item_type);
-    }
-    return parts.filter(Boolean).join(' | ');
+    return parts.filter(Boolean).join(' • ');
   }, [
     hasGenres,
     item.genres,
-    item.item_type,
-    runtimeText,
     showEpisodeBadge,
-    showTypeBadge,
-    status,
+    statusText,
     watchSummary,
   ]);
+  const itemTypeLabel = typeLabel[item.item_type] || 'Media';
+  const itemTypeColor = typeColor[item.item_type] || 'gray';
 
   return (
     <Card
       shadow="sm"
-      padding={CARD_PADDING}
+      padding="md"
       radius="md"
       withBorder
       tabIndex={0}
       role="button"
       style={{
         cursor: 'pointer',
-        background: 'rgba(12, 15, 27, 0.75)',
+        backgroundColor: '#27272A',
         display: 'flex',
         flexDirection: 'column',
-        minHeight: minCardHeight,
+        minHeight: cardHeight,
         width: cardWidth,
         maxWidth: cardWidth,
         margin: '0 auto',
@@ -211,177 +193,88 @@ const MediaCard = ({
       }}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
-      onFocus={() => setIsFocused(true)}
-      onBlur={handleBlur}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={handleMouseLeave}
       onKeyDown={handleKeyDown}
     >
-      <Stack spacing={8} style={{ flex: 1 }}>
+      <CardSection>
         <Box
           style={{
             position: 'relative',
-            borderRadius: 12,
             overflow: 'hidden',
-            background: 'rgba(12, 17, 32, 0.75)',
+            backgroundColor: '#3f3f46',
             height: posterHeight,
           }}
         >
-          <Box
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'rgba(5, 7, 12, 0.2)',
-              opacity: isActive ? 0.08 : 0,
-              transition: 'opacity 180ms cubic-bezier(0.2, 0, 0, 1)',
-              zIndex: 1,
-              pointerEvents: 'none',
-            }}
-          />
           {hasPoster ? (
             <Image
               src={posterUrl}
               alt={item.title}
-              height="100%"
-              width="100%"
-              fit="contain"
+              height={posterHeight}
+              fit="cover"
               loading="lazy"
               decoding="async"
-              style={{ position: 'absolute', inset: 0 }}
             />
           ) : (
             <Stack
               align="center"
               justify="center"
-              h="100%"
+              h={posterHeight}
               style={{
-                position: 'relative',
-                zIndex: 2,
-                color: '#e2e8f0',
+                color: '#a1a1aa',
                 textAlign: 'center',
-                background:
-                  'linear-gradient(160deg, rgba(59, 130, 246, 0.3), rgba(15, 23, 42, 0.8))',
+                backgroundColor: '#3f3f46',
               }}
             >
               {typeIcon[item.item_type] || <LibraryIcon size={24} />}
-              <Text size="sm" fw={600} ta="center" px="sm" lineClamp={2}>
+              <Text size="sm" fw={600} ta="center" px="sm" lineClamp={2} c="#e4e4e7">
                 {item.title}
               </Text>
             </Stack>
           )}
-          {progress && progress.percentage ? (
-            <RingProgress
-              style={{ position: 'absolute', top: 10, right: 10, zIndex: 3 }}
-              size={48}
-              thickness={4}
-              sections={[
-                {
-                  value: Math.min(100, progress.percentage * 100),
-                  color: progress.completed ? 'green' : 'cyan',
-                },
-              ]}
-              label={
-                <Text size="xs" c="white">
-                  {Math.round(progress.percentage * 100)}%
-                </Text>
-              }
-            />
-          ) : null}
-          {hasPoster ? (
-            <Box
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: 0,
-                zIndex: 2,
-                padding: '6px 10px 8px',
-                background: isActive
-                  ? 'rgba(6, 8, 12, 0.88)'
-                  : 'rgba(9, 11, 16, 0.78)',
-                backdropFilter: 'blur(6px)',
-                height: isActive ? 'auto' : titleBarHeight,
-                maxHeight: isActive ? titleBarExpandedHeight : titleBarHeight,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                overflow: 'hidden',
-                transition:
-                  'max-height 200ms cubic-bezier(0.2, 0, 0, 1), background 200ms cubic-bezier(0.2, 0, 0, 1)',
-              }}
-            >
-              <Box style={{ position: 'relative' }}>
-                <Text
-                  fw={600}
-                  lineClamp={isActive ? 4 : 1}
-                  style={{
-                    fontSize: 13,
-                    lineHeight: 1.2,
-                    color: '#f8fafc',
-                  }}
-                >
-                  {item.title}
-                </Text>
-                <Box
-                  style={{
-                    position: 'absolute',
-                    right: 0,
-                    top: 0,
-                    height: '100%',
-                    width: '30%',
-                    opacity: isActive ? 0 : 1,
-                    transition: 'opacity 160ms cubic-bezier(0.2, 0, 0, 1)',
-                    background:
-                      'linear-gradient(90deg, rgba(9, 11, 16, 0) 0%, rgba(9, 11, 16, 0.9) 65%, rgba(9, 11, 16, 1) 100%)',
-                    pointerEvents: 'none',
-                  }}
-                />
-              </Box>
-              {metaText ? (
-                <Text
-                  size="xs"
-                  c="dimmed"
-                  lineClamp={2}
-                  style={{
-                    opacity: isActive ? 1 : 0,
-                    maxHeight: isActive ? 48 : 0,
-                    overflow: 'hidden',
-                    transition:
-                      'opacity 160ms cubic-bezier(0.2, 0, 0, 1), max-height 160ms cubic-bezier(0.2, 0, 0, 1)',
-                  }}
-                >
-                  {metaText}
-                </Text>
-              ) : null}
-            </Box>
-          ) : null}
-        </Box>
-        <Box
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            minHeight: 22,
-          }}
-        >
-          {item.release_year ? (
-            <Badge
-              size="xs"
-              radius="xl"
-              variant="outline"
-              color="gray"
-              style={{
-                fontSize: 11,
-                letterSpacing: 0.3,
-                color: '#cbd5f5',
-                borderColor: 'rgba(148, 163, 184, 0.6)',
-              }}
-            >
-              {item.release_year}
+
+          {showTypeBadge ? (
+            <Badge pos="absolute" bottom={8} left={8} color={itemTypeColor}>
+              {itemTypeLabel}
             </Badge>
-          ) : (
-            <Box style={{ height: 22 }} />
-          )}
+          ) : null}
+
+          {progressPercent !== null && progressPercent > 0 ? (
+            <Badge
+              pos="absolute"
+              top={8}
+              right={8}
+              color={progress?.completed ? 'teal' : 'blue'}
+            >
+              {progressPercent}% {progressLabel}
+            </Badge>
+          ) : null}
         </Box>
+      </CardSection>
+
+      <Stack spacing={8} mt="md" style={{ flex: 1, minHeight: footerHeight }}>
+        <Text fw={500} lineClamp={2}>
+          {item.title}
+        </Text>
+
+        <Group spacing={10}>
+          {item.release_year ? (
+            <Text size="xs" c="dimmed">
+              {item.release_year}
+            </Text>
+          ) : null}
+          {runtimeText ? (
+            <Text size="xs" c="dimmed">
+              {runtimeText}
+            </Text>
+          ) : null}
+        </Group>
+
+        {metaText ? (
+          <Text size="xs" c="dimmed" lineClamp={2}>
+            {metaText}
+          </Text>
+        ) : (
+          <Box h={16} />
+        )}
       </Stack>
     </Card>
   );

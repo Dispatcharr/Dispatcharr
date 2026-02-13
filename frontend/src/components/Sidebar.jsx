@@ -217,7 +217,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       {/* Navigation Links */}
       <Stack gap="xs" mt="lg">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          const isMediaLibraryItem = item.path === '/library/movies';
+          const isActive = isMediaLibraryItem
+            ? /^\/library(?:\/|$)/.test(location.pathname)
+            : location.pathname === item.path;
 
           return (
             <NavLink

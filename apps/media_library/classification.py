@@ -292,8 +292,11 @@ def classify_media_entry(
             data["season"] = season_number
         if episode_number is not None:
             data["episode"] = episode_number
+        episode_list_sorted: list[int] = []
         if episode_list:
-            episode_list_sorted = sorted({n for n in episode_list if isinstance(n, int)})
+            episode_list_sorted = sorted(
+                {n for n in episode_list if isinstance(n, int)}
+            )
             if episode_list_sorted:
                 data["episode_list"] = episode_list_sorted
         if series_name:
@@ -305,6 +308,7 @@ def classify_media_entry(
             year=guess_data.get("year"),
             season=season_number,
             episode=episode_number,
+            episode_list=episode_list_sorted or None,
             episode_title=episode_title or None,
             data=data,
         )

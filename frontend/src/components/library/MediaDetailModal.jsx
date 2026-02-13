@@ -46,11 +46,54 @@ const CAST_TILE_WIDTH = 88;     // was 116
 const CAST_TILE_HEIGHT = 122;   // was 160
 const CAST_AVATAR_SIZE = 64;    // was 80
 const CAST_GAP = 6;             // was "md" (~16)
-const CAST_TILE_SPACING = 1;
+const CAST_TILE_SPACING = 0;
 const STACK_TIGHT = 4;          // was 6
 const SECTION_STACK = 12;       // was larger in some places
-const DETAIL_SCROLL_HEIGHT = '82vh';
+const CREDITS_SECTION_GAP = 2;
+const CREDITS_INNER_GAP = 2;
+const CREDITS_SCROLL_PADDING = 8;
+const CREDIT_NAME_MIN_HEIGHT = 18;
+const CREDIT_ROLE_MIN_HEIGHT = 8;
+const DETAIL_LOWER_SCROLL_MAX_HEIGHT = '42vh';
 const DETAIL_POSTER_MAX_HEIGHT = '72vh';
+const EXTRAS_SEASON_KEY = 'extras';
+const EXTRAS_SEASON_LABEL = 'Extras';
+const isExtrasSeasonNumber = (seasonNumber) =>
+  seasonNumber == null || seasonNumber === 0;
+const seasonKeyFromNumber = (seasonNumber) =>
+  isExtrasSeasonNumber(seasonNumber) ? EXTRAS_SEASON_KEY : String(seasonNumber);
+
+const compareEpisodes = (a, b) => {
+  const seasonA = isExtrasSeasonNumber(a.season_number)
+    ? Number.POSITIVE_INFINITY
+    : a.season_number ?? 0;
+  const seasonB = isExtrasSeasonNumber(b.season_number)
+    ? Number.POSITIVE_INFINITY
+    : b.season_number ?? 0;
+  if (seasonA !== seasonB) return seasonA - seasonB;
+  const episodeA = a.episode_number ?? 0;
+  const episodeB = b.episode_number ?? 0;
+  if (episodeA !== episodeB) return episodeA - episodeB;
+  return (a.sort_title || '').localeCompare(b.sort_title || '');
+};
+
+const sameEpisodeId = (a, b) => String(a) === String(b);
+
+const primaryFileForEpisode = (episode) =>
+  Array.isArray(episode?.files) && episode.files.length > 0
+    ? episode.files[0]
+    : null;
+
+const episodeGroupKey = (episode) => {
+  const file = primaryFileForEpisode(episode);
+  if (file?.id != null) {
+    return `file:${file.id}`;
+  }
+  if (file?.path) {
+    return `path:${file.path}`;
+  }
+  return `episode:${episode.id}`;
+};
 // ----------------------------
 
 const runtimeLabel = (runtimeMs) => {
@@ -79,6 +122,114 @@ const getEmbedUrl = (url) => {
   return `https://www.youtube.com/embed/${videoId}`;
 };
 
+const CreditStrip = ({ people, avatarColor }) => {
+  const viewportRef = useRef(null);
+  const contentRef = useRef(null);
+  const [hasOverflow, setHasOverflow] = useState(false);
+
+  const measureOverflow = useCallback(() => {
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) {
+      setHasOverflow(false);
+      return;
+    }
+    setHasOverflow(content.scrollWidth - viewport.clientWidth > 2);
+  }, []);
+
+  useEffect(() => {
+    measureOverflow();
+  }, [measureOverflow, people]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver(() => {
+      measureOverflow();
+    });
+    observer.observe(viewport);
+    observer.observe(content);
+
+    return () => observer.disconnect();
+  }, [measureOverflow, people]);
+
+  if (!Array.isArray(people) || people.length === 0) {
+    return null;
+  }
+
+  return (
+    <ScrollArea
+      w="100%"
+      scrollbars="x"
+      type={hasOverflow ? 'hover' : 'never'}
+      scrollbarSize={hasOverflow ? 8 : 0}
+      viewportRef={viewportRef}
+      styles={{
+        root: { width: '100%' },
+        viewport: {
+          paddingBottom: hasOverflow ? rem(CREDITS_SCROLL_PADDING) : 0,
+          overflowY: 'hidden',
+        },
+      }}
+    >
+      <Group
+        ref={contentRef}
+        gap={CAST_GAP}
+        wrap="nowrap"
+        style={{ width: 'max-content', minWidth: '100%' }}
+      >
+        {people.map((person) => (
+          <Stack
+            key={person.key}
+            spacing={CAST_TILE_SPACING}
+            align="center"
+            style={{
+              width: rem(CAST_TILE_WIDTH),
+              height: rem(CAST_TILE_HEIGHT),
+              flex: `0 0 ${rem(CAST_TILE_WIDTH)}`,
+            }}
+          >
+            <Avatar
+              size={CAST_AVATAR_SIZE}
+              radius="md"
+              src={person.profile || undefined}
+              alt={person.name}
+              color={avatarColor}
+              styles={{ image: { objectFit: 'cover' } }}
+            >
+              {!person.profile && person.name?.[0]}
+            </Avatar>
+            <Text
+              size="xs"
+              fw={600}
+              ta="center"
+              lineClamp={2}
+              style={{ minHeight: CREDIT_NAME_MIN_HEIGHT, lineHeight: 1.1 }}
+            >
+              {person.name}
+            </Text>
+            {person.role && (
+              <Text
+                size="xs"
+                c="dimmed"
+                ta="center"
+                lineClamp={1}
+                style={{ minHeight: CREDIT_ROLE_MIN_HEIGHT, lineHeight: 1.05 }}
+              >
+                {person.role}
+              </Text>
+            )}
+          </Stack>
+        ))}
+      </Group>
+    </ScrollArea>
+  );
+};
+
 const MediaDetailModal = ({ opened, onClose }) => {
   const activeItem = useMediaLibraryStore((s) => s.activeItem);
   const activeItemLoading = useMediaLibraryStore((s) => s.activeItemLoading);
@@ -87,7 +238,6 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const resumePrompt = useMediaLibraryStore((s) => s.resumePrompt);
   const requestResume = useMediaLibraryStore((s) => s.requestResume);
   const clearResumePrompt = useMediaLibraryStore((s) => s.clearResumePrompt);
-  const setActiveProgress = useMediaLibraryStore((s) => s.setActiveProgress);
   const pollItem = useMediaLibraryStore((s) => s.pollItem);
   const showVideo = useVideoStore((s) => s.showVideo);
   const userLevel = useAuthStore((s) => s.user?.user_level ?? 0);
@@ -132,7 +282,8 @@ const MediaDetailModal = ({ opened, onClose }) => {
     setEpisodesLoading(true);
     try {
       const results = await API.getMediaItemEpisodes(activeItem.id);
-      setEpisodes(Array.isArray(results) ? results : []);
+      const loadedEpisodes = Array.isArray(results) ? results : [];
+      setEpisodes(loadedEpisodes);
       setExpandedEpisodeIds(new Set());
     } catch (error) {
       console.error('Failed to load episodes for show', error);
@@ -158,16 +309,13 @@ const MediaDetailModal = ({ opened, onClose }) => {
 
   const orderedEpisodes = useMemo(() => {
     if (!episodes || episodes.length === 0) return [];
-    return [...episodes].sort((a, b) => {
-      const seasonA = a.season_number ?? 0;
-      const seasonB = b.season_number ?? 0;
-      if (seasonA !== seasonB) return seasonA - seasonB;
-      const episodeA = a.episode_number ?? 0;
-      const episodeB = b.episode_number ?? 0;
-      if (episodeA !== episodeB) return episodeA - episodeB;
-      return (a.sort_title || '').localeCompare(b.sort_title || '');
-    });
+    return [...episodes].sort(compareEpisodes);
   }, [episodes]);
+
+  const watchableEpisodes = useMemo(
+    () => orderedEpisodes.filter((episode) => !isExtrasSeasonNumber(episode.season_number)),
+    [orderedEpisodes]
+  );
 
   const showWatchSummary = activeItem?.watch_summary || null;
   const itemWatchSummary =
@@ -246,7 +394,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const playbackPlan = useMemo(() => {
     if (!activeItem || activeItem.item_type !== 'show') return null;
 
-    const sorted = orderedEpisodes;
+    const sorted = watchableEpisodes;
     if (!sorted || sorted.length === 0) {
       return { sorted: [], resumeEpisode: null, nextEpisode: null };
     }
@@ -269,7 +417,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
       }
     }
     return { sorted, resumeEpisode, nextEpisode };
-  }, [activeItem, orderedEpisodes, showWatchSummary]);
+  }, [activeItem, watchableEpisodes, showWatchSummary]);
 
   const metadataPending = useMemo(() => {
     if (!activeItem) return false;
@@ -446,7 +594,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
     if (!activeItem) return;
     if (activeItem.item_type === 'show') {
       const candidateSequence =
-        playbackPlan?.sorted?.length ? playbackPlan.sorted : orderedEpisodes;
+        playbackPlan?.sorted?.length ? playbackPlan.sorted : watchableEpisodes;
       const targetEpisode =
         playbackPlan?.resumeEpisode ||
         playbackPlan?.nextEpisode ||
@@ -491,14 +639,16 @@ const MediaDetailModal = ({ opened, onClose }) => {
 
   const handlePlayEpisode = async (
     episode,
-    { sequence = orderedEpisodes, startIndex = null } = {}
+    { sequence = watchableEpisodes, startIndex = null } = {}
   ) => {
     if (!episode) return;
     setEpisodePlayLoadingId(episode.id);
     try {
-      const episodeDetail = await API.getMediaItem(episode.id, {
-        suppressErrorNotification: true,
-      });
+      const episodeDetail = Array.isArray(episode.files)
+        ? episode
+        : await API.getMediaItem(episode.id, {
+            suppressErrorNotification: true,
+          });
       const episodeFileId = episodeDetail.files?.[0]?.id;
       if (!episodeFileId) {
         notifications.show({
@@ -509,17 +659,51 @@ const MediaDetailModal = ({ opened, onClose }) => {
         return;
       }
 
-      const baseSequence =
-        Array.isArray(sequence) && sequence.length ? sequence : orderedEpisodes;
-      const effectiveSequence =
-        baseSequence && baseSequence.length ? baseSequence : [episodeDetail];
-      const episodeIds = effectiveSequence.map((ep) => ep.id);
-      const computedIndex =
-        startIndex ?? episodeIds.findIndex((id) => id === episodeDetail.id);
+      let effectiveSequence = Array.isArray(sequence)
+        ? sequence.filter((entry) => entry && entry.id != null)
+        : [];
+      if (
+        effectiveSequence.length <= 1 &&
+        activeItem?.item_type === 'show' &&
+        activeItem?.id
+      ) {
+        const fallbackSequence = watchableEpisodes.length
+          ? watchableEpisodes
+          : orderedEpisodes;
+        if (fallbackSequence.length > 0) {
+          effectiveSequence = fallbackSequence;
+        }
+      }
+      if (!effectiveSequence.length) {
+        effectiveSequence = [episodeDetail];
+      }
+
+      let episodeIds = effectiveSequence.map((ep) => ep.id).filter((id) => id != null);
+      if (!episodeIds.some((id) => sameEpisodeId(id, episodeDetail.id))) {
+        const insertAt =
+          Number.isInteger(startIndex) && startIndex >= 0
+            ? Math.min(startIndex, episodeIds.length)
+            : 0;
+        episodeIds = [
+          ...episodeIds.slice(0, insertAt),
+          episodeDetail.id,
+          ...episodeIds.slice(insertAt),
+        ];
+      }
+
+      let computedIndex =
+        Number.isInteger(startIndex) &&
+        startIndex >= 0 &&
+        startIndex < episodeIds.length
+          ? startIndex
+          : episodeIds.findIndex((id) => sameEpisodeId(id, episodeDetail.id));
+      if (computedIndex < 0) {
+        computedIndex = 0;
+      }
 
       const playbackSequence =
         episodeIds.length > 1
-          ? { episodeIds, currentIndex: computedIndex >= 0 ? computedIndex : 0 }
+          ? { episodeIds, currentIndex: computedIndex }
           : null;
 
       const episodeProgress = episodeDetail.watch_progress;
@@ -590,22 +774,77 @@ const MediaDetailModal = ({ opened, onClose }) => {
   const episodesBySeason = useMemo(() => {
     const grouped = new Map();
     orderedEpisodes.forEach((episode) => {
-      const season = episode.season_number || 1;
-      if (!grouped.has(season)) grouped.set(season, []);
-      grouped.get(season).push(episode);
+      const seasonKey = seasonKeyFromNumber(episode.season_number);
+      if (!grouped.has(seasonKey)) grouped.set(seasonKey, []);
+      grouped.get(seasonKey).push(episode);
     });
     return grouped;
   }, [orderedEpisodes]);
 
-  const sortedSeasons = useMemo(
-    () => Array.from(episodesBySeason.keys()).sort((a, b) => a - b),
-    [episodesBySeason]
+  const sortedSeasonKeys = useMemo(() => {
+    const keys = Array.from(episodesBySeason.keys());
+    const numeric = keys
+      .filter((key) => key !== EXTRAS_SEASON_KEY)
+      .map((key) => Number(key))
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => a - b)
+      .map((value) => String(value));
+    if (keys.includes(EXTRAS_SEASON_KEY)) {
+      numeric.push(EXTRAS_SEASON_KEY);
+    }
+    return numeric;
+  }, [episodesBySeason]);
+
+  const nonExtrasSeasonKeys = useMemo(
+    () => sortedSeasonKeys.filter((key) => key !== EXTRAS_SEASON_KEY),
+    [sortedSeasonKeys]
   );
 
   const visibleEpisodes = useMemo(() => {
-    if (!selectedSeason) return [];
+    if (selectedSeason == null) return [];
     return episodesBySeason.get(selectedSeason) || [];
   }, [episodesBySeason, selectedSeason]);
+
+  const groupedVisibleEpisodes = useMemo(() => {
+    if (!visibleEpisodes.length) return [];
+
+    const grouped = new Map();
+    visibleEpisodes.forEach((episode) => {
+      const groupId = episodeGroupKey(episode);
+      if (!grouped.has(groupId)) {
+        grouped.set(groupId, []);
+      }
+      grouped.get(groupId).push(episode);
+    });
+
+    return Array.from(grouped.entries())
+      .map(([groupId, groupEpisodes]) => {
+        const episodes = [...groupEpisodes].sort(compareEpisodes);
+        const representative = episodes[0];
+        const watchedCount = episodes.filter(
+          (entry) => entry.watch_summary?.status === 'watched'
+        ).length;
+        const inProgressCount = episodes.filter(
+          (entry) => entry.watch_summary?.status === 'in_progress'
+        ).length;
+        const isMultiEpisode = episodes.length > 1;
+        let status = 'unwatched';
+        if (watchedCount === episodes.length) {
+          status = 'watched';
+        } else if (inProgressCount > 0 || watchedCount > 0) {
+          status = 'in_progress';
+        }
+        return {
+          id: groupId,
+          episodes,
+          representative,
+          watchedCount,
+          isMultiEpisode,
+          status,
+        };
+      })
+      .sort((a, b) => compareEpisodes(a.representative, b.representative));
+  }, [visibleEpisodes]);
 
   const formatEpisodeCode = (episode) => {
     const season = episode.season_number || 0;
@@ -731,17 +970,25 @@ const MediaDetailModal = ({ opened, onClose }) => {
 
   const seasonOptions = useMemo(
     () =>
-      sortedSeasons.map((season) => ({
-        value: String(season),
-        label: `Season ${season}`,
+      sortedSeasonKeys.map((seasonKey) => ({
+        value: seasonKey,
+        label:
+          seasonKey === EXTRAS_SEASON_KEY
+            ? EXTRAS_SEASON_LABEL
+            : `Season ${seasonKey}`,
       })),
-    [sortedSeasons]
+    [sortedSeasonKeys]
   );
 
-  const resumeSeasonNumber = playbackPlan?.resumeEpisode?.season_number ?? null;
+  const resumeCandidate =
+    playbackPlan?.resumeEpisode || playbackPlan?.nextEpisode || null;
+  const resumeSeasonKey =
+    resumeCandidate && !isExtrasSeasonNumber(resumeCandidate.season_number)
+      ? String(resumeCandidate.season_number)
+      : null;
 
   useEffect(() => {
-    if (!sortedSeasons.length) {
+    if (!sortedSeasonKeys.length) {
       if (selectedSeason !== null) {
         setSelectedSeason(null);
       }
@@ -750,11 +997,11 @@ const MediaDetailModal = ({ opened, onClose }) => {
       return;
     }
 
-    if (resumeSeasonNumber && sortedSeasons.includes(resumeSeasonNumber)) {
-      const resumeChanged = lastResumeSeasonRef.current !== resumeSeasonNumber;
+    if (resumeSeasonKey && nonExtrasSeasonKeys.includes(resumeSeasonKey)) {
+      const resumeChanged = lastResumeSeasonRef.current !== resumeSeasonKey;
       if (!seasonManuallySelected || resumeChanged) {
-        lastResumeSeasonRef.current = resumeSeasonNumber;
-        setSelectedSeason(resumeSeasonNumber);
+        lastResumeSeasonRef.current = resumeSeasonKey;
+        setSelectedSeason(resumeSeasonKey);
         setSeasonManuallySelected(false);
         return;
       }
@@ -762,12 +1009,29 @@ const MediaDetailModal = ({ opened, onClose }) => {
       lastResumeSeasonRef.current = null;
     }
 
-    if (selectedSeason === null || !sortedSeasons.includes(selectedSeason)) {
-      const fallback = sortedSeasons[0];
-      setSelectedSeason(fallback);
-      setSeasonManuallySelected(false);
+    const hasValidSelection =
+      selectedSeason !== null && sortedSeasonKeys.includes(selectedSeason);
+    if (seasonManuallySelected && hasValidSelection) {
+      return;
     }
-  }, [sortedSeasons, resumeSeasonNumber, seasonManuallySelected, selectedSeason]);
+
+    if (!hasValidSelection || selectedSeason === EXTRAS_SEASON_KEY) {
+      const fallback = nonExtrasSeasonKeys[0] || null;
+      if (fallback) {
+        setSelectedSeason(fallback);
+        setSeasonManuallySelected(false);
+      } else if (!seasonManuallySelected && selectedSeason !== null) {
+        setSelectedSeason(null);
+        setSeasonManuallySelected(false);
+      }
+    }
+  }, [
+    sortedSeasonKeys,
+    nonExtrasSeasonKeys,
+    resumeSeasonKey,
+    seasonManuallySelected,
+    selectedSeason,
+  ]);
 
   useEffect(() => {
     setExpandedEpisodeIds(new Set());
@@ -793,6 +1057,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
           },
           body: {
             background: 'transparent',
+            overflowX: 'hidden',
           },
         }}
         title={
@@ -820,9 +1085,8 @@ const MediaDetailModal = ({ opened, onClose }) => {
         ) : !activeItem ? (
           <Text c="dimmed">Select a media item to see its details.</Text>
         ) : (
-          <ScrollArea.Autosize mah={DETAIL_SCROLL_HEIGHT} offsetScrollbars>
-            <Stack spacing="xl">
-              <Group align="flex-start" gap="xl" wrap="wrap">
+          <Stack spacing="xl" style={{ width: '100%', minWidth: 0 }}>
+              <Group align="flex-start" gap="xl" wrap="wrap" style={{ width: '100%', minWidth: 0 }}>
                 {posterUrl ? (
                   <Box w={{ base: '100%', sm: 240 }} style={{ flexShrink: 0, maxWidth: 260 }}>
                     <Box
@@ -847,10 +1111,10 @@ const MediaDetailModal = ({ opened, onClose }) => {
                   </Box>
                 ) : null}
 
-                <Stack
-                  spacing={SECTION_STACK}
-                  style={{ flex: 1, minWidth: 0 }}
-                >
+                  <Stack
+                    spacing={SECTION_STACK}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
                   {metadataPending && (
                     <Alert
                       color="yellow"
@@ -862,9 +1126,11 @@ const MediaDetailModal = ({ opened, onClose }) => {
                     </Alert>
                   )}
                   <Stack spacing={STACK_TIGHT} style={{ flex: 1 }}>
-                    <Group justify="space-between" align="center">
-                      <Title order={3}>{activeItem.title}</Title>
-                      <Group gap="xs">
+                    <Group justify="space-between" align="center" wrap="wrap" gap="xs">
+                      <Title order={3} style={{ minWidth: 0, wordBreak: 'break-word' }}>
+                        {activeItem.title}
+                      </Title>
+                      <Group gap="xs" wrap="wrap">
                         {activeItem.release_year && (
                           <Badge variant="outline">{activeItem.release_year}</Badge>
                         )}
@@ -890,12 +1156,12 @@ const MediaDetailModal = ({ opened, onClose }) => {
                     </Group>
 
                     {activeItem.synopsis && (
-                      <Text size="sm" c="dimmed">
+                      <Text size="sm" c="dimmed" style={{ overflowWrap: 'anywhere' }}>
                         {activeItem.synopsis}
                       </Text>
                     )}
 
-                    <Group gap="lg" mt="sm">
+                    <Group gap="lg" mt="sm" wrap="wrap">
                       {runtimeLabel(activeItem.runtime_ms || files[0]?.duration_ms) && (
                         <Group gap={4} align="center">
                           <Clock size={18} />
@@ -905,7 +1171,7 @@ const MediaDetailModal = ({ opened, onClose }) => {
                         </Group>
                       )}
                       {activeItem.genres && (
-                        <Group gap={6}>
+                        <Group gap={6} wrap="wrap">
                           {activeItem.genres.map((genre) => (
                             <Badge key={genre} variant="light">
                               {genre}
@@ -1006,80 +1272,150 @@ const MediaDetailModal = ({ opened, onClose }) => {
                 </Stack>
               </Group>
 
-              {activeItem.item_type === 'show' && (
-                <Stack spacing={STACK_TIGHT} style={{ width: '100%' }}>
-                  <Divider label="Episodes" labelPosition="center" />
-                  {episodesLoading ? (
+	              {(activeItem.item_type === 'show' || hasCredits) ? (
+	                <Box
+	                  style={{
+	                    width: '100%',
+	                    maxHeight: DETAIL_LOWER_SCROLL_MAX_HEIGHT,
+	                    overflowY: 'auto',
+	                    overflowX: 'hidden',
+	                    paddingRight: rem(4),
+	                  }}
+	                >
+	                  <Stack spacing="xl" style={{ width: '100%', minWidth: 0 }}>
+	              {activeItem.item_type === 'show' && (
+	                <Stack spacing={STACK_TIGHT} style={{ width: '100%' }}>
+	                  <Divider label="Episodes" labelPosition="center" />
+	                  {episodesLoading ? (
                     <Group justify="center" py="md">
                       <Loader size="sm" />
                     </Group>
-                  ) : sortedSeasons.length === 0 ? (
+                  ) : sortedSeasonKeys.length === 0 ? (
                     <Text size="sm" c="dimmed">
                       No episodes discovered yet.
                     </Text>
                   ) : (
                     <Stack spacing="md">
-                      <Group justify="space-between" align="center">
-                        <Select
+	                      <Group justify="space-between" align="center" wrap="wrap" gap="sm">
+	                        <Select
                           label="Season"
                           data={seasonOptions}
-                          value={
-                            selectedSeason != null ? String(selectedSeason) : null
-                          }
+                          value={selectedSeason}
                           onChange={(value) => {
                             setSeasonManuallySelected(true);
-                            setSelectedSeason(value ? Number(value) : null);
+                            setSelectedSeason(value || null);
                           }}
                           placeholder="Select season"
                           allowDeselect={false}
                           w={220}
                         />
-                        <Badge variant="outline" size="xs">
-                          {visibleEpisodes.length} episode
-                          {visibleEpisodes.length === 1 ? '' : 's'}
-                        </Badge>
+	                        <Badge variant="outline" size="xs">
+	                          {visibleEpisodes.length} episode
+	                          {visibleEpisodes.length === 1 ? '' : 's'}
+	                        </Badge>
                       </Group>
-                      {visibleEpisodes.length === 0 ? (
+                      {groupedVisibleEpisodes.length === 0 ? (
                         <Text size="sm" c="dimmed">
                           No episodes available for this season.
                         </Text>
                       ) : (
                         <Stack spacing={STACK_TIGHT}>
-                          {visibleEpisodes.map((episode) => {
-                            const episodeProgress = episode.watch_progress;
-                            const episodeStatus = episode.watch_summary?.status;
-                            const progressPercent = episodeProgress?.percentage
-                              ? Math.round(episodeProgress.percentage * 100)
+                          {groupedVisibleEpisodes.map((group) => {
+                            const representative = group.representative;
+                            const firstEpisode = group.episodes[0];
+                            const lastEpisode =
+                              group.episodes[group.episodes.length - 1];
+                            const firstCode = firstEpisode
+                              ? formatEpisodeCode(firstEpisode)
+                              : '';
+                            const lastCode = lastEpisode
+                              ? formatEpisodeCode(lastEpisode)
+                              : '';
+                            const groupLabel = group.isMultiEpisode
+                              ? [firstCode, lastCode]
+                                  .filter(Boolean)
+                                  .join(' - ')
+                              : [formatEpisodeCode(representative), representative.title]
+                                  .filter(Boolean)
+                                  .join(' ');
+                            const groupSynopsisText = group.isMultiEpisode
+                              ? null
+                              : representative.synopsis?.trim();
+                            const representativeProgress =
+                              representative.watch_progress;
+                            const combinedRuntimeMs = group.episodes.reduce(
+                              (total, entry) => total + (entry.runtime_ms || 0),
+                              0
+                            );
+                            const representativeFileRuntimeMs =
+                              representative.files?.[0]?.duration_ms || 0;
+                            const displayRuntimeMs = group.isMultiEpisode
+                              ? combinedRuntimeMs ||
+                                representativeFileRuntimeMs ||
+                                representative.runtime_ms ||
+                                0
+                              : representative.runtime_ms ||
+                                representativeFileRuntimeMs ||
+                                0;
+                            const progressPercent = representativeProgress?.percentage
+                              ? Math.round(representativeProgress.percentage * 100)
                               : null;
-                            const isWatched = episodeStatus === 'watched';
-                            const isInProgress = episodeStatus === 'in_progress';
-                            const episodeLoading = episodeActionLoading[episode.id];
-                            const isExpanded = expandedEpisodeIds.has(episode.id);
-                            const synopsisText = episode.synopsis?.trim();
+                            const isWatched = group.status === 'watched';
+                            const isInProgress = group.status === 'in_progress';
+                            const isExpanded = expandedEpisodeIds.has(group.id);
+                            const playTarget =
+                              group.episodes.find(
+                                (entry) =>
+                                  entry.watch_summary?.status === 'in_progress'
+                              ) ||
+                              group.episodes.find(
+                                (entry) => entry.watch_summary?.status !== 'watched'
+                              ) ||
+                              representative;
+                            const isGroupPlaying = group.episodes.some(
+                              (entry) => entry.id === episodePlayLoadingId
+                            );
+                            const representativeLoading =
+                              episodeActionLoading[representative.id];
                             return (
-                              <Stack
-                                key={episode.id}
-                                spacing={STACK_TIGHT}
+	                              <Stack
+	                                key={group.id}
+	                                spacing={STACK_TIGHT}
                                 role="button"
                                 tabIndex={0}
-                                onClick={(event) => handleEpisodeCardClick(episode.id, event)}
-                                onKeyDown={(event) => handleEpisodeCardKeyDown(episode.id, event)}
-                                style={{
-                                  border: '1px solid rgba(148, 163, 184, 0.15)',
-                                  borderRadius: 12,
-                                  padding: '10px 12px',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                <Group justify="space-between" align="flex-start" gap="md" wrap="wrap">
+                                onClick={(event) =>
+                                  handleEpisodeCardClick(group.id, event)
+                                }
+                                onKeyDown={(event) =>
+                                  handleEpisodeCardKeyDown(group.id, event)
+                                }
+	                                style={{
+	                                  border: '1px solid rgba(148, 163, 184, 0.15)',
+	                                  borderRadius: 12,
+	                                  padding: '8px 10px',
+	                                  width: '100%',
+	                                  boxSizing: 'border-box',
+	                                  cursor: 'pointer',
+	                                }}
+	                              >
+	                                <Group
+	                                  justify="space-between"
+	                                  align="flex-start"
+	                                  gap="md"
+	                                  wrap="wrap"
+	                                  style={{ width: '100%', minWidth: 0 }}
+	                                >
                                   <Stack spacing={STACK_TIGHT} style={{ flex: 1, minWidth: 0 }}>
                                     <Group justify="space-between" align="center">
                                       <Text fw={600} size="sm" lineClamp={1}>
-                                        {[formatEpisodeCode(episode), episode.title]
-                                          .filter(Boolean)
-                                          .join(' ')}
+                                        {groupLabel}
                                       </Text>
-                                      <Group gap={6}>
+	                                  <Group gap={6} wrap="wrap">
+                                        {group.isMultiEpisode && (
+                                          <Badge size="xs" variant="outline">
+                                            {group.episodes.length} episodes
+                                          </Badge>
+                                        )}
                                         {isWatched && (
                                           <Badge size="xs" color="green">
                                             Watched
@@ -1090,23 +1426,35 @@ const MediaDetailModal = ({ opened, onClose }) => {
                                             In progress
                                           </Badge>
                                         )}
-                                        {progressPercent !== null && (
+                                        {!group.isMultiEpisode &&
+                                          progressPercent !== null && (
                                           <Badge
                                             size="xs"
-                                            color={episodeProgress?.completed ? 'green' : 'cyan'}
+                                            color={
+                                              representativeProgress?.completed
+                                                ? 'green'
+                                                : 'cyan'
+                                            }
                                             variant="light"
                                           >
                                             {progressPercent}%
                                           </Badge>
-                                        )}
+                                          )}
+                                        {group.isMultiEpisode &&
+                                          group.watchedCount > 0 && (
+                                          <Badge size="xs" color="cyan" variant="light">
+                                            {group.watchedCount}/
+                                            {group.episodes.length} watched
+                                          </Badge>
+                                          )}
                                       </Group>
                                     </Group>
                                     <Group gap={8} wrap="wrap">
-                                      {runtimeLabel(episode.runtime_ms) && (
+                                      {runtimeLabel(displayRuntimeMs) && (
                                         <Group gap={4} align="center">
                                           <Clock size={14} />
                                           <Text size="xs" c="dimmed">
-                                            {runtimeLabel(episode.runtime_ms)}
+                                            {runtimeLabel(displayRuntimeMs)}
                                           </Text>
                                         </Group>
                                       )}
@@ -1119,47 +1467,93 @@ const MediaDetailModal = ({ opened, onClose }) => {
                                       leftSection={<PlayCircle size={16} />}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        handlePlayEpisode(episode, {
-                                          sequence: playbackPlan?.sorted ?? orderedEpisodes,
+                                        handlePlayEpisode(playTarget, {
+                                          sequence:
+                                            playbackPlan?.sorted ?? watchableEpisodes,
                                         });
                                       }}
-                                      loading={episodePlayLoadingId === episode.id}
+                                      loading={isGroupPlaying}
                                     >
                                       Play
                                     </Button>
-                                    <Button
-                                      size="xs"
-                                      variant="subtle"
-                                      leftSection={
-                                        isWatched ? <Undo2 size={14} /> : <CheckCircle2 size={14} />
-                                      }
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        isWatched
-                                          ? handleEpisodeMarkUnwatched(episode)
-                                          : handleEpisodeMarkWatched(episode);
-                                      }}
-                                      loading={episodeLoading === 'watch' || episodeLoading === 'unwatch'}
-                                    >
-                                      {isWatched ? 'Unwatch' : 'Mark watched'}
-                                    </Button>
-                                    <ActionIcon
-                                      color="red"
-                                      variant="subtle"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        handleEpisodeDelete(episode);
-                                      }}
-                                      loading={episodeLoading === 'delete'}
-                                      title="Delete episode"
-                                    >
-                                      <Trash2 size={16} />
-                                    </ActionIcon>
+                                    {!group.isMultiEpisode && (
+                                      <>
+                                        <Button
+                                          size="xs"
+                                          variant="subtle"
+                                          leftSection={
+                                            isWatched ? (
+                                              <Undo2 size={14} />
+                                            ) : (
+                                              <CheckCircle2 size={14} />
+                                            )
+                                          }
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            isWatched
+                                              ? handleEpisodeMarkUnwatched(
+                                                  representative
+                                                )
+                                              : handleEpisodeMarkWatched(
+                                                  representative
+                                                );
+                                          }}
+                                          loading={
+                                            representativeLoading === 'watch' ||
+                                            representativeLoading === 'unwatch'
+                                          }
+                                        >
+                                          {isWatched ? 'Unwatch' : 'Mark watched'}
+                                        </Button>
+                                        <ActionIcon
+                                          color="red"
+                                          variant="subtle"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            handleEpisodeDelete(representative);
+                                          }}
+                                          loading={representativeLoading === 'delete'}
+                                          title="Delete episode"
+                                        >
+                                          <Trash2 size={16} />
+                                        </ActionIcon>
+                                      </>
+                                    )}
                                   </Group>
                                 </Group>
-                                {synopsisText ? (
+                                {group.isMultiEpisode ? (
+                                  <Stack spacing={2}>
+                                    {group.episodes.map((entry, index) => {
+                                      const entrySynopsis = entry.synopsis?.trim();
+                                      return (
+                                        <Box key={entry.id}>
+                                          <Text size="xs" fw={600} lineClamp={1}>
+                                            {[formatEpisodeCode(entry), entry.title]
+                                              .filter(Boolean)
+                                              .join(' ')}
+                                          </Text>
+                                          {entrySynopsis ? (
+                                            <Text
+                                              size="xs"
+                                              c="dimmed"
+                                              lineClamp={isExpanded ? undefined : 1}
+                                            >
+                                              {entrySynopsis}
+                                            </Text>
+                                          ) : null}
+                                          {index < group.episodes.length - 1 && (
+                                            <Divider
+                                              my="xs"
+                                              color="rgba(148, 163, 184, 0.18)"
+                                            />
+                                          )}
+                                        </Box>
+                                      );
+                                    })}
+                                  </Stack>
+                                ) : groupSynopsisText ? (
                                   <Text size="xs" c="dimmed" lineClamp={isExpanded ? undefined : 2}>
-                                    {synopsisText}
+                                    {groupSynopsisText}
                                   </Text>
                                 ) : null}
                               </Stack>
@@ -1170,132 +1564,32 @@ const MediaDetailModal = ({ opened, onClose }) => {
                     </Stack>
                   )}
                 </Stack>
-              )}
+	              )}
 
-              {hasCredits ? (
-                <Stack spacing={STACK_TIGHT} style={{ width: '100%' }}>
-                  {/* CAST */}
-                  {castPeople.length > 0 && (
-                    <Stack spacing={STACK_TIGHT}>
+	              {hasCredits ? (
+	                <Stack spacing={CREDITS_SECTION_GAP} style={{ width: '100%' }}>
+	                  {/* CAST */}
+	                  {castPeople.length > 0 && (
+	                    <Stack spacing={CREDITS_INNER_GAP}>
                       <Text fw={500}>Cast</Text>
-                      <ScrollArea
-                        type="auto"
-                        scrollbarSize={8}
-                        offsetScrollbars
-                        styles={{ viewport: { paddingBottom: rem(14) } }}
-                      >
-                        <Group gap={CAST_GAP} wrap="nowrap">
-                          {castPeople.map((person) => (
-                            <Stack
-                              key={person.key}
-                              spacing={CAST_TILE_SPACING}
-                              align="center"
-                              style={{
-                                width: rem(CAST_TILE_WIDTH),
-                                height: rem(CAST_TILE_HEIGHT),
-                                flex: `0 0 ${rem(CAST_TILE_WIDTH)}`,
-                              }}
-                            >
-                              <Avatar
-                                size={CAST_AVATAR_SIZE}
-                                radius="md"
-                                src={person.profile || undefined}
-                                alt={person.name}
-                                color="indigo"
-                                styles={{ image: { objectFit: 'cover' } }}
-                              >
-                                {!person.profile && person.name?.[0]}
-                              </Avatar>
-                              <Text
-                                size="xs"
-                                fw={600}
-                                ta="center"
-                                lineClamp={2}
-                                style={{ minHeight: 20, lineHeight: 1.15 }}
-                              >
-                                {person.name}
-                              </Text>
-                              {person.role && (
-                                <Text
-                                  size="xs"
-                                  c="dimmed"
-                                  ta="center"
-                                  lineClamp={1}
-                                  style={{ minHeight: 10, lineHeight: 1.1 }}
-                                >
-                                  {person.role}
-                                </Text>
-                              )}
-                            </Stack>
-                          ))}
-                        </Group>
-                      </ScrollArea>
+                      <CreditStrip people={castPeople} avatarColor="indigo" />
                     </Stack>
                   )}
 
                   {/* CREW */}
-                  {crewPeople.length > 0 && (
-                    <Stack spacing={STACK_TIGHT}>
-                      <Text fw={500}>Crew</Text>
-                      <ScrollArea
-                        type="auto"
-                        scrollbarSize={8}
-                        offsetScrollbars
-                        styles={{ viewport: { paddingBottom: rem(14) } }}
-                      >
-                        <Group gap={CAST_GAP} wrap="nowrap">
-                          {crewPeople.map((person) => (
-                            <Stack
-                              key={person.key}
-                              spacing={CAST_TILE_SPACING}
-                              align="center"
-                              style={{
-                                width: rem(CAST_TILE_WIDTH),
-                                height: rem(CAST_TILE_HEIGHT),
-                                flex: `0 0 ${rem(CAST_TILE_WIDTH)}`,
-                              }}
-                            >
-                              <Avatar
-                                size={CAST_AVATAR_SIZE}
-                                radius="md"
-                                src={person.profile || undefined}
-                                alt={person.name}
-                                color="grape"
-                                styles={{ image: { objectFit: 'cover' } }}
-                              >
-                                {!person.profile && person.name?.[0]}
-                              </Avatar>
-                              <Text
-                                size="xs"
-                                fw={600}
-                                ta="center"
-                                lineClamp={2}
-                                style={{ minHeight: 20, lineHeight: 1.15 }}
-                              >
-                                {person.name}
-                              </Text>
-                              {person.role && (
-                                <Text
-                                  size="xs"
-                                  c="dimmed"
-                                  ta="center"
-                                  lineClamp={1}
-                                  style={{ minHeight: 10, lineHeight: 1.1 }}
-                                >
-                                  {person.role}
-                                </Text>
-                              )}
-                            </Stack>
-                          ))}
-                        </Group>
-                      </ScrollArea>
-                    </Stack>
-                  )}
-                </Stack>
-              ) : null}
-            </Stack>
-          </ScrollArea.Autosize>
-        )}
+	                  {crewPeople.length > 0 && (
+	                    <Stack spacing={CREDITS_INNER_GAP}>
+	                      <Text fw={500}>Crew</Text>
+	                      <CreditStrip people={crewPeople} avatarColor="grape" />
+	                    </Stack>
+	                  )}
+	                </Stack>
+	              ) : null}
+	                  </Stack>
+	                </Box>
+	              ) : null}
+	            </Stack>
+	        )}
       </Modal>
       {canEditMetadata && activeItem && (
         <MediaEditModal

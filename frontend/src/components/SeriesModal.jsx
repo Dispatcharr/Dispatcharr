@@ -35,6 +35,10 @@ const formatDuration = (seconds) => {
   const secs = seconds % 60;
   return hours > 0 ? `${hours}h ${mins}m` : `${mins}m ${secs}s`;
 };
+const EXTRAS_SEASON_KEY = 'extras';
+const EXTRAS_SEASON_LABEL = 'Extras';
+const isExtrasSeasonNumber = (seasonNumber) =>
+  seasonNumber == null || seasonNumber === 0;
 
 const formatStreamLabel = (relation) => {
   // Create a label for the stream that includes provider name and stream-specific info
@@ -208,33 +212,45 @@ const SeriesModal = ({ series, opened, onClose }) => {
   const episodesBySeason = React.useMemo(() => {
     const grouped = {};
     seriesEpisodes.forEach((episode) => {
-      const season = episode.season_number || 1;
-      if (!grouped[season]) {
-        grouped[season] = [];
+      const seasonKey = isExtrasSeasonNumber(episode.season_number)
+        ? EXTRAS_SEASON_KEY
+        : String(episode.season_number);
+      if (!grouped[seasonKey]) {
+        grouped[seasonKey] = [];
       }
-      grouped[season].push(episode);
+      grouped[seasonKey].push(episode);
     });
     return grouped;
   }, [seriesEpisodes]);
 
-  // Get available seasons sorted
-  const seasons = React.useMemo(() => {
-    return Object.keys(episodesBySeason)
-      .map(Number)
-      .sort((a, b) => a - b);
+  // Get available seasons sorted (Extras last)
+  const seasonEntries = React.useMemo(() => {
+    const keys = Object.keys(episodesBySeason);
+    const numeric = keys
+      .filter((key) => key !== EXTRAS_SEASON_KEY)
+      .map((key) => Number(key))
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => a - b)
+      .map((value) => String(value));
+    const entries = numeric.map((key) => ({
+      key,
+      label: `Season ${key}`,
+    }));
+    if (keys.includes(EXTRAS_SEASON_KEY)) {
+      entries.push({ key: EXTRAS_SEASON_KEY, label: EXTRAS_SEASON_LABEL });
+    }
+    return entries;
   }, [episodesBySeason]);
 
   // Update active tab when seasons change or modal opens
   React.useEffect(() => {
-    if (seasons.length > 0) {
-      if (
-        !activeTab ||
-        !seasons.includes(parseInt(activeTab.replace('season-', '')))
-      ) {
-        setActiveTab(`season-${seasons[0]}`);
+    if (seasonEntries.length > 0) {
+      const activeKey = activeTab ? activeTab.replace('season-', '') : null;
+      if (!activeKey || !seasonEntries.some((entry) => entry.key === activeKey)) {
+        setActiveTab(`season-${seasonEntries[0].key}`);
       }
     }
-  }, [seasons, activeTab]);
+  }, [seasonEntries, activeTab]);
 
   // Reset tab when modal closes
   React.useEffect(() => {
@@ -577,18 +593,22 @@ const SeriesModal = ({ series, opened, onClose }) => {
                 <Flex justify="center" py="xl">
                   <Loader />
                 </Flex>
-              ) : seasons.length > 0 ? (
+              ) : seasonEntries.length > 0 ? (
                 <Tabs value={activeTab} onChange={setActiveTab}>
                   <Tabs.List>
-                    {seasons.map((season) => (
-                      <Tabs.Tab key={season} value={`season-${season}`}>
-                        Season {season}
+                    {seasonEntries.map((entry) => (
+                      <Tabs.Tab key={entry.key} value={`season-${entry.key}`}>
+                        {entry.label}
                       </Tabs.Tab>
                     ))}
                   </Tabs.List>
 
-                  {seasons.map((season) => (
-                    <Tabs.Panel key={season} value={`season-${season}`} pt="md">
+                  {seasonEntries.map((entry) => (
+                    <Tabs.Panel
+                      key={entry.key}
+                      value={`season-${entry.key}`}
+                      pt="md"
+                    >
                       <Table striped highlightOnHover>
                         <Table.Thead>
                           <Table.Tr>
@@ -604,7 +624,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                           </Table.Tr>
                         </Table.Thead>
                         <Table.Tbody>
-                          {episodesBySeason[season]?.map((episode) => (
+                          {episodesBySeason[entry.key]?.map((episode) => (
                             <React.Fragment key={episode.id}>
                               <Table.Tr
                                 style={{ cursor: 'pointer' }}

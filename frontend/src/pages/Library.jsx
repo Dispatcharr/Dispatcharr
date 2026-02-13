@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ActionIcon, Box, Button, Divider, Group, Loader, Paper, Portal, Select, Stack, Text, TextInput, Title, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -33,6 +33,25 @@ const parseDate = (value) => {
   if (!value) return 0;
   const timestamp = Date.parse(value);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const alphaLetterFromItem = (item) => {
+  const name = item?.sort_title || item?.title || '';
+  const firstChar = name.charAt(0).toUpperCase();
+  return /[A-Z]/.test(firstChar) ? firstChar : '#';
+};
+
+const getOrderingForSort = (sortOption) => {
+  switch (sortOption) {
+    case 'alpha':
+      return 'sort_title,title,id';
+    case 'year':
+      return '-release_year,sort_title,title,id';
+    case 'recent':
+      return '-first_imported_at,-updated_at,-id';
+    default:
+      return '-updated_at,-id';
+  }
 };
 
 const LibraryPage = () => {
@@ -73,10 +92,17 @@ const LibraryPage = () => {
   }, [contextMenu]);
 
   const [debouncedSearch] = useDebouncedValue(searchTerm, 350);
+  const libraryOrdering = useMemo(
+    () => getOrderingForSort(sortOption),
+    [sortOption]
+  );
 
   // Library store hooks
   const libraries = useLibraryStore((s) => s.libraries);
+  const librariesLoading = useLibraryStore((s) => s.loading);
   const fetchLibraries = useLibraryStore((s) => s.fetchLibraries);
+  const scansByKey = useLibraryStore((s) => s.scans);
+  const fetchScans = useLibraryStore((s) => s.fetchScans);
   const triggerScan = useLibraryStore((s) => s.triggerScan);
   const upsertScan = useLibraryStore((s) => s.upsertScan);
   const removeScan = useLibraryStore((s) => s.removeScan);
@@ -85,8 +111,10 @@ const LibraryPage = () => {
   const items = useMediaLibraryStore((s) => s.items);
   const itemsLoading = useMediaLibraryStore((s) => s.loading);
   const itemsBackgroundLoading = useMediaLibraryStore((s) => s.backgroundLoading);
+  const itemsTotalCount = useMediaLibraryStore((s) => s.totalCount);
   const setItemFilters = useMediaLibraryStore((s) => s.setFilters);
   const fetchItems = useMediaLibraryStore((s) => s.fetchItems);
+  const fetchItemsIncremental = useMediaLibraryStore((s) => s.fetchItemsIncremental);
   const clearItems = useMediaLibraryStore((s) => s.clearItems);
   const setSelectedMediaLibrary = useMediaLibraryStore((s) => s.setSelectedLibraryId);
   const openItem = useMediaLibraryStore((s) => s.openItem);
@@ -111,6 +139,97 @@ const LibraryPage = () => {
       .map((lib) => lib.id);
   }, [libraries, isMovies]);
 
+  const allLibraryIds = useMemo(
+    () => (Array.isArray(libraries) ? libraries.map((lib) => lib.id) : []),
+    [libraries]
+  );
+
+  const hasLibraries = relevantLibraryIds.length > 0;
+  const hasAnyLibraries = allLibraryIds.length > 0;
+  const hasActiveScans = useMemo(() => {
+    const scans = scansByKey?.all;
+    if (!Array.isArray(scans) || scans.length === 0 || relevantLibraryIds.length === 0) {
+      return false;
+    }
+    const relevantSet = new Set(relevantLibraryIds);
+    return scans.some((scan) => (
+      relevantSet.has(scan.library)
+      && ['pending', 'queued', 'running'].includes(scan.status)
+    ));
+  }, [scansByKey, relevantLibraryIds]);
+
+  useEffect(() => {
+    if (!hasLibraries || scanDrawerOpen) return undefined;
+
+    let cancelled = false;
+    let timer;
+
+    const runFetch = async (background) => {
+      try {
+        await fetchScans(null, { background });
+      } catch (error) {
+        if (!background) {
+          console.error('Failed to refresh library scan state', error);
+        }
+      }
+    };
+
+    const loop = () => {
+      if (cancelled) return;
+      const delay = hasActiveScans ? 2500 : 8000;
+      timer = setTimeout(async () => {
+        await runFetch(true);
+        loop();
+      }, delay);
+    };
+
+    void runFetch(false).then(loop);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasLibraries, hasActiveScans, fetchScans, scanDrawerOpen]);
+
+  useEffect(() => {
+    if (scanDrawerOpen || !hasActiveScans || relevantLibraryIds.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer;
+
+    const refreshItemsWhileScanning = async () => {
+      if (cancelled) return;
+      await fetchItemsIncremental(relevantLibraryIds, {
+        background: true,
+        limit: Math.max(INITIAL_LIBRARY_LIMIT, 120),
+        ordering: libraryOrdering,
+      });
+    };
+
+    const loop = () => {
+      if (cancelled) return;
+      timer = setTimeout(async () => {
+        await refreshItemsWhileScanning();
+        loop();
+      }, 4000);
+    };
+
+    void refreshItemsWhileScanning().then(loop);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    hasActiveScans,
+    relevantLibraryIds,
+    fetchItemsIncremental,
+    scanDrawerOpen,
+    libraryOrdering,
+  ]);
+
   // Sync media filters with current type and search
   useEffect(() => {
     setItemFilters({
@@ -122,31 +241,36 @@ const LibraryPage = () => {
   // Fetch items when library changes or filters update
   useEffect(() => {
     const ids = relevantLibraryIds;
+    const libraryList = Array.isArray(libraries) ? libraries : [];
 
-    if (!libraries || libraries.length === 0) {
+    if (libraryList.length === 0) {
       setSelectedMediaLibrary(null);
-      clearItems();
+      if (!librariesLoading) {
+        clearItems();
+      }
+      return;
+    }
+
+    if (ids.length === 0) {
+      setSelectedMediaLibrary(null);
+      if (!librariesLoading) {
+        clearItems();
+      }
       return;
     }
 
     setSelectedMediaLibrary(ids.length === 1 ? ids[0] : null);
 
-    if (ids.length === 0) {
-      clearItems();
-      return;
-    }
-
     let cancelled = false;
 
     const loadItems = async () => {
-      if (debouncedSearch) {
-        await fetchItems(ids, { background: false });
-        return;
-      }
-
-      await fetchItems(ids, { limit: INITIAL_LIBRARY_LIMIT, ordering: '-updated_at' });
+      await fetchItems(ids, {
+        background: false,
+        append: false,
+        all: true,
+        ordering: libraryOrdering,
+      });
       if (cancelled) return;
-      await fetchItems(ids, { background: true });
     };
 
     loadItems();
@@ -162,6 +286,8 @@ const LibraryPage = () => {
     setSelectedMediaLibrary,
     debouncedSearch,
     itemTypeFilter,
+    librariesLoading,
+    libraryOrdering,
   ]);
 
   const filteredItems = useMemo(() => {
@@ -173,7 +299,12 @@ const LibraryPage = () => {
     );
   }, [items, itemTypeFilter, debouncedSearch]);
 
+  const shouldComputeRecommendedRows = activeTab === 'recommended';
+  const shouldComputeGenreRows =
+    activeTab === 'categories' || (activeTab === 'library' && sortOption === 'genre');
+
   const continueWatching = useMemo(() => {
+    if (!shouldComputeRecommendedRows) return [];
     return filteredItems
       .filter((item) => {
         if (item.item_type === 'show') {
@@ -188,22 +319,25 @@ const LibraryPage = () => {
         return bTime - aTime;
       })
       .slice(0, 20);
-  }, [filteredItems]);
+  }, [filteredItems, shouldComputeRecommendedRows]);
 
   const recentlyReleased = useMemo(() => {
+    if (!shouldComputeRecommendedRows) return [];
     return [...filteredItems]
       .filter((item) => item.release_year)
       .sort((a, b) => (b.release_year || 0) - (a.release_year || 0))
       .slice(0, 30);
-  }, [filteredItems]);
+  }, [filteredItems, shouldComputeRecommendedRows]);
 
   const recentlyAdded = useMemo(() => {
+    if (!shouldComputeRecommendedRows) return [];
     return [...filteredItems]
       .sort((a, b) => parseDate(b.first_imported_at) - parseDate(a.first_imported_at))
       .slice(0, 30);
-  }, [filteredItems]);
+  }, [filteredItems, shouldComputeRecommendedRows]);
 
   const genresMap = useMemo(() => {
+    if (!shouldComputeGenreRows) return new Map();
     const map = new Map();
     filteredItems.forEach((item) => {
       const genres = Array.isArray(item.genres) ? item.genres : [];
@@ -215,9 +349,10 @@ const LibraryPage = () => {
       map.get(primary).push(item);
     });
     return map;
-  }, [filteredItems]);
+  }, [filteredItems, shouldComputeGenreRows]);
 
   const genreCarousels = useMemo(() => {
+    if (!shouldComputeGenreRows) return [];
     const entries = Array.from(genresMap.entries());
     return entries
       .map(([genre, genreItems]) => ({
@@ -229,14 +364,12 @@ const LibraryPage = () => {
       }))
       .filter((entry) => entry.items.length > 0)
       .slice(0, 12);
-  }, [genresMap]);
+  }, [genresMap, shouldComputeGenreRows]);
 
   const primaryLibraryId = useMemo(
     () => (relevantLibraryIds.length === 1 ? relevantLibraryIds[0] : null),
     [relevantLibraryIds]
   );
-
-  const hasLibraries = relevantLibraryIds.length > 0;
 
   const aggregatedSubtitle = useMemo(() => {
     if (!libraries || libraries.length === 0) {
@@ -248,47 +381,30 @@ const LibraryPage = () => {
         : 'No TV show libraries configured.';
     }
     return '';
-  }, [libraries, hasLibraries, relevantLibraryIds, isMovies]);
-
-  const canManageSingleLibrary = Boolean(primaryLibraryId);
+  }, [libraries, hasLibraries, isMovies]);
 
   const sortedLibraryItems = useMemo(() => {
-    switch (sortOption) {
-      case 'alpha':
-        return [...filteredItems].sort((a, b) => {
-          const aTitle = (a.sort_title || a.title || '').toLowerCase();
-          const bTitle = (b.sort_title || b.title || '').toLowerCase();
-          return aTitle.localeCompare(bTitle);
-        });
-      case 'year':
-        return [...filteredItems].sort((a, b) => (b.release_year || 0) - (a.release_year || 0));
-      case 'recent':
-        return [...filteredItems].sort((a, b) => parseDate(b.first_imported_at) - parseDate(a.first_imported_at));
-      default:
-        return filteredItems;
-    }
-  }, [filteredItems, sortOption]);
+    return filteredItems;
+  }, [filteredItems]);
 
   const availableLetters = useMemo(() => {
     if (sortOption !== 'alpha') return new Set();
     const letters = new Set();
     sortedLibraryItems.forEach((item) => {
-      const name = item.sort_title || item.title || '';
-      const firstChar = name.charAt(0).toUpperCase();
-      const key = /[A-Z]/.test(firstChar) ? firstChar : '#';
-      letters.add(key);
+      letters.add(alphaLetterFromItem(item));
     });
     return letters;
   }, [sortedLibraryItems, sortOption]);
 
   const letterRefs = useRef({});
 
-  const handleLetterSelect = (letter) => {
+  const handleLetterSelect = useCallback((letter) => {
+    if (sortOption !== 'alpha') return;
     const node = letterRefs.current[letter];
     if (node && node.scrollIntoView) {
       node.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  };
+  }, [sortOption]);
 
   const handleOpenItem = (item) => {
     setPlaybackModalOpen(true);
@@ -421,18 +537,10 @@ const LibraryPage = () => {
 
   // Open the drawer only (do NOT start a scan)
   const handleOpenScanDrawer = () => {
-    if (!hasLibraries) {
+    if (!hasAnyLibraries) {
       notifications.show({
         title: 'No libraries configured',
         message: 'Add a library to manage scans.',
-        color: 'yellow',
-      });
-      return;
-    }
-    if (!canManageSingleLibrary) {
-      notifications.show({
-        title: 'Multiple libraries detected',
-        message: 'Open the Libraries page to manage individual scans.',
         color: 'yellow',
       });
       return;
@@ -441,40 +549,55 @@ const LibraryPage = () => {
   };
 
   // Explicitly start a scan (quick or full)
-  const handleStartScan = async (full = false) => {
-    if (!hasLibraries) {
+  const handleStartScan = async (full = false, targetLibraryId = null, options = {}) => {
+    if (!hasAnyLibraries) {
       notifications.show({
         title: 'Scan unavailable',
         message: 'Add a library before starting a scan.',
         color: 'yellow',
       });
-      return;
+      return null;
     }
-    if (!primaryLibraryId) {
-      notifications.show({
-        title: 'Scan unavailable',
-        message: 'Choose a specific library from the Libraries page to start a scan.',
-        color: 'yellow',
-      });
-      return;
+    const resolvedLibraryId = targetLibraryId || primaryLibraryId;
+    if (!resolvedLibraryId) {
+      setScanDrawerOpen(true);
+      if (!options?.suppressNotification) {
+        notifications.show({
+          title: 'Choose scan scope',
+          message: 'Use the scan drawer to choose a library or scan all libraries.',
+          color: 'blue',
+        });
+      }
+      return null;
     }
     try {
-      await triggerScan(primaryLibraryId, { full });
-      notifications.show({
-        title: full ? 'Full scan started' : 'Scan started',
-        message: full
-          ? 'A full library scan has been queued.'
-          : 'Library scan has been queued.',
-        color: 'blue',
-      });
+      const scan = await triggerScan(resolvedLibraryId, { full });
+      if (!scan) {
+        return null;
+      }
+      if (!options?.suppressNotification) {
+        const libraryName =
+          libraries.find((library) => library.id === resolvedLibraryId)?.name || 'selected library';
+        notifications.show({
+          title: full ? 'Full scan started' : 'Scan started',
+          message: full
+            ? `A full scan for ${libraryName} has been queued.`
+            : `A quick scan for ${libraryName} has been queued.`,
+          color: 'blue',
+        });
+      }
       setScanDrawerOpen(true);
+      return scan;
     } catch (error) {
       console.error('Failed to start scan', error);
-      notifications.show({
-        title: 'Scan failed',
-        message: 'Unable to start scan at this time.',
-        color: 'red',
-      });
+      if (!options?.suppressNotification) {
+        notifications.show({
+          title: 'Scan failed',
+          message: 'Unable to start scan at this time.',
+          color: 'red',
+        });
+      }
+      return null;
     }
   };
 
@@ -545,9 +668,6 @@ const LibraryPage = () => {
   );
 
   const libraryView = (() => {
-    if (sortOption === 'alpha') {
-      letterRefs.current = {};
-    }
     return (
       <Box style={{ position: 'relative' }}>
         <Stack spacing="lg">
@@ -565,7 +685,12 @@ const LibraryPage = () => {
             <Button
               variant="subtle"
               leftSection={<RefreshCcw size={16} />}
-              onClick={() => fetchItems(relevantLibraryIds)}
+              onClick={() =>
+                fetchItems(relevantLibraryIds, {
+                  append: false,
+                  all: true,
+                  ordering: libraryOrdering,
+                })}
             >
               Refresh
             </Button>
@@ -596,6 +721,12 @@ const LibraryPage = () => {
                 letterRefs={letterRefs}
                 cardSize="md"
               />
+              <Group justify="space-between" mt="md">
+                <Text size="sm" c="dimmed">
+                  Loaded {sortedLibraryItems.length}
+                  {itemsTotalCount > 0 ? ` of ${itemsTotalCount}` : ''} items
+                </Text>
+              </Group>
             </Box>
           )}
         </Stack>
@@ -648,8 +779,8 @@ const LibraryPage = () => {
             <ActionIcon
               variant="filled"
               color="blue"
-              onClick={() => handleStartScan(false)}
-              title="Start library scan"
+              onClick={handleOpenScanDrawer}
+              title="Open scan drawer"
             >
               <RefreshCcw size={18} />
             </ActionIcon>
@@ -697,14 +828,18 @@ const LibraryPage = () => {
       </Stack>
 
       <LibraryScanDrawer
-        opened={scanDrawerOpen && canManageSingleLibrary}
+        opened={scanDrawerOpen && hasAnyLibraries}
         onClose={() => setScanDrawerOpen(false)}
-        libraryId={primaryLibraryId}
-        // NEW: enable controls inside the drawer
+        libraryId={primaryLibraryId || relevantLibraryIds[0] || allLibraryIds[0] || null}
+        libraryIds={allLibraryIds}
         onCancelJob={handleCancelScanJob}
         onDeleteQueuedJob={handleDeleteQueuedScan}
-        onStartScan={() => handleStartScan(false)}
-        onStartFullScan={() => handleStartScan(true)}
+        onStartScan={(targetLibraryId, options) =>
+          handleStartScan(false, targetLibraryId, options)
+        }
+        onStartFullScan={(targetLibraryId, options) =>
+          handleStartScan(true, targetLibraryId, options)
+        }
       />
 
       <MediaDetailModal

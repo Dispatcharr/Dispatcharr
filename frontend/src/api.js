@@ -2915,12 +2915,12 @@ export default class API {
     }
   }
 
-  static async getMediaItems(params = new URLSearchParams()) {
+  static async getMediaItems(params = new URLSearchParams(), { raw = false } = {}) {
     try {
       const response = await request(
         `${host}/api/media-library/items/?${params.toString()}`
       );
-      return response.results || response;
+      return raw ? response : response.results || response;
     } catch (e) {
       errorNotification('Failed to retrieve media items', e);
     }

@@ -38,6 +38,9 @@ const DvrSettingsForm = React.lazy(
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
 );
+const MediaLibrarySettingsForm = React.lazy(
+  () => import('../components/forms/settings/MediaLibrarySettingsForm.jsx')
+);
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);

@@ -7,7 +7,9 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.media_library.classification import classify_media_entry
-from apps.media_library.models import Library, MediaFile, MediaItem
+from apps.media_library.metadata import parse_nfo_episode_entries
+from apps.media_library.file_utils import sync_media_file_links
+from apps.media_library.models import Library, MediaFile, MediaFileLink, MediaItem
 from apps.media_library.utils import normalize_title
 
 VIDEO_EXTENSIONS = {
@@ -46,6 +48,19 @@ class ScanResult:
     errors: list[dict[str, str]] = field(default_factory=list)
 
 
+def _needs_metadata_refresh(item_state: dict | None) -> bool:
+    if not item_state:
+        return True
+    if not item_state.get("metadata_last_synced_at"):
+        return True
+    if item_state.get("item_type") in {MediaItem.TYPE_MOVIE, MediaItem.TYPE_SHOW}:
+        poster = (item_state.get("poster_url") or "").strip()
+        backdrop = (item_state.get("backdrop_url") or "").strip()
+        if not poster or not backdrop:
+            return True
+    return False
+
+
 def _is_media_file(file_name: str) -> bool:
     _, ext = os.path.splitext(file_name)
     return ext.lower() in VIDEO_EXTENSIONS
@@ -70,12 +85,23 @@ def _resolve_relative_path(full_path: str, base_path: str) -> str:
     return "" if parent == "." else parent
 
 
+def _find_episode_nfo_path(file_path: str) -> str | None:
+    directory = os.path.dirname(file_path)
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    for candidate_name in (f"{base_name}.nfo", "episode.nfo"):
+        candidate = os.path.join(directory, candidate_name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def scan_library_files(
     library: Library,
     *,
     full: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    metadata_callback: Optional[Callable[[int], None]] = None,
 ) -> ScanResult:
     result = ScanResult()
     scan_start = timezone.now()
@@ -100,6 +126,16 @@ def scan_library_files(
             "media_item_id", flat=True
         )
     )
+    item_metadata_state = {
+        row["id"]: row
+        for row in MediaItem.objects.filter(library=library).values(
+            "id",
+            "item_type",
+            "metadata_last_synced_at",
+            "poster_url",
+            "backdrop_url",
+        )
+    }
 
     movie_cache: dict[tuple[str, int | None], MediaItem] = {}
     show_cache: dict[str, MediaItem] = {}
@@ -108,6 +144,14 @@ def scan_library_files(
     file_updates: list[MediaFile] = []
     file_creates: list[MediaFile] = []
     seen_paths: set[str] = set()
+
+    def enqueue_metadata_item(item_id: int | None):
+        if not item_id:
+            return
+        is_new = item_id not in result.metadata_item_ids
+        result.metadata_item_ids.add(item_id)
+        if is_new and metadata_callback:
+            metadata_callback(item_id)
 
     def flush_updates():
         nonlocal file_updates, file_creates
@@ -268,19 +312,74 @@ def scan_library_files(
                     item_type = classification.detected_type
                     item_title = classification.title
                     media_item: MediaItem
+                    episode_items: list[MediaItem] = []
+                    primary_episode: MediaItem | None = None
 
                     if library.library_type == Library.LIBRARY_TYPE_SHOWS:
                         show_item = get_or_create_show(
                             item_title, classification.year
                         )
-                        result.metadata_item_ids.add(show_item.id)
+                        enqueue_metadata_item(show_item.id)
                         episode_title = classification.episode_title or os.path.splitext(file_name)[0]
-                        media_item = get_or_create_episode(
-                            show_item,
-                            episode_title,
-                            classification.season,
-                            classification.episode,
-                        )
+                        season_number = classification.season
+                        episode_numbers = []
+                        if classification.episode is not None:
+                            episode_numbers.append(classification.episode)
+                        if classification.episode_list:
+                            episode_numbers.extend(
+                                [num for num in classification.episode_list if num is not None]
+                            )
+                        seen_numbers = set()
+                        deduped_numbers = []
+                        for num in episode_numbers:
+                            if num in seen_numbers:
+                                continue
+                            seen_numbers.add(num)
+                            deduped_numbers.append(num)
+                        episode_numbers = deduped_numbers
+                        episode_title_map: dict[int, str] = {}
+                        if len(episode_numbers) <= 1:
+                            nfo_path = _find_episode_nfo_path(full_path)
+                            if nfo_path:
+                                nfo_entries, _error = parse_nfo_episode_entries(nfo_path)
+                                nfo_entries = [
+                                    entry
+                                    for entry in nfo_entries
+                                    if entry.get("episode") is not None
+                                ]
+                                if len(nfo_entries) > 1:
+                                    episode_numbers = []
+                                    for entry in nfo_entries:
+                                        episode_number = entry.get("episode")
+                                        if episode_number in episode_numbers:
+                                            continue
+                                        episode_numbers.append(episode_number)
+                                        if entry.get("title"):
+                                            episode_title_map[episode_number] = entry["title"]
+                                    if season_number is None:
+                                        seasons = {
+                                            entry.get("season")
+                                            for entry in nfo_entries
+                                            if entry.get("season") is not None
+                                        }
+                                        if len(seasons) == 1:
+                                            season_number = seasons.pop()
+                        if not episode_numbers:
+                            episode_numbers = [classification.episode]
+
+                        episode_items = [
+                            get_or_create_episode(
+                                show_item,
+                                episode_title_map.get(episode_number, episode_title),
+                                season_number,
+                                episode_number,
+                            )
+                            for episode_number in episode_numbers
+                        ]
+                        primary_episode = episode_items[0]
+                        media_item = primary_episode
+                        for episode in episode_items:
+                            enqueue_metadata_item(episode.id)
                         if media_item.normalized_title != normalize_title(media_item.title):
                             media_item.normalized_title = normalize_title(media_item.title)
                             media_item.save(update_fields=["normalized_title", "updated_at"])
@@ -292,7 +391,8 @@ def scan_library_files(
                             item_title, classification.year
                         )
 
-                    result.metadata_item_ids.add(media_item.id)
+                    if library.library_type != Library.LIBRARY_TYPE_SHOWS:
+                        enqueue_metadata_item(media_item.id)
 
                     if existing:
                         file_updates.append(
@@ -310,14 +410,21 @@ def scan_library_files(
                                 last_seen_at=scan_start,
                             )
                         )
+                        if library.library_type == Library.LIBRARY_TYPE_SHOWS:
+                            sync_media_file_links(
+                                MediaFile(id=existing["id"]),
+                                episode_items,
+                                primary_item=primary_episode,
+                                prune=len(episode_items) > 1,
+                            )
                         result.updated_files += 1
                     else:
                         is_primary = False
                         if media_item.id not in primary_item_ids:
                             is_primary = True
                             primary_item_ids.add(media_item.id)
-                        file_creates.append(
-                            MediaFile(
+                        if library.library_type == Library.LIBRARY_TYPE_SHOWS and len(episode_items) > 1:
+                            media_file = MediaFile.objects.create(
                                 library=library,
                                 media_item=media_item,
                                 path=full_path,
@@ -328,8 +435,28 @@ def scan_library_files(
                                 is_primary=is_primary,
                                 last_seen_at=scan_start,
                             )
-                        )
-                        result.new_files += 1
+                            sync_media_file_links(
+                                media_file,
+                                episode_items,
+                                primary_item=primary_episode,
+                                prune=len(episode_items) > 1,
+                            )
+                            result.new_files += 1
+                        else:
+                            file_creates.append(
+                                MediaFile(
+                                    library=library,
+                                    media_item=media_item,
+                                    path=full_path,
+                                    relative_path=relative_path,
+                                    file_name=file_name,
+                                    size_bytes=size_bytes,
+                                    modified_at=modified_at,
+                                    is_primary=is_primary,
+                                    last_seen_at=scan_start,
+                                )
+                            )
+                            result.new_files += 1
                 else:
                     file_updates.append(
                         MediaFile(
@@ -346,6 +473,10 @@ def scan_library_files(
                             last_seen_at=scan_start,
                         )
                     )
+                    if not full and _needs_metadata_refresh(
+                        item_metadata_state.get(existing["media_item_id"])
+                    ):
+                        enqueue_metadata_item(existing["media_item_id"])
 
                 if processed_since_update >= PROGRESS_UPDATE_INTERVAL:
                     flush_updates()
@@ -367,15 +498,34 @@ def scan_library_files(
         library=library, last_seen_at__lt=scan_start
     )
     result.removed_files = stale_files.count()
+    stale_file_ids = list(stale_files.values_list("id", flat=True))
     stale_item_ids = set(stale_files.values_list("media_item_id", flat=True))
+    stale_linked_item_ids = set()
+    if stale_file_ids:
+        stale_linked_item_ids = set(
+            MediaFileLink.objects.filter(media_file_id__in=stale_file_ids).values_list(
+                "media_item_id", flat=True
+            )
+        )
     stale_files.delete()
 
-    if stale_item_ids:
+    candidate_item_ids = stale_item_ids | stale_linked_item_ids
+    if candidate_item_ids:
+        parent_show_ids = set(
+            MediaItem.objects.filter(
+                library=library,
+                id__in=candidate_item_ids,
+                parent_id__isnull=False,
+            ).values_list("parent_id", flat=True)
+        )
+        candidate_item_ids.update(parent_show_ids)
+
         MediaItem.objects.filter(
             library=library,
-            id__in=stale_item_ids,
+            id__in=candidate_item_ids,
         ).filter(
             files__isnull=True,
+            file_links__isnull=True,
             children__isnull=True,
         ).delete()
 

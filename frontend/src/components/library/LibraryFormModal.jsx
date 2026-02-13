@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Badge,
+  Box,
   ActionIcon,
   Button,
   Checkbox,
@@ -7,16 +9,27 @@ import {
   Group,
   Modal,
   NumberInput,
+  Paper,
+  ScrollArea,
   Select,
   Stack,
   Switch,
   Text,
   TextInput,
   Textarea,
-  ScrollArea,
+  UnstyledButton,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
-import { ArrowUp, FolderOpen, Plus, Trash2 } from 'lucide-react';
+import {
+  ArrowUp,
+  ChevronRight,
+  Folder,
+  FolderOpen,
+  Home,
+  Plus,
+  Search,
+  Trash2,
+} from 'lucide-react';
 import API from '../../api';
 
 const LIBRARY_TYPES = [
@@ -29,6 +42,35 @@ const defaultLocation = () => ({
   include_subdirectories: true,
   is_primary: false,
 });
+
+const buildBreadcrumbs = (inputPath) => {
+  const normalized = (inputPath || '/').replace(/\\/g, '/');
+  const hasDrivePrefix = /^[A-Za-z]:\//.test(normalized);
+
+  if (hasDrivePrefix) {
+    const drive = normalized.slice(0, 2);
+    const crumbs = [{ label: drive, path: `${drive}/` }];
+    const parts = normalized
+      .slice(3)
+      .split('/')
+      .filter(Boolean);
+    let current = `${drive}/`;
+    parts.forEach((part) => {
+      current = current.endsWith('/') ? `${current}${part}` : `${current}/${part}`;
+      crumbs.push({ label: part, path: current });
+    });
+    return crumbs;
+  }
+
+  const parts = normalized.split('/').filter(Boolean);
+  const crumbs = [{ label: '/', path: '/' }];
+  let current = '';
+  parts.forEach((part) => {
+    current = `${current}/${part}`;
+    crumbs.push({ label: part, path: current });
+  });
+  return crumbs;
+};
 
 const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) => {
   const editing = Boolean(library);
@@ -58,6 +100,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
     loading: false,
     error: null,
   });
+  const [browserSearch, setBrowserSearch] = useState('');
 
   useEffect(() => {
     if (library) {
@@ -134,6 +177,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
 
   const openDirectoryBrowser = (index) => {
     const current = form.values.locations?.[index]?.path || '';
+    setBrowserSearch('');
     setBrowser({
       open: true,
       index,
@@ -147,6 +191,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
   };
 
   const closeBrowser = () => {
+    setBrowserSearch('');
     setBrowser({
       open: false,
       index: null,
@@ -182,6 +227,24 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
     };
     onSubmit(payload);
   };
+
+  const currentBrowserPath = browser.path || '/';
+
+  const breadcrumbs = useMemo(
+    () => buildBreadcrumbs(currentBrowserPath),
+    [currentBrowserPath]
+  );
+
+  const filteredEntries = useMemo(() => {
+    const entries = Array.isArray(browser.entries) ? browser.entries : [];
+    const query = browserSearch.trim().toLowerCase();
+    if (!query) return entries;
+    return entries.filter((entry) => {
+      const name = (entry.name || '').toLowerCase();
+      const path = (entry.path || '').toLowerCase();
+      return name.includes(query) || path.includes(query);
+    });
+  }, [browser.entries, browserSearch]);
 
   return (
     <>
@@ -310,7 +373,7 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
                     onClick={() => openDirectoryBrowser(index)}
                     type="button"
                   >
-                    Browse
+                    Choose Folder
                   </Button>
                 </Group>
                 <Group>
@@ -354,15 +417,51 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
         opened={browser.open}
         onClose={closeBrowser}
         title="Select library directory"
-        size="lg"
+        size="xl"
         overlayProps={{ backgroundOpacity: 0.6, blur: 4 }}
         zIndex={410}
       >
-        <Stack spacing="md">
-          <Group justify="space-between" align="center">
-            <Text size="sm" c="dimmed">
-              {browser.path || '/'}
-            </Text>
+        <Stack gap="md">
+          <Paper withBorder radius="md" p="sm">
+            <Group justify="space-between" align="center" wrap="nowrap">
+              <ScrollArea type="auto" offsetScrollbars style={{ flex: 1 }}>
+                <Group gap={6} wrap="nowrap">
+                  <FolderOpen size={16} />
+                  {breadcrumbs.map((crumb, index) => (
+                    <Group key={`${crumb.path}-${index}`} gap={6} wrap="nowrap">
+                      <Button
+                        variant="subtle"
+                        size="compact-xs"
+                        leftSection={
+                          index === 0 ? <Home size={12} /> : undefined
+                        }
+                        onClick={() => handleSelectDirectory(crumb.path)}
+                        type="button"
+                      >
+                        {crumb.label}
+                      </Button>
+                      {index < breadcrumbs.length - 1 && (
+                        <ChevronRight size={12} color="var(--mantine-color-dimmed)" />
+                      )}
+                    </Group>
+                  ))}
+                </Group>
+              </ScrollArea>
+              <Badge variant="light" color="gray">
+                {browser.entries.length} folders
+              </Badge>
+            </Group>
+          </Paper>
+
+          <Group gap="sm" align="flex-end">
+            <TextInput
+              label="Filter folders"
+              placeholder="Search current directory"
+              value={browserSearch}
+              onChange={(event) => setBrowserSearch(event.currentTarget.value)}
+              leftSection={<Search size={14} />}
+              style={{ flex: 1 }}
+            />
             <Button
               size="xs"
               variant="light"
@@ -374,40 +473,62 @@ const LibraryFormModal = ({ opened, onClose, library, onSubmit, submitting }) =>
               Up one level
             </Button>
           </Group>
+
           {browser.error && (
             <Text size="sm" c="red">
               {browser.error}
             </Text>
           )}
-          <ScrollArea h={260} offsetScrollbars>
-            {browser.loading ? (
-              <Group justify="center" py="md">
-                <Loader size="sm" />
-              </Group>
-            ) : browser.entries.length === 0 ? (
-              <Text c="dimmed" size="sm">
-                No subdirectories found.
-              </Text>
-            ) : (
-              <Stack spacing="xs">
-                {browser.entries.map((entry) => (
-                  <Button
-                    key={entry.path}
-                    variant="subtle"
-                    fullWidth
-                    justify="space-between"
-                    onClick={() => handleSelectDirectory(entry.path)}
-                    type="button"
-                  >
-                    <span>{entry.name || entry.path}</span>
-                    <Text size="xs" c="dimmed">
-                      {entry.path}
-                    </Text>
-                  </Button>
-                ))}
-              </Stack>
-            )}
-          </ScrollArea>
+
+          <Paper withBorder radius="md" p={4}>
+            <ScrollArea h={320} offsetScrollbars>
+              {browser.loading ? (
+                <Group justify="center" py="xl">
+                  <Loader size="sm" />
+                </Group>
+              ) : filteredEntries.length === 0 ? (
+                <Stack align="center" py="xl" gap={4}>
+                  <Text c="dimmed" size="sm">
+                    {browser.entries.length === 0
+                      ? 'No subdirectories found.'
+                      : 'No folders match your search.'}
+                  </Text>
+                </Stack>
+              ) : (
+                <Stack gap={4}>
+                  {filteredEntries.map((entry) => (
+                    <UnstyledButton
+                      key={entry.path}
+                      onClick={() => handleSelectDirectory(entry.path)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 8,
+                        border: '1px solid rgba(148, 163, 184, 0.18)',
+                        background: 'rgba(15, 23, 42, 0.35)',
+                      }}
+                    >
+                      <Group justify="space-between" align="center" wrap="nowrap">
+                        <Group gap="sm" align="center" wrap="nowrap" style={{ minWidth: 0 }}>
+                          <Folder size={16} />
+                          <Box style={{ minWidth: 0 }}>
+                            <Text size="sm" fw={600} lineClamp={1}>
+                              {entry.name || entry.path}
+                            </Text>
+                            <Text size="xs" c="dimmed" lineClamp={1}>
+                              {entry.path}
+                            </Text>
+                          </Box>
+                        </Group>
+                        <ChevronRight size={14} color="var(--mantine-color-dimmed)" />
+                      </Group>
+                    </UnstyledButton>
+                  ))}
+                </Stack>
+              )}
+            </ScrollArea>
+          </Paper>
+
           <Group justify="space-between">
             <Button
               variant="light"

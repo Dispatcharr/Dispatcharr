@@ -24,6 +24,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     dvr_settings: {},
     backup_settings: {},
     system_settings: {},
+    media_library_settings: {},
   };
 
   // Map of field prefixes to their groups
@@ -61,6 +62,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'schedule_cron_expression',
   ];
   const systemFields = ['time_zone', 'max_system_events'];
+  const mediaLibraryFields = ['tmdb_api_key', 'prefer_local_metadata'];
 
   for (const formKey in changedSettings) {
     let value = changedSettings[formKey];
@@ -122,6 +124,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       'comskip_enabled',
       'schedule_enabled',
       'auto_import_mapped_files',
+      'prefer_local_metadata',
     ];
     if (booleanFields.includes(formKey) && value != null) {
       value = typeof value === 'boolean' ? value : Boolean(value);
@@ -138,6 +141,8 @@ export const saveChangedSettings = async (settings, changedSettings) => {
       groupedChanges.backup_settings[formKey] = value;
     } else if (systemFields.includes(formKey)) {
       groupedChanges.system_settings[formKey] = value;
+    } else if (mediaLibraryFields.includes(formKey)) {
+      groupedChanges.media_library_settings[formKey] = value;
     }
   }
 
@@ -332,6 +337,34 @@ export const parseSettings = (settings) => {
       typeof systemSettings.max_system_events === 'number'
         ? systemSettings.max_system_events
         : parseInt(systemSettings.max_system_events, 10) || 100;
+  }
+
+  // Media library settings - direct mapping with underscore keys
+  const mediaLibrarySettings = settings['media_library_settings']?.value;
+  if (mediaLibrarySettings && typeof mediaLibrarySettings === 'object') {
+    parsed.tmdb_api_key = mediaLibrarySettings.tmdb_api_key || '';
+    if (typeof mediaLibrarySettings.prefer_local_metadata === 'boolean') {
+      parsed.prefer_local_metadata = mediaLibrarySettings.prefer_local_metadata;
+    } else if (mediaLibrarySettings.prefer_local_metadata != null) {
+      const normalized = String(
+        mediaLibrarySettings.prefer_local_metadata
+      ).toLowerCase();
+      parsed.prefer_local_metadata = ['1', 'true', 'yes', 'on'].includes(
+        normalized
+      );
+    }
+  } else {
+    const legacyTmdb = settings['tmdb-api-key']?.value;
+    if (legacyTmdb != null) {
+      parsed.tmdb_api_key = String(legacyTmdb);
+    }
+    const legacyPrefer = settings['prefer-local-metadata']?.value;
+    if (legacyPrefer != null) {
+      const normalized = String(legacyPrefer).toLowerCase();
+      parsed.prefer_local_metadata = ['1', 'true', 'yes', 'on'].includes(
+        normalized
+      );
+    }
   }
 
   // Proxy and network access are already grouped objects

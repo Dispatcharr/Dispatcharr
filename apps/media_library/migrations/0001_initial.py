@@ -95,6 +95,21 @@ class Migration(migrations.Migration):
             ],
         ),
         migrations.CreateModel(
+            name='MediaFileLink',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('is_primary', models.BooleanField(default=False)),
+                ('created_at', models.DateTimeField(auto_now_add=True)),
+                ('updated_at', models.DateTimeField(auto_now=True)),
+                ('media_file', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='item_links', to='media_library.mediafile')),
+                ('media_item', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='file_links', to='media_library.mediaitem')),
+            ],
+            options={
+                'unique_together': {('media_item', 'media_file')},
+                'indexes': [models.Index(fields=['media_item'], name='media_libra_media_i_3a0f5e_idx'), models.Index(fields=['media_file'], name='media_libra_media_f_1a08ab_idx'), models.Index(fields=['media_item', 'is_primary'], name='media_libra_media_i_65c73b_idx')],
+            },
+        ),
+        migrations.CreateModel(
             name='ArtworkAsset',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),

@@ -10,6 +10,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.media_library.metadata import find_local_artwork_path
+from apps.media_library.file_utils import primary_media_file_for_item
 from apps.media_library.models import MediaItem
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ def serve_artwork_response(request, item: MediaItem, asset_type: str):
     )
     path = find_local_artwork_path(item, asset_type)
     if not path:
-        file = item.files.filter(is_primary=True).first() or item.files.first()
+        file = primary_media_file_for_item(item)
         logger.debug(
             "Artwork not found item_id=%s asset_type=%s library_id=%s file_path=%s",
             item.id,

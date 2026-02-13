@@ -238,6 +238,36 @@ describe('SettingsUtils', () => {
         value: ['192.168.1.0/24', '10.0.0.0/8'],
       });
     });
+
+    it('should group media library settings correctly', async () => {
+      const settings = {
+        media_library_settings: {
+          id: 7,
+          key: 'media_library_settings',
+          value: {
+            tmdb_api_key: 'old-key',
+            prefer_local_metadata: false,
+          },
+        },
+      };
+      const changedSettings = {
+        tmdb_api_key: 'new-key',
+        prefer_local_metadata: true,
+      };
+
+      API.updateSetting.mockResolvedValue({});
+
+      await SettingsUtils.saveChangedSettings(settings, changedSettings);
+
+      expect(API.updateSetting).toHaveBeenCalledWith({
+        id: 7,
+        key: 'media_library_settings',
+        value: {
+          tmdb_api_key: 'new-key',
+          prefer_local_metadata: true,
+        },
+      });
+    });
   });
 
   describe('parseSettings', () => {
@@ -327,6 +357,23 @@ describe('SettingsUtils', () => {
 
       const result = SettingsUtils.parseSettings(mockSettings);
       expect(result.network_access).toEqual(['192.168.1.0/24', '10.0.0.0/8']);
+    });
+
+    it('should handle media_library_settings', () => {
+      const mockSettings = {
+        media_library_settings: {
+          id: 7,
+          key: 'media_library_settings',
+          value: {
+            tmdb_api_key: 'key-123',
+            prefer_local_metadata: true,
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseSettings(mockSettings);
+      expect(result.tmdb_api_key).toBe('key-123');
+      expect(result.prefer_local_metadata).toBe(true);
     });
   });
 

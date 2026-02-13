@@ -10,6 +10,7 @@ from apps.media_library.models import (
     MediaItem,
     WatchProgress,
 )
+from apps.media_library.file_utils import media_files_for_item
 
 
 class LibraryLocationSerializer(serializers.ModelSerializer):
@@ -186,9 +187,12 @@ class MediaItemSerializer(serializers.ModelSerializer):
         }
 
     def _summary_for_show(self, item: MediaItem, user):
-        episodes = MediaItem.objects.filter(
-            parent=item, item_type=MediaItem.TYPE_EPISODE
-        ).order_by("season_number", "episode_number", "id")
+        episodes = (
+            MediaItem.objects.filter(parent=item, item_type=MediaItem.TYPE_EPISODE)
+            .exclude(season_number__isnull=True)
+            .exclude(season_number=0)
+            .order_by("season_number", "episode_number", "id")
+        )
         total = episodes.count()
         if total == 0:
             return {
@@ -246,7 +250,11 @@ class MediaItemSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return None
-        progress = WatchProgress.objects.filter(user=user, media_item=obj).first()
+        progress_map = self.context.get("progress_map")
+        if isinstance(progress_map, dict):
+            progress = progress_map.get(obj.id)
+        else:
+            progress = WatchProgress.objects.filter(user=user, media_item=obj).first()
         return self._progress_payload(progress, obj)
 
     def get_watch_summary(self, obj: MediaItem):
@@ -255,16 +263,57 @@ class MediaItemSerializer(serializers.ModelSerializer):
         if not user or not user.is_authenticated:
             return None
         if obj.item_type == MediaItem.TYPE_SHOW:
+            show_summary_map = self.context.get("show_summary_map")
+            if isinstance(show_summary_map, dict) and obj.id in show_summary_map:
+                return show_summary_map[obj.id]
             return self._summary_for_show(obj, user)
-        progress = WatchProgress.objects.filter(user=user, media_item=obj).first()
+        progress_map = self.context.get("progress_map")
+        if isinstance(progress_map, dict):
+            progress = progress_map.get(obj.id)
+        else:
+            progress = WatchProgress.objects.filter(user=user, media_item=obj).first()
         return self._summary_for_progress(progress, obj)
 
 
+class MediaItemListSerializer(MediaItemSerializer):
+    class Meta(MediaItemSerializer.Meta):
+        # Keep list payloads lightweight for large libraries while preserving
+        # all fields needed for card rendering, sorting, progress, and polling.
+        fields = [
+            "id",
+            "library",
+            "parent",
+            "item_type",
+            "title",
+            "sort_title",
+            "normalized_title",
+            "release_year",
+            "rating",
+            "runtime_ms",
+            "season_number",
+            "episode_number",
+            "genres",
+            "poster_url",
+            "backdrop_url",
+            "movie_db_id",
+            "imdb_id",
+            "metadata_last_synced_at",
+            "first_imported_at",
+            "updated_at",
+            "watch_progress",
+            "watch_summary",
+        ]
+
+
 class MediaItemDetailSerializer(MediaItemSerializer):
-    files = MediaFileSerializer(many=True, read_only=True)
+    files = serializers.SerializerMethodField()
 
     class Meta(MediaItemSerializer.Meta):
         fields = MediaItemSerializer.Meta.fields + ["files", "metadata"]
+
+    def get_files(self, obj: MediaItem):
+        files = media_files_for_item(obj)
+        return MediaFileSerializer(files, many=True).data
 
 
 class LibraryScanSerializer(serializers.ModelSerializer):

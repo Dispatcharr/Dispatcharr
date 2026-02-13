@@ -156,6 +156,9 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+MEDIA_LIBRARY_SETTINGS_KEY = "media_library_settings"
+TMDB_API_KEY = "tmdb-api-key"
+PREFER_LOCAL_METADATA_KEY = "prefer-local-metadata"
 
 
 class CoreSettings(models.Model):
@@ -311,8 +314,22 @@ class CoreSettings(models.Model):
         return int(cls.get_dvr_settings().get("post_offset_minutes", 0) or 0)
 
     @classmethod
+    def get_media_library_settings(cls):
+        """Get media library settings."""
+        return cls._get_group(MEDIA_LIBRARY_SETTINGS_KEY, {
+            "tmdb_api_key": "",
+            "prefer_local_metadata": False,
+        })
+
+    @classmethod
     def get_tmdb_api_key(cls):
         """Return configured TMDB API key or None when unset."""
+        settings_obj = cls.objects.filter(key=MEDIA_LIBRARY_SETTINGS_KEY).first()
+        if settings_obj and isinstance(settings_obj.value, dict):
+            value = settings_obj.value.get("tmdb_api_key")
+            if value is not None:
+                value = str(value).strip()
+                return value or None
         try:
             value = cls.objects.get(key=TMDB_API_KEY).value
         except cls.DoesNotExist:
@@ -325,6 +342,13 @@ class CoreSettings(models.Model):
     @classmethod
     def get_prefer_local_metadata(cls):
         """Return True when local NFO metadata is preferred."""
+        settings_obj = cls.objects.filter(key=MEDIA_LIBRARY_SETTINGS_KEY).first()
+        if settings_obj and isinstance(settings_obj.value, dict):
+            value = settings_obj.value.get("prefer_local_metadata")
+            if isinstance(value, bool):
+                return value
+            if value is not None:
+                return str(value).lower() in ("1", "true", "yes", "on")
         try:
             value = cls.objects.get(key=PREFER_LOCAL_METADATA_KEY).value
         except cls.DoesNotExist:

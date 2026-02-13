@@ -12,6 +12,8 @@ import useChannelsStore from './store/channels';
 import useLogosStore from './store/logos';
 import usePlaylistsStore from './store/playlists';
 import useEPGsStore from './store/epgs';
+import useLibraryStore from './store/library';
+import useMediaLibraryStore from './store/mediaLibrary';
 import { Box, Button, Stack, Alert, Group } from '@mantine/core';
 import API from './api';
 import useSettingsStore from './store/settings';
@@ -195,7 +197,9 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch (error) {
+                  console.debug('Failed to refresh recordings after comskip completion', error);
+                }
               } else if (status === 'skipped') {
                 notifications.update({
                   id,
@@ -207,7 +211,9 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch (error) {
+                  console.debug('Failed to refresh recordings after comskip skip', error);
+                }
               } else if (status === 'error') {
                 notifications.update({
                   id,
@@ -219,7 +225,9 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch (error) {
+                  console.debug('Failed to refresh recordings after comskip error', error);
+                }
               }
               break;
             }
@@ -291,6 +299,18 @@ export const WebsocketProvider = ({ children }) => {
                       `Waiting for playlist_created event to sync...`
                   );
                 }
+              }
+              break;
+
+            case 'media_library_scan_updated':
+              if (parsedEvent.data.scan?.id) {
+                upsertLibraryScan(parsedEvent.data.scan);
+              }
+              break;
+
+            case 'media_library_item_updated':
+              if (parsedEvent.data.item?.id) {
+                upsertLiveMediaItems([parsedEvent.data.item]);
               }
               break;
 
@@ -970,6 +990,8 @@ export const WebsocketProvider = ({ children }) => {
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
   const fetchLogos = useLogosStore((s) => s.fetchAllLogos);
   const fetchChannelProfiles = useChannelsStore((s) => s.fetchChannelProfiles);
+  const upsertLibraryScan = useLibraryStore((s) => s.upsertScan);
+  const upsertLiveMediaItems = useMediaLibraryStore((s) => s.upsertLiveItems);
 
   const ret = useMemo(() => {
     return [isReady, ws.current?.send.bind(ws.current), val];

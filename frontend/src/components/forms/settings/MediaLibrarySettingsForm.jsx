@@ -18,10 +18,9 @@ import {
 import { Plus } from 'lucide-react';
 
 import useSettingsStore from '../../../store/settings.jsx';
-import useLibraryStore from '../../../store/library.jsx';
 import {
-  createSetting,
-  updateSetting,
+  parseSettings,
+  saveChangedSettings,
 } from '../../../utils/pages/SettingsUtils.js';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import LibraryCard from '../../library/LibraryCard.jsx';
@@ -29,111 +28,64 @@ import LibraryFormModal from '../../library/LibraryFormModal.jsx';
 import LibraryScanDrawer from '../../library/LibraryScanDrawer.jsx';
 import ConfirmationDialog from '../../ConfirmationDialog.jsx';
 import tmdbLogoUrl from '../../../assets/tmdb-logo-blue.svg?url';
+import useLibraryManagement from '../../../hooks/useLibraryManagement.jsx';
 
 const MediaLibrarySettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
   const navigate = useNavigate();
-  const libraries = useLibraryStore((s) => s.libraries);
-  const fetchLibraries = useLibraryStore((s) => s.fetchLibraries);
-  const createLibrary = useLibraryStore((s) => s.createLibrary);
-  const updateLibrary = useLibraryStore((s) => s.updateLibrary);
-  const deleteLibrary = useLibraryStore((s) => s.deleteLibrary);
-  const triggerScan = useLibraryStore((s) => s.triggerScan);
-  const upsertScan = useLibraryStore((s) => s.upsertScan);
-  const removeScan = useLibraryStore((s) => s.removeScan);
-  const cancelLibraryScan = useLibraryStore((s) => s.cancelLibraryScan);
-  const deleteLibraryScan = useLibraryStore((s) => s.deleteLibraryScan);
+  const {
+    visibleLibraries,
+    selectedLibraryId,
+    setSelectedLibraryId,
+    libraryFormOpen,
+    editingLibrary,
+    librarySubmitting,
+    scanDrawerOpen,
+    setScanDrawerOpen,
+    scanLoadingId,
+    deleteDialogOpen,
+    deleteTarget,
+    openCreateLibraryModal,
+    openEditLibraryModal,
+    closeLibraryForm,
+    handleLibrarySubmit,
+    requestLibraryDelete,
+    closeDeleteDialog,
+    handleDeleteConfirm,
+    handleLibraryScan,
+    handleCancelLibraryScan,
+    handleDeleteQueuedLibraryScan,
+  } = useLibraryManagement({
+    enabled: active,
+    notify: showNotification,
+  });
 
-  const tmdbSetting = settings['tmdb-api-key'];
-  const preferLocalSetting = settings['prefer-local-metadata'];
+  const parsedSettings = useMemo(() => parseSettings(settings), [settings]);
 
   const [tmdbKey, setTmdbKey] = useState('');
   const [preferLocalMetadata, setPreferLocalMetadata] = useState(false);
   const [savingMetadataSettings, setSavingMetadataSettings] = useState(false);
   const [tmdbHelpOpen, setTmdbHelpOpen] = useState(false);
 
-  const [selectedLibraryId, setSelectedLibraryId] = useState(null);
-  const [libraryFormOpen, setLibraryFormOpen] = useState(false);
-  const [editingLibrary, setEditingLibrary] = useState(null);
-  const [librarySubmitting, setLibrarySubmitting] = useState(false);
-  const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
-  const [scanLoadingId, setScanLoadingId] = useState(null);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [pendingDeleteIds, setPendingDeleteIds] = useState(() => new Set());
-
   useEffect(() => {
-    if (active) {
-      fetchLibraries();
-    }
-  }, [active, fetchLibraries]);
-
-  useEffect(() => {
-    const currentKey = tmdbSetting?.value ?? '';
+    const currentKey = parsedSettings.tmdb_api_key ?? '';
     setTmdbKey(currentKey);
-    const preferValue = preferLocalSetting?.value;
-    const normalized = String(preferValue ?? '').toLowerCase();
-    setPreferLocalMetadata(['1', 'true', 'yes', 'on'].includes(normalized));
-  }, [tmdbSetting?.value, preferLocalSetting?.value]);
+    setPreferLocalMetadata(Boolean(parsedSettings.prefer_local_metadata));
+  }, [parsedSettings.tmdb_api_key, parsedSettings.prefer_local_metadata]);
 
-  useEffect(() => {
-    setPendingDeleteIds((prev) => {
-      if (!prev.size) return prev;
-      const activeIds = new Set(libraries.map((library) => library.id));
-      let changed = false;
-      const next = new Set();
-      prev.forEach((id) => {
-        if (activeIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [libraries]);
-
-  const visibleLibraries = useMemo(
-    () => libraries.filter((library) => !pendingDeleteIds.has(library.id)),
-    [libraries, pendingDeleteIds]
+  const visibleLibraryIds = useMemo(
+    () => visibleLibraries.map((library) => library.id),
+    [visibleLibraries]
   );
 
   const handleSaveMetadataSettings = async () => {
     setSavingMetadataSettings(true);
     try {
-      const tasks = [];
-      const preferValue = preferLocalMetadata ? 'true' : 'false';
-      if (preferLocalSetting?.id) {
-        tasks.push(
-          updateSetting({ ...preferLocalSetting, value: preferValue })
-        );
-      } else {
-        tasks.push(
-          createSetting({
-            key: 'prefer-local-metadata',
-            name: 'Prefer Local Metadata',
-            value: preferValue,
-          })
-        );
-      }
-
       const trimmedKey = (tmdbKey || '').trim();
-      if (tmdbSetting?.id) {
-        tasks.push(updateSetting({ ...tmdbSetting, value: trimmedKey }));
-      } else if (trimmedKey) {
-        tasks.push(
-          createSetting({
-            key: 'tmdb-api-key',
-            name: 'TMDB API Key',
-            value: trimmedKey,
-          })
-        );
-      }
-
-      const results = await Promise.all(tasks);
-      if (results.some((result) => !result)) {
-        throw new Error('Failed to save metadata settings');
-      }
+      await saveChangedSettings(settings, {
+        prefer_local_metadata: preferLocalMetadata,
+        tmdb_api_key: trimmedKey,
+      });
       showNotification({
         title: 'Metadata settings saved',
         message: 'Metadata preferences updated successfully.',
@@ -148,135 +100,6 @@ const MediaLibrarySettingsForm = React.memo(({ active }) => {
       });
     } finally {
       setSavingMetadataSettings(false);
-    }
-  };
-
-  const openCreateLibraryModal = () => {
-    setEditingLibrary(null);
-    setLibraryFormOpen(true);
-  };
-
-  const openEditLibraryModal = (library) => {
-    setEditingLibrary(library);
-    setLibraryFormOpen(true);
-  };
-
-  const handleLibrarySubmit = async (payload) => {
-    setLibrarySubmitting(true);
-    try {
-      if (editingLibrary) {
-        const updated = await updateLibrary(editingLibrary.id, payload);
-        if (updated) {
-          showNotification({
-            title: 'Library updated',
-            message: `${updated.name} saved successfully.`,
-            color: 'green',
-          });
-        }
-      } else {
-        const created = await createLibrary(payload);
-        if (created) {
-          showNotification({
-            title: 'Library created',
-            message: `${created.name} added.`,
-            color: 'green',
-          });
-        }
-      }
-      setLibraryFormOpen(false);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLibrarySubmitting(false);
-    }
-  };
-
-  const handleLibraryDelete = async (library) => {
-    setDeleteTarget(library);
-    setDeleteDialogOpen(true);
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!deleteTarget) return;
-    const target = deleteTarget;
-    setDeleteDialogOpen(false);
-    setDeleteTarget(null);
-    setPendingDeleteIds((prev) => {
-      const next = new Set(prev);
-      next.add(target.id);
-      return next;
-    });
-    if (selectedLibraryId === target.id) {
-      setSelectedLibraryId(null);
-      setScanDrawerOpen(false);
-    }
-
-    const success = await deleteLibrary(target.id);
-    if (success) {
-      showNotification({
-        title: 'Library deleted',
-        message: `${target.name} removed.`,
-        color: 'red',
-      });
-      setPendingDeleteIds((prev) => {
-        const next = new Set(prev);
-        next.delete(target.id);
-        return next;
-      });
-    } else {
-      showNotification({
-        title: 'Unable to delete library',
-        message: `Failed to delete ${target.name}.`,
-        color: 'red',
-      });
-      setPendingDeleteIds((prev) => {
-        const next = new Set(prev);
-        next.delete(target.id);
-        return next;
-      });
-    }
-  };
-
-  const handleLibraryScan = async (libraryId, full = false) => {
-    setSelectedLibraryId(libraryId);
-    setScanLoadingId(libraryId);
-    try {
-      const scan = await triggerScan(libraryId, { full });
-      if (scan) {
-        upsertScan(scan);
-        setScanDrawerOpen(true);
-        showNotification({
-          title: full ? 'Full scan started' : 'Scan started',
-          message: 'The library scan has been queued.',
-          color: 'blue',
-        });
-      }
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setScanLoadingId(null);
-    }
-  };
-
-  const handleCancelLibraryScan = async (scanId) => {
-    try {
-      const updated = await cancelLibraryScan(scanId);
-      if (updated) {
-        upsertScan(updated);
-      }
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const handleDeleteQueuedLibraryScan = async (scanId) => {
-    try {
-      const success = await deleteLibraryScan(scanId);
-      if (success) {
-        removeScan(scanId);
-      }
-    } catch (error) {
-      console.error(error);
     }
   };
 
@@ -374,7 +197,7 @@ const MediaLibrarySettingsForm = React.memo(({ active }) => {
                 selected={selectedLibraryId === library.id}
                 onSelect={() => handleBrowseLibrary(library)}
                 onEdit={openEditLibraryModal}
-                onDelete={handleLibraryDelete}
+                onDelete={requestLibraryDelete}
                 onScan={(id) => handleLibraryScan(id, false)}
                 loadingScan={scanLoadingId === library.id}
               />
@@ -385,28 +208,30 @@ const MediaLibrarySettingsForm = React.memo(({ active }) => {
 
       <LibraryFormModal
         opened={libraryFormOpen}
-        onClose={() => setLibraryFormOpen(false)}
+        onClose={closeLibraryForm}
         library={editingLibrary}
         onSubmit={handleLibrarySubmit}
         submitting={librarySubmitting}
       />
 
       <LibraryScanDrawer
-        opened={scanDrawerOpen && Boolean(selectedLibraryId)}
+        opened={scanDrawerOpen && visibleLibraries.length > 0}
         onClose={() => setScanDrawerOpen(false)}
-        libraryId={selectedLibraryId}
+        libraryId={selectedLibraryId || visibleLibraries[0]?.id || null}
+        libraryIds={visibleLibraryIds}
         onCancelJob={handleCancelLibraryScan}
         onDeleteQueuedJob={handleDeleteQueuedLibraryScan}
-        onStartScan={() => handleLibraryScan(selectedLibraryId, false)}
-        onStartFullScan={() => handleLibraryScan(selectedLibraryId, true)}
+        onStartScan={(targetLibraryId, options) =>
+          handleLibraryScan(targetLibraryId, false, options)
+        }
+        onStartFullScan={(targetLibraryId, options) =>
+          handleLibraryScan(targetLibraryId, true, options)
+        }
       />
 
       <ConfirmationDialog
         opened={deleteDialogOpen}
-        onClose={() => {
-          setDeleteDialogOpen(false);
-          setDeleteTarget(null);
-        }}
+        onClose={closeDeleteDialog}
         onConfirm={handleDeleteConfirm}
         title="Delete library"
         message={

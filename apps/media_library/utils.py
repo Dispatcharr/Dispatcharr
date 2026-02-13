@@ -10,6 +10,7 @@ class ClassificationResult:
     year: Optional[int] = None
     season: Optional[int] = None
     episode: Optional[int] = None
+    episode_list: list[int] | None = None
     episode_title: Optional[str] = None
     data: dict[str, Any] = field(default_factory=dict)
 
