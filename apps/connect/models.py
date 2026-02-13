@@ -1,5 +1,4 @@
 from django.db import models
-from .utils import SUPPORTED_EVENTS
 
 SUPPORTED_EVENTS = {
     "channel_start": "Channel Started",
