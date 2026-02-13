@@ -1,9 +1,13 @@
 import json
 import logging
 
-from django_celery_beat.models import PeriodicTask, CrontabSchedule
+from django_celery_beat.models import PeriodicTask
 
 from core.models import CoreSettings
+from core.scheduling import (
+    create_or_update_periodic_task,
+    delete_periodic_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,98 +109,25 @@ def _sync_periodic_task() -> None:
     settings = get_schedule_settings()
 
     if not settings["enabled"]:
-        # Delete the task if it exists
-        task = PeriodicTask.objects.filter(name=BACKUP_SCHEDULE_TASK_NAME).first()
-        if task:
-            old_crontab = task.crontab
-            task.delete()
-            _cleanup_orphaned_crontab(old_crontab)
+        delete_periodic_task(BACKUP_SCHEDULE_TASK_NAME)
         logger.info("Backup schedule disabled, removed periodic task")
         return
 
-    # Get old crontab before creating new one
-    old_crontab = None
-    try:
-        old_task = PeriodicTask.objects.get(name=BACKUP_SCHEDULE_TASK_NAME)
-        old_crontab = old_task.crontab
-    except PeriodicTask.DoesNotExist:
-        pass
-
     # Check if using cron expression (advanced mode)
     if settings["cron_expression"]:
-        # Parse cron expression: "minute hour day month weekday"
-        try:
-            parts = settings["cron_expression"].split()
-            if len(parts) != 5:
-                raise ValueError("Cron expression must have 5 parts: minute hour day month weekday")
-
-            minute, hour, day_of_month, month_of_year, day_of_week = parts
-
-            crontab, _ = CrontabSchedule.objects.get_or_create(
-                minute=minute,
-                hour=hour,
-                day_of_week=day_of_week,
-                day_of_month=day_of_month,
-                month_of_year=month_of_year,
-                timezone=CoreSettings.get_system_time_zone(),
-            )
-        except Exception as e:
-            logger.error(f"Invalid cron expression '{settings['cron_expression']}': {e}")
-            raise ValueError(f"Invalid cron expression: {e}")
+        cron_expr = settings["cron_expression"]
     else:
-        # Use simple frequency-based scheduling
-        # Parse time
+        # Build a cron expression from simple frequency settings
         hour, minute = settings["time"].split(":")
-
-        # Build crontab based on frequency
-        system_tz = CoreSettings.get_system_time_zone()
         if settings["frequency"] == "daily":
-            crontab, _ = CrontabSchedule.objects.get_or_create(
-                minute=minute,
-                hour=hour,
-                day_of_week="*",
-                day_of_month="*",
-                month_of_year="*",
-                timezone=system_tz,
-            )
+            cron_expr = f"{minute} {hour} * * *"
         else:  # weekly
-            crontab, _ = CrontabSchedule.objects.get_or_create(
-                minute=minute,
-                hour=hour,
-                day_of_week=str(settings["day_of_week"]),
-                day_of_month="*",
-                month_of_year="*",
-                timezone=system_tz,
-            )
+            cron_expr = f"{minute} {hour} * * {settings['day_of_week']}"
 
-    # Create or update the periodic task
-    task, created = PeriodicTask.objects.update_or_create(
-        name=BACKUP_SCHEDULE_TASK_NAME,
-        defaults={
-            "task": "apps.backups.tasks.scheduled_backup_task",
-            "crontab": crontab,
-            "enabled": True,
-            "kwargs": json.dumps({"retention_count": settings["retention_count"]}),
-        },
+    create_or_update_periodic_task(
+        task_name=BACKUP_SCHEDULE_TASK_NAME,
+        celery_task_path="apps.backups.tasks.scheduled_backup_task",
+        kwargs={"retention_count": settings["retention_count"]},
+        cron_expression=cron_expr,
+        enabled=True,
     )
-
-    # Clean up old crontab if it changed and is orphaned
-    if old_crontab and old_crontab.id != crontab.id:
-        _cleanup_orphaned_crontab(old_crontab)
-
-    action = "Created" if created else "Updated"
-    logger.info(f"{action} backup schedule: {settings['frequency']} at {settings['time']}")
-
-
-def _cleanup_orphaned_crontab(crontab_schedule):
-    """Delete old CrontabSchedule if no other tasks are using it."""
-    if crontab_schedule is None:
-        return
-
-    # Check if any other tasks are using this crontab
-    if PeriodicTask.objects.filter(crontab=crontab_schedule).exists():
-        logger.debug(f"CrontabSchedule {crontab_schedule.id} still in use, not deleting")
-        return
-
-    logger.debug(f"Cleaning up orphaned CrontabSchedule: {crontab_schedule.id}")
-    crontab_schedule.delete()
