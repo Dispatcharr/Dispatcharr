@@ -8,9 +8,9 @@ import {
   Flex,
   TextInput,
   Box,
-  Title,
   Checkbox,
   Text,
+  SimpleGrid,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
 import { SUBSCRIPTION_EVENTS } from '../../constants';
@@ -72,6 +72,7 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
       );
     } else {
       form.reset();
+      setSelectedEvents([]);
     }
   }, [connection]);
 
@@ -128,7 +129,7 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <Modal opened={isOpen} onClose={handleClose} title="Connection">
+    <Modal opened={isOpen} size="lg" onClose={handleClose} title="Connection">
       <form onSubmit={form.onSubmit(onSubmit)}>
         <Stack gap="md">
           <TextInput
@@ -161,17 +162,19 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
 
           <Box>
             <Text size="sm" weight={500} mb={5}>
-              Triggers
+              Event Triggers
             </Text>
             <Stack gap="xs">
-              {EVENT_OPTIONS.map((opt) => (
-                <Checkbox
-                  key={opt.value}
-                  label={opt.label}
-                  checked={selectedEvents.includes(opt.value)}
-                  onChange={() => toggleEvent(opt.value)}
-                />
-              ))}
+              <SimpleGrid cols={3}>
+                {EVENT_OPTIONS.map((opt) => (
+                  <Checkbox
+                    key={opt.value}
+                    label={opt.label}
+                    checked={selectedEvents.includes(opt.value)}
+                    onChange={() => toggleEvent(opt.value)}
+                  />
+                ))}
+              </SimpleGrid>
             </Stack>
           </Box>
 

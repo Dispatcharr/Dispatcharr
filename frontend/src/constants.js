@@ -368,4 +368,7 @@ export const SUBSCRIPTION_EVENTS = {
   m3u_refresh: 'M3U Refreshed',
   client_connect: 'Client Connected',
   client_disconnect: 'Client Disconnected',
+  login_failed: 'Login Failed',
+  epg_blocked: 'EPG Blocked',
+  m3u_blocked: 'M3U Blocked',
 };
