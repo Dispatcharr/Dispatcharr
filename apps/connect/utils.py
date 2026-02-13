@@ -13,20 +13,20 @@ HANDLERS = {
     "script": ScriptHandler,
 }
 
-SUPPORTED_EVENTS = [
-    "channel_start",
-    "channel_stop",
-    "channel_reconnect",
-    "channel_error",
-    "channel_failover",
-    "stream_switch",
-    "recording_start",
-    "recording_end",
-    "epg_refresh",
-    "m3u_refresh",
-    "client_connect",
-    "client_disconnect",
-]
+SUPPORTED_EVENTS = {
+    "channel_start": "Channel Started",
+    "channel_stop": "Channel Stopped",
+    "channel_reconnect": "Channel Reconnected",
+    "channel_error": "Channel Error",
+    "channel_failover": "Channel Failover",
+    "stream_switch": "Stream Switch",
+    "recording_start": "Recording Started",
+    "recording_end": "Recording Ended",
+    "epg_refresh": "EPG Refreshed",
+    "m3u_refresh": "M3U Refreshed",
+    "client_connect": "Client Connected",
+    "client_disconnect": "Client Disconnected",
+}
 
 
 def trigger_event(event_name, payload):

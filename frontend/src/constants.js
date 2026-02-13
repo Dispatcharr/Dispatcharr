@@ -358,4 +358,14 @@ export const CONTAINER_EXTENSIONS = [
 export const SUBSCRIPTION_EVENTS = {
   channel_start: 'Channel Started',
   channel_stop: 'Channel Stopped',
+  channel_reconnect: 'Channel Reconnected',
+  channel_error: 'Channel Error',
+  channel_failover: 'Channel Failover',
+  stream_switch: 'Stream Switch',
+  recording_start: 'Recording Started',
+  recording_end: 'Recording Ended',
+  epg_refresh: 'EPG Refreshed',
+  m3u_refresh: 'M3U Refreshed',
+  client_connect: 'Client Connected',
+  client_disconnect: 'Client Disconnected',
 };

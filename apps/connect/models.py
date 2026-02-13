@@ -1,4 +1,5 @@
 from django.db import models
+from .utils import SUPPORTED_EVENTS
 
 
 class Integration(models.Model):
@@ -15,13 +16,7 @@ class Integration(models.Model):
 
 
 class EventSubscription(models.Model):
-    EVENT_CHOICES = [
-        ("channel_start", "Channel Started"),
-        ("channel_stop", "Channel Stopped"),
-        ("movie_added", "Movie Added"),
-        ("series_added", "Series Added"),
-        ("download_complete", "Download Complete"),
-    ]
+    EVENT_CHOICES = list(SUPPORTED_EVENTS.items())
     event = models.CharField(max_length=100, choices=EVENT_CHOICES)
     integration = models.ForeignKey(Integration, on_delete=models.CASCADE, related_name="subscriptions")
     enabled = models.BooleanField(default=True)
