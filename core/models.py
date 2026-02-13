@@ -1,4 +1,7 @@
 # core/models.py
+
+from shlex import split as shlex_split
+
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
@@ -133,7 +136,7 @@ class StreamProfile(models.Model):
         # Split the command and iterate through each part to apply replacements
         cmd = [self.command] + [
             self._replace_in_part(part, replacements)
-            for part in self.parameters.split()
+            for part in shlex_split(self.parameters) # use shlex to handle quoted strings
         ]
 
         return cmd
@@ -145,25 +148,15 @@ class StreamProfile(models.Model):
         return part
 
 
-DEFAULT_USER_AGENT_KEY = slugify("Default User-Agent")
-DEFAULT_STREAM_PROFILE_KEY = slugify("Default Stream Profile")
-STREAM_HASH_KEY = slugify("M3U Hash Key")
-PREFERRED_REGION_KEY = slugify("Preferred Region")
-AUTO_IMPORT_MAPPED_FILES = slugify("Auto-Import Mapped Files")
-NETWORK_ACCESS = slugify("Network Access")
-PROXY_SETTINGS_KEY = slugify("Proxy Settings")
-FUSE_SETTINGS_KEY = slugify("Fuse Settings")
-DVR_TV_TEMPLATE_KEY = slugify("DVR TV Template")
-DVR_MOVIE_TEMPLATE_KEY = slugify("DVR Movie Template")
-DVR_SERIES_RULES_KEY = slugify("DVR Series Rules")
-DVR_TV_FALLBACK_DIR_KEY = slugify("DVR TV Fallback Dir")
-DVR_TV_FALLBACK_TEMPLATE_KEY = slugify("DVR TV Fallback Template")
-DVR_MOVIE_FALLBACK_TEMPLATE_KEY = slugify("DVR Movie Fallback Template")
-DVR_COMSKIP_ENABLED_KEY = slugify("DVR Comskip Enabled")
-DVR_COMSKIP_CUSTOM_PATH_KEY = slugify("DVR Comskip Custom Path")
-DVR_PRE_OFFSET_MINUTES_KEY = slugify("DVR Pre-Offset Minutes")
-DVR_POST_OFFSET_MINUTES_KEY = slugify("DVR Post-Offset Minutes")
-SYSTEM_TIME_ZONE_KEY = slugify("System Time Zone")
+# Setting group keys
+STREAM_SETTINGS_KEY = "stream_settings"
+DVR_SETTINGS_KEY = "dvr_settings"
+BACKUP_SETTINGS_KEY = "backup_settings"
+PROXY_SETTINGS_KEY = "proxy_settings"
+FUSE_SETTINGS_KEY = "fuse_settings"
+NETWORK_ACCESS_KEY = "network_access"
+SYSTEM_SETTINGS_KEY = "system_settings"
+EPG_SETTINGS_KEY = "epg_settings"
 
 
 class CoreSettings(models.Model):
@@ -174,208 +167,189 @@ class CoreSettings(models.Model):
     name = models.CharField(
         max_length=255,
     )
-    value = models.CharField(
-        max_length=255,
+    value = models.JSONField(
+        default=dict,
+        blank=True,
     )
 
     def __str__(self):
         return "Core Settings"
 
+    # Helper methods to get/set grouped settings
+    @classmethod
+    def _get_group(cls, key, defaults=None):
+        """Get a settings group, returning defaults if not found."""
+        try:
+            return cls.objects.get(key=key).value or (defaults or {})
+        except cls.DoesNotExist:
+            return defaults or {}
+
+    @classmethod
+    def _update_group(cls, key, name, updates):
+        """Update specific fields in a settings group."""
+        obj, created = cls.objects.get_or_create(
+            key=key,
+            defaults={"name": name, "value": {}}
+        )
+        current = obj.value if isinstance(obj.value, dict) else {}
+        current.update(updates)
+        obj.value = current
+        obj.save()
+        return current
+
+    # Stream Settings
+    @classmethod
+    def get_stream_settings(cls):
+        """Get all stream-related settings."""
+        return cls._get_group(STREAM_SETTINGS_KEY, {
+            "default_user_agent": None,
+            "default_stream_profile": None,
+            "m3u_hash_key": "",
+            "preferred_region": None,
+            "auto_import_mapped_files": None,
+        })
+
     @classmethod
     def get_default_user_agent_id(cls):
-        """Retrieve a system profile by name (or return None if not found)."""
-        return cls.objects.get(key=DEFAULT_USER_AGENT_KEY).value
+        return cls.get_stream_settings().get("default_user_agent")
 
     @classmethod
     def get_default_stream_profile_id(cls):
-        return cls.objects.get(key=DEFAULT_STREAM_PROFILE_KEY).value
+        return cls.get_stream_settings().get("default_stream_profile")
 
     @classmethod
     def get_m3u_hash_key(cls):
-        return cls.objects.get(key=STREAM_HASH_KEY).value
+        return cls.get_stream_settings().get("m3u_hash_key", "")
 
     @classmethod
     def get_preferred_region(cls):
-        """Retrieve the preferred region setting (or return None if not found)."""
-        try:
-            return cls.objects.get(key=PREFERRED_REGION_KEY).value
-        except cls.DoesNotExist:
-            return None
+        return cls.get_stream_settings().get("preferred_region")
 
     @classmethod
     def get_auto_import_mapped_files(cls):
-        """Retrieve the preferred region setting (or return None if not found)."""
-        try:
-            return cls.objects.get(key=AUTO_IMPORT_MAPPED_FILES).value
-        except cls.DoesNotExist:
-            return None
+        return cls.get_stream_settings().get("auto_import_mapped_files")
+
+    # EPG Settings
+    @classmethod
+    def get_epg_settings(cls):
+        """Get all EPG-related settings."""
+        return cls._get_group(EPG_SETTINGS_KEY, {
+            "epg_match_mode": "default",
+            "epg_match_ignore_prefixes": [],
+            "epg_match_ignore_suffixes": [],
+            "epg_match_ignore_custom": [],
+        })
 
     @classmethod
-    def get_proxy_settings(cls):
-        """Retrieve proxy settings as dict (or return defaults if not found)."""
-        try:
-            import json
-            settings_json = cls.objects.get(key=PROXY_SETTINGS_KEY).value
-            return json.loads(settings_json)
-        except (cls.DoesNotExist, json.JSONDecodeError):
-            # Return defaults if not found or invalid JSON
-            return {
-                "buffering_timeout": 15,
-                "buffering_speed": 1.0,
-                "redis_chunk_ttl": 60,
-                "channel_shutdown_delay": 0,
-                "channel_init_grace_period": 5,
-            }
+    def get_epg_match_ignore_prefixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_prefixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_suffixes(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_suffixes", [])
+
+    @classmethod
+    def get_epg_match_ignore_custom(cls):
+        return cls.get_epg_settings().get("epg_match_ignore_custom", [])
+
+    # DVR Settings
+    @classmethod
+    def get_dvr_settings(cls):
+        """Get all DVR-related settings."""
+        return cls._get_group(DVR_SETTINGS_KEY, {
+            "tv_template": "TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv",
+            "movie_template": "Movies/{title} ({year}).mkv",
+            "tv_fallback_dir": "TV_Shows",
+            "tv_fallback_template": "TV_Shows/{show}/{start}.mkv",
+            "movie_fallback_template": "Movies/{start}.mkv",
+            "comskip_enabled": False,
+            "comskip_custom_path": "",
+            "pre_offset_minutes": 0,
+            "post_offset_minutes": 0,
+            "series_rules": [],
+        })
 
     @classmethod
     def get_dvr_tv_template(cls):
-        try:
-            return cls.objects.get(key=DVR_TV_TEMPLATE_KEY).value
-        except cls.DoesNotExist:
-            # Default: relative to recordings root (/data/recordings)
-            return "TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv"
+        return cls.get_dvr_settings().get("tv_template", "TV_Shows/{show}/S{season:02d}E{episode:02d}.mkv")
 
     @classmethod
     def get_dvr_movie_template(cls):
-        try:
-            return cls.objects.get(key=DVR_MOVIE_TEMPLATE_KEY).value
-        except cls.DoesNotExist:
-            return "Movies/{title} ({year}).mkv"
+        return cls.get_dvr_settings().get("movie_template", "Movies/{title} ({year}).mkv")
 
     @classmethod
     def get_dvr_tv_fallback_dir(cls):
-        """Folder name to use when a TV episode has no season/episode information.
-        Defaults to 'TV_Show' to match existing behavior but can be overridden in settings.
-        """
-        try:
-            return cls.objects.get(key=DVR_TV_FALLBACK_DIR_KEY).value or "TV_Shows"
-        except cls.DoesNotExist:
-            return "TV_Shows"
+        return cls.get_dvr_settings().get("tv_fallback_dir", "TV_Shows")
 
     @classmethod
     def get_dvr_tv_fallback_template(cls):
-        """Full path template used when season/episode are missing for a TV airing."""
-        try:
-            return cls.objects.get(key=DVR_TV_FALLBACK_TEMPLATE_KEY).value
-        except cls.DoesNotExist:
-            # default requested by user
-            return "TV_Shows/{show}/{start}.mkv"
+        return cls.get_dvr_settings().get("tv_fallback_template", "TV_Shows/{show}/{start}.mkv")
 
     @classmethod
     def get_dvr_movie_fallback_template(cls):
-        """Full path template used when movie metadata is incomplete."""
-        try:
-            return cls.objects.get(key=DVR_MOVIE_FALLBACK_TEMPLATE_KEY).value
-        except cls.DoesNotExist:
-            return "Movies/{start}.mkv"
+        return cls.get_dvr_settings().get("movie_fallback_template", "Movies/{start}.mkv")
 
     @classmethod
     def get_dvr_comskip_enabled(cls):
-        """Return boolean-like string value ('true'/'false') for comskip enablement."""
-        try:
-            val = cls.objects.get(key=DVR_COMSKIP_ENABLED_KEY).value
-            return str(val).lower() in ("1", "true", "yes", "on")
-        except cls.DoesNotExist:
-            return False
+        return bool(cls.get_dvr_settings().get("comskip_enabled", False))
 
     @classmethod
     def get_dvr_comskip_custom_path(cls):
-        """Return configured comskip.ini path or empty string if unset."""
-        try:
-            return cls.objects.get(key=DVR_COMSKIP_CUSTOM_PATH_KEY).value
-        except cls.DoesNotExist:
-            return ""
+        return cls.get_dvr_settings().get("comskip_custom_path", "")
 
     @classmethod
     def set_dvr_comskip_custom_path(cls, path: str | None):
-        """Persist the comskip.ini path setting, normalizing nulls to empty string."""
         value = (path or "").strip()
-        obj, _ = cls.objects.get_or_create(
-            key=DVR_COMSKIP_CUSTOM_PATH_KEY,
-            defaults={"name": "DVR Comskip Custom Path", "value": value},
-        )
-        if obj.value != value:
-            obj.value = value
-            obj.save(update_fields=["value"])
+        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"comskip_custom_path": value})
         return value
 
     @classmethod
     def get_dvr_pre_offset_minutes(cls):
-        """Minutes to start recording before scheduled start (default 0)."""
-        try:
-            val = cls.objects.get(key=DVR_PRE_OFFSET_MINUTES_KEY).value
-            return int(val)
-        except cls.DoesNotExist:
-            return 0
-        except Exception:
-            try:
-                return int(float(val))
-            except Exception:
-                return 0
+        return int(cls.get_dvr_settings().get("pre_offset_minutes", 0) or 0)
 
     @classmethod
     def get_dvr_post_offset_minutes(cls):
-        """Minutes to stop recording after scheduled end (default 0)."""
-        try:
-            val = cls.objects.get(key=DVR_POST_OFFSET_MINUTES_KEY).value
-            return int(val)
-        except cls.DoesNotExist:
-            return 0
-        except Exception:
-            try:
-                return int(float(val))
-            except Exception:
-                return 0
-
-    @classmethod
-    def get_system_time_zone(cls):
-        """Return configured system time zone or fall back to Django settings."""
-        try:
-            value = cls.objects.get(key=SYSTEM_TIME_ZONE_KEY).value
-            if value:
-                return value
-        except cls.DoesNotExist:
-            pass
-        return getattr(settings, "TIME_ZONE", "UTC") or "UTC"
-
-    @classmethod
-    def set_system_time_zone(cls, tz_name: str | None):
-        """Persist the desired system time zone identifier."""
-        value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
-        obj, _ = cls.objects.get_or_create(
-            key=SYSTEM_TIME_ZONE_KEY,
-            defaults={"name": "System Time Zone", "value": value},
-        )
-        if obj.value != value:
-            obj.value = value
-            obj.save(update_fields=["value"])
-        return value
+        return int(cls.get_dvr_settings().get("post_offset_minutes", 0) or 0)
 
     @classmethod
     def get_dvr_series_rules(cls):
-        """Return list of series recording rules. Each: {tvg_id, title, mode: 'all'|'new'}"""
-        import json
-        try:
-            raw = cls.objects.get(key=DVR_SERIES_RULES_KEY).value
-            rules = json.loads(raw) if raw else []
-            if isinstance(rules, list):
-                return rules
-            return []
-        except cls.DoesNotExist:
-            # Initialize empty if missing
-            cls.objects.create(key=DVR_SERIES_RULES_KEY, name="DVR Series Rules", value="[]")
-            return []
+        return cls.get_dvr_settings().get("series_rules", [])
 
     @classmethod
     def set_dvr_series_rules(cls, rules):
-        import json
-        try:
-            obj, _ = cls.objects.get_or_create(key=DVR_SERIES_RULES_KEY, defaults={"name": "DVR Series Rules", "value": "[]"})
-            obj.value = json.dumps(rules)
-            obj.save(update_fields=["value"])
-            return rules
-        except Exception:
-            return rules
+        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"series_rules": rules})
+        return rules
+
+    # Proxy Settings
+    @classmethod
+    def get_proxy_settings(cls):
+        """Get proxy settings."""
+        return cls._get_group(PROXY_SETTINGS_KEY, {
+            "buffering_timeout": 15,
+            "buffering_speed": 1.0,
+            "redis_chunk_ttl": 60,
+            "channel_shutdown_delay": 0,
+            "channel_init_grace_period": 5,
+        })
+
+    # System Settings
+    @classmethod
+    def get_system_settings(cls):
+        """Get all system-related settings."""
+        return cls._get_group(SYSTEM_SETTINGS_KEY, {
+            "time_zone": getattr(settings, "TIME_ZONE", "UTC") or "UTC",
+            "max_system_events": 100,
+        })
+
+    @classmethod
+    def get_system_time_zone(cls):
+        return cls.get_system_settings().get("time_zone") or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
+
+    @classmethod
+    def set_system_time_zone(cls, tz_name: str | None):
+        value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
+        cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
+        return value
 
 
 class SystemEvent(models.Model):
@@ -421,3 +395,153 @@ class SystemEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} - {self.channel_name or 'N/A'} @ {self.timestamp}"
+
+
+class SystemNotification(models.Model):
+    """
+    Stores system notifications that users can view and dismiss.
+    Used for version updates, recommended settings, announcements, etc.
+    """
+    class NotificationType(models.TextChoices):
+        VERSION_UPDATE = 'version_update', 'Version Update Available'
+        SETTING_RECOMMENDATION = 'setting_recommendation', 'Recommended Setting Change'
+        ANNOUNCEMENT = 'announcement', 'System Announcement'
+        WARNING = 'warning', 'Warning'
+        INFO = 'info', 'Information'
+
+    class Priority(models.TextChoices):
+        LOW = 'low', 'Low'
+        NORMAL = 'normal', 'Normal'
+        HIGH = 'high', 'High'
+        CRITICAL = 'critical', 'Critical'
+
+    class Source(models.TextChoices):
+        SYSTEM = 'system', 'System Generated'
+        DEVELOPER = 'developer', 'Developer Notification'
+
+    # Unique identifier for the notification (e.g., 'version-0.19.0', 'setting-proxy-buffer')
+    # This allows deduplication and targeted dismissals
+    notification_key = models.CharField(max_length=255, unique=True, db_index=True)
+
+    notification_type = models.CharField(
+        max_length=50,
+        choices=NotificationType.choices,
+        default=NotificationType.INFO,
+        db_index=True
+    )
+    priority = models.CharField(
+        max_length=20,
+        choices=Priority.choices,
+        default=Priority.NORMAL
+    )
+
+    # Source of the notification (system-generated vs developer-defined)
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.SYSTEM,
+        db_index=True
+    )
+
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+
+    # Optional action data (e.g., setting key/value for recommendations, release URL for versions)
+    action_data = models.JSONField(default=dict, blank=True)
+
+    # Whether this notification is currently active
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    # Admin-only notifications require admin privileges to view
+    admin_only = models.BooleanField(default=False)
+
+    # Auto-expire after this date (null = never expires)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-priority', '-created_at']
+        indexes = [
+            models.Index(fields=['is_active', '-created_at']),
+            models.Index(fields=['notification_type', 'is_active']),
+            models.Index(fields=['source', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"[{self.notification_type}] {self.title}"
+
+    @classmethod
+    def create_version_notification(cls, version, release_url=None, release_notes=None):
+        """Create or update a version update notification. Returns (notification, created) tuple."""
+        key = f"version-{version}"
+        notification, created = cls.objects.update_or_create(
+            notification_key=key,
+            defaults={
+                'notification_type': cls.NotificationType.VERSION_UPDATE,
+                'priority': cls.Priority.HIGH,
+                'title': f'Version {version} Available',
+                'message': f'A new version of Dispatcharr ({version}) is available.',
+                'action_data': {
+                    'version': version,
+                    'release_url': release_url,
+                    'release_notes': release_notes,
+                },
+                'is_active': True,
+                'admin_only': True,
+            }
+        )
+        return notification, created
+
+    @classmethod
+    def create_setting_recommendation(cls, setting_key, recommended_value, reason, current_value=None):
+        """Create a setting recommendation notification. Returns (notification, created) tuple."""
+        key = f"setting-{setting_key}"
+        notification, created = cls.objects.update_or_create(
+            notification_key=key,
+            defaults={
+                'notification_type': cls.NotificationType.SETTING_RECOMMENDATION,
+                'priority': cls.Priority.NORMAL,
+                'title': f'Recommended Setting: {setting_key}',
+                'message': reason,
+                'action_data': {
+                    'setting_key': setting_key,
+                    'recommended_value': recommended_value,
+                    'current_value': current_value,
+                },
+                'is_active': True,
+                'admin_only': True,
+            }
+        )
+        return notification, created
+
+
+class NotificationDismissal(models.Model):
+    """
+    Tracks which users have dismissed which notifications.
+    Allows users to dismiss notifications once without seeing them again.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='dismissed_notifications'
+    )
+    notification = models.ForeignKey(
+        SystemNotification,
+        on_delete=models.CASCADE,
+        related_name='dismissals'
+    )
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    # Optional: track if user accepted/applied the recommendation
+    action_taken = models.CharField(max_length=50, blank=True, null=True)
+
+    class Meta:
+        unique_together = ['user', 'notification']
+        indexes = [
+            models.Index(fields=['user', 'notification']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} dismissed {self.notification.notification_key}"

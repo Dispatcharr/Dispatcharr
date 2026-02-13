@@ -15,6 +15,7 @@ DATA_DIRS=(
 APP_DIRS=(
     "/app/logo_cache"
     "/app/media"
+    "/app/static"
 )
 
 # Create all directories
@@ -30,6 +31,10 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
     fi
 fi
 # Configure nginx port
+if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
+    echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
+    DISPATCHARR_PORT=9191
+fi
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
 # Configure nginx based on IPv6 availability

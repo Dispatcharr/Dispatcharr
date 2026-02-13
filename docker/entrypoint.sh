@@ -36,7 +36,10 @@ export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 export REDIS_HOST=${REDIS_HOST:-localhost}
+export REDIS_PORT=${REDIS_PORT:-6379}
 export REDIS_DB=${REDIS_DB:-0}
+export REDIS_PASSWORD=${REDIS_PASSWORD:-}
+export REDIS_USER=${REDIS_USER:-}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
@@ -54,7 +57,7 @@ PY
   mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
   umask $old_umask
 fi
-export DJANGO_SECRET_KEY="$(cat "$SECRET_FILE")"
+export DJANGO_SECRET_KEY="$(tr -d '\r\n' < "$SECRET_FILE")"
 
 # Process priority configuration
 # UWSGI_NICE_LEVEL: Absolute nice value for uWSGI/streaming (default: 0 = normal priority)
@@ -100,10 +103,10 @@ export POSTGRES_DIR=/data/db
 if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
     # Define all variables to process
     variables=(
-        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED
+        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
         POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_DB POSTGRES_DIR DISPATCHARR_PORT
+        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
         CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     )
@@ -138,25 +141,60 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
+
+# Initialize PostgreSQL (script handles modular vs internal mode internally)
 echo "Setting up PostgreSQL..."
 . /app/docker/init/02-postgres.sh
+
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
 
-# Start PostgreSQL
-echo "Starting Postgres..."
-su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
-# Wait for PostgreSQL to be ready
-until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
-    echo_with_timestamp "Waiting for PostgreSQL to be ready..."
-    sleep 1
-done
-postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
-echo "✅ Postgres started with PID $postgres_pid"
-pids+=("$postgres_pid")
+# Start PostgreSQL if NOT in modular mode (using external database)
+if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
+    echo "Starting Postgres..."
+    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    # Wait for PostgreSQL to be ready
+    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL to be ready..."
+        sleep 1
+    done
+    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    echo "✅ Postgres started with PID $postgres_pid"
+    pids+=("$postgres_pid")
+else
+    echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+    # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
+    echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
+        sleep 1
+    done
+    echo "✅ External PostgreSQL is ready"
 
-# Ensure database encoding is UTF8
-. /app/docker/init/02-postgres.sh
+    # Check PostgreSQL version compatibility
+    check_external_postgres_version || exit 1
+fi
+
+# Wait for Redis to be ready (modular mode uses external Redis)
+if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
+    echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
+    echo_with_timestamp "Waiting for external Redis to be ready..."
+    until python3 -c "
+import socket, sys
+try:
+    s = socket.create_connection(('${REDIS_HOST}', ${REDIS_PORT}), timeout=2)
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; do
+        echo_with_timestamp "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
+        sleep 1
+    done
+    echo "✅ External Redis is ready"
+fi
+
+# Ensure database encoding is UTF8 (handles both internal and external databases)
 ensure_utf8_encoding
 
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
@@ -174,9 +212,22 @@ else
     pids+=("$nginx_pid")
 fi
 
-cd /app
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
+
+# --- NumPy version switching for legacy hardware ---
+if [ "$USE_LEGACY_NUMPY" = "true" ]; then
+    # Check if NumPy was compiled with baseline support
+    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
+        echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
+        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
+        echo_with_timestamp "✅ Legacy NumPy installed"
+    else
+        echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
+    fi
+fi
+
+# Run Django commands as non-root user to prevent permission issues
+su - $POSTGRES_USER -c "cd /app && python manage.py migrate --noinput"
+su - $POSTGRES_USER -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
@@ -185,6 +236,9 @@ if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
 elif [ "$DISPATCHARR_DEBUG" = "true" ]; then
     echo "🚀 Starting uwsgi in debug mode..."
     uwsgi_file="/app/docker/uwsgi.debug.ini"
+elif [ "$DISPATCHARR_ENV" = "modular" ]; then
+    echo "🚀 Starting uwsgi in modular mode..."
+    uwsgi_file="/app/docker/uwsgi.modular.ini"
 else
     echo "🚀 Starting uwsgi in production mode..."
     uwsgi_file="/app/docker/uwsgi.ini"
@@ -202,7 +256,7 @@ fi
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec /dispatcharrpy/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 

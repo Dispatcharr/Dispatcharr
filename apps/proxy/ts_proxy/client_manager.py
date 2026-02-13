@@ -48,9 +48,11 @@ class ClientManager:
             # Import here to avoid potential import issues
             from apps.proxy.ts_proxy.channel_status import ChannelStatus
             import redis
+            from django.conf import settings
 
-            # Get all channels from Redis
-            redis_client = redis.Redis.from_url('redis://localhost:6379', decode_responses=True)
+            # Get all channels from Redis using settings
+            redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
             all_channels = []
             cursor = 0
 

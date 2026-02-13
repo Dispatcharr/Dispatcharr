@@ -7,9 +7,9 @@
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu',
+    'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: #18181b;
@@ -18,8 +18,8 @@ body {
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+  font-family:
+    source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
 
 /* Example scrollbars - optional, to match a dark theme. */
@@ -28,7 +28,7 @@ code {
 }
 
 ::-webkit-scrollbar-track {
-  background: #3B3C41;
+  background: #3b3c41;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -45,7 +45,9 @@ code {
   }
 }
 
-table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Table-td-detail-panel {
+table.mrt-table
+  tr.mantine-Table-tr.mantine-Table-tr-detail-panel
+  td.mantine-Table-td-detail-panel {
   width: 100% !important;
 }
 
@@ -71,7 +73,7 @@ table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Tab
 
 /* Create a short vertical bar */
 .sash.sash-vertical::before {
-  content: "";
+  content: '';
   position: absolute;
   top: 50%;
   left: 50%;
@@ -103,7 +105,7 @@ table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Tab
 }
 
 /* For elements that specifically need transforms (like draggable elements) */
-[data-draggable="true"] {
+[data-draggable='true'] {
   transform: translate3d(0, 0, 0) !important;
 }
 
@@ -118,7 +120,23 @@ table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Tab
 
 .custom-multiselect .mantine-MultiSelect-input {
   min-height: 30px;
-  /* Set a minimum height */
   max-height: 30px;
-  /* Set max height */
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+
+.custom-multiselect .mantine-MultiSelect-pillsList {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.custom-multiselect .mantine-MultiSelect-pill {
+  max-width: 100px;
+  flex-shrink: 0;
+}
+
+.custom-multiselect .mantine-MultiSelect-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

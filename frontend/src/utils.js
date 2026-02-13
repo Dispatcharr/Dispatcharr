@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { notifications } from '@mantine/notifications';
 
 export default {
   Limiter: (n, list) => {
@@ -40,13 +41,25 @@ export default {
 // Custom debounce hook
 export function useDebounce(value, delay = 500, callback = null) {
   const [debouncedValue, setDebouncedValue] = useState(value);
+  const isFirstRender = useRef(true);
+  const previousValueRef = useRef(JSON.stringify(value));
 
   useEffect(() => {
+    const currentValueStr = JSON.stringify(value);
+
+    // Skip if value hasn't actually changed (prevents unnecessary state updates)
+    if (previousValueRef.current === currentValueStr) {
+      return;
+    }
+
     const handler = setTimeout(() => {
       setDebouncedValue(value);
-      if (callback) {
+      // Only fire callback if not the first render
+      if (callback && !isFirstRender.current) {
         callback();
       }
+      isFirstRender.current = false;
+      previousValueRef.current = currentValueStr;
     }, delay);
 
     return () => clearTimeout(handler); // Cleanup timeout on unmount or value change
@@ -64,30 +77,53 @@ export function sleep(ms) {
 export const getDescendantProp = (obj, path) =>
   path.split('.').reduce((acc, part) => acc && acc[part], obj);
 
-export const copyToClipboard = async (value) => {
+export const copyToClipboard = async (value, options = {}) => {
+  const {
+    successTitle = 'Copied!',
+    successMessage = 'Copied to clipboard',
+    failureTitle = 'Copy Failed',
+    failureMessage = 'Failed to copy to clipboard',
+    showNotification = true,
+  } = options;
+
+  let success = false;
+
   if (navigator.clipboard) {
     // Modern method, using navigator.clipboard
     try {
       await navigator.clipboard.writeText(value);
-      return true;
+      success = true;
     } catch (err) {
       console.error('Failed to copy: ', err);
     }
   }
 
-  // Fallback method for environments without clipboard support
-  try {
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
-    document.body.appendChild(textarea);
-    textarea.select();
-    const successful = document.execCommand('copy');
-    document.body.removeChild(textarea);
-    return successful;
-  } catch (err) {
-    console.error('Failed to copy with fallback method: ', err);
-    return false;
+  if (!success) {
+    // Fallback method for environments without clipboard support
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      document.body.appendChild(textarea);
+      textarea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      success = successful;
+    } catch (err) {
+      console.error('Failed to copy with fallback method: ', err);
+      success = false;
+    }
   }
+
+  // Show notification if enabled
+  if (showNotification) {
+    notifications.show({
+      title: success ? successTitle : failureTitle,
+      message: success ? successMessage : failureMessage,
+      color: success ? 'green' : 'red',
+    });
+  }
+
+  return success;
 };
 
 export const setCustomProperty = (input, key, value, serialize = false) => {

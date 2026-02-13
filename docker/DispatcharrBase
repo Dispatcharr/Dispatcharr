@@ -1,29 +1,54 @@
 FROM lscr.io/linuxserver/ffmpeg:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
 ENV VIRTUAL_ENV=/dispatcharrpy
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
-# --- Install Python 3.13 and system dependencies ---
+# --- Install Python 3.13 and build dependencies ---
 # Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates software-properties-common gnupg2 curl wget \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
-    python3.13 python3.13-dev python3.13-venv \
+    python3.13 python3.13-dev python3.13-venv libpython3.13 \
     python-is-python3 python3-pip \
-    libpcre3 libpcre3-dev libpq-dev procps \
-    build-essential gcc pciutils \
-    nginx streamlink comskip\
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    libpcre3 libpcre3-dev libpq-dev procps pciutils \
+    nginx streamlink comskip \
+    vlc-bin vlc-plugin-base \
+    build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build
 
-# --- Create Python virtual environment ---
-RUN python3.13 -m venv $VIRTUAL_ENV && $VIRTUAL_ENV/bin/pip install --upgrade pip
+# --- Install UV ---
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# --- Install Python dependencies ---
-COPY requirements.txt /tmp/requirements.txt
-RUN $VIRTUAL_ENV/bin/pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+# --- Create Python virtual environment and install dependencies ---
+WORKDIR /tmp/build
+COPY pyproject.toml /tmp/build/
+COPY version.py /tmp/build/
+COPY README.md /tmp/build/
+RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev && \
+    rm -rf /tmp/build
+WORKDIR /
+
+# --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---
+RUN uv pip install --python $UV_PROJECT_ENVIRONMENT/bin/python --no-cache build pip && \
+    cd /tmp && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -m pip download --no-binary numpy --no-deps numpy && \
+    tar -xzf numpy-*.tar.gz && \
+    cd numpy-*/ && \
+    $UV_PROJECT_ENVIRONMENT/bin/python -m build --wheel -Csetup-args=-Dcpu-baseline="none" -Csetup-args=-Dcpu-dispatch="none" && \
+    mv dist/*.whl /opt/ && \
+    cd / && rm -rf /tmp/numpy-* /tmp/*.tar.gz && \
+    uv pip uninstall --python $UV_PROJECT_ENVIRONMENT/bin/python build pip
+
+# --- Clean up build dependencies to reduce image size ---
+RUN apt-get remove -y build-essential gcc g++ gfortran libopenblas-dev libpcre3-dev python3.13-dev ninja-build && \
+    apt-get autoremove -y --purge && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
 # --- Set up Redis 7.x ---
 RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \

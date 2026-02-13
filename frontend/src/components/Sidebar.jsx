@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
@@ -33,10 +33,10 @@ import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
 import useSettingsStore from '../store/settings';
-import useAuthStore from '../store/auth'; // Add this import
-import API from '../api';
+import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
+import NotificationCenter from './NotificationCenter';
 
 const NavLink = ({ item, isActive, collapsed }) => {
   return (
@@ -75,16 +75,13 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const channels = useChannelsStore((s) => s.channels);
   const environment = useSettingsStore((s) => s.environment);
+  const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
   const publicIPRef = useRef(null);
 
-  const [appVersion, setAppVersion] = useState({
-    version: '',
-    timestamp: null,
-  });
   const [userFormOpen, setUserFormOpen] = useState(false);
 
   const closeUserForm = () => setUserFormOpen(false);
@@ -144,48 +141,14 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           },
         ];
 
-  // Fetch environment settings including version on component mount
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-
-    const fetchEnvironment = async () => {
-      API.getEnvironmentSettings();
-    };
-
-    fetchEnvironment();
-  }, [isAuthenticated]);
-
-  // Fetch version information on component mount (regardless of authentication)
-  useEffect(() => {
-    const fetchVersion = async () => {
-      try {
-        const versionData = await API.getVersion();
-        setAppVersion({
-          version: versionData.version || '',
-          timestamp: versionData.timestamp || null,
-        });
-      } catch (error) {
-        console.error('Failed to fetch version information:', error);
-        // Keep using default values from useState initialization
-      }
-    };
-
-    fetchVersion();
-  }, []);
+  // Environment settings and version are loaded by the settings store during initData()
+  // No need to fetch them again here - just use the store values
 
   const copyPublicIP = async () => {
-    const success = await copyToClipboard(environment.public_ip);
-    if (success) {
-      notifications.show({
-        title: 'Success',
-        message: 'Public IP copied to clipboard',
-        color: 'green',
-      });
-    } else {
-      console.error('Failed to copy public IP to clipboard');
-    }
+    await copyToClipboard(environment.public_ip, {
+      successTitle: 'Success',
+      successMessage: 'Public IP copied to clipboard',
+    });
   };
 
   const onLogout = async () => {
@@ -270,7 +233,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {isAuthenticated && (
-          <Group>
+          <Stack gap="sm">
             {!collapsed && (
               <TextInput
                 label="Public IP"
@@ -300,34 +263,54 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               />
             )}
 
-            <Avatar src="" radius="xl" />
             {!collapsed && authUser && (
               <Group
-                style={{
-                  flex: 1,
-                  justifyContent: 'space-between',
-                  whiteSpace: 'nowrap',
-                }}
+                gap="xs"
+                style={{ justifyContent: 'space-between', width: '100%' }}
               >
-                <UnstyledButton onClick={() => setUserFormOpen(true)}>
-                  {authUser.first_name || authUser.username}
-                </UnstyledButton>
-
+                <Group gap="xs">
+                  <Avatar src="" radius="xl" />
+                  <UnstyledButton onClick={() => setUserFormOpen(true)}>
+                    {authUser.first_name || authUser.username}
+                  </UnstyledButton>
+                </Group>
                 <ActionIcon variant="transparent" color="white" size="sm">
                   <LogOut onClick={logout} />
                 </ActionIcon>
               </Group>
             )}
-          </Group>
+            {collapsed && (
+              <Group gap="xs">
+                <Avatar src="" radius="xl" />
+              </Group>
+            )}
+          </Stack>
         )}
       </Box>
 
-      {/* Version is always shown when sidebar is expanded, regardless of auth status */}
+      {/* Version and Notification */}
       {!collapsed && (
-        <Text size="xs" style={{ padding: '0 16px 16px' }} c="dimmed">
-          v{appVersion?.version || '0.0.0'}
-          {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-        </Text>
+        <Group
+          gap="xs"
+          style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
+        >
+          <Text size="xs" c="dimmed">
+            v{appVersion?.version || '0.0.0'}
+            {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
+          </Text>
+          {isAuthenticated && <NotificationCenter />}
+        </Group>
+      )}
+      {collapsed && isAuthenticated && (
+        <Box
+          style={{
+            padding: '0 16px 16px',
+            display: 'flex',
+            justifyContent: 'center',
+          }}
+        >
+          <NotificationCenter />
+        </Box>
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />

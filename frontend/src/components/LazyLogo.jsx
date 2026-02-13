@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { Skeleton } from '@mantine/core';
 import useLogosStore from '../store/logos';
 import logo from '../images/logo.png'; // Default logo
@@ -16,15 +16,16 @@ const LazyLogo = ({
 }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const fetchAttempted = useRef(new Set()); // Track which IDs we've already tried to fetch
+  const fetchAttempted = useRef(new Set());
   const isMountedRef = useRef(true);
 
   const logos = useLogosStore((s) => s.logos);
   const fetchLogosByIds = useLogosStore((s) => s.fetchLogosByIds);
+  const allowLogoRendering = useLogosStore((s) => s.allowLogoRendering);
 
   // Determine the logo source
   const logoData = logoId && logos[logoId];
-  const logoSrc = logoData?.cache_url || fallbackSrc; // Only use cache URL if we have logo data
+  const logoSrc = logoData?.cache_url || fallbackSrc;
 
   // Cleanup on unmount
   useEffect(() => {
@@ -34,6 +35,9 @@ const LazyLogo = ({
   }, []);
 
   useEffect(() => {
+    // Don't start fetching until logo rendering is allowed
+    if (!allowLogoRendering) return;
+
     // If we have a logoId but no logo data, add it to the batch request queue
     if (
       logoId &&
@@ -44,7 +48,7 @@ const LazyLogo = ({
       isMountedRef.current
     ) {
       setIsLoading(true);
-      fetchAttempted.current.add(logoId); // Mark this ID as attempted
+      fetchAttempted.current.add(logoId);
       logoRequestQueue.add(logoId);
 
       // Clear existing timer and set new one to batch requests
@@ -82,7 +86,7 @@ const LazyLogo = ({
       setIsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logoId, fetchLogosByIds, logoData]); // Include logoData to detect when it becomes available
+  }, [logoId, fetchLogosByIds, logoData, allowLogoRendering]);
 
   // Reset error state when logoId changes
   useEffect(() => {
@@ -91,8 +95,10 @@ const LazyLogo = ({
     }
   }, [logoId]);
 
-  // Show skeleton while loading
-  if (isLoading && !logoData) {
+  // Show skeleton if:
+  // 1. Logo rendering is not allowed yet, OR
+  // 2. We don't have logo data yet (regardless of loading state)
+  if (logoId && (!allowLogoRendering || !logoData)) {
     return (
       <Skeleton
         height={style.maxHeight || 18}

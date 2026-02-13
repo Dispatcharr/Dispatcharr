@@ -1,10 +1,10 @@
 import logging, os
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 from datetime import timedelta
 from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
@@ -122,8 +122,8 @@ class EPGGridAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
+    @extend_schema(
+        description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
         responses={200: ProgramDataSerializer(many=True)},
     )
     def get(self, request, format=None):
@@ -371,9 +371,8 @@ class EPGImportAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers an EPG data import",
-        responses={202: "EPG data import initiated"},
+    @extend_schema(
+        description="Triggers an EPG data import",
     )
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
@@ -416,4 +415,90 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+
+# ─────────────────────────────
+# 6) Current Programs API
+# ─────────────────────────────
+class CurrentProgramsAPIView(APIView):
+    """
+    Lightweight endpoint that returns currently playing programs for specified channel IDs.
+    Accepts POST with JSON body containing channel_ids array, or null/empty to fetch all channels.
+    """
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        description="Get currently playing programs for specified channels or all channels",
+        request=inline_serializer(
+            name="CurrentProgramsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    allow_null=True,
+                    help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
+                ),
+            },
+        ),
+        responses={200: ProgramDataSerializer(many=True)},
+    )
+    def post(self, request, format=None):
+        # Get channel IDs from request body
+        channel_ids = request.data.get('channel_ids', None)
+
+        # Import Channel model
+        from apps.channels.models import Channel
+
+        # Build query for channels with EPG data
+        query = Channel.objects.filter(epg_data__isnull=False)
+
+        # Filter by specific channel IDs if provided
+        if channel_ids is not None:
+            if not isinstance(channel_ids, list):
+                return Response(
+                    {"error": "channel_ids must be an array of integers or null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                channel_ids = [int(id) for id in channel_ids]
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "channel_ids must contain valid integers"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            query = query.filter(id__in=channel_ids)
+
+        # Get channels with EPG data
+        channels = query.select_related('epg_data')
+
+        # Get current time
+        now = timezone.now()
+
+        # Build list of current programs
+        current_programs = []
+
+        for channel in channels:
+            # Query for current program
+            program = ProgramData.objects.filter(
+                epg=channel.epg_data,
+                start_time__lte=now,
+                end_time__gt=now
+            ).first()
+
+            if program:
+                # Serialize program and add channel_id for easy mapping
+                program_data = ProgramDataSerializer(program).data
+                program_data['channel_id'] = channel.id
+                current_programs.append(program_data)
+
+        return Response(current_programs, status=status.HTTP_200_OK)
 

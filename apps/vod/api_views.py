@@ -62,7 +62,7 @@ class MovieFilter(django_filters.FilterSet):
 
         # Handle the format 'category_name|category_type'
         if '|' in value:
-            category_name, category_type = value.split('|', 1)
+            category_name, category_type = value.rsplit('|', 1)
             return queryset.filter(
                 m3u_relations__category__name=category_name,
                 m3u_relations__category__category_type=category_type
@@ -219,7 +219,7 @@ class SeriesFilter(django_filters.FilterSet):
 
         # Handle the format 'category_name|category_type'
         if '|' in value:
-            category_name, category_type = value.split('|', 1)
+            category_name, category_type = value.rsplit('|', 1)
             return queryset.filter(
                 m3u_relations__category__name=category_name,
                 m3u_relations__category__category_type=category_type
@@ -588,7 +588,7 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
 
             if category:
                 if '|' in category:
-                    cat_name, cat_type = category.split('|', 1)
+                    cat_name, cat_type = category.rsplit('|', 1)
                     if cat_type == 'movie':
                         where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
                         where_conditions[1] = "1=0"  # Exclude series

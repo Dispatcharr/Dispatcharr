@@ -7,6 +7,7 @@ from .api_views import (
     PluginEnabledAPIView,
     PluginImportAPIView,
     PluginDeleteAPIView,
+    PluginLogoAPIView,
 )
 
 app_name = "plugins"
@@ -19,4 +20,5 @@ urlpatterns = [
     path("plugins/<str:key>/settings/", PluginSettingsAPIView.as_view(), name="settings"),
     path("plugins/<str:key>/run/", PluginRunAPIView.as_view(), name="run"),
     path("plugins/<str:key>/enabled/", PluginEnabledAPIView.as_view(), name="enabled"),
+    path("plugins/<str:key>/logo/", PluginLogoAPIView.as_view(), name="logo"),
 ]

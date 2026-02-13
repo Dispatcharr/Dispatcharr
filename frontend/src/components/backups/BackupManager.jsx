@@ -34,7 +34,13 @@ import useLocalStorage from '../../hooks/useLocalStorage';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from '../tables/CustomTable';
 
-const RowActions = ({ row, handleDownload, handleRestoreClick, handleDeleteClick, downloading }) => {
+const RowActions = ({
+  row,
+  handleDownload,
+  handleRestoreClick,
+  handleDeleteClick,
+  downloading,
+}) => {
   return (
     <Flex gap={4} wrap="nowrap">
       <Tooltip label="Download">
@@ -98,7 +104,6 @@ function to24Hour(time12, period) {
   return `${String(hours24).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
-
 // Get default timezone (same as Settings page)
 function getDefaultTimeZone() {
   try {
@@ -116,35 +121,60 @@ function validateCronExpression(expression) {
 
   const parts = expression.trim().split(/\s+/);
   if (parts.length !== 5) {
-    return { valid: false, error: 'Cron expression must have exactly 5 parts: minute hour day month weekday' };
+    return {
+      valid: false,
+      error:
+        'Cron expression must have exactly 5 parts: minute hour day month weekday',
+    };
   }
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
   // Validate each part (allowing *, */N steps, ranges, lists, steps)
   // Supports: *, */2, 5, 1-5, 1-5/2, 1,3,5, etc.
-  const cronPartRegex = /^(\*\/\d+|\*|\d+(-\d+)?(\/\d+)?(,\d+(-\d+)?(\/\d+)?)*)$/;
+  const cronPartRegex =
+    /^(\*\/\d+|\*|\d+(-\d+)?(\/\d+)?(,\d+(-\d+)?(\/\d+)?)*)$/;
 
   if (!cronPartRegex.test(minute)) {
-    return { valid: false, error: 'Invalid minute field (0-59, *, or cron syntax)' };
+    return {
+      valid: false,
+      error: 'Invalid minute field (0-59, *, or cron syntax)',
+    };
   }
   if (!cronPartRegex.test(hour)) {
-    return { valid: false, error: 'Invalid hour field (0-23, *, or cron syntax)' };
+    return {
+      valid: false,
+      error: 'Invalid hour field (0-23, *, or cron syntax)',
+    };
   }
   if (!cronPartRegex.test(dayOfMonth)) {
-    return { valid: false, error: 'Invalid day field (1-31, *, or cron syntax)' };
+    return {
+      valid: false,
+      error: 'Invalid day field (1-31, *, or cron syntax)',
+    };
   }
   if (!cronPartRegex.test(month)) {
-    return { valid: false, error: 'Invalid month field (1-12, *, or cron syntax)' };
+    return {
+      valid: false,
+      error: 'Invalid month field (1-12, *, or cron syntax)',
+    };
   }
   if (!cronPartRegex.test(dayOfWeek)) {
-    return { valid: false, error: 'Invalid weekday field (0-6, *, or cron syntax)' };
+    return {
+      valid: false,
+      error: 'Invalid weekday field (0-6, *, or cron syntax)',
+    };
   }
 
   // Additional range validation for numeric values
   const validateRange = (value, min, max, name) => {
     // Skip if it's * or contains special characters
-    if (value === '*' || value.includes('/') || value.includes('-') || value.includes(',')) {
+    if (
+      value === '*' ||
+      value.includes('/') ||
+      value.includes('-') ||
+      value.includes(',')
+    ) {
       return null;
     }
     const num = parseInt(value, 10);
@@ -200,11 +230,12 @@ export default function BackupManager() {
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [selectedBackup, setSelectedBackup] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Read user's preferences from settings
   const [timeFormat] = useLocalStorage('time-format', '12h');
   const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const [tableSize] = useLocalStorage('table-size', 'default');
   const [userTimezone] = useLocalStorage('time-zone', getDefaultTimeZone());
   const is12Hour = timeFormat === '12h';
 
@@ -277,10 +308,10 @@ export default function BackupManager() {
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize === 'compact' ? 75 : 100,
+        size: 100,
       },
     ],
-    [tableSize]
+    []
   );
 
   const renderHeaderCell = (header) => {
@@ -482,6 +513,7 @@ export default function BackupManager() {
   };
 
   const handleDeleteConfirm = async () => {
+    setDeleting(true);
     try {
       await API.deleteBackup(selectedBackup.name);
       notifications.show({
@@ -497,6 +529,7 @@ export default function BackupManager() {
         color: 'red',
       });
     } finally {
+      setDeleting(false);
       setDeleteConfirmOpen(false);
       setSelectedBackup(null);
     }
@@ -508,11 +541,13 @@ export default function BackupManager() {
   };
 
   const handleRestoreConfirm = async () => {
+    setRestoring(true);
     try {
       await API.restoreBackup(selectedBackup.name);
       notifications.show({
         title: 'Success',
-        message: 'Backup restored successfully. You may need to refresh the page.',
+        message:
+          'Backup restored successfully. You may need to refresh the page.',
         color: 'green',
       });
       setTimeout(() => window.location.reload(), 2000);
@@ -523,6 +558,7 @@ export default function BackupManager() {
         color: 'red',
       });
     } finally {
+      setRestoring(false);
       setRestoreConfirmOpen(false);
       setSelectedBackup(null);
     }
@@ -555,16 +591,22 @@ export default function BackupManager() {
       {/* Schedule Settings */}
       <Stack gap="sm">
         <Group justify="space-between">
-          <Text size="sm" fw={500}>Scheduled Backups</Text>
+          <Text size="sm" fw={500}>
+            Scheduled Backups
+          </Text>
           <Switch
             checked={schedule.enabled}
-            onChange={(e) => handleScheduleChange('enabled', e.currentTarget.checked)}
+            onChange={(e) =>
+              handleScheduleChange('enabled', e.currentTarget.checked)
+            }
             label={schedule.enabled ? 'Enabled' : 'Disabled'}
           />
         </Group>
 
         <Group justify="space-between">
-          <Text size="sm" fw={500}>Advanced (Cron Expression)</Text>
+          <Text size="sm" fw={500}>
+            Advanced (Cron Expression)
+          </Text>
           <Switch
             checked={advancedMode}
             onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
@@ -584,18 +626,24 @@ export default function BackupManager() {
                   <TextInput
                     label="Cron Expression"
                     value={schedule.cron_expression}
-                    onChange={(e) => handleScheduleChange('cron_expression', e.currentTarget.value)}
+                    onChange={(e) =>
+                      handleScheduleChange(
+                        'cron_expression',
+                        e.currentTarget.value
+                      )
+                    }
                     placeholder="0 3 * * *"
                     description="Format: minute hour day month weekday (e.g., '0 3 * * *' = 3:00 AM daily)"
                     disabled={!schedule.enabled}
                     error={cronError}
                   />
                   <Text size="xs" c="dimmed">
-                    Examples: <br />
-                    • <code>0 3 * * *</code> - Every day at 3:00 AM<br />
-                    • <code>0 2 * * 0</code> - Every Sunday at 2:00 AM<br />
-                    • <code>0 */6 * * *</code> - Every 6 hours<br />
-                    • <code>30 14 1 * *</code> - 1st of every month at 2:30 PM
+                    Examples: <br />• <code>0 3 * * *</code> - Every day at 3:00
+                    AM
+                    <br />• <code>0 2 * * 0</code> - Every Sunday at 2:00 AM
+                    <br />• <code>0 */6 * * *</code> - Every 6 hours
+                    <br />• <code>30 14 1 * *</code> - 1st of every month at
+                    2:30 PM
                   </Text>
                 </Stack>
                 <Group grow align="flex-end">
@@ -603,7 +651,9 @@ export default function BackupManager() {
                     label="Retention"
                     description="0 = keep all"
                     value={schedule.retention_count}
-                    onChange={(value) => handleScheduleChange('retention_count', value || 0)}
+                    onChange={(value) =>
+                      handleScheduleChange('retention_count', value || 0)
+                    }
                     min={0}
                     disabled={!schedule.enabled}
                   />
@@ -623,7 +673,9 @@ export default function BackupManager() {
                   <Select
                     label="Frequency"
                     value={schedule.frequency}
-                    onChange={(value) => handleScheduleChange('frequency', value)}
+                    onChange={(value) =>
+                      handleScheduleChange('frequency', value)
+                    }
                     data={[
                       { value: 'daily', label: 'Daily' },
                       { value: 'weekly', label: 'Weekly' },
@@ -634,7 +686,9 @@ export default function BackupManager() {
                     <Select
                       label="Day"
                       value={String(schedule.day_of_week)}
-                      onChange={(value) => handleScheduleChange('day_of_week', parseInt(value, 10))}
+                      onChange={(value) =>
+                        handleScheduleChange('day_of_week', parseInt(value, 10))
+                      }
                       data={DAYS_OF_WEEK}
                       disabled={!schedule.enabled}
                     />
@@ -645,7 +699,9 @@ export default function BackupManager() {
                         label="Hour"
                         value={displayTime ? displayTime.split(':')[0] : '12'}
                         onChange={(value) => {
-                          const minute = displayTime ? displayTime.split(':')[1] : '00';
+                          const minute = displayTime
+                            ? displayTime.split(':')[1]
+                            : '00';
                           handleTimeChange12h(`${value}:${minute}`, null);
                         }}
                         data={Array.from({ length: 12 }, (_, i) => ({
@@ -659,7 +715,9 @@ export default function BackupManager() {
                         label="Minute"
                         value={displayTime ? displayTime.split(':')[1] : '00'}
                         onChange={(value) => {
-                          const hour = displayTime ? displayTime.split(':')[0] : '12';
+                          const hour = displayTime
+                            ? displayTime.split(':')[0]
+                            : '12';
                           handleTimeChange12h(`${hour}:${value}`, null);
                         }}
                         data={Array.from({ length: 60 }, (_, i) => ({
@@ -684,9 +742,13 @@ export default function BackupManager() {
                     <>
                       <Select
                         label="Hour"
-                        value={schedule.time ? schedule.time.split(':')[0] : '00'}
+                        value={
+                          schedule.time ? schedule.time.split(':')[0] : '00'
+                        }
                         onChange={(value) => {
-                          const minute = schedule.time ? schedule.time.split(':')[1] : '00';
+                          const minute = schedule.time
+                            ? schedule.time.split(':')[1]
+                            : '00';
                           handleTimeChange24h(`${value}:${minute}`);
                         }}
                         data={Array.from({ length: 24 }, (_, i) => ({
@@ -698,9 +760,13 @@ export default function BackupManager() {
                       />
                       <Select
                         label="Minute"
-                        value={schedule.time ? schedule.time.split(':')[1] : '00'}
+                        value={
+                          schedule.time ? schedule.time.split(':')[1] : '00'
+                        }
                         onChange={(value) => {
-                          const hour = schedule.time ? schedule.time.split(':')[0] : '00';
+                          const hour = schedule.time
+                            ? schedule.time.split(':')[0]
+                            : '00';
                           handleTimeChange24h(`${hour}:${value}`);
                         }}
                         data={Array.from({ length: 60 }, (_, i) => ({
@@ -718,7 +784,9 @@ export default function BackupManager() {
                     label="Retention"
                     description="0 = keep all"
                     value={schedule.retention_count}
-                    onChange={(value) => handleScheduleChange('retention_count', value || 0)}
+                    onChange={(value) =>
+                      handleScheduleChange('retention_count', value || 0)
+                    }
                     min={0}
                     disabled={!schedule.enabled}
                   />
@@ -737,7 +805,8 @@ export default function BackupManager() {
             {/* Timezone info - only show in simple mode */}
             {!advancedMode && schedule.enabled && schedule.time && (
               <Text size="xs" c="dimmed" mt="xs">
-                System Timezone: {userTimezone} • Backup will run at {schedule.time} {userTimezone}
+                System Timezone: {userTimezone} • Backup will run at{' '}
+                {schedule.time} {userTimezone}
               </Text>
             )}
           </>
@@ -861,7 +930,11 @@ export default function BackupManager() {
             >
               Cancel
             </Button>
-            <Button onClick={handleUploadSubmit} disabled={!uploadFile} variant="default">
+            <Button
+              onClick={handleUploadSubmit}
+              disabled={!uploadFile}
+              variant="default"
+            >
               Upload
             </Button>
           </Group>
@@ -881,6 +954,7 @@ export default function BackupManager() {
         cancelLabel="Cancel"
         actionKey="restore-backup"
         onSuppressChange={suppressWarning}
+        loading={restoring}
       />
 
       <ConfirmationDialog
@@ -896,6 +970,7 @@ export default function BackupManager() {
         cancelLabel="Cancel"
         actionKey="delete-backup"
         onSuppressChange={suppressWarning}
+        loading={deleting}
       />
     </Stack>
   );

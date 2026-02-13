@@ -1,12 +1,16 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from urllib.parse import quote_plus
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = os.environ.get("REDIS_DB", "0")
+REDIS_USER = os.environ.get("REDIS_USER", "")
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 
 # Set DEBUG to True for development, False for production
 if os.environ.get("DISPATCHARR_DEBUG", "False").lower() == "true":
@@ -20,6 +24,7 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 INSTALLED_APPS = [
     "apps.api",
     "apps.accounts",
+    "apps.backups.apps.BackupsConfig",
     "apps.channels.apps.ChannelsConfig",
     "apps.dashboard",
     "apps.epg",
@@ -32,7 +37,7 @@ INSTALLED_APPS = [
     "apps.vod.apps.VODConfig",
     "core",
     "daphne",
-    "drf_yasg",
+    "drf_spectacular",
     "channels",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -119,7 +124,12 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [(REDIS_HOST, 6379, REDIS_DB)],  # Ensure Redis is running
+            "hosts": ["redis://{redis_auth}{host}:{port}/{db}".format(
+                redis_auth=f"{quote_plus(REDIS_USER)}:{quote_plus(REDIS_PASSWORD)}@" if REDIS_PASSWORD and REDIS_USER else f":{quote_plus(REDIS_PASSWORD)}@" if REDIS_PASSWORD else "",
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=REDIS_DB
+            )],  # URL format supports authentication
         },
     },
 }
@@ -151,7 +161,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 REST_FRAMEWORK = {
-    "DEFAULT_SCHEMA_CLASS": "rest_framework.schemas.coreapi.AutoSchema",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
@@ -162,10 +172,22 @@ REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
 }
 
-SWAGGER_SETTINGS = {
-    "SECURITY_DEFINITIONS": {
-        "Bearer": {"type": "apiKey", "name": "Authorization", "in": "header"}
-    }
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Dispatcharr API",
+    "DESCRIPTION": "API documentation for Dispatcharr",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SECURITY": [{"BearerAuth": []}],
+    "COMPONENTS": {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "Enter your JWT access token. The 'Bearer ' prefix is added automatically.",
+            }
+        }
+    },
 }
 
 LANGUAGE_CODE = "en-us"
@@ -185,8 +207,21 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+# Build default Redis URL from components for Celery with optional authentication
+# Build auth string conditionally with URL encoding for special characters
+if REDIS_PASSWORD:
+    encoded_password = quote_plus(REDIS_PASSWORD)
+    if REDIS_USER:
+        encoded_user = quote_plus(REDIS_USER)
+        redis_auth = f"{encoded_user}:{encoded_password}@"
+    else:
+        redis_auth = f":{encoded_password}@"
+else:
+    redis_auth = ""
+
+_default_redis_url = f"redis://{redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", _default_redis_url)
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 
 # Configure Redis key prefix
 CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
@@ -222,6 +257,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.channels.tasks.maintain_recurring_recordings",
         "schedule": 3600.0,  # Once an hour ensure recurring schedules stay ahead
     },
+    # Check for version updates daily
+    "check-version-updates": {
+        "task": "core.tasks.check_for_version_update",
+        "schedule": 86400.0,  # Once every 24 hours
+    },
 }
 
 MEDIA_ROOT = BASE_DIR / "media"
@@ -250,7 +290,7 @@ SIMPLE_JWT = {
 }
 
 # Redis connection settings
-REDIS_URL = "redis://localhost:6379/0"
+REDIS_URL = os.environ.get("REDIS_URL", _default_redis_url)
 REDIS_SOCKET_TIMEOUT = 60  # Socket timeout in seconds
 REDIS_SOCKET_CONNECT_TIMEOUT = 5  # Connection timeout in seconds
 REDIS_HEALTH_CHECK_INTERVAL = 15  # Health check every 15 seconds
