@@ -800,36 +800,56 @@ class ProgramSearchAPIView(APIView):
             desc_whole_words = params.get('description_whole_words', '').lower() in ('true', '1', 'yes')
             filters &= _parse_text_query('description', description, use_regex=desc_regex, whole_words=desc_whole_words)
 
-        # Time filters
+        # Time filters with validation
         start_after = params.get('start_after')
         if start_after:
             dt = parse_datetime(start_after)
-            if dt:
-                filters &= Q(start_time__gte=dt)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for start_after: {start_after}. Use ISO 8601 format (e.g., 2026-02-14T18:00:00Z)"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__gte=dt)
 
         start_before = params.get('start_before')
         if start_before:
             dt = parse_datetime(start_before)
-            if dt:
-                filters &= Q(start_time__lte=dt)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for start_before: {start_before}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__lte=dt)
 
         end_after = params.get('end_after')
         if end_after:
             dt = parse_datetime(end_after)
-            if dt:
-                filters &= Q(end_time__gte=dt)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for end_after: {end_after}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(end_time__gte=dt)
 
         end_before = params.get('end_before')
         if end_before:
             dt = parse_datetime(end_before)
-            if dt:
-                filters &= Q(end_time__lte=dt)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for end_before: {end_before}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(end_time__lte=dt)
 
         airing_at = params.get('airing_at')
         if airing_at:
             dt = parse_datetime(airing_at)
-            if dt:
-                filters &= Q(start_time__lte=dt, end_time__gt=dt)
+            if dt is None:
+                return Response(
+                    {"error": f"Invalid datetime format for airing_at: {airing_at}. Use ISO 8601 format."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            filters &= Q(start_time__lte=dt, end_time__gt=dt)
 
         # Channel/stream filters
         channel = params.get('channel')

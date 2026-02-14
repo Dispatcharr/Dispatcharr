@@ -244,8 +244,10 @@ class TestEPGSearchAPI:
         dt = datetime.fromisoformat(test_timestamp.replace("Z", "+00:00"))
         
         # Create time window: +/- 2 hours
-        start_after = (dt - timedelta(hours=2)).isoformat() + "Z"
-        start_before = (dt + timedelta(hours=2)).isoformat() + "Z"
+        start_after_dt = dt - timedelta(hours=2)
+        start_before_dt = dt + timedelta(hours=2)
+        start_after = start_after_dt.isoformat().replace("+00:00", "Z")
+        start_before = start_before_dt.isoformat().replace("+00:00", "Z")
         
         result = api_client.search_programs({
             "start_after": start_after,
@@ -254,12 +256,16 @@ class TestEPGSearchAPI:
         })
         
         assert "results" in result
+        assert isinstance(result["results"], list)
         
-        # Verify programs are within range
+        # Verify all returned programs are within the requested range
+        # If no programs exist in this range, results should be empty (count=0)
         for program in result["results"]:
-            start = program["start_time"]
-            assert start >= start_after
-            assert start <= start_before
+            # Parse timestamp for comparison
+            start_dt = datetime.fromisoformat(program["start_time"].replace("Z", "+00:00"))
+            # Programs must be within the filtered range
+            assert start_dt >= start_after_dt, f"Program starts at {start_dt}, before filter start {start_after_dt}"
+            assert start_dt <= start_before_dt, f"Program starts at {start_dt}, after filter end {start_before_dt}"
     
     def test_channel_filter(self, api_client):
         """Test channel name filter"""
