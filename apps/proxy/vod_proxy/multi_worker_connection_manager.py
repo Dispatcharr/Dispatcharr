@@ -674,6 +674,41 @@ class MultiWorkerVODConnectionManager:
             logger.error(f"Error checking profile limits: {e}")
             return False
 
+    def _check_and_reserve_profile_slot(self, m3u_profile) -> bool:
+        """
+        Atomically check and reserve a connection slot for the given profile.
+
+        Uses an INCR-first-then-check pattern to eliminate the TOCTOU race
+        condition where separate GET > check > INCR operations could allow
+        concurrent requests to both pass the capacity check.
+
+        For profiles with max_streams=0 (unlimited), no reservation is needed.
+
+        Returns:
+            bool: True if slot was reserved (or unlimited), False if at capacity
+        """
+        if m3u_profile.max_streams == 0:  # Unlimited
+            return True
+
+        try:
+            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
+
+            # Atomically increment first — single Redis command eliminates race window
+            new_count = self.redis_client.incr(profile_connections_key)
+
+            if new_count <= m3u_profile.max_streams:
+                logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: {new_count}/{m3u_profile.max_streams}")
+                return True
+
+            # Over capacity — roll back the increment
+            self.redis_client.decr(profile_connections_key)
+            logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} at capacity: {new_count - 1}/{m3u_profile.max_streams}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error reserving profile slot: {e}")
+            return False
+
     def _increment_profile_connections(self, m3u_profile):
         """Increment profile connection count"""
         try:
@@ -756,10 +791,11 @@ class MultiWorkerVODConnectionManager:
             if not existing_state:
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Creating new Redis-backed connection")
 
-                # Check profile limits before creating new connection
-                if not self._check_profile_limits(m3u_profile):
+                # Atomically check and reserve a profile connection slot (INCR-first)
+                if not self._check_and_reserve_profile_slot(m3u_profile):
                     logger.warning(f"[{client_id}] Profile {m3u_profile.name} connection limit exceeded")
                     return HttpResponse("Connection limit exceeded for profile", status=429)
+                profile_connections_incremented = True
 
                 # Apply timeshift parameters
                 modified_stream_url = self._apply_timeshift_parameters(stream_url, utc_start, utc_end, offset)
@@ -802,11 +838,10 @@ class MultiWorkerVODConnectionManager:
                     worker_id=self.worker_id
                 ):
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
+                    # Roll back the profile slot reservation since connection failed
+                    self._decrement_profile_connections(m3u_profile.id)
+                    profile_connections_incremented = False
                     return HttpResponse("Failed to create connection", status=500)
-
-                # Increment profile connections after successful connection creation
-                self._increment_profile_connections(m3u_profile)
-                profile_connections_incremented = True
 
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Created consolidated connection with session metadata")
             else:
@@ -898,11 +933,18 @@ class MultiWorkerVODConnectionManager:
 
                     # Schedule smart cleanup if no active streams after normal completion
                     if not redis_connection.has_active_streams():
+                        # Decrement profile counter immediately — don't defer to daemon thread
+                        state = redis_connection._get_connection_state()
+                        if state and state.m3u_profile_id:
+                            self._decrement_profile_connections(state.m3u_profile_id)
+                            logger.info(f"[{client_id}] Profile counter decremented for profile {state.m3u_profile_id} on normal completion")
+
                         def delayed_cleanup():
                             time.sleep(1)  # Wait 1 second
                             # Smart cleanup: check active streams and ownership
                             logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after normal completion")
-                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                            # No connection_manager — profile already decremented above
+                            redis_connection.cleanup(current_worker_id=self.worker_id)
 
                         import threading
                         cleanup_thread = threading.Thread(target=delayed_cleanup)
@@ -917,11 +959,18 @@ class MultiWorkerVODConnectionManager:
 
                     # Schedule smart cleanup if no active streams
                     if not redis_connection.has_active_streams():
+                        # Decrement profile counter immediately — don't defer to daemon thread
+                        state = redis_connection._get_connection_state()
+                        if state and state.m3u_profile_id:
+                            self._decrement_profile_connections(state.m3u_profile_id)
+                            logger.info(f"[{client_id}] Profile counter decremented for profile {state.m3u_profile_id} on client disconnect")
+
                         def delayed_cleanup():
                             time.sleep(1)  # Wait 1 second
                             # Smart cleanup: check active streams and ownership
                             logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after client disconnect")
-                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                            # No connection_manager — profile already decremented above
+                            redis_connection.cleanup(current_worker_id=self.worker_id)
 
                         import threading
                         cleanup_thread = threading.Thread(target=delayed_cleanup)
@@ -933,8 +982,16 @@ class MultiWorkerVODConnectionManager:
                     if not decremented:
                         redis_connection.decrement_active_streams()
                         decremented = True
-                    # Smart cleanup on error - immediate cleanup since we're in error state
-                    redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+
+                    # Decrement profile counter immediately if no other active streams
+                    if not redis_connection.has_active_streams():
+                        state = redis_connection._get_connection_state()
+                        if state and state.m3u_profile_id:
+                            self._decrement_profile_connections(state.m3u_profile_id)
+                            logger.info(f"[{client_id}] Profile counter decremented for profile {state.m3u_profile_id} on stream error")
+                        # Smart cleanup on error - immediate cleanup since we're in error state
+                        # No connection_manager — profile already decremented above
+                        redis_connection.cleanup(current_worker_id=self.worker_id)
                     yield b"Error: Stream interrupted"
 
                 finally:
