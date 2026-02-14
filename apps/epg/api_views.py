@@ -479,7 +479,7 @@ class CurrentProgramsAPIView(APIView):
                 )
 
             try:
-                epg_data_ids = [int(id) for id in epg_data_ids]
+                epg_data_ids = [int(eid) for eid in epg_data_ids]
             except (ValueError, TypeError):
                 return Response(
                     {"error": "epg_data_ids must contain valid integers"},
@@ -491,12 +491,20 @@ class CurrentProgramsAPIView(APIView):
 
             epg_data_entries = EPGData.objects.select_related('epg_source').filter(id__in=epg_data_ids)
 
+            # Batch-fetch current programs for all requested EPG entries in one query
+            db_programs = ProgramData.objects.filter(
+                epg__in=epg_data_entries, start_time__lte=now, end_time__gt=now
+            ).select_related('epg')
+            # Map epg_data id -> first matching program
+            programs_by_epg = {}
+            for prog in db_programs:
+                if prog.epg_id not in programs_by_epg:
+                    programs_by_epg[prog.epg_id] = prog
+
             current_programs = []
             for epg_data in epg_data_entries:
-                # Check DB first (already-parsed channels)
-                program = ProgramData.objects.filter(
-                    epg=epg_data, start_time__lte=now, end_time__gt=now
-                ).first()
+                # Check batch-fetched DB results first
+                program = programs_by_epg.get(epg_data.id)
 
                 if program:
                     program_data = ProgramDataSerializer(program).data
@@ -508,8 +516,8 @@ class CurrentProgramsAPIView(APIView):
                 if epg_data.epg_source and epg_data.epg_source.source_type == 'dummy':
                     continue
 
-                # Fall back to byte-offset index lookup
-                result = find_current_program_for_tvg_id(epg_data.id)
+                # Fall back to byte-offset index lookup, pass the object to avoid re-fetch
+                result = find_current_program_for_tvg_id(epg_data)
 
                 if result == "timeout":
                     current_programs.append({

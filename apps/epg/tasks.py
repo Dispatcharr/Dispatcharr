@@ -192,6 +192,14 @@ def refresh_epg_data(source_id):
         # Continue with the normal processing...
         logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
         if source.source_type == 'xmltv':
+            # Invalidate the byte-offset index before downloading the new file
+            # so stale offsets are never used during the refresh window.
+            from core.utils import RedisClient
+            try:
+                RedisClient.get_client().delete(f'epg_programme_index_{source.id}')
+            except Exception:
+                pass
+
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
@@ -2313,19 +2321,22 @@ def build_programme_index_task(source_id):
     build_programme_index(source_id)
 
 
-def find_current_program_for_tvg_id(epg_id):
+def find_current_program_for_tvg_id(epg_or_id):
     """
-    Look up the currently-airing program for an EPGData id using the
-    byte-offset index. Falls back to sequential scan if no index exists.
+    Look up the currently-airing program for an EPGData instance (or id) using
+    the byte-offset index. Falls back to sequential scan if no index exists.
 
     Returns dict, None, or "timeout".
     """
     from core.utils import RedisClient
 
-    try:
-        epg = EPGData.objects.select_related('epg_source').get(id=epg_id)
-    except EPGData.DoesNotExist:
-        return None
+    if isinstance(epg_or_id, EPGData):
+        epg = epg_or_id
+    else:
+        try:
+            epg = EPGData.objects.select_related('epg_source').get(id=epg_or_id)
+        except EPGData.DoesNotExist:
+            return None
 
     source = epg.epg_source
     if not source or source.source_type == 'dummy':
