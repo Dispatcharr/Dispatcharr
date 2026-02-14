@@ -1290,20 +1290,20 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 </PopoverDropdown>
               </Popover>
 
-                {(isLoadingProgram || hasFetchedProgram || currentProgram) && (
-                  <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
-                    <ProgramPreview
-                      program={currentProgram}
-                      loading={isLoadingProgram}
-                      fetched={hasFetchedProgram}
-                      label="Current Program:"
-                    />
-                  </Box>
-                )}
-              </Stack>
-            </Group>
+              {(isLoadingProgram || hasFetchedProgram || currentProgram) && (
+                <Box mt="xs" p="xs" style={{ backgroundColor: '#1a1a1c', borderRadius: '4px' }}>
+                  <ProgramPreview
+                    program={currentProgram}
+                    loading={isLoadingProgram}
+                    fetched={hasFetchedProgram}
+                    label="Current Program:"
+                  />
+                </Box>
+              )}
+            </Stack>
+          </Group>
 
-           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+          <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             <Button
               type="submit"
               variant="default"
