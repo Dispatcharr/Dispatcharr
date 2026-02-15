@@ -57,6 +57,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 
     # VOD proxy is now handled by the main proxy URLs above
+
     # Catch-all routes should always be last
     path("", TemplateView.as_view(template_name="index.html")),  # React entry point
     path("<path:unused_path>", TemplateView.as_view(template_name="index.html")),
