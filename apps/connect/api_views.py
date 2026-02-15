@@ -3,6 +3,7 @@ from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from django.utils import timezone
 from .models import Integration, EventSubscription, DeliveryLog
 from .serializers import (
     IntegrationSerializer,
@@ -12,7 +13,10 @@ from .serializers import (
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
+    IsAdmin,
 )
+from .handlers.webhook import WebhookHandler
+from .handlers.script import ScriptHandler
 
 
 class IntegrationViewSet(viewsets.ModelViewSet):
@@ -21,9 +25,11 @@ class IntegrationViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         try:
-            return [perm() for perm in permission_classes_by_action[self.action]]
+            perms = permission_classes_by_action[self.action]
         except KeyError:
-            return [Authenticated()]
+            # Respect view/action-specific permission_classes if provided; fallback to Authenticated
+            perms = getattr(self, "permission_classes", [Authenticated])
+        return [perm() for perm in perms]
 
     @action(detail=True, methods=["get"], url_path="subscriptions")
     def list_subscriptions(self, request, pk=None):
@@ -98,6 +104,63 @@ class IntegrationViewSet(viewsets.ModelViewSet):
 
         serializer = EventSubscriptionSerializer(updated, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="test", permission_classes=[IsAdmin])
+    def test(self, request, pk=None):
+        """
+        Execute a saved integration (connect) with a dummy payload to verify configuration.
+        """
+        try:
+            integration = Integration.objects.get(pk=pk)
+        except Integration.DoesNotExist:
+            return Response({"detail": "Integration not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Build a dummy payload similar to system events
+        now = timezone.now().isoformat()
+        dummy_payload = {
+            "event": "test",
+            "timestamp": now,
+            "channel_name": "Test Channel",
+            "stream_name": "Test Stream",
+            "stream_url": "http://example.com/stream.m3u8",
+            "channel_url": "http://example.com/stream.m3u8",
+            "provider_name": "Test Provider",
+            "profile_used": "Default",
+            "test": True,
+        }
+
+        # Choose handler based on saved type
+        if integration.type == "webhook":
+            handler = WebhookHandler(integration, None, dummy_payload)
+        elif integration.type == "script":
+            handler = ScriptHandler(integration, None, dummy_payload)
+        else:
+            return Response(
+                {"success": False, "error": f"Unsupported integration type: {integration.type}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = handler.execute()
+            return Response(
+                {
+                    "success": bool(result.get("success")),
+                    "type": integration.type,
+                    "request_payload": dummy_payload,
+                    "result": result,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            return Response(
+                {
+                    "success": False,
+                    "type": integration.type,
+                    "request_payload": dummy_payload,
+                    "error": str(e),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
 
 class EventSubscriptionViewSet(viewsets.ModelViewSet):
