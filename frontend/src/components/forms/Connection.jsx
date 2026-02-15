@@ -25,6 +25,7 @@ const EVENT_OPTIONS = Object.entries(SUBSCRIPTION_EVENTS).map(
 const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
   const [submitting, setSubmitting] = useState(false);
   const [selectedEvents, setSelectedEvents] = useState([]);
+  const [apiError, setApiError] = useState('');
 
   // One-time form
   const form = useForm({
@@ -77,6 +78,7 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
   }, [connection]);
 
   const handleClose = () => {
+    setApiError('');
     onClose?.();
   };
 
@@ -84,6 +86,7 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
     console.log(values);
     try {
       setSubmitting(true);
+      setApiError('');
       const config =
         values.type === 'webhook'
           ? { url: values.url }
@@ -114,7 +117,37 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
       );
       handleClose();
     } catch (error) {
-      console.error('Failed to create connection', error);
+      console.error('Failed to create/update connection', error);
+      // Try to map server-side validation errors to form fields
+      const body = error?.body;
+
+      if (body && typeof body === 'object') {
+        const fieldErrors = {};
+        if (body.name) {
+          fieldErrors.name = body.name;
+        }
+        if (body.type) {
+          fieldErrors.type = body.type;
+        }
+        if (body.config) {
+          if (values.type === 'webhook') {
+            fieldErrors.url = msg;
+          } else {
+            fieldErrors.script_path = msg;
+          }
+        }
+
+        const nonField = body.non_field_errors || body.detail;
+        if (Object.keys(fieldErrors).length > 0) {
+          form.setErrors(fieldErrors);
+        }
+        if (nonField) setApiError(nonField);
+        if (!nonField && Object.keys(fieldErrors).length === 0) {
+          setApiError(body);
+        }
+      } else {
+        setApiError(error?.message || 'Unknown error');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -132,6 +165,11 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
     <Modal opened={isOpen} size="lg" onClose={handleClose} title="Connection">
       <form onSubmit={form.onSubmit(onSubmit)}>
         <Stack gap="md">
+          {apiError ? (
+            <Text c="red" size="sm">
+              {apiError}
+            </Text>
+          ) : null}
           <TextInput
             label="Name"
             {...form.getInputProps('name')}
