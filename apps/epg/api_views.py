@@ -31,7 +31,9 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     API endpoint that allows EPG sources to be viewed or edited.
     """
 
-    queryset = EPGSource.objects.all()
+    queryset = EPGSource.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).all()
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
