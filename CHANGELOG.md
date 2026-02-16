@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- XC profile refresh credential extraction with sub-paths: Fixed credential extraction in `get_transformed_credentials()` to use negative indices anchored to the known tail structure instead of hardcoded indices that broke when server URLs contained sub-paths (e.g., `http://server.com/portal/a/`). This ensures XC accounts with sub-paths in their server URLs work correctly for profile refreshes. (Fixes #945) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- XC EPG URL construction for accounts with sub-paths or trailing slashes: Fixed EPG URL construction in M3U forms to normalize server URL to origin before appending `xmltv.php` endpoint, preventing double slashes and incorrect path placement when server URLs include sub-paths or trailing slashes. (Fixes #800) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Auto channel sync duplicate channel numbers across groups: Fixed issue where multiple auto-sync groups starting at the same number would create duplicate channel numbers. The used channel number tracking now persists across all groups in a single sync operation, ensuring each assigned channel number is globally unique.
 - Modular mode PostgreSQL/Redis connection checks: Replaced raw Python socket checks with native tools (`pg_isready` for PostgreSQL and `socket.create_connection` for Redis) in modular deployment mode to prevent indefinite hangs in Docker environments with non-standard networking or DNS configurations. Now properly supports IPv4 and IPv6 configurations. (Fixes #952) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 
