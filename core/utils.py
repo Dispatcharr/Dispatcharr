@@ -397,6 +397,78 @@ def validate_flexible_url(value):
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")
 
+def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    try:
+        from apps.connect.utils import trigger_event
+        from apps.channels.models import Channel, Stream
+        from core.models import StreamProfile
+        from core.utils import RedisClient
+
+        payload = {}
+
+        channel_obj = None
+        if channel_id:
+            try:
+                channel_obj = Channel.objects.get(uuid=channel_id)
+                payload["channel_name"] = channel_obj.name
+            except Exception:
+                payload["channel_name"] = channel_name or None
+        else:
+            payload["channel_name"] = channel_name or None
+
+        # Resolve current stream info
+        stream_id = details.get("stream_id")
+        stream_obj = None
+        if not stream_id and channel_obj:
+            try:
+                redis = RedisClient.get_client()
+                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                if sid:
+                    stream_id = int(sid)
+            except Exception:
+                stream_id = None
+
+        if stream_id:
+            try:
+                stream_obj = Stream.objects.get(id=stream_id)
+            except Exception:
+                stream_obj = None
+
+        # Populate stream details
+        payload["stream_name"] = getattr(stream_obj, "name", None)
+        payload["stream_url"] = getattr(stream_obj, "url", None)
+
+        # Channel URL: use stream URL as best-effort
+        payload["channel_url"] = payload.get("stream_url")
+
+        # Provider name from M3U account
+        provider_name = None
+        try:
+            if stream_obj and stream_obj.m3u_account:
+                provider_name = stream_obj.m3u_account.name
+        except Exception:
+            provider_name = None
+        payload["provider_name"] = provider_name
+
+        # Profile used
+        profile_used = None
+        try:
+            if stream_id:
+                redis = RedisClient.get_client()
+                pid = redis.get(f"stream_profile:{stream_id}")
+                if pid:
+                    profile = StreamProfile.objects.filter(id=int(pid)).first()
+                    profile_used = profile.name if profile else None
+        except Exception:
+            profile_used = None
+
+        payload["profile_used"] = profile_used
+
+        trigger_event(event_type, payload)
+
+    except Exception as e:
+        # Don't fail main path if connect dispatch fails
+        pass
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -422,6 +494,9 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             channel_name=channel_name,
             details=details
         )
+
+        # Trigger connect integrations for specific events
+        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
 
         # Get max events from settings (default 100)
         try:
@@ -517,4 +592,3 @@ def send_notification_dismissed(notification_key):
         )
     except Exception as e:
         logger.error(f"Failed to send notification dismissed event: {e}")
-

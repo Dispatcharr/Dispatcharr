@@ -12,6 +12,7 @@ import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
+import useConnectStore from './store/connect';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -178,9 +179,34 @@ export default class API {
 
   static async getChannels() {
     try {
-      const response = await request(`${host}/api/channels/channels/`);
+      // Paginate through channels to avoid heavy single response
+      const pageSize = 200;
+      let page = 1;
+      let allChannels = [];
 
-      return response;
+      while (true) {
+        const data = await request(
+          `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+        );
+
+        // Backward compatibility: if endpoint returns an array (legacy), just return it
+        if (Array.isArray(data)) {
+          allChannels = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        allChannels = allChannels.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) {
+          break;
+        }
+
+        page += 1;
+      }
+
+      return allChannels;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
     }
@@ -3131,6 +3157,126 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to dismiss all notifications', e);
+    }
+  }
+
+  static async getConnectIntegrations() {
+    try {
+      return await request(`${host}/api/connect/integrations/`);
+    } catch (e) {
+      errorNotification('Failed to fetch connect integrations', e);
+    }
+  }
+
+  static async createConnectIntegration(values) {
+    try {
+      const response = await request(`${host}/api/connect/integrations/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useConnectStore.getState().addIntegration(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create integration', e);
+    }
+  }
+
+  static async updateConnectIntegration(id, values) {
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${id}/`,
+        {
+          method: 'PUT',
+          body: values,
+        }
+      );
+
+      if (response.id) {
+        useConnectStore.getState().updateIntegration(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update integration', e);
+    }
+  }
+
+  static async deleteConnectIntegration(id) {
+    try {
+      await request(`${host}/api/connect/integrations/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useConnectStore.getState().removeIntegration(id);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete integration', e);
+      throw e;
+    }
+  }
+
+  static async createConnectSubscription(values) {
+    try {
+      await request(`${host}/api/connect/subscriptions/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to create subscription', e);
+    }
+  }
+
+  static async listConnectSubscriptions(integrationId) {
+    try {
+      return await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch subscriptions', e);
+    }
+  }
+
+  static async setConnectSubscriptions(integrationId, subscriptions) {
+    // subscriptions: [{ event, enabled, payload_template }]
+    console.log(subscriptions);
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/set/`,
+        {
+          method: 'PUT',
+          body: subscriptions,
+        }
+      );
+
+      useConnectStore
+        .getState()
+        .updateIntegrationSubscriptions(integrationId, response);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to set subscriptions', e);
+      throw e;
+    }
+  }
+
+  static async getConnectLogs(params = {}) {
+    try {
+      const search = new URLSearchParams();
+      if (params.page) search.set('page', params.page);
+      if (params.page_size) search.set('page_size', params.page_size);
+      if (params.type) search.set('type', params.type);
+      if (params.integration) search.set('integration', params.integration);
+
+      return await request(
+        `${host}/api/connect/logs/${search.toString() ? `?${search.toString()}` : ''}`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch connect logs', e);
     }
   }
 }

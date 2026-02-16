@@ -139,6 +139,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
         model = M3UAccount
@@ -158,6 +159,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "locked",
             "channel_groups",
             "refresh_interval",
+            "cron_expression",
             "custom_properties",
             "account_type",
             "username",
@@ -188,9 +190,23 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
+
+        # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
+        # But first check if we have a transient _cron_expression (from create/update before signal runs)
+        cron_expr = ""
+        if hasattr(instance, '_cron_expression'):
+            cron_expr = instance._cron_expression
+        elif instance.refresh_task_id and instance.refresh_task and instance.refresh_task.crontab:
+            ct = instance.refresh_task.crontab
+            cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
+        data["cron_expression"] = cron_expr
         return data
 
     def update(self, instance, validated_data):
+        # Pop cron_expression before it reaches model fields
+        cron_expr = validated_data.pop("cron_expression", "")
+        instance._cron_expression = cron_expr
+
         # Handle enable_vod preference and auto_enable_new_groups settings
         enable_vod = validated_data.pop("enable_vod", None)
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
@@ -244,6 +260,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
+        # Pop cron_expression — it's not a model field
+        cron_expr = validated_data.pop("cron_expression", "")
+
         # Handle enable_vod preference and auto_enable_new_groups settings during creation
         enable_vod = validated_data.pop("enable_vod", False)
         auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
@@ -260,7 +279,11 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
         validated_data["custom_properties"] = custom_props
 
-        return super().create(validated_data)
+        # Build instance manually so we can attach transient attr before save triggers signal
+        instance = M3UAccount(**validated_data)
+        instance._cron_expression = cron_expr
+        instance.save()
+        return instance
 
     def get_filters(self, obj):
         filters = obj.filters.order_by("order")

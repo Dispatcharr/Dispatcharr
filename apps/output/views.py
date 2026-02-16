@@ -183,8 +183,9 @@ def generate_m3u(request, profile_name=None, user=None):
     # Check if this is an XC API request (has username/password in GET params and user is authenticated)
     xc_username = request.GET.get('username')
     xc_password = request.GET.get('password')
+    is_xc_request = user is not None and xc_username and xc_password
 
-    if user is not None and xc_username and xc_password:
+    if is_xc_request:
         # This is an XC API request - use XC-style EPG URL
         base_url = build_absolute_uri_with_port(request, '')
         epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
@@ -254,8 +255,12 @@ def generate_m3u(request, profile_name=None, user=None):
             f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{channel.name}\n'
         )
 
-        # Determine the stream URL based on the direct parameter
-        if use_direct_urls:
+        # Determine the stream URL based on request type
+        if is_xc_request:
+            # XC API request - use XC-style stream URL format
+            base_url = build_absolute_uri_with_port(request, '')
+            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}"
+        elif use_direct_urls:
             # Try to get the first stream's direct URL
             first_stream = channel.streams.order_by('channelstream__order').first()
             if first_stream and first_stream.url:

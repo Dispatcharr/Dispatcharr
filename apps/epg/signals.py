@@ -2,7 +2,7 @@ from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import EPGSource, EPGData
 from .tasks import refresh_epg_data, delete_epg_refresh_task_by_id
-from django_celery_beat.models import PeriodicTask, IntervalSchedule
+from core.scheduling import create_or_update_periodic_task, delete_periodic_task
 from core.utils import is_protected_path, send_websocket_update
 import json
 import logging
@@ -74,6 +74,7 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
     """
     Create or update a Celery Beat periodic task when an EPGSource is created/updated.
     Skip creating tasks for dummy EPG sources as they don't need refreshing.
+    Supports both interval-based and cron-based scheduling via the shared utility.
     """
     # Skip task creation for dummy EPGs
     if instance.source_type == 'dummy':
@@ -84,38 +85,23 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
         return
 
     task_name = f"epg_source-refresh-{instance.id}"
-    interval, _ = IntervalSchedule.objects.get_or_create(
-        every=int(instance.refresh_interval),
-        period=IntervalSchedule.HOURS
+    should_be_enabled = instance.is_active
+
+    # Read cron_expression from transient attribute set by the serializer
+    cron_expr = getattr(instance, "_cron_expression", "")
+
+    task = create_or_update_periodic_task(
+        task_name=task_name,
+        celery_task_path="apps.epg.tasks.refresh_epg_data",
+        kwargs={"source_id": instance.id},
+        interval_hours=int(instance.refresh_interval),
+        cron_expression=cron_expr,
+        enabled=should_be_enabled,
     )
-
-    task, created = PeriodicTask.objects.get_or_create(name=task_name, defaults={
-        "interval": interval,
-        "task": "apps.epg.tasks.refresh_epg_data",
-        "kwargs": json.dumps({"source_id": instance.id}),
-        "enabled": instance.refresh_interval != 0 and instance.is_active,
-    })
-
-    update_fields = []
-    if created:
-        task.interval = interval
-
-    if task.interval != interval:
-        task.interval = interval
-        update_fields.append("interval")
-
-    # Check both refresh_interval and is_active to determine if task should be enabled
-    should_be_enabled = instance.refresh_interval != 0 and instance.is_active
-    if task.enabled != should_be_enabled:
-        task.enabled = should_be_enabled
-        update_fields.append("enabled")
-
-    if update_fields:
-        task.save(update_fields=update_fields)
 
     if instance.refresh_task != task:
         instance.refresh_task = task
-        instance.save(update_fields=["refresh_task"])  # Fixed field name
+        instance.save(update_fields=["refresh_task"])
 
 @receiver(post_delete, sender=EPGSource)
 def delete_refresh_task(sender, instance, **kwargs):
