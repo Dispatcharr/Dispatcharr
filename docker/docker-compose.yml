@@ -117,6 +117,11 @@ services:
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
 
+      # Legacy CPU Support (Optional)
+      # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
+      # that lack support for newer baseline CPU features:
+      #- USE_LEGACY_NUMPY=true
+
       # Django Configuration
       - DJANGO_SETTINGS_MODULE=dispatcharr.settings
       - PYTHONUNBUFFERED=1
