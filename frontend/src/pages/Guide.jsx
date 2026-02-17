@@ -190,19 +190,27 @@ export default function TVChannelGuide({ startDate, endDate }) {
           );
           if (firstGroup?.name) params.set('channel_group', firstGroup.name);
         }
-        // Profile filter
-        if (selectedProfileId && selectedProfileId !== 'all') {
-          params.set('channel_profile_id', String(selectedProfileId));
-        }
-        // Search filter
-        if (searchQuery && searchQuery.trim() !== '') {
-          params.set('search', searchQuery.trim());
+
+        let channels = [];
+        if (selectedGroupId === 'all' && allowAllGroups) {
+          channels = await API.getChannels();
+        } else {
+          // Profile filter
+          if (selectedProfileId && selectedProfileId !== 'all') {
+            params.set('channel_profile_id', String(selectedProfileId));
+          }
+
+          // Search filter
+          if (searchQuery && searchQuery.trim() !== '') {
+            params.set('search', searchQuery.trim());
+          }
+
+          channels = await API.getChannelsForParams(params);
         }
 
-        const chans = await API.getChannelsForParams(params);
         if (cancelled) return;
 
-        const sorted = sortChannels(chans || []);
+        const sorted = sortChannels(channels || []);
         setGuideChannels(sorted);
 
         // Load program data after channels are available
