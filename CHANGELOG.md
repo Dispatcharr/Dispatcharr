@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Custom Dummy EPG form UI improvements: Reorganized the form into collapsible accordion sections (Pattern Configuration, Output Templates, Upcoming/Ended Templates, Fallback Templates, EPG Settings) for better organization. Field descriptions now appear in info icon popovers instead of taking up vertical space, making the form more compact and easier to navigate while keeping help text accessible.
 - XC API M3U stream URLs: M3U generation for Xtream Codes API endpoints now use proper XC-style stream URLs (`/live/username/password/channel_id`) instead of UUID-based stream endpoints, ensuring full compatibility with XC clients. (Fixes #839)
 
 ### Fixed
