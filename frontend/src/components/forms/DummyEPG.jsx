@@ -43,6 +43,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   const [datePattern, setDatePattern] = useState('');
   const [sampleTitle, setSampleTitle] = useState('');
   const [titleTemplate, setTitleTemplate] = useState('');
+  const [subtitleTemplate, setSubtitleTemplate] = useState('');
   const [descriptionTemplate, setDescriptionTemplate] = useState('');
   const [upcomingTitleTemplate, setUpcomingTitleTemplate] = useState('');
   const [upcomingDescriptionTemplate, setUpcomingDescriptionTemplate] =
@@ -71,6 +72,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         program_duration: 180,
         sample_title: '',
         title_template: '',
+        subtitle_template: '',
         description_template: '',
         upcoming_title_template: '',
         upcoming_description_template: '',
@@ -125,6 +127,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       dateGroups: {},
       calculatedPlaceholders: {},
       formattedTitle: '',
+      formattedSubtitle: '',
       formattedDescription: '',
       formattedUpcomingTitle: '',
       formattedUpcomingDescription: '',
@@ -459,6 +462,14 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       );
     }
 
+    // Format subtitle template
+    if (subtitleTemplate && (result.titleMatch || result.timeMatch)) {
+      result.formattedSubtitle = subtitleTemplate.replace(
+        /\{(\w+)\}/g,
+        (match, key) => allGroups[key] || match
+      );
+    }
+
     // Format description template
     if (descriptionTemplate && (result.titleMatch || result.timeMatch)) {
       result.formattedDescription = descriptionTemplate.replace(
@@ -533,6 +544,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     datePattern,
     sampleTitle,
     titleTemplate,
+    subtitleTemplate,
     descriptionTemplate,
     upcomingTitleTemplate,
     upcomingDescriptionTemplate,
@@ -565,6 +577,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           program_duration: custom.program_duration || 180,
           sample_title: custom.sample_title || '',
           title_template: custom.title_template || '',
+          subtitle_template: custom.subtitle_template || '',
           description_template: custom.description_template || '',
           upcoming_title_template: custom.upcoming_title_template || '',
           upcoming_description_template:
@@ -591,6 +604,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setDatePattern(custom.date_pattern || '');
       setSampleTitle(custom.sample_title || '');
       setTitleTemplate(custom.title_template || '');
+      setSubtitleTemplate(custom.subtitle_template || '');
       setDescriptionTemplate(custom.description_template || '');
       setUpcomingTitleTemplate(custom.upcoming_title_template || '');
       setUpcomingDescriptionTemplate(
@@ -611,6 +625,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setDatePattern('');
       setSampleTitle('');
       setTitleTemplate('');
+      setSubtitleTemplate('');
       setDescriptionTemplate('');
       setUpcomingTitleTemplate('');
       setUpcomingDescriptionTemplate('');
@@ -682,6 +697,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         program_duration: custom.program_duration || 180,
         sample_title: custom.sample_title || '',
         title_template: custom.title_template || '',
+        subtitle_template: custom.subtitle_template || '',
         description_template: custom.description_template || '',
         upcoming_title_template: custom.upcoming_title_template || '',
         upcoming_description_template:
@@ -708,6 +724,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     setDatePattern(custom.date_pattern || '');
     setSampleTitle(custom.sample_title || '');
     setTitleTemplate(custom.title_template || '');
+    setSubtitleTemplate(custom.subtitle_template || '');
     setDescriptionTemplate(custom.description_template || '');
     setUpcomingTitleTemplate(custom.upcoming_title_template || '');
     setUpcomingDescriptionTemplate(custom.upcoming_description_template || '');
@@ -901,6 +918,20 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
               const value = e.target.value;
               setTitleTemplate(value);
               form.setFieldValue('custom_properties.title_template', value);
+            }}
+          />
+
+          <TextInput
+            id="subtitle_template"
+            name="subtitle_template"
+            label="Subtitle Template (Optional)"
+            description="Format the EPG subtitle using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Example: {starttime} - {endtime}"
+            placeholder="{starttime} - {endtime}"
+            value={subtitleTemplate}
+            onChange={(e) => {
+              const value = e.target.value;
+              setSubtitleTemplate(value);
+              form.setFieldValue('custom_properties.subtitle_template', value);
             }}
           />
 
@@ -1371,6 +1402,18 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                       </>
                     )}
 
+                    {subtitleTemplate && (
+                      <>
+                        <Text size="xs" c="dimmed" mt="xs">
+                          EPG Subtitle:
+                        </Text>
+                        <Text size="sm" fw={500}>
+                          {patternValidation.formattedSubtitle ||
+                            '(no matching groups)'}
+                        </Text>
+                      </>
+                    )}
+
                     {descriptionTemplate && (
                       <>
                         <Text size="xs" c="dimmed" mt="xs">
@@ -1464,6 +1507,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     )}
 
                     {!titleTemplate &&
+                      !subtitleTemplate &&
                       !descriptionTemplate &&
                       !upcomingTitleTemplate &&
                       !upcomingDescriptionTemplate &&

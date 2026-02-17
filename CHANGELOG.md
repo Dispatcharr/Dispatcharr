@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Custom Dummy EPG subtitle template support: Added optional subtitle template field to custom dummy EPG configuration. Users can now define subtitle patterns using extracted regex groups and time/date placeholders (e.g., `{starttime} - {endtime}`). (Closes #942)
 - Event-driven webhooks and script execution (Connect): Added new Connect feature that enables event-driven execution of custom scripts and webhooks in response to system events. Supports multiple event types including channel lifecycle (start, stop, reconnect, error, failover), stream operations (switch), recording events (start, end), data refreshes (EPG, M3U), and client activity (connect, disconnect). Event data is available as environment variables in scripts (prefixed with `DISPATCHARR_`), POST payloads for webhooks, and plugin execution payloads. Plugins can now subscribe to events by specifying an `events` array in their action definitions. Includes connection testing endpoint with dummy payloads for validation. (Closes #203)
 - Cron scheduling support for M3U and EPG refreshes: Added interactive cron expression builder with preset buttons and custom field editors, plus info popover with common cron examples. Refactored backup scheduling to use shared ScheduleInput component for consistency across all scheduling interfaces. (Closes #165)
 - Channel numbering modes for auto channel sync: Added three channel numbering modes when auto-syncing channels from M3U groups:
@@ -16,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Use Provider Number**: Use channel numbers from the M3U source (tvg-chno), with configurable fallback if provider number is missing
   - **Next Available**: Auto-assign starting from 1, skipping all used channel numbers
     Each mode includes its own configuration options accessible via the "Channel Numbering Mode" dropdown in auto sync settings. (Closes #956, #433)
-- Legacy NumPy for modular Docker: Added entrypoint detection and automatic installation for the Celery container (use `USE_LEGACY_NUMPY`) to support older CPUs.- Thanks [@patrickjmcd](https://github.com/patrickjmcd)
+- Legacy NumPy for modular Docker: Added entrypoint detection and automatic installation for the Celery container (use `USE_LEGACY_NUMPY`) to support older CPUs. - Thanks [@patrickjmcd](https://github.com/patrickjmcd)
 
 ### Changed
 
