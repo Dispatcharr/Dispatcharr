@@ -11,6 +11,7 @@ import {
   MultiSelect,
   Group,
   TextInput,
+  Loader,
 } from '@mantine/core';
 import { DateTimePicker, TimeInput, DatePickerInput } from '@mantine/dates';
 import { CircleAlert } from 'lucide-react';
@@ -87,9 +88,14 @@ const RecordingModal = ({
   isOpen,
   onClose,
 }) => {
-  const channels = useChannelsStore((s) => s.channels);
+  const channelGroups = useChannelsStore((s) => s.channelGroups);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
+
+  // Local state: selected group and channels for that group
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [localChannels, setLocalChannels] = useState([]);
+  const [isChannelsLoading, setIsChannelsLoading] = useState(false);
 
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
@@ -210,8 +216,79 @@ const RecordingModal = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, recording, channel]);
 
+  // Initialize group selection to the first available group when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    if (selectedGroupId) return;
+    const firstGroup = Object.values(channelGroups || {}).find(
+      (g) => g?.hasChannels
+    );
+    if (firstGroup) {
+      setSelectedGroupId(String(firstGroup.id));
+    }
+  }, [isOpen, selectedGroupId, channelGroups]);
+
+  // Fetch channels for selected group (no global load)
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isOpen) return;
+      if (!selectedGroupId) return;
+      const group = channelGroups?.[Number(selectedGroupId)];
+      if (!group?.name) return;
+      try {
+        setIsChannelsLoading(true);
+        const params = new URLSearchParams();
+        params.set('channel_group', group.name);
+        const chans = await API.getChannelsForParams(params);
+        if (cancelled) return;
+        setLocalChannels(Array.isArray(chans) ? chans : []);
+      } catch (e) {
+        console.warn('Failed to load channels for group', group?.name, e);
+        if (!cancelled) setLocalChannels([]);
+      } finally {
+        if (!cancelled) setIsChannelsLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, selectedGroupId, channelGroups]);
+
+  // When group changes, clear selected channel in both forms
+  useEffect(() => {
+    if (!isOpen) return;
+    singleForm.setFieldValue('channel_id', '');
+    recurringForm.setFieldValue('channel_id', '');
+  }, [isOpen, selectedGroupId]);
+
+  // After channels load for a group, auto-select the first channel
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    if (!selectedGroupId) {
+      return;
+    }
+    const first = Array.isArray(localChannels) ? localChannels[0] : null;
+    if (!first) {
+      return;
+    }
+    if (mode === 'single') {
+      if (!singleForm.values.channel_id) {
+        singleForm.setFieldValue('channel_id', `${first.id}`);
+      }
+    } else {
+      if (!recurringForm.values.channel_id) {
+        recurringForm.setFieldValue('channel_id', `${first.id}`);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, selectedGroupId, localChannels, mode]);
+
   const channelOptions = useMemo(() => {
-    const list = Object.values(channels || {});
+    const list = Array.isArray(localChannels) ? [...localChannels] : [];
     list.sort((a, b) => {
       const aNum = Number(a.channel_number) || 0;
       const bNum = Number(b.channel_number) || 0;
@@ -222,7 +299,16 @@ const RecordingModal = ({
       value: `${item.id}`,
       label: item.name || `Channel ${item.id}`,
     }));
-  }, [channels]);
+  }, [localChannels]);
+
+  // Group options (no "All")
+  const groupOptions = useMemo(() => {
+    const arr = Object.values(channelGroups || {}).filter(
+      (g) => g?.hasChannels
+    );
+    arr.sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
+    return arr.map((g) => ({ value: String(g.id), label: g.name }));
+  }, [channelGroups]);
 
   const resetForms = () => {
     singleForm.reset();
@@ -333,23 +419,38 @@ const RecordingModal = ({
 
         <form onSubmit={onSubmit}>
           <Stack gap="md">
+            {/* Group selection (required, no "All") */}
+            <Select
+              label="Group"
+              placeholder="Select group"
+              data={groupOptions}
+              value={selectedGroupId}
+              onChange={(value) => setSelectedGroupId(value)}
+              searchable
+            />
+
             {mode === 'single' ? (
               <Select
                 {...singleForm.getInputProps('channel_id')}
-                key={singleForm.key('channel_id')}
+                key={`${singleForm.key('channel_id')}-${selectedGroupId || 'none'}`}
                 label="Channel"
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                disabled={isChannelsLoading}
+                rightSection={
+                  isChannelsLoading ? <Loader size="xs" color="blue" /> : null
+                }
               />
             ) : (
               <Select
                 {...recurringForm.getInputProps('channel_id')}
-                key={recurringForm.key('channel_id')}
+                key={`${recurringForm.key('channel_id')}-${selectedGroupId || 'none'}`}
                 label="Channel"
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                rightSection={isChannelsLoading ? 'Loading…' : null}
               />
             )}
 

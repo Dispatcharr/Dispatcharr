@@ -50,7 +50,7 @@ const RecordingCard = ({
   const { timeFormat: timeformat, dateFormat: dateformat } =
     useDateTimeFormat();
 
-  const channel = channelProp ?? channels?.[recording.channel];
+  const channel = channelProp;
 
   const customProps = recording.custom_properties || {};
   const program = customProps.program || {};

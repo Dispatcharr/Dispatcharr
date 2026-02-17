@@ -142,7 +142,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
       try {
         const params = new URLSearchParams();
         const ids = await API.getAllChannelIds(params);
-        if (cancelled) return;
+        if (cancelled) {
+          return;
+        }
+
         const total = Array.isArray(ids)
           ? ids.length
           : (ids?.length ?? ids?.count ?? 0);
@@ -1160,7 +1163,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             value={selectedGroupId}
             onChange={handleGroupChange} // Use the new handler
             w={'220px'}
-            clearable={true} // Allow clearing the selection
+            clearable={allowAllGroups} // Allow clearing the selection
           />
 
           <Select
