@@ -88,7 +88,7 @@ import ErrorBoundary from '../components/ErrorBoundary.jsx';
 export default function TVChannelGuide({ startDate, endDate }) {
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
   const [allowAllGroups, setAllowAllGroups] = useState(true);
-  const MAX_ALL_CHANNELS = 500;
+  const MAX_ALL_CHANNELS = 99999;
 
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
