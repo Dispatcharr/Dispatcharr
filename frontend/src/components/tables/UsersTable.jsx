@@ -2,6 +2,7 @@ import React, { useMemo, useCallback, useState } from 'react';
 import API from '../../api';
 import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
+import useChannelsStore from '../../store/channels';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
@@ -17,6 +18,7 @@ import {
   useMantineTheme,
   LoadingOverlay,
   Stack,
+  Badge,
 } from '@mantine/core';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
@@ -76,6 +78,7 @@ const UsersTable = () => {
    * STORES
    */
   const users = useUsersStore((s) => s.users);
+  const profiles = useChannelsStore((s) => s.profiles);
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -137,6 +140,15 @@ const UsersTable = () => {
   /**
    * useMemo
    */
+  // Create a profile ID to name lookup map for efficient rendering
+  const profileIdToName = useMemo(() => {
+    const map = {};
+    Object.values(profiles).forEach((profile) => {
+      map[profile.id] = profile.name;
+    });
+    return map;
+  }, [profiles]);
+
   const columns = useMemo(
     () => [
       {
@@ -257,6 +269,37 @@ const UsersTable = () => {
         },
       },
       {
+        header: 'Channel Profiles',
+        accessorKey: 'channel_profiles',
+        grow: true,
+        cell: ({ getValue }) => {
+          const userProfiles = getValue() || [];
+          const profileNames = userProfiles
+            .map((id) => profileIdToName[id])
+            .filter(Boolean); // Filter out any undefined values
+          return (
+            <Group gap={4} wrap="wrap" py={4}>
+              {profileNames.length > 0 ? (
+                profileNames.map((name, index) => (
+                  <Badge
+                    key={index}
+                    size="sm"
+                    variant="light"
+                    color="gray"
+                  >
+                    {name}
+                  </Badge>
+                ))
+              ) : (
+                <Badge size="sm" variant="light" color="gray">
+                  All
+                </Badge>
+              )}
+            </Group>
+          );
+        },
+      },      
+      {
         id: 'actions',
         size: 80,
         header: 'Actions',
@@ -318,6 +361,7 @@ const UsersTable = () => {
       user_level: renderHeaderCell,
       last_login: renderHeaderCell,
       date_joined: renderHeaderCell,
+      channel_profiles: renderHeaderCell,
       custom_properties: renderHeaderCell,
     },
   });
@@ -332,7 +376,7 @@ const UsersTable = () => {
           minHeight: '100vh',
         }}
       >
-        <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
+        <Stack gap="md" style={{ width: '100%' }}>
           <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
             <Text
               style={{
