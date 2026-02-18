@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DVRPage from '../DVR';
 import dayjs from 'dayjs';
 import useChannelsStore from '../../store/channels';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import API from '../../api';
 import {
   isAfter,
   isBefore,
@@ -22,6 +23,7 @@ vi.mock('../../store/channels');
 vi.mock('../../store/settings');
 vi.mock('../../store/useVideoStore');
 vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../api');
 
 // Mock Mantine components
 vi.mock('@mantine/core', () => ({
@@ -168,6 +170,9 @@ describe('DVRPage', () => {
     vi.useFakeTimers();
     const now = new Date('2024-01-15T12:00:00Z');
     vi.setSystemTime(now);
+
+    // Default: API.getChannel returns null (no channel data loaded by default)
+    API.getChannel.mockResolvedValue(null);
 
     isAfter.mockImplementation((a, b) => new Date(a) > new Date(b));
     isBefore.mockImplementation((a, b) => new Date(a) < new Date(b));
@@ -448,13 +453,19 @@ describe('DVRPage', () => {
         custom_properties: { Title: 'Live Show' },
       };
 
+      // DVR.jsx now lazy-loads channel data via API.getChannel rather than
+      // reading s.channels from the store.  Mock the API so channelsById
+      // gets populated before the Watch Live handler runs.
+      API.getChannel.mockResolvedValue({
+        id: 1,
+        name: 'Channel 1',
+        stream_url: 'http://stream.url',
+      });
+
       useChannelsStore.mockImplementation((selector) => {
         const state = {
           ...defaultChannelsState,
           recordings: [recording],
-          channels: {
-            1: { id: 1, name: 'Channel 1', stream_url: 'http://stream.url' },
-          },
         };
         return selector ? selector(state) : state;
       });
@@ -465,6 +476,11 @@ describe('DVRPage', () => {
       fireEvent.click(detailsButton);
 
       await screen.findByTestId('details-modal');
+
+      // Wait for channelsById to be populated from the async API call
+      await waitFor(() => {
+        expect(API.getChannel).toHaveBeenCalledWith(1);
+      });
 
       const watchLiveButton = screen.getByText('Watch Live');
       fireEvent.click(watchLiveButton);
