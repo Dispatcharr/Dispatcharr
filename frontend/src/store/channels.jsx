@@ -129,6 +129,7 @@ const useChannelsStore = create((set, get) => ({
       const channelIds = await api.getAllChannelIds();
       set({
         channelIds,
+        isLoading: false,
       });
     } catch (error) {
       set({ error: error.message, isLoading: false });
