@@ -191,22 +191,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
           if (firstGroup?.name) params.set('channel_group', firstGroup.name);
         }
 
-        let channels = [];
-        if (selectedGroupId === 'all' && allowAllGroups) {
-          channels = await API.getChannels();
-        } else {
-          // Profile filter
-          if (selectedProfileId && selectedProfileId !== 'all') {
-            params.set('channel_profile_id', String(selectedProfileId));
-          }
-
-          // Search filter
-          if (searchQuery && searchQuery.trim() !== '') {
-            params.set('search', searchQuery.trim());
-          }
-
-          channels = await API.getChannelsForParams(params);
+        // Profile filter
+        if (selectedProfileId && selectedProfileId !== 'all') {
+          params.set('channel_profile_id', String(selectedProfileId));
         }
+
+        // Search filter
+        if (searchQuery && searchQuery.trim() !== '') {
+          params.set('search', searchQuery.trim());
+        }
+
+        // Use lightweight summary endpoint — returns only the fields
+        // the Guide needs (id, name, logo_id, channel_number, uuid,
+        // epg_data_id, channel_group_id) without serializer/join overhead.
+        const channels = await API.getChannelsSummary(params);
 
         if (cancelled) return;
 
@@ -1060,9 +1058,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
     if (allowAllGroups) {
       opts.push({ value: 'all', label: 'All Channel Groups' });
     }
-    const groupsArr = Object.values(channelGroups).sort((a, b) =>
-      (a?.name || '').localeCompare(b?.name || '')
-    );
+    const groupsArr = Object.values(channelGroups)
+      .filter((g) => g?.hasChannels)
+      .sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
     groupsArr.forEach((g) => {
       opts.push({ value: String(g.id), label: g.name });
     });

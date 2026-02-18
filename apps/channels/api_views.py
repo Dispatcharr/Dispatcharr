@@ -929,6 +929,23 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Return the response with the list of IDs
         return Response(list(channel_ids))
 
+    @action(detail=False, methods=["get"], url_path="summary")
+    def summary(self, request, *args, **kwargs):
+        """Return a lightweight list of channels with only the fields needed by the TV Guide."""
+        queryset = self.filter_queryset(self.get_queryset())
+        data = list(
+            queryset.values(
+                "id",
+                "name",
+                "logo_id",
+                "channel_number",
+                "uuid",
+                "epg_data_id",
+                "channel_group_id",
+            )
+        )
+        return Response(data)
+
     @extend_schema(
         methods=["POST"],
         description="Retrieve channels by a list of UUIDs using POST to avoid URL length limitations",

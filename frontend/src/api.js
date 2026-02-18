@@ -212,6 +212,22 @@ export default class API {
     }
   }
 
+  /**
+   * Retrieve a lightweight summary of channels (id, name, logo_id,
+   * channel_number, uuid, epg_data_id, channel_group_id).
+   * Designed for the TV Guide where full channel data is not needed.
+   */
+  static async getChannelsSummary(params = new URLSearchParams()) {
+    try {
+      const url = `${host}/api/channels/channels/summary/?${params.toString()}`;
+      const data = await request(url);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      errorNotification('Failed to retrieve channel summary', e);
+      return [];
+    }
+  }
+
   static async queryChannels(params) {
     try {
       API.lastQueryParams = params;
