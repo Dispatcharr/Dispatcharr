@@ -271,6 +271,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const start = calculateStart(earliestProgramStart, defaultStart);
   const end = calculateEnd(latestProgramEnd, defaultEnd);
 
+  // Pre-compute timeline origin in ms for horizontal culling in GuideRow
+  const timelineStartMs = useMemo(() => convertToMs(start), [start]);
+
   const channelIdByTvgId = useMemo(
     () => buildChannelIdMap(guideChannels, tvgsById, epgs),
     [guideChannels, tvgsById, epgs]
@@ -1018,6 +1021,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
       renderProgram,
       handleLogoClick,
       contentWidth,
+      guideScrollLeftRef,
+      viewportWidth:
+        guideWidth ||
+        (typeof window !== 'undefined' ? window.innerWidth : 1200),
+      timelineStartMs,
     }),
     [
       filteredChannels,
@@ -1028,6 +1036,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
       renderProgram,
       handleLogoClick,
       contentWidth,
+      guideWidth,
+      timelineStartMs,
     ]
   );
 
