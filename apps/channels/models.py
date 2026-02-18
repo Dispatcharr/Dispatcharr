@@ -564,6 +564,14 @@ class Channel(models.Model):
                 redis_client.delete(f"channel_stream:{self.id}")
                 redis_client.delete(f"stream_profile:{stream_id}")
 
+                # Clear metadata fields so duplicate release_stream() calls
+                # won't find them and DECR again
+                redis_client.hdel(
+                    metadata_key,
+                    ChannelMetadataField.STREAM_ID,
+                    ChannelMetadataField.M3U_PROFILE,
+                )
+
                 profile_connections_key = f"profile_connections:{profile_id}"
                 current_count = int(
                     redis_client.get(profile_connections_key) or 0
@@ -588,16 +596,27 @@ class Channel(models.Model):
 
         # Get the matched profile for cleanup
         profile_id = redis_client.get(f"stream_profile:{stream_id}")
-        if not profile_id:
-            logger.debug(
-                f"Channel {self.uuid}: no profile found for "
-                f"stream_profile:{stream_id}"
+        if profile_id:
+            redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
+            profile_id = int(profile_id)
+        else:
+            # stream_profile key missing — try metadata hash fallback
+            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+            meta_profile_id = redis_client.hget(
+                metadata_key, ChannelMetadataField.M3U_PROFILE
             )
-            return False
-
-        redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
-
-        profile_id = int(profile_id)
+            if meta_profile_id:
+                profile_id = int(meta_profile_id)
+                logger.debug(
+                    f"Channel {self.uuid}: recovered profile_id={profile_id} "
+                    f"from metadata fallback (stream_profile:{stream_id} was missing)"
+                )
+            else:
+                logger.warning(
+                    f"Channel {self.uuid}: no profile found for "
+                    f"stream_profile:{stream_id} or in metadata fallback"
+                )
+                return False
         logger.debug(
             f"Channel {self.uuid}: found profile_id={profile_id} for "
             f"stream {stream_id}"
@@ -609,6 +628,16 @@ class Channel(models.Model):
         current_count = int(redis_client.get(profile_connections_key) or 0)
         if current_count > 0:
             redis_client.decr(profile_connections_key)
+
+        # Clear metadata fields so duplicate release_stream() calls
+        # (e.g. from _clean_redis_keys or ChannelService.stop_channel)
+        # won't find them via fallback and DECR again
+        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
+        redis_client.hdel(
+            metadata_key,
+            ChannelMetadataField.STREAM_ID,
+            ChannelMetadataField.M3U_PROFILE,
+        )
 
         return True
 

@@ -244,8 +244,18 @@ def stream_ts(request, channel_id):
             if needs_initialization:
                 connection_allocated = True
 
-            # Get the stream ID from the channel
-            stream_id, m3u_profile_id, _ = channel.get_stream()
+            # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
+            # Avoid calling get_stream() again — (INCR profile counter)
+            # It could double-allocate if the keys were cleared by a concurrent release.
+            stream_id = None
+            m3u_profile_id = None
+            if proxy_server.redis_client:
+                stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                if stream_id_bytes:
+                    stream_id = int(stream_id_bytes)
+                    profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                    if profile_id_bytes:
+                        m3u_profile_id = int(profile_id_bytes)
             logger.info(
                 f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
             )
