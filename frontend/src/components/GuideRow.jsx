@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   CHANNEL_WIDTH,
   EXPANDED_PROGRAM_HEIGHT,
@@ -16,12 +16,12 @@ const GuideRow = React.memo(({ index, style, data }) => {
     expandedProgramId,
     rowHeights,
     logos,
-    hoveredChannelId,
-    setHoveredChannelId,
     renderProgram,
     handleLogoClick,
     contentWidth,
   } = data;
+
+  const [hovered, setHovered] = useState(false);
 
   const channel = filteredChannels[index];
   if (!channel) {
@@ -100,10 +100,10 @@ const GuideRow = React.memo(({ index, style, data }) => {
           h={'100%'}
           pos="relative"
           onClick={(event) => handleLogoClick(channel, event)}
-          onMouseEnter={() => setHoveredChannelId(channel.id)}
-          onMouseLeave={() => setHoveredChannelId(null)}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
         >
-          {hoveredChannelId === channel.id && (
+          {hovered && (
             <Flex
               align="center"
               justify="center"

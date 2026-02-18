@@ -132,9 +132,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   } = useElementSize();
   const [guideScrollLeft, setGuideScrollLeft] = useState(0);
 
-  // Add new state to track hovered logo
-  const [hoveredChannelId, setHoveredChannelId] = useState(null);
-
   // Decide if 'All Channel Groups' should be enabled (based on total channel count)
   useEffect(() => {
     let cancelled = false;
@@ -809,7 +806,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       const programStartInView = leftPx + gapSize;
       const programEndInView = leftPx + gapSize + widthPx;
-      const viewportLeft = guideScrollLeft;
+      const viewportLeft = guideScrollLeftRef.current;
       const startsBeforeView = programStartInView < viewportLeft;
       const extendsIntoView = programEndInView > viewportLeft;
 
@@ -980,10 +977,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     },
     [
       expandedProgramId,
-      guideScrollLeft,
       handleProgramClick,
       handleWatchStream,
-      now,
       openRecordChoice,
       recordingsByProgramId,
       start,
@@ -1020,8 +1015,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
       expandedProgramId,
       rowHeights,
       logos,
-      hoveredChannelId,
-      setHoveredChannelId,
       renderProgram,
       handleLogoClick,
       contentWidth,
@@ -1032,11 +1025,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
       expandedProgramId,
       rowHeights,
       logos,
-      hoveredChannelId,
       renderProgram,
       handleLogoClick,
       contentWidth,
-      setHoveredChannelId,
     ]
   );
 
@@ -1318,7 +1309,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               itemData={listData}
               ref={listRef}
               outerRef={guideRef}
-              overscanCount={8}
+              overscanCount={3}
             >
               {GuideRow}
             </VariableSizeList>
