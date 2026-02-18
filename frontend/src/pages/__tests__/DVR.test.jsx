@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import DVRPage from '../DVR';
 import dayjs from 'dayjs';
 import useChannelsStore from '../../store/channels';
@@ -171,8 +177,8 @@ describe('DVRPage', () => {
     const now = new Date('2024-01-15T12:00:00Z');
     vi.setSystemTime(now);
 
-    // Default: API.getChannel returns null (no channel data loaded by default)
-    API.getChannel.mockResolvedValue(null);
+    // Default: API.getChannelsSummary returns empty array
+    API.getChannelsSummary.mockResolvedValue([]);
 
     isAfter.mockImplementation((a, b) => new Date(a) > new Date(b));
     isBefore.mockImplementation((a, b) => new Date(a) < new Date(b));
@@ -228,21 +234,25 @@ describe('DVRPage', () => {
   });
 
   describe('Initial Render', () => {
-    it('renders new recording buttons', () => {
-      render(<DVRPage />);
+    it('renders new recording buttons', async () => {
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
       expect(screen.getByText('New Recording')).toBeInTheDocument();
     });
 
-    it('renders empty state when no recordings', () => {
-      render(<DVRPage />);
+    it('renders empty state when no recordings', async () => {
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
       expect(screen.getByText('No upcoming recordings.')).toBeInTheDocument();
     });
   });
 
   describe('Recording Display', () => {
-    it('displays recordings grouped by date', () => {
+    it('displays recordings grouped by date', async () => {
       const now = dayjs('2024-01-15T12:00:00Z');
       const recordings = [
         {
@@ -266,7 +276,9 @@ describe('DVRPage', () => {
         return selector ? selector(state) : state;
       });
 
-      render(<DVRPage />);
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
       expect(screen.getByTestId('recording-card-1')).toBeInTheDocument();
       expect(screen.getByTestId('recording-card-2')).toBeInTheDocument();
@@ -275,24 +287,34 @@ describe('DVRPage', () => {
 
   describe('New Recording', () => {
     it('opens recording form when new recording button is clicked', async () => {
-      render(<DVRPage />);
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
       const newButton = screen.getByText('New Recording');
-      fireEvent.click(newButton);
+      act(() => {
+        fireEvent.click(newButton);
+      });
 
       expect(screen.getByTestId('recording-form')).toBeInTheDocument();
     });
 
     it('closes recording form when close is clicked', async () => {
-      render(<DVRPage />);
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
       const newButton = screen.getByText('New Recording');
-      fireEvent.click(newButton);
+      act(() => {
+        fireEvent.click(newButton);
+      });
 
       expect(screen.getByTestId('recording-form')).toBeInTheDocument();
 
       const closeButton = screen.getByText('Close Form');
-      fireEvent.click(closeButton);
+      act(() => {
+        fireEvent.click(closeButton);
+      });
 
       expect(screen.queryByTestId('recording-form')).not.toBeInTheDocument();
     });
@@ -395,10 +417,13 @@ describe('DVRPage', () => {
         return selector ? selector(state) : state;
       });
 
-      render(<DVRPage />);
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
-      const recurringButton = screen.getByText('Open Recurring');
-      fireEvent.click(recurringButton);
+      act(() => {
+        fireEvent.click(screen.getByText('Open Recurring'));
+      });
 
       expect(screen.getByTestId('recurring-modal')).toBeInTheDocument();
       expect(screen.getByText('Rule ID: 100')).toBeInTheDocument();
@@ -426,15 +451,19 @@ describe('DVRPage', () => {
         return selector ? selector(state) : state;
       });
 
-      render(<DVRPage />);
+      await act(async () => {
+        render(<DVRPage />);
+      });
 
-      const recurringButton = screen.getByText('Open Recurring');
-      fireEvent.click(recurringButton);
+      act(() => {
+        fireEvent.click(screen.getByText('Open Recurring'));
+      });
 
       expect(screen.getByTestId('recurring-modal')).toBeInTheDocument();
 
-      const closeButton = screen.getByText('Close Recurring');
-      fireEvent.click(closeButton);
+      act(() => {
+        fireEvent.click(screen.getByText('Close Recurring'));
+      });
 
       expect(screen.queryByTestId('recurring-modal')).not.toBeInTheDocument();
     });
@@ -453,14 +482,11 @@ describe('DVRPage', () => {
         custom_properties: { Title: 'Live Show' },
       };
 
-      // DVR.jsx now lazy-loads channel data via API.getChannel rather than
-      // reading s.channels from the store.  Mock the API so channelsById
-      // gets populated before the Watch Live handler runs.
-      API.getChannel.mockResolvedValue({
-        id: 1,
-        name: 'Channel 1',
-        stream_url: 'http://stream.url',
-      });
+      // DVR.jsx loads all channel data via getChannelsSummary.
+      // Mock the API so channelsById gets populated before the handler runs.
+      API.getChannelsSummary.mockResolvedValue([
+        { id: 1, name: 'Channel 1', stream_url: 'http://stream.url' },
+      ]);
 
       useChannelsStore.mockImplementation((selector) => {
         const state = {
@@ -479,7 +505,7 @@ describe('DVRPage', () => {
 
       // Wait for channelsById to be populated from the async API call
       await waitFor(() => {
-        expect(API.getChannel).toHaveBeenCalledWith(1);
+        expect(API.getChannelsSummary).toHaveBeenCalled();
       });
 
       const watchLiveButton = screen.getByText('Watch Live');

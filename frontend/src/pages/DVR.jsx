@@ -52,7 +52,6 @@ const DVRPage = () => {
   const recordings = useChannelsStore((s) => s.recordings);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
-  const channelIds = useChannelsStore((s) => s.channelIds);
   const [channelsById, setChannelsById] = useState({});
   const { toUserTime, userNow } = useTimeHelpers();
 
@@ -95,29 +94,16 @@ const DVRPage = () => {
     fetchRecurringRules();
   }, [fetchRecordings, fetchRecurringRules]);
 
-  // When recordings change, ensure we have local channel details on demand
+  // Load channel details for recordings via lightweight summary API
   useEffect(() => {
-    const neededIds = new Set();
-    for (const rec of Array.isArray(recordings) ? recordings : []) {
-      if (rec?.channel) neededIds.add(rec.channel);
-    }
-    const missing = Array.from(neededIds).filter(
-      (id) => !channelsById[id]
-    );
-    if (missing.length === 0) return;
-
     let cancelled = false;
     (async () => {
       try {
-        const fetched = await Promise.all(
-          missing.map((id) => API.getChannel(id))
-        );
+        const channels = await API.getChannelsSummary();
         if (cancelled) return;
-        setChannelsById((prev) => {
-          const next = { ...prev };
-          for (const ch of fetched) if (ch?.id) next[ch.id] = ch;
-          return next;
-        });
+        const byId = {};
+        for (const ch of channels) if (ch?.id) byId[ch.id] = ch;
+        setChannelsById(byId);
       } catch (e) {
         console.warn('Failed to fetch channels for DVR page', e);
       }
@@ -125,7 +111,7 @@ const DVRPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [recordings, channelsById]);
+  }, []);
 
   // Re-render every second so time-based bucketing updates without a refresh
   const [now, setNow] = useState(userNow());

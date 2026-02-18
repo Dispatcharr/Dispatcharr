@@ -88,13 +88,11 @@ const RecordingModal = ({
   isOpen,
   onClose,
 }) => {
-  const channelGroups = useChannelsStore((s) => s.channelGroups);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
 
-  // Local state: selected group and channels for that group
-  const [selectedGroupId, setSelectedGroupId] = useState(null);
-  const [localChannels, setLocalChannels] = useState([]);
+  // All channels loaded via lightweight summary API
+  const [allChannels, setAllChannels] = useState([]);
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
 
   const [mode, setMode] = useState('single');
@@ -216,36 +214,19 @@ const RecordingModal = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, recording, channel]);
 
-  // Initialize group selection to the first available group when modal opens
-  useEffect(() => {
-    if (!isOpen) return;
-    if (selectedGroupId) return;
-    const firstGroup = Object.values(channelGroups || {}).find(
-      (g) => g?.hasChannels
-    );
-    if (firstGroup) {
-      setSelectedGroupId(String(firstGroup.id));
-    }
-  }, [isOpen, selectedGroupId, channelGroups]);
-
-  // Fetch channels for selected group (no global load)
+  // Load all channels via lightweight summary API when modal opens
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (!isOpen) return;
-      if (!selectedGroupId) return;
-      const group = channelGroups?.[Number(selectedGroupId)];
-      if (!group?.name) return;
       try {
         setIsChannelsLoading(true);
-        const params = new URLSearchParams();
-        params.set('channel_group', group.name);
-        const chans = await API.getChannelsForParams(params);
+        const chans = await API.getChannelsSummary();
         if (cancelled) return;
-        setLocalChannels(Array.isArray(chans) ? chans : []);
+        setAllChannels(Array.isArray(chans) ? chans : []);
       } catch (e) {
-        console.warn('Failed to load channels for group', group?.name, e);
-        if (!cancelled) setLocalChannels([]);
+        console.warn('Failed to load channels for recording form', e);
+        if (!cancelled) setAllChannels([]);
       } finally {
         if (!cancelled) setIsChannelsLoading(false);
       }
@@ -254,41 +235,10 @@ const RecordingModal = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, selectedGroupId, channelGroups]);
-
-  // When group changes, clear selected channel in both forms
-  useEffect(() => {
-    if (!isOpen) return;
-    singleForm.setFieldValue('channel_id', '');
-    recurringForm.setFieldValue('channel_id', '');
-  }, [isOpen, selectedGroupId]);
-
-  // After channels load for a group, auto-select the first channel
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    if (!selectedGroupId) {
-      return;
-    }
-    const first = Array.isArray(localChannels) ? localChannels[0] : null;
-    if (!first) {
-      return;
-    }
-    if (mode === 'single') {
-      if (!singleForm.values.channel_id) {
-        singleForm.setFieldValue('channel_id', `${first.id}`);
-      }
-    } else {
-      if (!recurringForm.values.channel_id) {
-        recurringForm.setFieldValue('channel_id', `${first.id}`);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, selectedGroupId, localChannels, mode]);
+  }, [isOpen]);
 
   const channelOptions = useMemo(() => {
-    const list = Array.isArray(localChannels) ? [...localChannels] : [];
+    const list = Array.isArray(allChannels) ? [...allChannels] : [];
     list.sort((a, b) => {
       const aNum = Number(a.channel_number) || 0;
       const bNum = Number(b.channel_number) || 0;
@@ -297,18 +247,11 @@ const RecordingModal = ({
     });
     return list.map((item) => ({
       value: `${item.id}`,
-      label: item.name || `Channel ${item.id}`,
+      label: item.channel_number
+        ? `${item.channel_number} - ${item.name || `Channel ${item.id}`}`
+        : item.name || `Channel ${item.id}`,
     }));
-  }, [localChannels]);
-
-  // Group options (no "All")
-  const groupOptions = useMemo(() => {
-    const arr = Object.values(channelGroups || {}).filter(
-      (g) => g?.hasChannels
-    );
-    arr.sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
-    return arr.map((g) => ({ value: String(g.id), label: g.name }));
-  }, [channelGroups]);
+  }, [allChannels]);
 
   const resetForms = () => {
     singleForm.reset();
@@ -419,20 +362,10 @@ const RecordingModal = ({
 
         <form onSubmit={onSubmit}>
           <Stack gap="md">
-            {/* Group selection (required, no "All") */}
-            <Select
-              label="Group"
-              placeholder="Select group"
-              data={groupOptions}
-              value={selectedGroupId}
-              onChange={(value) => setSelectedGroupId(value)}
-              searchable
-            />
-
             {mode === 'single' ? (
               <Select
                 {...singleForm.getInputProps('channel_id')}
-                key={`${singleForm.key('channel_id')}-${selectedGroupId || 'none'}`}
+                key={singleForm.key('channel_id')}
                 label="Channel"
                 placeholder="Select channel"
                 searchable
@@ -445,7 +378,7 @@ const RecordingModal = ({
             ) : (
               <Select
                 {...recurringForm.getInputProps('channel_id')}
-                key={`${recurringForm.key('channel_id')}-${selectedGroupId || 'none'}`}
+                key={recurringForm.key('channel_id')}
                 label="Channel"
                 placeholder="Select channel"
                 searchable
