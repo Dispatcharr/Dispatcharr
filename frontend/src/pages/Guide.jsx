@@ -283,10 +283,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
   // Local map of channel id -> channel object for quick lookup
   const channelById = useMemo(() => {
-    const map = {};
+    const map = new Map();
     for (const ch of guideChannels) {
       if (ch && ch.id !== undefined && ch.id !== null) {
-        map[ch.id] = ch;
+        map.set(ch.id, ch);
       }
     }
     return map;
