@@ -125,12 +125,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const tvGuideRef = useRef(null); // Ref for the main tv-guide wrapper
   const isSyncingScroll = useRef(false);
   const guideScrollLeftRef = useRef(0);
+  const nowLineRef = useRef(null);
+  const [settledScrollLeft, setSettledScrollLeft] = useState(0);
+  const scrollDebounceRef = useRef(null);
   const {
     ref: guideContainerRef,
     width: guideWidth,
     height: guideHeight,
   } = useElementSize();
-  const [guideScrollLeft, setGuideScrollLeft] = useState(0);
 
   // Decide if 'All Channel Groups' should be enabled (based on total channel count)
   useEffect(() => {
@@ -348,14 +350,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
         isSyncingScroll.current = true;
         timelineRef.current.scrollLeft = scrollLeft;
         guideScrollLeftRef.current = scrollLeft;
-        setGuideScrollLeft(scrollLeft);
+        updateNowLine();
         requestAnimationFrame(() => {
           isSyncingScroll.current = false;
         });
       } else if (scrollLeft !== guideScrollLeftRef.current) {
         // Update ref even if timeline was already synced
         guideScrollLeftRef.current = scrollLeft;
-        setGuideScrollLeft(scrollLeft);
+        updateNowLine();
       }
     };
 
@@ -366,11 +368,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
     };
   }, []);
 
-  // Update "now" every second
+  // Update "now" every 60 seconds (on a 24h guide, per-second is imperceptible)
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(getNow());
-    }, 1000);
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -379,6 +381,25 @@ export default function TVChannelGuide({ startDate, endDate }) {
     () => calculateNowPosition(now, start, end),
     [now, start, end]
   );
+
+  // Update the now-line DOM element directly (no React re-render)
+  const updateNowLine = useCallback(() => {
+    if (nowLineRef.current) {
+      nowLineRef.current.style.left = `${nowPosition + CHANNEL_WIDTH - guideScrollLeftRef.current}px`;
+    }
+    // Debounce horizontal culling update — fires 150ms after scrolling stops
+    if (scrollDebounceRef.current) {
+      clearTimeout(scrollDebounceRef.current);
+    }
+    scrollDebounceRef.current = setTimeout(() => {
+      setSettledScrollLeft(guideScrollLeftRef.current);
+    }, 150);
+  }, [nowPosition]);
+
+  // Sync now-line whenever nowPosition changes (every 60s)
+  useEffect(() => {
+    updateNowLine();
+  }, [updateNowLine]);
 
   useEffect(() => {
     const tvGuide = tvGuideRef.current;
@@ -418,7 +439,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
         // Update the ref to keep state in sync
         guideScrollLeftRef.current = newScrollLeft;
-        setGuideScrollLeft(newScrollLeft);
+        updateNowLine();
       }
     };
 
@@ -448,7 +469,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         if (guide && timeline && guide.scrollLeft !== timeline.scrollLeft) {
           timeline.scrollLeft = guide.scrollLeft;
           guideScrollLeftRef.current = guide.scrollLeft;
-          setGuideScrollLeft(guide.scrollLeft);
+          updateNowLine();
         }
         lastCheck = timestamp;
       }
@@ -485,7 +506,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       if (currentScroll !== lastScrollLeft) {
         timeline.scrollLeft = currentScroll;
         guideScrollLeftRef.current = currentScroll;
-        setGuideScrollLeft(currentScroll);
+        updateNowLine();
         lastScrollLeft = currentScroll;
         stableFrames = 0;
         return true; // Still scrolling
@@ -581,7 +602,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
 
     guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
+    updateNowLine();
 
     requestAnimationFrame(() => {
       isSyncingScroll.current = false;
@@ -743,7 +764,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
 
     guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
+    updateNowLine();
 
     isSyncingScroll.current = true;
     if (guideRef.current) {
@@ -1026,6 +1047,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         guideWidth ||
         (typeof window !== 'undefined' ? window.innerWidth : 1200),
       timelineStartMs,
+      settledScrollLeft, // triggers row re-renders after scrolling stops
     }),
     [
       filteredChannels,
@@ -1038,6 +1060,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       contentWidth,
       guideWidth,
       timelineStartMs,
+      settledScrollLeft,
     ]
   );
 
@@ -1294,13 +1317,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
           />
           {nowPosition >= 0 && (
             <Box
+              ref={nowLineRef}
               style={{
                 backgroundColor: '#38b2ac',
                 zIndex: 15,
                 pointerEvents: 'none',
+                left: `${nowPosition + CHANNEL_WIDTH - guideScrollLeftRef.current}px`,
               }}
               pos="absolute"
-              left={nowPosition + CHANNEL_WIDTH - guideScrollLeft}
               top={0}
               bottom={0}
               w={'2px'}
