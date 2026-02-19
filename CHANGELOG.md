@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Channel store optimization: Refactored frontend channel loading to only fetch channel IDs on initial login (matching the streams store pattern), instead of loading full channel objects upfront. Full channel data is fetched lazily as needed. This dramatically reduces login time and initial page load when large channel libraries are present.
+- DVR scheduling: Channel selector now displays the channel number alongside the channel name when scheduling a recording.
 - TV Guide performance improvements: Optimized the TV Guide with horizontal culling for off-screen program rows (only rendering visible programs), throttled now-line position updates, and improved scroll performance. Reduces unnecessary DOM work and improves responsiveness with large EPG datasets.
 - XC API M3U stream URLs: M3U generation for Xtream Codes API endpoints now use proper XC-style stream URLs (`/live/username/password/channel_id`) instead of UUID-based stream endpoints, ensuring full compatibility with XC clients. (Fixes #839)
 
