@@ -9,6 +9,9 @@ class PluginActionSerializer(serializers.Serializer):
     button_label = serializers.CharField(required=False, allow_blank=True)
     button_variant = serializers.CharField(required=False, allow_blank=True)
     button_color = serializers.CharField(required=False, allow_blank=True)
+    events = serializers.ListField(
+        child=serializers.CharField(), required=False, allow_empty=True
+    )
 
 
 class PluginFieldOptionSerializer(serializers.Serializer):

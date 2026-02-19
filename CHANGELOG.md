@@ -7,8 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Custom Dummy EPG subtitle template support: Added optional subtitle template field to custom dummy EPG configuration. Users can now define subtitle patterns using extracted regex groups and time/date placeholders (e.g., `{starttime} - {endtime}`). (Closes #942)
+- Event-driven webhooks and script execution (Connect): Added new Connect feature that enables event-driven execution of custom scripts and webhooks in response to system events. Supports multiple event types including channel lifecycle (start, stop, reconnect, error, failover), stream operations (switch), recording events (start, end), data refreshes (EPG, M3U), and client activity (connect, disconnect). Event data is available as environment variables in scripts (prefixed with `DISPATCHARR_`), POST payloads for webhooks, and plugin execution payloads. Plugins can now subscribe to events by specifying an `events` array in their action definitions. Includes connection testing endpoint with dummy payloads for validation. (Closes #203)
+- Cron scheduling support for M3U and EPG refreshes: Added interactive cron expression builder with preset buttons and custom field editors, plus info popover with common cron examples. Refactored backup scheduling to use shared ScheduleInput component for consistency across all scheduling interfaces. (Closes #165)
+- Channel numbering modes for auto channel sync: Added three channel numbering modes when auto-syncing channels from M3U groups:
+  - **Fixed Start Number** (default): Start at a specified number and increment sequentially
+  - **Use Provider Number**: Use channel numbers from the M3U source (tvg-chno), with configurable fallback if provider number is missing
+  - **Next Available**: Auto-assign starting from 1, skipping all used channel numbers
+    Each mode includes its own configuration options accessible via the "Channel Numbering Mode" dropdown in auto sync settings. (Closes #956, #433)
+- Legacy NumPy for modular Docker: Added entrypoint detection and automatic installation for the Celery container (use `USE_LEGACY_NUMPY`) to support older CPUs. - Thanks [@patrickjmcd](https://github.com/patrickjmcd)
+
+### Changed
+
+- Custom Dummy EPG form UI improvements: Reorganized the form into collapsible accordion sections (Pattern Configuration, Output Templates, Upcoming/Ended Templates, Fallback Templates, EPG Settings) for better organization. Field descriptions now appear in info icon popovers instead of taking up vertical space, making the form more compact and easier to navigate while keeping help text accessible.
+- XC API M3U stream URLs: M3U generation for Xtream Codes API endpoints now use proper XC-style stream URLs (`/live/username/password/channel_id`) instead of UUID-based stream endpoints, ensuring full compatibility with XC clients. (Fixes #839)
+
 ### Fixed
 
+- VOD proxy connection counter leak on client disconnect: Fixed a connection leak in the VOD proxy where connection counters were not properly decremented when clients disconnected, causing the connection pool to lose track of available connections. The multi-worker connection manager now correctly handles client disconnection events across all proxy configurations. Includes three key fixes: (1) Replaced GET-check-INCR race condition with atomic INCR-first-then-check pattern in both connection managers to prevent concurrent requests exceeding max_streams; (2) Decrement profile counter directly in stream generator exit paths instead of deferring to daemon thread cleanup; (3) Decrement profile counter on create_connection() failure to release reserved slots. (Fixes #962, #971, #451, #533) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- XC profile refresh credential extraction with sub-paths: Fixed credential extraction in `get_transformed_credentials()` to use negative indices anchored to the known tail structure instead of hardcoded indices that broke when server URLs contained sub-paths (e.g., `http://server.com/portal/a/`). This ensures XC accounts with sub-paths in their server URLs work correctly for profile refreshes. (Fixes #945) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- XC EPG URL construction for accounts with sub-paths or trailing slashes: Fixed EPG URL construction in M3U forms to normalize server URL to origin before appending `xmltv.php` endpoint, preventing double slashes and incorrect path placement when server URLs include sub-paths or trailing slashes. (Fixes #800) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Auto channel sync duplicate channel numbers across groups: Fixed issue where multiple auto-sync groups starting at the same number would create duplicate channel numbers. The used channel number tracking now persists across all groups in a single sync operation, ensuring each assigned channel number is globally unique.
 - Modular mode PostgreSQL/Redis connection checks: Replaced raw Python socket checks with native tools (`pg_isready` for PostgreSQL and `socket.create_connection` for Redis) in modular deployment mode to prevent indefinite hangs in Docker environments with non-standard networking or DNS configurations. Now properly supports IPv4 and IPv6 configurations. (Fixes #952) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 
 ## [0.19.0] - 2026-02-10

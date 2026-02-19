@@ -37,7 +37,9 @@ import json
 class M3UAccountViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U accounts"""
 
-    queryset = M3UAccount.objects.prefetch_related("channel_group")
+    queryset = M3UAccount.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).prefetch_related("channel_group")
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):

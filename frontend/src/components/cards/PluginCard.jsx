@@ -14,9 +14,11 @@ import {
   Switch,
   Text,
   UnstyledButton,
+  Badge,
 } from '@mantine/core';
 import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
+import { SUBSCRIPTION_EVENTS } from '../../constants.js';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
   return plugin.fields.map((f) => (
@@ -44,6 +46,14 @@ const PluginActionList = ({
             {action.description}
           </Text>
         )}
+        <Text size="xs" style={{ paddingTop: 10 }}>
+          Event Triggers
+        </Text>
+        {action.events.map((event) => (
+          <Badge size="sm" variant="light" color="green">
+            {SUBSCRIPTION_EVENTS[event] || event}
+          </Badge>
+        ))}
       </div>
       <Button
         loading={runningActionId === action.id}

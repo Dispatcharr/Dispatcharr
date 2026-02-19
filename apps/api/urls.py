@@ -14,6 +14,7 @@ urlpatterns = [
     path('vod/', include(('apps.vod.api_urls', 'vod'), namespace='vod')),
     path('fuse/', include(('apps.fuse.api_urls', 'fuse'), namespace='fuse')),
     path('backups/', include(('apps.backups.api_urls', 'backups'), namespace='backups')),
+    path('connect/', include(('apps.connect.api_urls', 'connect'), namespace='connect')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),
     #path('settings/', include(('apps.settings.api_urls', 'settings'), namespace='settings')),

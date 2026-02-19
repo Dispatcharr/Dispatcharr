@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "apps.proxy.ts_proxy",
     "apps.fuse",
     "apps.vod.apps.VODConfig",
+    "apps.connect.apps.ConnectConfig",
     "core",
     "daphne",
     "drf_spectacular",
@@ -412,3 +413,18 @@ LOGGING = {
         "level": LOG_LEVEL,  # Use user-configured level instead of hardcoded 'INFO'
     },
 }
+
+# Connect script execution safety settings
+# Allowed base directories for custom scripts; real paths must be inside
+_allowed_dirs_env = os.environ.get("DISPATCHARR_ALLOWED_SCRIPT_DIRS", "/data/plugins")
+CONNECT_ALLOWED_SCRIPT_DIRS = [p for p in _allowed_dirs_env.split(":") if p]
+
+# Max execution time (seconds) for scripts
+CONNECT_SCRIPT_TIMEOUT = int(os.environ.get("DISPATCHARR_SCRIPT_TIMEOUT", "10"))
+
+# Truncate stdout/stderr to this many characters to avoid large outputs
+CONNECT_SCRIPT_MAX_OUTPUT = int(os.environ.get("DISPATCHARR_SCRIPT_MAX_OUTPUT", "65536"))
+
+# Require executable bit and disallow world-writable files
+CONNECT_SCRIPT_REQUIRE_EXECUTABLE = True
+CONNECT_SCRIPT_DISALLOW_WORLD_WRITABLE = True
