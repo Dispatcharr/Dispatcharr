@@ -2523,6 +2523,8 @@ def xc_get_series(request, user, category_id=None):
             "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
             "category_id": str(relation.category.id) if relation.category else "0",
             "category_ids": [int(relation.category.id)] if relation.category else [],
+            "tmdb_id": series.tmdb_id or "",
+            "imdb_id": series.imdb_id or "",
         })
 
     return series_list
