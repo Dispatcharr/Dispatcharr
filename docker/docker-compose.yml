@@ -9,6 +9,7 @@ services:
   web:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_web
+    restart: unless-stopped
     ports:
       - 9191:9191
     volumes:
@@ -80,6 +81,7 @@ services:
   celery:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_celery
+    restart: unless-stopped
     depends_on:
       - db
       - redis
@@ -132,6 +134,7 @@ services:
   db:
     image: postgres:17
     container_name: dispatcharr_db
+    restart: unless-stopped
     ports:
       - "5436:5432"
     environment:
@@ -152,6 +155,7 @@ services:
   redis:
     image: redis:latest
     container_name: dispatcharr_redis
+    restart: unless-stopped
 
     # --- Authentication Configuration (Optional) ---
     # By default, Redis runs without authentication.
