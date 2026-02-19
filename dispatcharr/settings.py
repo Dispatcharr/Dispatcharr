@@ -33,7 +33,7 @@ INSTALLED_APPS = [
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
     "apps.proxy.ts_proxy",
-    "apps.fuse_api",
+    "apps.fuse",
     "apps.vod.apps.VODConfig",
     "core",
     "daphne",

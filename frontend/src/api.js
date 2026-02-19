@@ -1912,6 +1912,45 @@ export default class API {
     }
   }
 
+  static async getFuseClients(includeInactive = false) {
+    try {
+      const query = includeInactive ? '?include_inactive=1' : '';
+      const response = await request(`${host}/api/fuse/clients/${query}`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve FUSE clients', e);
+    }
+  }
+
+  static async createFusePairingToken(ttlSeconds = 600) {
+    try {
+      const response = await request(`${host}/api/fuse/pairing-token/`, {
+        method: 'POST',
+        body: {
+          ttl_seconds: ttlSeconds,
+        },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create FUSE pairing token', e);
+    }
+  }
+
+  static async forceRemoveFuseClient(clientId, blockSeconds = 300) {
+    try {
+      const response = await request(`${host}/api/fuse/clients/`, {
+        method: 'POST',
+        body: {
+          client_id: clientId,
+          block_seconds: blockSeconds,
+        },
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to force-remove FUSE client', e);
+    }
+  }
+
   static async stopVODClient(clientId) {
     try {
       const response = await request(`${host}/proxy/vod/stop_client/`, {

@@ -1,3 +1,4 @@
+views.py
 """
 VOD (Video on Demand) proxy views for handling movie and series streaming.
 Supports M3U profiles for authentication and URL transformation.
@@ -6,6 +7,7 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
+import json
 import requests
 from django.http import StreamingHttpResponse, JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
@@ -17,6 +19,7 @@ from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.proxy.vod_proxy.connection_manager import VODConnectionManager
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info, create_vod_response
+from core.models import CoreSettings, FUSE_SETTINGS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -762,6 +765,36 @@ class VODPositionView(View):
 @method_decorator(csrf_exempt, name='dispatch')
 class VODStatsView(View):
     """Get VOD connection statistics"""
+    DEFAULT_FUSE_STATS_GRACE_SECONDS = 30
+
+    @classmethod
+    def _get_fuse_stats_grace_seconds(cls) -> int:
+        """Read FUSE-specific stats grace window from saved fuse settings."""
+        try:
+            raw_value = CoreSettings.objects.values_list("value", flat=True).get(
+                key=FUSE_SETTINGS_KEY
+            )
+        except CoreSettings.DoesNotExist:
+            return cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
+        except Exception:
+            return cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
+
+        if isinstance(raw_value, str):
+            try:
+                raw_value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                return cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
+
+        if not isinstance(raw_value, dict):
+            return cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
+
+        configured = raw_value.get(
+            "fuse_stats_grace_seconds", cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
+        )
+        try:
+            return max(0, int(configured))
+        except (TypeError, ValueError):
+            return cls.DEFAULT_FUSE_STATS_GRACE_SECONDS
 
     def get(self, request):
         """Get current VOD connection statistics"""
@@ -777,6 +810,8 @@ class VODStatsView(View):
             cursor = 0
             connections = []
             current_time = time.time()
+            include_inactive = str(request.GET.get('include_inactive', '')).lower() in {'1', 'true', 'yes'}
+            fuse_stats_grace_seconds = self._get_fuse_stats_grace_seconds()
 
             while True:
                 cursor, keys = redis_client.scan(cursor, match=pattern, count=100)
@@ -801,6 +836,31 @@ class VODStatsView(View):
                             content_type = combined_data.get('content_obj_type', 'unknown')
                             content_uuid = combined_data.get('content_uuid', 'unknown')
                             client_id = session_id
+                            active_streams = int(combined_data.get('active_streams', 0) or 0)
+                            client_user_agent = combined_data.get('client_user_agent', '')
+                            is_fuse_client = 'dispatcharr-fuse/' in client_user_agent.lower()
+                            last_activity_raw = combined_data.get('last_activity')
+                            last_activity = 0.0
+                            if last_activity_raw is not None and last_activity_raw != '':
+                                try:
+                                    last_activity = float(last_activity_raw)
+                                except (TypeError, ValueError):
+                                    last_activity = 0.0
+                            is_fuse_recently_active = (
+                                is_fuse_client
+                                and fuse_stats_grace_seconds > 0
+                                and last_activity > 0
+                                and (current_time - last_activity) <= fuse_stats_grace_seconds
+                            )
+
+                            # By default show only active streams.
+                            # For FUSE sessions, keep recently-active rows visible briefly between burst reads.
+                            if (
+                                not include_inactive
+                                and active_streams <= 0
+                                and not is_fuse_recently_active
+                            ):
+                                continue
 
                             # Get content info with enhanced metadata
                             content_name = "Unknown"
@@ -945,10 +1005,13 @@ class VODStatsView(View):
                                 'm3u_profile': m3u_profile_info,
                                 'client_id': client_id,
                                 'client_ip': combined_data.get('client_ip', 'Unknown'),
-                                'user_agent': combined_data.get('client_user_agent', 'Unknown'),
+                                'user_agent': client_user_agent or 'Unknown',
                                 'connected_at': combined_data.get('created_at'),
                                 'last_activity': combined_data.get('last_activity'),
                                 'm3u_profile_id': m3u_profile_id,
+                                'active_streams': active_streams,
+                                'is_fuse_client': is_fuse_client,
+                                'is_fuse_recently_active': is_fuse_recently_active,
                                 'position_seconds': estimated_position,  # Use estimated position
                                 'last_known_position': last_known_position,  # Include raw position for debugging
                                 'last_position_update': last_position_update,  # Include timestamp for frontend use
@@ -1078,5 +1141,3 @@ def stop_vod_client(request):
     except Exception as e:
         logger.error(f"Error stopping VOD client: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
-
-

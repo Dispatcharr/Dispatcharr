@@ -1,3 +1,4 @@
+multi_worker_connection_manager.py
 """
 Enhanced VOD Connection Manager with Redis-based connection sharing for multi-worker environments
 """
@@ -22,6 +23,14 @@ from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
 
 logger = logging.getLogger("vod_proxy")
+
+STREAM_ITER_CHUNK_SIZE = max(
+    8 * 1024, int(os.getenv("VOD_PROXY_STREAM_CHUNK_SIZE", str(64 * 1024)))
+)
+STREAM_ACTIVITY_CHECK_BYTES = max(
+    STREAM_ITER_CHUNK_SIZE,
+    int(os.getenv("VOD_PROXY_STREAM_ACTIVITY_CHECK_BYTES", str(1024 * 1024))),
+)
 
 
 def get_vod_client_stop_key(client_id):
@@ -87,7 +96,7 @@ class SerializableConnectionState:
 
     def __init__(self, session_id: str, stream_url: str, headers: dict,
                  content_length: str = None, content_type: str = None,
-                 final_url: str = None, m3u_profile_id: int = None,
+                 final_url: str = None, content_length_is_total: bool = False, m3u_profile_id: int = None,
                  # Session metadata fields (previously stored in vod_session key)
                  content_obj_type: str = None, content_uuid: str = None,
                  content_name: str = None, client_ip: str = None,
@@ -100,6 +109,7 @@ class SerializableConnectionState:
         self.content_length = content_length
         self.content_type = content_type
         self.final_url = final_url
+        self.content_length_is_total = bool(content_length_is_total)
         self.m3u_profile_id = m3u_profile_id  # Store M3U profile ID for connection counting
         self.last_activity = time.time()
         self.request_count = 0
@@ -135,6 +145,7 @@ class SerializableConnectionState:
             'stream_url': self.stream_url or '',
             'headers': json.dumps(self.headers or {}),
             'content_length': str(self.content_length) if self.content_length is not None else '',
+            'content_length_is_total': '1' if self.content_length_is_total else '0',
             'content_type': self.content_type or '',
             'final_url': self.final_url or '',
             'm3u_profile_id': str(self.m3u_profile_id) if self.m3u_profile_id is not None else '',
@@ -171,6 +182,7 @@ class SerializableConnectionState:
             stream_url=data['stream_url'],
             headers=json.loads(data['headers']) if data['headers'] else {},
             content_length=data.get('content_length') if data.get('content_length') else None,
+            content_length_is_total=str(data.get('content_length_is_total', '0')).lower() in {'1', 'true', 'yes'},
             content_type=data.get('content_type') or None,
             final_url=data.get('final_url') if data.get('final_url') else None,
             m3u_profile_id=int(data.get('m3u_profile_id')) if data.get('m3u_profile_id') else None,
@@ -341,7 +353,7 @@ class RedisBackedVODConnection:
             headers = state.headers.copy()
             if range_header:
                 # Validate range against content length if available
-                if state.content_length:
+                if state.content_length and state.content_length_is_total:
                     validated_range = self._validate_range_header(range_header, int(state.content_length))
                     if validated_range is None:
                         logger.warning(f"[{self.session_id}] Range not satisfiable: {range_header}")
@@ -353,68 +365,76 @@ class RedisBackedVODConnection:
 
             # Use final URL if available, otherwise original URL
             target_url = state.final_url if state.final_url else state.stream_url
-            allow_redirects = not state.final_url  # Only follow redirects if we don't have final URL
+            # Always follow redirects: many providers rotate/refresh signed URLs mid-session.
+            allow_redirects = True
 
             logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")
 
-            # Make request (10s connect, 10s read timeout - keeps lock time reasonable if client disconnects)
+            # Make request with a more tolerant read timeout for slower upstream range responses.
             response = self.local_session.get(
                 target_url,
                 headers=headers,
                 stream=True,
-                timeout=(10, 10),
+                timeout=(10, 30),
                 allow_redirects=allow_redirects
             )
             response.raise_for_status()
+            if response.status_code not in (200, 206):
+                logger.warning(
+                    f"[{self.session_id}] Unexpected upstream status {response.status_code} "
+                    f"after redirects (url={response.url})"
+                )
+                # Treat non-stream statuses as unusable for playback.
+                response.close()
+                return None
 
-            # Update state with response info on first request
-            if state.request_count == 1:
-                if not state.content_length:
-                    # Try to get full file size from Content-Range header first (for range requests)
-                    content_range = response.headers.get('content-range')
-                    if content_range and '/' in content_range:
-                        try:
-                            # Parse "bytes 0-1023/12653476926" to get total size
-                            total_size = content_range.split('/')[-1]
-                            if total_size.isdigit():
-                                state.content_length = total_size
-                                logger.debug(f"[{self.session_id}] Got full file size from Content-Range: {total_size}")
-                            else:
-                                # Fallback to Content-Length for partial size
-                                state.content_length = response.headers.get('content-length')
-                        except Exception as e:
-                            logger.warning(f"[{self.session_id}] Error parsing Content-Range: {e}")
-                            state.content_length = response.headers.get('content-length')
-                    else:
-                        # No Content-Range, use Content-Length (for non-range requests)
-                        state.content_length = response.headers.get('content-length')
+            # Learn content length in a way that distinguishes full size from partial range size.
+            content_range = response.headers.get('Content-Range') or response.headers.get('content-range')
+            response_content_length = response.headers.get('Content-Length') or response.headers.get('content-length')
+            if content_range and '/' in content_range:
+                try:
+                    total_size = content_range.split('/')[-1].strip()
+                    if total_size.isdigit():
+                        state.content_length = total_size
+                        state.content_length_is_total = True
+                        logger.debug(f"[{self.session_id}] Got total size from Content-Range: {total_size}")
+                except Exception as e:
+                    logger.warning(f"[{self.session_id}] Error parsing Content-Range '{content_range}': {e}")
 
-                logger.debug(f"[{self.session_id}] Response headers received: {dict(response.headers)}")
+            if not state.content_length and response_content_length:
+                state.content_length = response_content_length
+                # 200 responses imply full body length; 206 without Content-Range is likely partial.
+                state.content_length_is_total = (response.status_code == 200)
 
-                if not state.content_type:  # This will be True for None, '', or any falsy value
-                    # Get content type from provider response headers
-                    provider_content_type = (response.headers.get('content-type') or
-                                           response.headers.get('Content-Type') or
-                                           response.headers.get('CONTENT-TYPE'))
+            logger.debug(f"[{self.session_id}] Response headers received: {dict(response.headers)}")
 
-                    if provider_content_type:
-                        logger.debug(f"[{self.session_id}] Using provider Content-Type: '{provider_content_type}'")
-                        state.content_type = provider_content_type
-                    else:
-                        # Provider didn't send Content-Type, infer from URL extension
-                        inferred_content_type = infer_content_type_from_url(state.stream_url)
-                        if inferred_content_type:
-                            logger.info(f"[{self.session_id}] Provider missing Content-Type, inferred from URL: '{inferred_content_type}'")
-                            state.content_type = inferred_content_type
-                        else:
-                            logger.debug(f"[{self.session_id}] No Content-Type from provider and could not infer from URL, using default: 'video/mp4'")
-                            state.content_type = 'video/mp4'
+            if not state.content_type:  # This will be True for None, '', or any falsy value
+                # Get content type from provider response headers
+                provider_content_type = (response.headers.get('content-type') or
+                                       response.headers.get('Content-Type') or
+                                       response.headers.get('CONTENT-TYPE'))
+
+                if provider_content_type:
+                    logger.debug(f"[{self.session_id}] Using provider Content-Type: '{provider_content_type}'")
+                    state.content_type = provider_content_type
                 else:
-                    logger.debug(f"[{self.session_id}] Content-Type already set in state: {state.content_type}")
-                if not state.final_url:
-                    state.final_url = response.url
+                    # Provider didn't send Content-Type, infer from URL extension
+                    inferred_content_type = infer_content_type_from_url(state.stream_url)
+                    if inferred_content_type:
+                        logger.info(f"[{self.session_id}] Provider missing Content-Type, inferred from URL: '{inferred_content_type}'")
+                        state.content_type = inferred_content_type
+                    else:
+                        logger.debug(f"[{self.session_id}] No Content-Type from provider and could not infer from URL, using default: 'video/mp4'")
+                        state.content_type = 'video/mp4'
+            else:
+                logger.debug(f"[{self.session_id}] Content-Type already set in state: {state.content_type}")
+            # Persist the latest resolved URL so future range requests reuse the freshest target.
+            state.final_url = response.url
 
-                logger.info(f"[{self.session_id}] Updated connection state: length={state.content_length}, type={state.content_type}")
+            logger.info(
+                f"[{self.session_id}] Updated connection state: length={state.content_length}, "
+                f"length_is_total={state.content_length_is_total}, type={state.content_type}"
+            )
 
             # Save updated state
             self._save_connection_state(state)
@@ -641,7 +661,61 @@ class MultiWorkerVODConnectionManager:
         self.connection_ttl = 3600  # 1 hour TTL for connections
         self.session_ttl = 1800  # 30 minutes TTL for sessions
         self.worker_id = self._get_worker_id()
+        # Keep connections warm between short, bursty Range requests (common with Plex transcoder).
+        self.idle_cleanup_delay_seconds = max(
+            1, int(os.getenv("VOD_IDLE_CLEANUP_DELAY_SECONDS", "300"))
+        )
+        self._cleanup_timers = {}
+        self._cleanup_timers_lock = threading.Lock()
         logger.info(f"MultiWorkerVODConnectionManager initialized for worker {self.worker_id}")
+
+    def _cancel_idle_cleanup(self, session_id: str):
+        """Cancel a pending idle-cleanup timer for a session, if any."""
+        with self._cleanup_timers_lock:
+            timer = self._cleanup_timers.pop(session_id, None)
+        if timer:
+            timer.cancel()
+            logger.debug(
+                f"[{session_id}] Worker {self.worker_id} - Canceled pending idle cleanup"
+            )
+
+    def _schedule_idle_cleanup(self, session_id: str, client_id: str):
+        """
+        Schedule delayed cleanup for a session.
+
+        This avoids tearing down provider/session state between closely spaced Range requests.
+        """
+        timer_ref = {"timer": None}
+
+        def delayed_cleanup():
+            try:
+                redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
+                if redis_connection.has_active_streams():
+                    logger.debug(
+                        f"[{client_id}] Worker {self.worker_id} - Skipping idle cleanup, stream became active"
+                    )
+                    return
+
+                logger.info(
+                    f"[{client_id}] Worker {self.worker_id} - Running idle cleanup after "
+                    f"{self.idle_cleanup_delay_seconds}s grace"
+                )
+                redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+            finally:
+                with self._cleanup_timers_lock:
+                    if self._cleanup_timers.get(session_id) is timer_ref["timer"]:
+                        self._cleanup_timers.pop(session_id, None)
+
+        with self._cleanup_timers_lock:
+            existing = self._cleanup_timers.get(session_id)
+            if existing:
+                existing.cancel()
+
+            timer = threading.Timer(self.idle_cleanup_delay_seconds, delayed_cleanup)
+            timer.daemon = True
+            timer_ref["timer"] = timer
+            self._cleanup_timers[session_id] = timer
+            timer.start()
 
     def _get_worker_id(self):
         """Get unique worker ID for this process"""
@@ -714,6 +788,7 @@ class MultiWorkerVODConnectionManager:
 
         # Track whether we incremented profile connections (for cleanup on error)
         profile_connections_incremented = False
+        stream_reserved = False
         redis_connection = None
 
         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed streaming request for {content_type} {content_name}")
@@ -740,6 +815,7 @@ class MultiWorkerVODConnectionManager:
                 temp_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
                 if temp_connection.increment_active_streams():
                     logger.info(f"[{client_id}] Reserved idle session - incremented active streams")
+                    stream_reserved = True
                 else:
                     logger.warning(f"[{client_id}] Failed to reserve idle session - falling back to new session")
                     effective_session_id = session_id
@@ -750,6 +826,8 @@ class MultiWorkerVODConnectionManager:
 
             # Create Redis-backed connection
             redis_connection = RedisBackedVODConnection(effective_session_id, self.redis_client)
+            # New request arrived; keep this session alive by cancelling pending idle cleanup.
+            self._cancel_idle_cleanup(effective_session_id)
 
             # Check if connection exists, create if not
             existing_state = redis_connection._get_connection_state()
@@ -829,11 +907,44 @@ class MultiWorkerVODConnectionManager:
                     finally:
                         redis_connection._release_lock()
 
+            # Reserve active stream before upstream fetch to avoid cleanup races while get_stream is pending.
+            if not stream_reserved:
+                if redis_connection.increment_active_streams():
+                    stream_reserved = True
+                    logger.debug(
+                        f"[{client_id}] Worker {self.worker_id} - Reserved session before upstream fetch"
+                    )
+                else:
+                    logger.warning(
+                        f"[{client_id}] Worker {self.worker_id} - Could not reserve active stream before fetch"
+                    )
+
             # Get stream from Redis-backed connection
             upstream_response = redis_connection.get_stream(range_header)
 
             if upstream_response is None:
                 logger.warning(f"[{client_id}] Worker {self.worker_id} - Range not satisfiable")
+                if stream_reserved:
+                    try:
+                        redis_connection.decrement_active_streams()
+                    except Exception as decrement_error:
+                        logger.warning(f"[{client_id}] Error releasing reserved stream slot: {decrement_error}")
+                    finally:
+                        stream_reserved = False
+
+                # If this request created a new profile-backed connection, ensure cleanup/decrement.
+                if profile_connections_incremented:
+                    try:
+                        redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                    except Exception as cleanup_error:
+                        logger.warning(f"[{client_id}] Error cleaning up after 416: {cleanup_error}")
+                elif matching_session_id:
+                    # For reused sessions, only clean up if no streams remain.
+                    try:
+                        if not redis_connection.has_active_streams():
+                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                    except Exception as cleanup_error:
+                        logger.warning(f"[{client_id}] Error cleaning up reused session after 416: {cleanup_error}")
                 return HttpResponse("Requested Range Not Satisfiable", status=416)
 
             # Get connection headers
@@ -843,31 +954,32 @@ class MultiWorkerVODConnectionManager:
             def stream_generator():
                 decremented = False
                 stop_signal_detected = False
+                decrement_needed = stream_reserved
                 try:
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Starting Redis-backed stream")
 
-                    # Increment active streams (unless we already did it for session reuse)
-                    if not matching_session_id:
-                        # New session - increment active streams
-                        redis_connection.increment_active_streams()
-                    else:
-                        # Reused session - we already incremented when reserving the session
-                        logger.debug(f"[{client_id}] Using pre-reserved session - active streams already incremented")
+                    if not decrement_needed:
+                        if redis_connection.increment_active_streams():
+                            decrement_needed = True
+                        else:
+                            logger.warning(
+                                f"[{client_id}] Worker {self.worker_id} - Failed to increment active streams at stream start"
+                            )
 
                     bytes_sent = 0
-                    chunk_count = 0
+                    bytes_since_activity_check = 0
 
                     # Get the stop signal key for this client
                     stop_key = get_vod_client_stop_key(client_id)
 
-                    for chunk in upstream_response.iter_content(chunk_size=8192):
+                    for chunk in upstream_response.iter_content(chunk_size=STREAM_ITER_CHUNK_SIZE):
                         if chunk:
                             yield chunk
                             bytes_sent += len(chunk)
-                            chunk_count += 1
+                            bytes_since_activity_check += len(chunk)
 
-                            # Check for stop signal every 100 chunks
-                            if chunk_count % 100 == 0:
+                            # Check stop/activity periodically by bytes (not chunk count) to keep cadence stable.
+                            if bytes_since_activity_check >= STREAM_ACTIVITY_CHECK_BYTES:
                                 # Check if stop signal has been set
                                 if self.redis_client and self.redis_client.exists(stop_key):
                                     logger.info(f"[{client_id}] Worker {self.worker_id} - Stop signal detected, terminating stream")
@@ -877,7 +989,10 @@ class MultiWorkerVODConnectionManager:
                                     break
 
                                 # Update the connection state
-                                logger.debug(f"Client: [{client_id}] Worker: {self.worker_id} sent {chunk_count} chunks for VOD: {content_name}")
+                                logger.debug(
+                                    f"Client: [{client_id}] Worker: {self.worker_id} sent "
+                                    f"{bytes_sent} bytes for VOD: {content_name}"
+                                )
                                 if redis_connection._acquire_lock():
                                     try:
                                         state = redis_connection._get_connection_state()
@@ -888,57 +1003,44 @@ class MultiWorkerVODConnectionManager:
                                             redis_connection._save_connection_state(state)
                                     finally:
                                         redis_connection._release_lock()
+                                bytes_since_activity_check = 0
 
                     if stop_signal_detected:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Stream stopped by signal: {bytes_sent} bytes sent")
                     else:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed stream completed: {bytes_sent} bytes sent")
-                    redis_connection.decrement_active_streams()
-                    decremented = True
+                    if decrement_needed:
+                        redis_connection.decrement_active_streams()
+                        decremented = True
+                        decrement_needed = False
 
                     # Schedule smart cleanup if no active streams after normal completion
                     if not redis_connection.has_active_streams():
-                        def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
-                            # Smart cleanup: check active streams and ownership
-                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after normal completion")
-                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
-
-                        import threading
-                        cleanup_thread = threading.Thread(target=delayed_cleanup)
-                        cleanup_thread.daemon = True
-                        cleanup_thread.start()
+                        self._schedule_idle_cleanup(effective_session_id, client_id)
 
                 except GeneratorExit:
                     logger.info(f"[{client_id}] Worker {self.worker_id} - Client disconnected from Redis-backed stream")
-                    if not decremented:
+                    if decrement_needed and not decremented:
                         redis_connection.decrement_active_streams()
                         decremented = True
+                        decrement_needed = False
 
                     # Schedule smart cleanup if no active streams
                     if not redis_connection.has_active_streams():
-                        def delayed_cleanup():
-                            time.sleep(1)  # Wait 1 second
-                            # Smart cleanup: check active streams and ownership
-                            logger.info(f"[{client_id}] Worker {self.worker_id} - Checking for smart cleanup after client disconnect")
-                            redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
-
-                        import threading
-                        cleanup_thread = threading.Thread(target=delayed_cleanup)
-                        cleanup_thread.daemon = True
-                        cleanup_thread.start()
+                        self._schedule_idle_cleanup(effective_session_id, client_id)
 
                 except Exception as e:
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream: {e}")
-                    if not decremented:
+                    if decrement_needed and not decremented:
                         redis_connection.decrement_active_streams()
                         decremented = True
+                        decrement_needed = False
                     # Smart cleanup on error - immediate cleanup since we're in error state
                     redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
                     yield b"Error: Stream interrupted"
 
                 finally:
-                    if not decremented:
+                    if decrement_needed and not decremented:
                         redis_connection.decrement_active_streams()
 
             # Create streaming response
@@ -948,7 +1050,8 @@ class MultiWorkerVODConnectionManager:
             )
 
             # Set appropriate status code
-            response.status_code = 206 if range_header else 200
+            upstream_status = int(getattr(upstream_response, "status_code", 200) or 200)
+            response.status_code = upstream_status if upstream_status in (200, 206) else (206 if range_header else 200)
 
             # Set required headers
             response['Cache-Control'] = 'no-cache'
@@ -957,31 +1060,68 @@ class MultiWorkerVODConnectionManager:
             response['Connection'] = 'keep-alive'
             response['X-Worker-ID'] = self.worker_id  # Identify which worker served this
 
-            if connection_headers.get('content_length'):
+            upstream_accept_ranges = upstream_response.headers.get('Accept-Ranges') or upstream_response.headers.get('accept-ranges')
+            upstream_content_length = upstream_response.headers.get('Content-Length') or upstream_response.headers.get('content-length')
+            upstream_content_range = upstream_response.headers.get('Content-Range') or upstream_response.headers.get('content-range')
+
+            if upstream_accept_ranges:
+                response['Accept-Ranges'] = upstream_accept_ranges
+            elif connection_headers.get('content_length'):
                 response['Accept-Ranges'] = 'bytes'
 
-                # For range requests, Content-Length should be the partial content size, not full file size
-                if range_header and 'bytes=' in range_header:
+            if range_header and 'bytes=' in range_header:
+                if upstream_content_range:
+                    response['Content-Range'] = upstream_content_range
+                    if upstream_content_length:
+                        response['Content-Length'] = upstream_content_length
+
+                    # Store seek info based on provider-confirmed content-range.
+                    try:
+                        range_spec = upstream_content_range.split(" ", 1)[1] if " " in upstream_content_range else upstream_content_range
+                        byte_range, total = range_spec.split("/", 1)
+                        start_str, _end_str = byte_range.split("-", 1)
+                        start = int(start_str)
+                        total_size = int(total) if total.isdigit() else 0
+                        if total_size > 0 and start > 0:
+                            position_percentage = (start / total_size) * 100
+                            current_timestamp = time.time()
+                            if redis_connection._acquire_lock():
+                                try:
+                                    state = redis_connection._get_connection_state()
+                                    if state:
+                                        state.last_seek_byte = start
+                                        state.last_seek_percentage = position_percentage
+                                        state.total_content_size = total_size
+                                        state.last_seek_timestamp = current_timestamp
+                                        state.last_activity = current_timestamp
+                                        redis_connection._save_connection_state(state)
+                                finally:
+                                    redis_connection._release_lock()
+                    except Exception as pos_e:
+                        logger.debug(f"[{client_id}] Could not parse upstream Content-Range for seek info: {pos_e}")
+                elif connection_headers.get('content_length'):
+                    # Fallback synthesis only when we know the full content length from state.
                     try:
                         range_part = range_header.replace('bytes=', '')
                         if '-' in range_part:
                             start_byte, end_byte = range_part.split('-', 1)
                             start = int(start_byte) if start_byte else 0
 
-                            # Get the FULL content size from the connection state (from initial request)
                             state = redis_connection._get_connection_state()
-                            if state and state.content_length:
+                            if state and state.content_length and state.content_length_is_total:
                                 full_content_size = int(state.content_length)
                                 end = int(end_byte) if end_byte else full_content_size - 1
+                                if end >= full_content_size:
+                                    end = full_content_size - 1
 
-                                # Calculate partial content size for Content-Length header
-                                partial_content_size = end - start + 1
+                                partial_content_size = max(0, end - start + 1)
                                 response['Content-Length'] = str(partial_content_size)
-
-                                # Content-Range should show full file size per HTTP standards
                                 content_range = f"bytes {start}-{end}/{full_content_size}"
                                 response['Content-Range'] = content_range
-                                logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {content_range}, Content-Length: {partial_content_size}")
+                                logger.info(
+                                    f"[{client_id}] Worker {self.worker_id} - Synthesized Content-Range: "
+                                    f"{content_range}, Content-Length: {partial_content_size}"
+                                )
 
                                 # Store range information for the VOD stats API to calculate position
                                 if start > 0:
@@ -1009,19 +1149,21 @@ class MultiWorkerVODConnectionManager:
                                             logger.warning(f"[{client_id}] Could not acquire lock to update seek info")
                                     except Exception as pos_e:
                                         logger.error(f"[{client_id}] Error storing seek info: {pos_e}")
-                            else:
-                                # Fallback to partial content size if full size not available
-                                partial_size = int(connection_headers['content_length'])
-                                end = int(end_byte) if end_byte else partial_size - 1
-                                content_range = f"bytes {start}-{end}/{partial_size}"
-                                response['Content-Range'] = content_range
-                                response['Content-Length'] = str(end - start + 1)
-                                logger.warning(f"[{client_id}] Using partial content size for Content-Range (full size not available): {content_range}")
                     except Exception as e:
-                        logger.warning(f"[{client_id}] Worker {self.worker_id} - Could not set Content-Range: {e}")
-                        response['Content-Length'] = connection_headers['content_length']
-                else:
-                    # For non-range requests, use the full content length
+                        logger.warning(f"[{client_id}] Worker {self.worker_id} - Could not synthesize Content-Range: {e}")
+                    # Always provide a bounded response length for range responses.
+                    if 'Content-Length' not in response:
+                        if upstream_content_length:
+                            response['Content-Length'] = upstream_content_length
+                        elif connection_headers.get('content_length'):
+                            response['Content-Length'] = connection_headers['content_length']
+                elif upstream_content_length:
+                    response['Content-Length'] = upstream_content_length
+            else:
+                # For non-range requests, prefer provider-reported length.
+                if upstream_content_length:
+                    response['Content-Length'] = upstream_content_length
+                elif connection_headers.get('content_length'):
                     response['Content-Length'] = connection_headers['content_length']
 
             logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed response ready (status: {response.status_code})")
@@ -1029,6 +1171,14 @@ class MultiWorkerVODConnectionManager:
 
         except Exception as e:
             logger.error(f"[{client_id}] Worker {self.worker_id} - Error in Redis-backed stream_content_with_session: {e}", exc_info=True)
+
+            if stream_reserved and redis_connection:
+                try:
+                    redis_connection.decrement_active_streams()
+                except Exception as decrement_error:
+                    logger.warning(
+                        f"[{client_id}] Error releasing reserved stream slot after failure: {decrement_error}"
+                    )
 
             # Decrement profile connections if we incremented them but failed before streaming started
             if profile_connections_incremented:
