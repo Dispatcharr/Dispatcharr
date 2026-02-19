@@ -2244,7 +2244,7 @@ def xc_get_live_streams(request, user, category_id=None):
                     )
                 ),
                 "epg_channel_id": str(channel_num_int),
-                "added": int(channel.created_at.timestamp()),
+                "added": str(int(channel.created_at.timestamp())),
                 "is_adult": int(channel.is_adult),
                 "category_id": str(channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id),
                 "category_ids": [channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id],
@@ -2906,7 +2906,7 @@ def xc_get_vod_info(request, user, vod_id):
         "movie_data": {
             "stream_id": movie.id,
             "name": movie.name,
-            "added": int(movie_relation.created_at.timestamp()),
+            "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
             "container_extension": movie_relation.container_extension or "mp4",
