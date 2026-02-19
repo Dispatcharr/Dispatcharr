@@ -4,6 +4,7 @@ services:
     #   context: .
     #   dockerfile: Dockerfile
     image: ghcr.io/dispatcharr/dispatcharr:latest
+    restart: unless-stopped
     container_name: dispatcharr
     ports:
       - 9191:9191
