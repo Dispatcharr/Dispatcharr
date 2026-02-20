@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated Django 5.2.9 → 6.0.2, resolving the following CVEs:
+  - **CVE-2025-13473** (low): Username enumeration via timing difference in mod_wsgi authentication handler.
+  - **CVE-2025-14550** (moderate): Potential denial-of-service via repeated headers on ASGI requests.
+  - **CVE-2026-1207** (high): Potential SQL injection via raster lookups on PostGIS.
+  - **CVE-2026-1285** (moderate): Potential denial-of-service in `django.utils.text.Truncator` HTML methods via inputs with large numbers of unmatched HTML end tags.
+  - **CVE-2026-1287** (high): Potential SQL injection in column aliases via control characters in `FilteredRelation`.
+  - **CVE-2026-1312** (high): Potential SQL injection via `QuerySet.order_by()` and `FilteredRelation` when using column aliases containing periods.
+
 ### Added
 
 - Lightweight channel summary API endpoint: Added a new `/api/channels/summary/` endpoint that returns only the minimal channel data needed for TV Guide and DVR scheduling (id, name, logo), avoiding the overhead of serializing full channel objects for high-frequency UI operations.
@@ -22,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dependency updates:
+  - `Django` 5.2.9 → 6.0.2 (major version upgrade; includes security fixes — see Security section)
+  - `celery` 5.6.0 → 5.6.2
+  - `psutil` 7.1.3 → 7.2.2
+  - `torch` 2.9.1+cpu → 2.10.0+cpu
+  - `sentence-transformers` 5.2.0 → 5.2.3
 - Channel store optimization: Refactored frontend channel loading to only fetch channel IDs on initial login (matching the streams store pattern), instead of loading full channel objects upfront. Full channel data is fetched lazily as needed. This dramatically reduces login time and initial page load when large channel libraries are present.
 - DVR scheduling: Channel selector now displays the channel number alongside the channel name when scheduling a recording.
 - TV Guide performance improvements: Optimized the TV Guide with horizontal culling for off-screen program rows (only rendering visible programs), throttled now-line position updates, and improved scroll performance. Reduces unnecessary DOM work and improves responsiveness with large EPG datasets.
