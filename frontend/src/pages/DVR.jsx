@@ -12,6 +12,7 @@ import {
 } from '@mantine/core';
 import { SquarePlus } from 'lucide-react';
 import useChannelsStore from '../store/channels';
+import API from '../api';
 import useSettingsStore from '../store/settings';
 import useVideoStore from '../store/useVideoStore';
 import RecordingForm from '../components/forms/Recording';
@@ -29,13 +30,19 @@ import {
 } from '../utils/cards/RecordingCardUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
-const RecordingList = ({ list, onOpenDetails, onOpenRecurring }) => {
+const RecordingList = ({
+  list,
+  onOpenDetails,
+  onOpenRecurring,
+  channelsById,
+}) => {
   return list.map((rec) => (
     <RecordingCard
       key={`rec-${rec.id}`}
       recording={rec}
       onOpenDetails={onOpenDetails}
       onOpenRecurring={onOpenRecurring}
+      channel={channelsById?.[rec.channel]}
     />
   ));
 };
@@ -44,9 +51,8 @@ const DVRPage = () => {
   const theme = useMantineTheme();
   const recordings = useChannelsStore((s) => s.recordings);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
-  const channels = useChannelsStore((s) => s.channels);
-  const fetchChannels = useChannelsStore((s) => s.fetchChannels);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
+  const [channelsById, setChannelsById] = useState({});
   const { toUserTime, userNow } = useTimeHelpers();
 
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
@@ -84,12 +90,28 @@ const DVRPage = () => {
   const closeRuleModal = () => setRuleModal({ open: false, ruleId: null });
 
   useEffect(() => {
-    if (!channels || Object.keys(channels).length === 0) {
-      fetchChannels();
-    }
     fetchRecordings();
     fetchRecurringRules();
-  }, [channels, fetchChannels, fetchRecordings, fetchRecurringRules]);
+  }, [fetchRecordings, fetchRecurringRules]);
+
+  // Load channel details for recordings via lightweight summary API
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const channels = await API.getChannelsSummary();
+        if (cancelled) return;
+        const byId = {};
+        for (const ch of channels) if (ch?.id) byId[ch.id] = ch;
+        setChannelsById(byId);
+      } catch (e) {
+        console.warn('Failed to fetch channels for DVR page', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Re-render every second so time-based bucketing updates without a refresh
   const [now, setNow] = useState(userNow());
@@ -114,7 +136,7 @@ const DVRPage = () => {
     const e = toUserTime(rec.end_time);
     if (isAfter(now, s) && isBefore(now, e)) {
       // call into child RecordingCard behavior by constructing a URL like there
-      const channel = channels[rec.channel];
+      const channel = channelsById[rec.channel];
       if (!channel) return;
       const url = getShowVideoUrl(
         channel,
@@ -136,7 +158,7 @@ const DVRPage = () => {
         url: getPosterUrl(
           detailsRecording.custom_properties?.poster_logo_id,
           undefined,
-          channels[detailsRecording.channel]?.logo?.cache_url
+          channelsById[detailsRecording.channel]?.logo?.cache_url
         ),
       },
     });
@@ -177,6 +199,7 @@ const DVRPage = () => {
                 list={inProgress}
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
+                channelsById={channelsById}
               />
             }
             {inProgress.length === 0 && (
@@ -205,6 +228,7 @@ const DVRPage = () => {
                 list={upcoming}
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
+                channelsById={channelsById}
               />
             }
             {upcoming.length === 0 && (
@@ -233,6 +257,7 @@ const DVRPage = () => {
                 list={completed}
                 onOpenDetails={openDetails}
                 onOpenRecurring={openRuleModal}
+                channelsById={channelsById}
               />
             }
             {completed.length === 0 && (
@@ -273,11 +298,11 @@ const DVRPage = () => {
               opened={detailsOpen}
               onClose={closeDetails}
               recording={detailsRecording}
-              channel={channels[detailsRecording.channel]}
+              channel={channelsById[detailsRecording.channel]}
               posterUrl={getPosterUrl(
                 detailsRecording.custom_properties?.poster_logo_id,
                 detailsRecording.custom_properties,
-                channels[detailsRecording.channel]?.logo?.cache_url
+                channelsById[detailsRecording.channel]?.logo?.cache_url
               )}
               env_mode={useSettingsStore.getState().environment.env_mode}
               onWatchLive={handleOnWatchLive}

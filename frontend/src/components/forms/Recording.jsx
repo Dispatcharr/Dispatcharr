@@ -11,6 +11,7 @@ import {
   MultiSelect,
   Group,
   TextInput,
+  Loader,
 } from '@mantine/core';
 import { DateTimePicker, TimeInput, DatePickerInput } from '@mantine/dates';
 import { CircleAlert } from 'lucide-react';
@@ -87,9 +88,12 @@ const RecordingModal = ({
   isOpen,
   onClose,
 }) => {
-  const channels = useChannelsStore((s) => s.channels);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
+
+  // All channels loaded via lightweight summary API
+  const [allChannels, setAllChannels] = useState([]);
+  const [isChannelsLoading, setIsChannelsLoading] = useState(false);
 
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
@@ -210,8 +214,31 @@ const RecordingModal = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, recording, channel]);
 
+  // Load all channels via lightweight summary API when modal opens
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isOpen) return;
+      try {
+        setIsChannelsLoading(true);
+        const chans = await API.getChannelsSummary();
+        if (cancelled) return;
+        setAllChannels(Array.isArray(chans) ? chans : []);
+      } catch (e) {
+        console.warn('Failed to load channels for recording form', e);
+        if (!cancelled) setAllChannels([]);
+      } finally {
+        if (!cancelled) setIsChannelsLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
   const channelOptions = useMemo(() => {
-    const list = Object.values(channels || {});
+    const list = Array.isArray(allChannels) ? [...allChannels] : [];
     list.sort((a, b) => {
       const aNum = Number(a.channel_number) || 0;
       const bNum = Number(b.channel_number) || 0;
@@ -220,9 +247,11 @@ const RecordingModal = ({
     });
     return list.map((item) => ({
       value: `${item.id}`,
-      label: item.name || `Channel ${item.id}`,
+      label: item.channel_number
+        ? `${item.channel_number} - ${item.name || `Channel ${item.id}`}`
+        : item.name || `Channel ${item.id}`,
     }));
-  }, [channels]);
+  }, [allChannels]);
 
   const resetForms = () => {
     singleForm.reset();
@@ -341,6 +370,10 @@ const RecordingModal = ({
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                disabled={isChannelsLoading}
+                rightSection={
+                  isChannelsLoading ? <Loader size="xs" color="blue" /> : null
+                }
               />
             ) : (
               <Select
@@ -350,6 +383,7 @@ const RecordingModal = ({
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                rightSection={isChannelsLoading ? 'Loading…' : null}
               />
             )}
 

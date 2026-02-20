@@ -147,7 +147,7 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
 const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const location = useLocation();
 
-  const channels = useChannelsStore((s) => s.channels);
+  const channelIds = useChannelsStore((s) => s.channelIds);
   const environment = useSettingsStore((s) => s.environment);
   const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -168,7 +168,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
             path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
+            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
           },
           {
             label: 'VODs',
@@ -227,7 +227,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
             path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
+            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
           },
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
           {

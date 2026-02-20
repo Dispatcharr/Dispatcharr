@@ -85,12 +85,23 @@ def create_profile_memberships(sender, instance, created, **kwargs):
             for channel in channels
         ])
 
-def schedule_recording_task(instance):
-    eta = instance.start_time
+def schedule_recording_task(instance, eta=None):
+    # Use the explicitly-passed (and timezone-aware) eta if provided;
+    # fall back to instance.start_time only as a last resort.
+    if eta is None:
+        eta = instance.start_time
+    # Ensure eta is timezone-aware before comparing against now()
+    if eta is not None and not is_aware(eta):
+        eta = make_aware(eta)
+    # countdown=0 fires immediately (in-progress programs whose start_time was
+    # clamped to now by the serializer), countdown>0 delays until start_time
+    # (future programs).  Using an integer countdown avoids any timezone
+    # serialization ambiguity that can occur with an absolute eta datetime.
+    countdown = max(0, int((eta - now()).total_seconds()))
     # Pass recording_id first so task can persist metadata to the correct row
     task = run_recording.apply_async(
         args=[instance.id, instance.channel_id, str(instance.start_time), str(instance.end_time)],
-        eta=eta
+        countdown=countdown,
     )
     return task.id
 
@@ -133,7 +144,10 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
             # Optionally allow slight fudge factor (1 second) to ensure scheduling happens
             if start_time > current_time - timedelta(seconds=1):
                 print("Scheduling recording task!")
-                task_id = schedule_recording_task(instance)
+                # Pass the corrected, timezone-aware start_time explicitly so
+                # schedule_recording_task uses it as the Celery ETA rather than
+                # re-reading instance.start_time which may still be naive.
+                task_id = schedule_recording_task(instance, eta=start_time)
                 instance.task_id = task_id
                 instance.save(update_fields=['task_id'])
             else:
