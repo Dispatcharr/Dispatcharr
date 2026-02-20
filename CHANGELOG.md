@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Updated Django 5.2.9 → 6.0.2, resolving the following CVEs:
+- Updated Django 5.2.9 → 5.2.11, resolving the following CVEs:
   - **CVE-2025-13473** (low): Username enumeration via timing difference in mod_wsgi authentication handler.
   - **CVE-2025-14550** (moderate): Potential denial-of-service via repeated headers on ASGI requests.
   - **CVE-2026-1207** (high): Potential SQL injection via raster lookups on PostGIS.
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Dependency updates:
-  - `Django` 5.2.9 → 6.0.2 (major version upgrade; includes security fixes — see Security section)
+  - `Django` 5.2.9 → 5.2.11 (security patch; see Security section)
   - `celery` 5.6.0 → 5.6.2
   - `psutil` 7.1.3 → 7.2.2
   - `torch` 2.9.1+cpu → 2.10.0+cpu
