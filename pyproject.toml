@@ -6,7 +6,7 @@ license = "CC-BY-NC-SA-4.0"
 requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
-    "Django==5.2.9",
+    "Django==5.2.11",
     "psycopg2-binary==2.9.11",
     "celery[redis]==5.6.0",
     "djangorestframework==3.16.1",
