@@ -375,7 +375,9 @@ const ChannelsTable = ({ onReady }) => {
   /**
    * Derived variables
    */
-  const groupOptions = Object.values(channelGroups).map((group) => group.name);
+  const groupOptions = Object.values(channelGroups)
+    .filter((group) => group.hasChannels)
+    .map((group) => group.name);
 
   let hasUnlinkedChannels = false;
   const epgOptions = Object.values(epgs)
