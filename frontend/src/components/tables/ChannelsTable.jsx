@@ -377,7 +377,8 @@ const ChannelsTable = ({ onReady }) => {
    */
   const groupOptions = Object.values(channelGroups)
     .filter((group) => group.hasChannels)
-    .map((group) => group.name);
+    .map((group) => group.name)
+    .sort((a, b) => a.localeCompare(b));
 
   let hasUnlinkedChannels = false;
   const epgOptions = Object.values(epgs)

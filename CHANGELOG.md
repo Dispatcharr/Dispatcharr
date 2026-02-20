@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Channel table group filter sort order: The group dropdown in the channel table is now sorted alphabetically.
 - DVR one-time recording scheduling: Fixed a bug where scheduling a one-time recording for a future program caused the recording to start immediately instead of at the scheduled time.
 - XC API `added` field type inconsistencies: `get_live_streams` and `get_vod_info` now return the `added` field as a string (e.g., `"1708300800"`) instead of an integer, fixing compatibility with XC clients that have strict JSON serializers (such as Jellyfin's Xtream Library plugin). (Closes #978)
 - Stream Profile form User-Agent not populating when editing: The User-Agent field was not correctly loaded from the existing profile when opening the edit modal. (Fixes #650)
