@@ -4,15 +4,32 @@ set -e
 cd /app
 source /dispatcharrpy/bin/activate
 
+# Function to echo with timestamp
+echo_with_timestamp() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
 # Wait for Django secret key
 echo 'Waiting for Django secret key...'
 while [ ! -f /data/jwt ]; do sleep 1; done
 export DJANGO_SECRET_KEY="$(tr -d '\r\n' < /data/jwt)"
 
+# --- NumPy version switching for legacy hardware ---
+if [ "$USE_LEGACY_NUMPY" = "true" ]; then
+    # Check if NumPy was compiled with baseline support
+    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
+        echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
+        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
+        echo_with_timestamp "✅ Legacy NumPy installed"
+    else
+        echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
+    fi
+fi
+
 # Wait for migrations to complete (check that NO unapplied migrations remain)
 echo 'Waiting for migrations to complete...'
 until ! python manage.py showmigrations 2>&1 | grep -q '\[ \]'; do
-    echo 'Migrations not ready yet, waiting...'
+    echo_with_timestamp 'Migrations not ready yet, waiting...'
     sleep 2
 done
 

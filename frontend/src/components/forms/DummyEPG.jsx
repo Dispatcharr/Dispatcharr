@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Accordion,
+  ActionIcon,
   Box,
   Button,
   Checkbox,
@@ -8,12 +10,14 @@ import {
   Modal,
   NumberInput,
   Paper,
+  Popover,
   Select,
   Stack,
   Text,
   TextInput,
   Textarea,
 } from '@mantine/core';
+import { Info } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
@@ -25,6 +29,30 @@ import timezone from 'dayjs/plugin/timezone';
 // Extend dayjs with timezone support
 dayjs.extend(utc);
 dayjs.extend(timezone);
+
+// Helper component for labels with info popover
+const LabelWithInfo = ({ label, info, required }) => (
+  <Group spacing={4} align="center">
+    <Text size="sm" fw={500}>
+      {label}
+      {required && (
+        <Text component="span" c="red" ml={4}>
+          *
+        </Text>
+      )}
+    </Text>
+    <Popover width={300} position="top" withArrow shadow="md">
+      <Popover.Target>
+        <ActionIcon size="xs" variant="subtle" color="gray">
+          <Info size={14} />
+        </ActionIcon>
+      </Popover.Target>
+      <Popover.Dropdown>
+        <Text size="xs">{info}</Text>
+      </Popover.Dropdown>
+    </Popover>
+  </Group>
+);
 
 const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   // Get all EPGs from the store
@@ -43,6 +71,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   const [datePattern, setDatePattern] = useState('');
   const [sampleTitle, setSampleTitle] = useState('');
   const [titleTemplate, setTitleTemplate] = useState('');
+  const [subtitleTemplate, setSubtitleTemplate] = useState('');
   const [descriptionTemplate, setDescriptionTemplate] = useState('');
   const [upcomingTitleTemplate, setUpcomingTitleTemplate] = useState('');
   const [upcomingDescriptionTemplate, setUpcomingDescriptionTemplate] =
@@ -71,6 +100,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         program_duration: 180,
         sample_title: '',
         title_template: '',
+        subtitle_template: '',
         description_template: '',
         upcoming_title_template: '',
         upcoming_description_template: '',
@@ -125,6 +155,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       dateGroups: {},
       calculatedPlaceholders: {},
       formattedTitle: '',
+      formattedSubtitle: '',
       formattedDescription: '',
       formattedUpcomingTitle: '',
       formattedUpcomingDescription: '',
@@ -459,6 +490,14 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       );
     }
 
+    // Format subtitle template
+    if (subtitleTemplate && (result.titleMatch || result.timeMatch)) {
+      result.formattedSubtitle = subtitleTemplate.replace(
+        /\{(\w+)\}/g,
+        (match, key) => allGroups[key] || match
+      );
+    }
+
     // Format description template
     if (descriptionTemplate && (result.titleMatch || result.timeMatch)) {
       result.formattedDescription = descriptionTemplate.replace(
@@ -533,6 +572,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     datePattern,
     sampleTitle,
     titleTemplate,
+    subtitleTemplate,
     descriptionTemplate,
     upcomingTitleTemplate,
     upcomingDescriptionTemplate,
@@ -565,6 +605,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           program_duration: custom.program_duration || 180,
           sample_title: custom.sample_title || '',
           title_template: custom.title_template || '',
+          subtitle_template: custom.subtitle_template || '',
           description_template: custom.description_template || '',
           upcoming_title_template: custom.upcoming_title_template || '',
           upcoming_description_template:
@@ -591,6 +632,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setDatePattern(custom.date_pattern || '');
       setSampleTitle(custom.sample_title || '');
       setTitleTemplate(custom.title_template || '');
+      setSubtitleTemplate(custom.subtitle_template || '');
       setDescriptionTemplate(custom.description_template || '');
       setUpcomingTitleTemplate(custom.upcoming_title_template || '');
       setUpcomingDescriptionTemplate(
@@ -611,6 +653,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       setDatePattern('');
       setSampleTitle('');
       setTitleTemplate('');
+      setSubtitleTemplate('');
       setDescriptionTemplate('');
       setUpcomingTitleTemplate('');
       setUpcomingDescriptionTemplate('');
@@ -682,6 +725,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         program_duration: custom.program_duration || 180,
         sample_title: custom.sample_title || '',
         title_template: custom.title_template || '',
+        subtitle_template: custom.subtitle_template || '',
         description_template: custom.description_template || '',
         upcoming_title_template: custom.upcoming_title_template || '',
         upcoming_description_template:
@@ -708,6 +752,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     setDatePattern(custom.date_pattern || '');
     setSampleTitle(custom.sample_title || '');
     setTitleTemplate(custom.title_template || '');
+    setSubtitleTemplate(custom.subtitle_template || '');
     setDescriptionTemplate(custom.description_template || '');
     setUpcomingTitleTemplate(custom.upcoming_title_template || '');
     setUpcomingDescriptionTemplate(custom.upcoming_description_template || '');
@@ -805,341 +850,494 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
             {...form.getInputProps('name')}
           />
 
-          {/* Pattern Configuration */}
-          <Divider label="Pattern Configuration" labelPosition="center" />
+          {/* Accordion for organized sections */}
+          <Accordion defaultValue="patterns" variant="separated">
+            <Accordion.Item value="patterns">
+              <Accordion.Control>Pattern Configuration</Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="md">
+                  <Text size="sm" c="dimmed">
+                    Define regex patterns to extract information from channel
+                    titles or stream names. Use named capture groups like
+                    (?&lt;groupname&gt;pattern).
+                  </Text>
 
-          <Text size="sm" c="dimmed">
-            Define regex patterns to extract information from channel titles or
-            stream names. Use named capture groups like
-            (?&lt;groupname&gt;pattern).
-          </Text>
+                  <Select
+                    label={
+                      <LabelWithInfo
+                        label="Name Source"
+                        info="Choose whether to parse the channel name or a stream name assigned to the channel"
+                        required
+                      />
+                    }
+                    required
+                    withAsterisk={false}
+                    data={[
+                      { value: 'channel', label: 'Channel Name' },
+                      { value: 'stream', label: 'Stream Name' },
+                    ]}
+                    {...form.getInputProps('custom_properties.name_source')}
+                  />
 
-          <Select
-            label="Name Source"
-            description="Choose whether to parse the channel name or a stream name assigned to the channel"
-            required
-            data={[
-              { value: 'channel', label: 'Channel Name' },
-              { value: 'stream', label: 'Stream Name' },
-            ]}
-            {...form.getInputProps('custom_properties.name_source')}
-          />
+                  {form.values.custom_properties?.name_source === 'stream' && (
+                    <NumberInput
+                      label={
+                        <LabelWithInfo
+                          label="Stream Index"
+                          info="Which stream to use (1 = first stream, 2 = second stream, etc.)"
+                        />
+                      }
+                      placeholder="1"
+                      min={1}
+                      max={100}
+                      {...form.getInputProps('custom_properties.stream_index')}
+                    />
+                  )}
 
-          {form.values.custom_properties?.name_source === 'stream' && (
-            <NumberInput
-              label="Stream Index"
-              description="Which stream to use (1 = first stream, 2 = second stream, etc.)"
-              placeholder="1"
-              min={1}
-              max={100}
-              {...form.getInputProps('custom_properties.stream_index')}
-            />
-          )}
+                  <TextInput
+                    id="title_pattern"
+                    name="title_pattern"
+                    label={
+                      <LabelWithInfo
+                        label="Title Pattern"
+                        info="Regex pattern to extract title information (e.g., team names, league). Example: (?<league>\w+) \d+: (?<team1>.*) VS (?<team2>.*)"
+                        required
+                      />
+                    }
+                    placeholder="(?<league>\w+) \d+: (?<team1>.*) VS (?<team2>.*)"
+                    required
+                    withAsterisk={false}
+                    value={titlePattern}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setTitlePattern(value);
+                      form.setFieldValue(
+                        'custom_properties.title_pattern',
+                        value
+                      );
+                    }}
+                    error={form.errors['custom_properties.title_pattern']}
+                  />
 
-          <TextInput
-            id="title_pattern"
-            name="title_pattern"
-            label="Title Pattern"
-            description="Regex pattern to extract title information (e.g., team names, league). Example: (?<league>\w+) \d+: (?<team1>.*) VS (?<team2>.*)"
-            placeholder="(?<league>\w+) \d+: (?<team1>.*) VS (?<team2>.*)"
-            required
-            value={titlePattern}
-            onChange={(e) => {
-              const value = e.target.value;
-              setTitlePattern(value);
-              form.setFieldValue('custom_properties.title_pattern', value);
-            }}
-            error={form.errors['custom_properties.title_pattern']}
-          />
+                  <TextInput
+                    id="time_pattern"
+                    name="time_pattern"
+                    label={
+                      <LabelWithInfo
+                        label="Time Pattern (Optional)"
+                        info="Extract time from channel titles. Required groups: 'hour' (1-12 or 0-23), 'minute' (0-59), 'ampm' (AM/PM - optional for 24-hour). Examples: @ (?<hour>\d+):(?<minute>\d+)(?<ampm>AM|PM) for '8:30PM' OR @ (?<hour>\d{1,2}):(?<minute>\d{2}) for '20:30'"
+                      />
+                    }
+                    placeholder="@ (?<hour>\d+):(?<minute>\d+)(?<ampm>AM|PM)"
+                    value={timePattern}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setTimePattern(value);
+                      form.setFieldValue(
+                        'custom_properties.time_pattern',
+                        value
+                      );
+                    }}
+                  />
 
-          <TextInput
-            id="time_pattern"
-            name="time_pattern"
-            label="Time Pattern (Optional)"
-            description="Extract time from channel titles. Required groups: 'hour' (1-12 or 0-23), 'minute' (0-59), 'ampm' (AM/PM - optional for 24-hour). Examples: @ (?<hour>\d+):(?<minute>\d+)(?<ampm>AM|PM) for '8:30PM' OR @ (?<hour>\d{1,2}):(?<minute>\d{2}) for '20:30'"
-            placeholder="@ (?<hour>\d+):(?<minute>\d+)(?<ampm>AM|PM)"
-            value={timePattern}
-            onChange={(e) => {
-              const value = e.target.value;
-              setTimePattern(value);
-              form.setFieldValue('custom_properties.time_pattern', value);
-            }}
-          />
+                  <TextInput
+                    id="date_pattern"
+                    name="date_pattern"
+                    label={
+                      <LabelWithInfo
+                        label="Date Pattern (Optional)"
+                        info="Extract date from channel titles. Groups: 'month' (name or number), 'day', 'year' (optional, defaults to current year). Examples: @ (?<month>\w+) (?<day>\d+) for 'Oct 17' OR (?<month>\d+)/(?<day>\d+)/(?<year>\d+) for '10/17/2025'"
+                      />
+                    }
+                    placeholder="@ (?<month>\w+) (?<day>\d+)"
+                    value={datePattern}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setDatePattern(value);
+                      form.setFieldValue(
+                        'custom_properties.date_pattern',
+                        value
+                      );
+                    }}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
 
-          <TextInput
-            id="date_pattern"
-            name="date_pattern"
-            label="Date Pattern (Optional)"
-            description="Extract date from channel titles. Groups: 'month' (name or number), 'day', 'year' (optional, defaults to current year). Examples: @ (?<month>\w+) (?<day>\d+) for 'Oct 17' OR (?<month>\d+)/(?<day>\d+)/(?<year>\d+) for '10/17/2025'"
-            placeholder="@ (?<month>\w+) (?<day>\d+)"
-            value={datePattern}
-            onChange={(e) => {
-              const value = e.target.value;
-              setDatePattern(value);
-              form.setFieldValue('custom_properties.date_pattern', value);
-            }}
-          />
+            <Accordion.Item value="templates">
+              <Accordion.Control>Output Templates</Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="md">
+                  <Text size="sm" c="dimmed">
+                    Use extracted groups from your patterns to format EPG titles
+                    and descriptions. Reference groups using {'{groupname}'}{' '}
+                    syntax. For cleaner URLs, use {'{groupname_normalize}'} to
+                    get alphanumeric-only lowercase versions.
+                  </Text>
 
-          {/* Output Templates */}
-          <Divider label="Output Templates (Optional)" labelPosition="center" />
+                  <TextInput
+                    id="title_template"
+                    name="title_template"
+                    label={
+                      <LabelWithInfo
+                        label="Title Template"
+                        info="Format the EPG title using extracted groups. Use {starttime} (12-hour: '10 PM'), {starttime24} (24-hour: '22:00'), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {league} - {team1} vs {team2} ({starttime}-{endtime})"
+                      />
+                    }
+                    placeholder="{league} - {team1} vs {team2}"
+                    value={titleTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setTitleTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.title_template',
+                        value
+                      );
+                    }}
+                  />
 
-          <Text size="sm" c="dimmed">
-            Use extracted groups from your patterns to format EPG titles and
-            descriptions. Reference groups using {'{groupname}'} syntax. For
-            cleaner URLs, use {'{groupname_normalize}'} to get alphanumeric-only
-            lowercase versions.
-          </Text>
+                  <TextInput
+                    id="subtitle_template"
+                    name="subtitle_template"
+                    label={
+                      <LabelWithInfo
+                        label="Subtitle Template (Optional)"
+                        info="Format the EPG subtitle using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Example: {starttime} - {endtime}"
+                      />
+                    }
+                    placeholder="{starttime} - {endtime}"
+                    value={subtitleTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setSubtitleTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.subtitle_template',
+                        value
+                      );
+                    }}
+                  />
 
-          <TextInput
-            id="title_template"
-            name="title_template"
-            label="Title Template"
-            description="Format the EPG title using extracted groups. Use {starttime} (12-hour: '10 PM'), {starttime24} (24-hour: '22:00'), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {league} - {team1} vs {team2} ({starttime}-{endtime})"
-            placeholder="{league} - {team1} vs {team2}"
-            value={titleTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setTitleTemplate(value);
-              form.setFieldValue('custom_properties.title_template', value);
-            }}
-          />
+                  <Textarea
+                    id="description_template"
+                    name="description_template"
+                    label={
+                      <LabelWithInfo
+                        label="Description Template"
+                        info="Format the EPG description using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Watch {team1} take on {team2} on {date} from {starttime} to {endtime}!"
+                      />
+                    }
+                    placeholder="Watch {team1} take on {team2} in this exciting {league} matchup from {starttime} to {endtime}!"
+                    minRows={2}
+                    value={descriptionTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setDescriptionTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.description_template',
+                        value
+                      );
+                    }}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
 
-          <Textarea
-            id="description_template"
-            name="description_template"
-            label="Description Template"
-            description="Format the EPG description using extracted groups. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Watch {team1} take on {team2} on {date} from {starttime} to {endtime}!"
-            placeholder="Watch {team1} take on {team2} in this exciting {league} matchup from {starttime} to {endtime}!"
-            minRows={2}
-            value={descriptionTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setDescriptionTemplate(value);
-              form.setFieldValue(
-                'custom_properties.description_template',
-                value
-              );
-            }}
-          />
+            <Accordion.Item value="upcoming-ended">
+              <Accordion.Control>Upcoming/Ended Templates</Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="md">
+                  <Text size="sm" c="dimmed">
+                    Customize how programs appear before and after the event. If
+                    left empty, will use the main title/description with
+                    "Upcoming:" or "Ended:" prefix.
+                  </Text>
 
-          {/* Upcoming/Ended Templates */}
-          <Divider
-            label="Upcoming/Ended Templates (Optional)"
-            labelPosition="center"
-          />
+                  <TextInput
+                    id="upcoming_title_template"
+                    name="upcoming_title_template"
+                    label={
+                      <LabelWithInfo
+                        label="Upcoming Title Template"
+                        info="Title for programs before the event starts. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} starting at {starttime}."
+                      />
+                    }
+                    placeholder="{team1} vs {team2} starting at {starttime}."
+                    value={upcomingTitleTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setUpcomingTitleTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.upcoming_title_template',
+                        value
+                      );
+                    }}
+                  />
 
-          <Text size="sm" c="dimmed">
-            Customize how programs appear before and after the event. If left
-            empty, will use the main title/description with "Upcoming:" or
-            "Ended:" prefix.
-          </Text>
+                  <Textarea
+                    id="upcoming_description_template"
+                    name="upcoming_description_template"
+                    label={
+                      <LabelWithInfo
+                        label="Upcoming Description Template"
+                        info="Description for programs before the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} on {date} from {starttime} to {endtime}!"
+                      />
+                    }
+                    placeholder="Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
+                    minRows={2}
+                    value={upcomingDescriptionTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setUpcomingDescriptionTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.upcoming_description_template',
+                        value
+                      );
+                    }}
+                  />
 
-          <TextInput
-            id="upcoming_title_template"
-            name="upcoming_title_template"
-            label="Upcoming Title Template"
-            description="Title for programs before the event starts. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} starting at {starttime}."
-            placeholder="{team1} vs {team2} starting at {starttime}."
-            value={upcomingTitleTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setUpcomingTitleTemplate(value);
-              form.setFieldValue(
-                'custom_properties.upcoming_title_template',
-                value
-              );
-            }}
-          />
+                  <TextInput
+                    id="ended_title_template"
+                    name="ended_title_template"
+                    label={
+                      <LabelWithInfo
+                        label="Ended Title Template"
+                        info="Title for programs after the event has ended. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} started at {starttime}."
+                      />
+                    }
+                    placeholder="{team1} vs {team2} started at {starttime}."
+                    value={endedTitleTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEndedTitleTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.ended_title_template',
+                        value
+                      );
+                    }}
+                  />
 
-          <Textarea
-            id="upcoming_description_template"
-            name="upcoming_description_template"
-            label="Upcoming Description Template"
-            description="Description for programs before the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: Upcoming: Watch the {league} match up where the {team1} take on the {team2} on {date} from {starttime} to {endtime}!"
-            placeholder="Upcoming: Watch the {league} match up where the {team1} take on the {team2} from {starttime} to {endtime}!"
-            minRows={2}
-            value={upcomingDescriptionTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setUpcomingDescriptionTemplate(value);
-              form.setFieldValue(
-                'custom_properties.upcoming_description_template',
-                value
-              );
-            }}
-          />
+                  <Textarea
+                    id="ended_description_template"
+                    name="ended_description_template"
+                    label={
+                      <LabelWithInfo
+                        label="Ended Description Template"
+                        info="Description for programs after the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: The {league} match between {team1} and {team2} on {date} ran from {starttime} to {endtime}."
+                      />
+                    }
+                    placeholder="The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
+                    minRows={2}
+                    value={endedDescriptionTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEndedDescriptionTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.ended_description_template',
+                        value
+                      );
+                    }}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
 
-          <TextInput
-            id="ended_title_template"
-            name="ended_title_template"
-            label="Ended Title Template"
-            description="Title for programs after the event has ended. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: {team1} vs {team2} started at {starttime}."
-            placeholder="{team1} vs {team2} started at {starttime}."
-            value={endedTitleTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setEndedTitleTemplate(value);
-              form.setFieldValue(
-                'custom_properties.ended_title_template',
-                value
-              );
-            }}
-          />
+            <Accordion.Item value="fallback">
+              <Accordion.Control>Fallback Templates</Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="md">
+                  <Text size="sm" c="dimmed">
+                    When patterns don't match the channel/stream name, use these
+                    custom fallback templates instead of the default placeholder
+                    messages. Leave empty to use the built-in humorous fallback
+                    descriptions.
+                  </Text>
 
-          <Textarea
-            id="ended_description_template"
-            name="ended_description_template"
-            label="Ended Description Template"
-            description="Description for programs after the event. Use {starttime} (12-hour), {starttime24} (24-hour), {endtime} (12-hour end), {endtime24} (24-hour end), {date} (YYYY-MM-DD), {month}, {day}, or {year}. Date/time placeholders respect Output Timezone settings. Example: The {league} match between {team1} and {team2} on {date} ran from {starttime} to {endtime}."
-            placeholder="The {league} match between {team1} and {team2} ran from {starttime} to {endtime}."
-            minRows={2}
-            value={endedDescriptionTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setEndedDescriptionTemplate(value);
-              form.setFieldValue(
-                'custom_properties.ended_description_template',
-                value
-              );
-            }}
-          />
+                  <TextInput
+                    id="fallback_title_template"
+                    name="fallback_title_template"
+                    label={
+                      <LabelWithInfo
+                        label="Fallback Title Template"
+                        info="Custom title when patterns don't match. If empty, uses the channel/stream name."
+                      />
+                    }
+                    placeholder="No EPG data available"
+                    value={fallbackTitleTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setFallbackTitleTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.fallback_title_template',
+                        value
+                      );
+                    }}
+                  />
 
-          {/* Fallback Templates */}
-          <Divider
-            label="Fallback Templates (Optional)"
-            labelPosition="center"
-          />
+                  <Textarea
+                    id="fallback_description_template"
+                    name="fallback_description_template"
+                    label={
+                      <LabelWithInfo
+                        label="Fallback Description Template"
+                        info="Custom description when patterns don't match. If empty, uses built-in placeholder messages."
+                      />
+                    }
+                    placeholder="EPG information is currently unavailable for this channel."
+                    minRows={2}
+                    value={fallbackDescriptionTemplate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setFallbackDescriptionTemplate(value);
+                      form.setFieldValue(
+                        'custom_properties.fallback_description_template',
+                        value
+                      );
+                    }}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
 
-          <Text size="sm" c="dimmed">
-            When patterns don't match the channel/stream name, use these custom
-            fallback templates instead of the default placeholder messages.
-            Leave empty to use the built-in humorous fallback descriptions.
-          </Text>
+            <Accordion.Item value="settings">
+              <Accordion.Control>EPG Settings</Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="md">
+                  <Select
+                    label={
+                      <LabelWithInfo
+                        label="Event Timezone"
+                        info="The timezone of the event times in your channel titles. DST (Daylight Saving Time) is handled automatically! All timezones supported by pytz are available."
+                      />
+                    }
+                    placeholder={
+                      loadingTimezones
+                        ? 'Loading timezones...'
+                        : 'Select timezone'
+                    }
+                    data={timezoneOptions}
+                    searchable
+                    disabled={loadingTimezones}
+                    {...form.getInputProps('custom_properties.timezone')}
+                  />
 
-          <TextInput
-            id="fallback_title_template"
-            name="fallback_title_template"
-            label="Fallback Title Template"
-            description="Custom title when patterns don't match. If empty, uses the channel/stream name."
-            placeholder="No EPG data available"
-            value={fallbackTitleTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setFallbackTitleTemplate(value);
-              form.setFieldValue(
-                'custom_properties.fallback_title_template',
-                value
-              );
-            }}
-          />
+                  <Select
+                    label={
+                      <LabelWithInfo
+                        label="Output Timezone (Optional)"
+                        info="Display times in a different timezone than the event timezone. Leave empty to use the event timezone. Example: Event at 10 PM ET displayed as 9 PM CT."
+                      />
+                    }
+                    placeholder="Same as event timezone"
+                    data={timezoneOptions}
+                    searchable
+                    clearable
+                    disabled={loadingTimezones}
+                    {...form.getInputProps('custom_properties.output_timezone')}
+                  />
 
-          <Textarea
-            id="fallback_description_template"
-            name="fallback_description_template"
-            label="Fallback Description Template"
-            description="Custom description when patterns don't match. If empty, uses built-in placeholder messages."
-            placeholder="EPG information is currently unavailable for this channel."
-            minRows={2}
-            value={fallbackDescriptionTemplate}
-            onChange={(e) => {
-              const value = e.target.value;
-              setFallbackDescriptionTemplate(value);
-              form.setFieldValue(
-                'custom_properties.fallback_description_template',
-                value
-              );
-            }}
-          />
+                  <NumberInput
+                    label={
+                      <LabelWithInfo
+                        label="Program Duration (minutes)"
+                        info="Default duration for each program"
+                      />
+                    }
+                    placeholder="180"
+                    min={1}
+                    max={1440}
+                    {...form.getInputProps(
+                      'custom_properties.program_duration'
+                    )}
+                  />
 
-          {/* EPG Settings */}
-          <Divider label="EPG Settings" labelPosition="center" />
+                  <TextInput
+                    label={
+                      <LabelWithInfo
+                        label="Categories (Optional)"
+                        info="EPG categories for these programs. Use commas to separate multiple (e.g., Sports, Live, HD). Note: Only added to the main event, not upcoming/ended filler programs."
+                      />
+                    }
+                    placeholder="Sports, Live"
+                    {...form.getInputProps('custom_properties.category')}
+                  />
 
-          <Select
-            label="Event Timezone"
-            description="The timezone of the event times in your channel titles. DST (Daylight Saving Time) is handled automatically! All timezones supported by pytz are available."
-            placeholder={
-              loadingTimezones ? 'Loading timezones...' : 'Select timezone'
-            }
-            data={timezoneOptions}
-            searchable
-            disabled={loadingTimezones}
-            {...form.getInputProps('custom_properties.timezone')}
-          />
+                  <TextInput
+                    label={
+                      <LabelWithInfo
+                        label="Channel Logo URL (Optional)"
+                        info="Build a URL for the channel logo using regex groups. Example: https://example.com/logos/{league_normalize}/{team1_normalize}.png. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the channel <icon> in the EPG output."
+                      />
+                    }
+                    placeholder="https://example.com/logos/{league_normalize}/{team1_normalize}.png"
+                    value={channelLogoUrl}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setChannelLogoUrl(value);
+                      form.setFieldValue(
+                        'custom_properties.channel_logo_url',
+                        value
+                      );
+                    }}
+                  />
 
-          <Select
-            label="Output Timezone (Optional)"
-            description="Display times in a different timezone than the event timezone. Leave empty to use the event timezone. Example: Event at 10 PM ET displayed as 9 PM CT."
-            placeholder="Same as event timezone"
-            data={timezoneOptions}
-            searchable
-            clearable
-            disabled={loadingTimezones}
-            {...form.getInputProps('custom_properties.output_timezone')}
-          />
+                  <TextInput
+                    label={
+                      <LabelWithInfo
+                        label="Program Poster URL (Optional)"
+                        info="Build a URL for the program poster/icon using regex groups. Example: https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the program <icon> in the EPG output."
+                      />
+                    }
+                    placeholder="https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg"
+                    value={programPosterUrl}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setProgramPosterUrl(value);
+                      form.setFieldValue(
+                        'custom_properties.program_poster_url',
+                        value
+                      );
+                    }}
+                  />
 
-          <NumberInput
-            label="Program Duration (minutes)"
-            description="Default duration for each program"
-            placeholder="180"
-            min={1}
-            max={1440}
-            {...form.getInputProps('custom_properties.program_duration')}
-          />
+                  <Checkbox
+                    label={
+                      <LabelWithInfo
+                        label="Include Date Tag"
+                        info="Include the <date> tag in EPG output with the program's start date (YYYY-MM-DD format). Added to all programs."
+                      />
+                    }
+                    {...form.getInputProps('custom_properties.include_date', {
+                      type: 'checkbox',
+                    })}
+                  />
 
-          <TextInput
-            label="Categories (Optional)"
-            description="EPG categories for these programs. Use commas to separate multiple (e.g., Sports, Live, HD). Note: Only added to the main event, not upcoming/ended filler programs."
-            placeholder="Sports, Live"
-            {...form.getInputProps('custom_properties.category')}
-          />
+                  <Checkbox
+                    label={
+                      <LabelWithInfo
+                        label="Include Live Tag"
+                        info="Mark programs as live content with the <live /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
+                      />
+                    }
+                    {...form.getInputProps('custom_properties.include_live', {
+                      type: 'checkbox',
+                    })}
+                  />
 
-          <TextInput
-            label="Channel Logo URL (Optional)"
-            description="Build a URL for the channel logo using regex groups. Example: https://example.com/logos/{league_normalize}/{team1_normalize}.png. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the channel <icon> in the EPG output."
-            placeholder="https://example.com/logos/{league_normalize}/{team1_normalize}.png"
-            value={channelLogoUrl}
-            onChange={(e) => {
-              const value = e.target.value;
-              setChannelLogoUrl(value);
-              form.setFieldValue('custom_properties.channel_logo_url', value);
-            }}
-          />
-
-          <TextInput
-            label="Program Poster URL (Optional)"
-            description="Build a URL for the program poster/icon using regex groups. Example: https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg. Use {groupname_normalize} for cleaner URLs (alphanumeric-only, lowercase). This will be used as the program <icon> in the EPG output."
-            placeholder="https://example.com/posters/{team1_normalize}-vs-{team2_normalize}.jpg"
-            value={programPosterUrl}
-            onChange={(e) => {
-              const value = e.target.value;
-              setProgramPosterUrl(value);
-              form.setFieldValue('custom_properties.program_poster_url', value);
-            }}
-          />
-
-          <Checkbox
-            label="Include Date Tag"
-            description="Include the <date> tag in EPG output with the program's start date (YYYY-MM-DD format). Added to all programs."
-            {...form.getInputProps('custom_properties.include_date', {
-              type: 'checkbox',
-            })}
-          />
-
-          <Checkbox
-            label="Include Live Tag"
-            description="Mark programs as live content with the <live /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
-            {...form.getInputProps('custom_properties.include_live', {
-              type: 'checkbox',
-            })}
-          />
-
-          <Checkbox
-            label="Include New Tag"
-            description="Mark programs as new content with the <new /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
-            {...form.getInputProps('custom_properties.include_new', {
-              type: 'checkbox',
-            })}
-          />
+                  <Checkbox
+                    label={
+                      <LabelWithInfo
+                        label="Include New Tag"
+                        info="Mark programs as new content with the <new /> tag in EPG output. Note: Only added to the main event, not upcoming/ended filler programs."
+                      />
+                    }
+                    {...form.getInputProps('custom_properties.include_new', {
+                      type: 'checkbox',
+                    })}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
 
           {/* Testing & Preview */}
           <Divider label="Test Your Configuration" labelPosition="center" />
@@ -1155,8 +1353,12 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           <TextInput
             id="sample_title"
             name="sample_title"
-            label={`Sample ${form.values.custom_properties?.name_source === 'stream' ? 'Stream' : 'Channel'} Name`}
-            description={`Enter a sample ${form.values.custom_properties?.name_source === 'stream' ? 'stream name' : 'channel name'} to test pattern matching and see the formatted output`}
+            label={
+              <LabelWithInfo
+                label={`Sample ${form.values.custom_properties?.name_source === 'stream' ? 'Stream' : 'Channel'} Name`}
+                info={`Enter a sample ${form.values.custom_properties?.name_source === 'stream' ? 'stream name' : 'channel name'} to test pattern matching and see the formatted output`}
+              />
+            }
             placeholder="League 01: Team 1 VS Team 2 @ Oct 17 8:00PM ET"
             value={sampleTitle}
             onChange={(e) => {
@@ -1371,6 +1573,18 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                       </>
                     )}
 
+                    {subtitleTemplate && (
+                      <>
+                        <Text size="xs" c="dimmed" mt="xs">
+                          EPG Subtitle:
+                        </Text>
+                        <Text size="sm" fw={500}>
+                          {patternValidation.formattedSubtitle ||
+                            '(no matching groups)'}
+                        </Text>
+                      </>
+                    )}
+
                     {descriptionTemplate && (
                       <>
                         <Text size="xs" c="dimmed" mt="xs">
@@ -1464,6 +1678,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     )}
 
                     {!titleTemplate &&
+                      !subtitleTemplate &&
                       !descriptionTemplate &&
                       !upcomingTitleTemplate &&
                       !upcomingDescriptionTemplate &&

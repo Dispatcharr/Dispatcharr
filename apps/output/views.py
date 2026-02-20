@@ -511,6 +511,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     output_timezone_value = custom_properties.get('output_timezone', '')  # Optional: display times in different timezone
     program_duration = custom_properties.get('program_duration', 180)  # Minutes
     title_template = custom_properties.get('title_template', '')
+    subtitle_template = custom_properties.get('subtitle_template', '')
     description_template = custom_properties.get('description_template', '')
 
     # Templates for upcoming/ended programs
@@ -916,6 +917,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     title_parts.append(all_groups['title'])
                 main_event_title = ' - '.join(title_parts) if title_parts else channel_name
 
+            if subtitle_template:
+                main_event_subtitle = format_template(subtitle_template, all_groups)
+            else:
+                main_event_subtitle = None
+
             if description_template:
                 main_event_description = format_template(description_template, all_groups)
             else:
@@ -966,6 +972,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": upcoming_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": upcoming_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1005,6 +1012,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": event_start_utc,
                     "end_time": event_end_utc,
                     "title": main_event_title,
+                    "sub_title": main_event_subtitle,
                     "description": main_event_description,
                     "custom_properties": main_event_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1049,6 +1057,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": ended_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": ended_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1109,6 +1118,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": program_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": program_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,
@@ -1135,6 +1145,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     elif 'title' in all_groups and all_groups['title']:
                         title_parts.append(all_groups['title'])
                     title = ' - '.join(title_parts) if title_parts else channel_name
+
+                if subtitle_template:
+                    subtitle = format_template(subtitle_template, all_groups)
+                else:
+                    subtitle = None
 
                 if description_template:
                     description = format_template(description_template, all_groups)
@@ -1172,6 +1187,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": program_start_utc,
                     "end_time": program_end_utc,
                     "title": title,
+                    "sub_title": subtitle,
                     "description": description,
                     "custom_properties": program_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1211,6 +1227,11 @@ def generate_dummy_epg(
             f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(program["channel_id"])}">'
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
+
+        # Add subtitle if available
+        if program.get('sub_title'):
+            xml_lines.append(f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>")
+
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
 
         # Add custom_properties if present
@@ -1530,6 +1551,11 @@ def generate_epg(request, profile_name=None, user=None):
                     # Create program entry with escaped channel name
                     yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                     yield f"    <title>{html.escape(program['title'])}</title>\n"
+
+                    # Add subtitle if available
+                    if program.get('sub_title'):
+                        yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
+
                     yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
                     # Add custom_properties if present
@@ -1579,6 +1605,11 @@ def generate_epg(request, profile_name=None, user=None):
 
                             yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                             yield f"    <title>{html.escape(program['title'])}</title>\n"
+
+                            # Add subtitle if available
+                            if program.get('sub_title'):
+                                yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
+
                             yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
                             # Add custom_properties if present
@@ -2213,7 +2244,7 @@ def xc_get_live_streams(request, user, category_id=None):
                     )
                 ),
                 "epg_channel_id": str(channel_num_int),
-                "added": int(channel.created_at.timestamp()),
+                "added": str(int(channel.created_at.timestamp())),
                 "is_adult": int(channel.is_adult),
                 "category_id": str(channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id),
                 "category_ids": [channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id],
@@ -2875,7 +2906,7 @@ def xc_get_vod_info(request, user, vod_id):
         "movie_data": {
             "stream_id": movie.id,
             "name": movie.name,
-            "added": int(movie_relation.created_at.timestamp()),
+            "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
             "container_extension": movie_relation.container_extension or "mp4",
