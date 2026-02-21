@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **CVE-2026-1285** (moderate): Potential denial-of-service in `django.utils.text.Truncator` HTML methods via inputs with large numbers of unmatched HTML end tags.
   - **CVE-2026-1287** (high): Potential SQL injection in column aliases via control characters in `FilteredRelation`.
   - **CVE-2026-1312** (high): Potential SQL injection via `QuerySet.order_by()` and `FilteredRelation` when using column aliases containing periods.
+- Updated frontend npm dependencies to resolve 5 audit vulnerabilities (1 moderate, 4 high):
+  - Updated `ajv` 6.12.6 → 6.14.0, resolving a **moderate** ReDoS vulnerability when using the `$data` option ([GHSA-2g4f-4pwh-qvx6](https://github.com/advisories/GHSA-2g4f-4pwh-qvx6))
+  - Enforced `minimatch` ≥10.2.2 via npm overrides, resolving **high** ReDoS via repeated wildcards with non-matching literal patterns ([GHSA-3ppc-4f35-3m26](https://github.com/advisories/GHSA-3ppc-4f35-3m26)) affecting `minimatch`, `@eslint/config-array`, `@eslint/eslintrc`, and `eslint`
 
 ### Added
 
@@ -38,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `psutil` 7.1.3 → 7.2.2
   - `torch` 2.9.1+cpu → 2.10.0+cpu
   - `sentence-transformers` 5.2.0 → 5.2.3
+  - `ajv` 6.12.6 → 6.14.0 (security patch; see Security section)
+  - `minimatch` enforced ≥10.2.2 via npm overrides (security patch; see Security section)
 - Channel store optimization: Refactored frontend channel loading to only fetch channel IDs on initial login (matching the streams store pattern), instead of loading full channel objects upfront. Full channel data is fetched lazily as needed. This dramatically reduces login time and initial page load when large channel libraries are present.
 - DVR scheduling: Channel selector now displays the channel number alongside the channel name when scheduling a recording.
 - TV Guide performance improvements: Optimized the TV Guide with horizontal culling for off-screen program rows (only rendering visible programs), throttled now-line position updates, and improved scroll performance. Reduces unnecessary DOM work and improves responsiveness with large EPG datasets.
