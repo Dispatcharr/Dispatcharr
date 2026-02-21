@@ -138,6 +138,7 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": "/data/dispatcharr.db",
+            "TEST": {"NAME": ":memory:"},
         }
     }
 else:
