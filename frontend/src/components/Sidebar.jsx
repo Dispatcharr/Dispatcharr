@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   MonitorCog,
+  Blocks,
 } from 'lucide-react';
 import {
   Avatar,
@@ -185,8 +186,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
           { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
           {
-            label: 'Connect',
-            icon: <Webhook size={20} />,
+            label: 'Integrations',
+            icon: <Blocks size={20} />,
             paths: [
               {
                 label: 'Connections',
