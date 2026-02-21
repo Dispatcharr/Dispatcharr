@@ -13,6 +13,7 @@ import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
+import Limiter from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -105,6 +106,41 @@ export default class API {
     return await useAuthStore.getState().getToken();
   }
 
+  /**
+   * Fetch all pages for a paginated endpoint when you already know totalCount.
+   * Builds page calls from totalCount and pageSize and aggregates all results.
+   * - endpoint: path like "/api/channels/channels/"
+   * - params: URLSearchParams for filters (will not be mutated)
+   * - totalCount: total number of matching items
+   * - pageSize: items per page
+   * Returns a flat array of results. Supports both array and {results, next} responses.
+   */
+  static async fetchAllByCount(endpoint, params, totalCount, pageSize = 200) {
+    const total = Number(totalCount) || 0;
+    const size = Number(pageSize) || 200;
+    const totalPages = Math.max(1, Math.ceil(total / size));
+
+    const requests = [];
+    for (let page = 1; page <= totalPages; page++) {
+      const q = new URLSearchParams(params || new URLSearchParams());
+      q.set('page', String(page));
+      q.set('page_size', String(size));
+      const url = `${host}${endpoint}?${q.toString()}`;
+      requests.push(request(url));
+    }
+
+    const responses = await Promise.all(requests);
+    const all = [];
+    for (const data of responses) {
+      if (Array.isArray(data)) {
+        all.push(...data);
+      } else if (Array.isArray(data?.results)) {
+        all.push(...data.results);
+      }
+    }
+    return all;
+  }
+
   static async fetchSuperUser() {
     try {
       return await request(`${host}/api/accounts/initialize-superuser/`, {
@@ -181,32 +217,39 @@ export default class API {
     try {
       // Paginate through channels to avoid heavy single response
       const pageSize = 200;
-      let page = 1;
-      let allChannels = [];
+      const allChannels = [];
 
-      while (true) {
-        const data = await request(
-          `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
-        );
+      // Get first page to get total results count
+      const data = await request(
+        `${host}/api/channels/channels/?page=1&page_size=${pageSize}`
+      );
 
-        // Backward compatibility: if endpoint returns an array (legacy), just return it
-        if (Array.isArray(data)) {
-          allChannels = data;
-          break;
-        }
-
-        const results = Array.isArray(data?.results) ? data.results : [];
-        allChannels = allChannels.concat(results);
-
-        const hasMore = Boolean(data?.next);
-        if (!hasMore || results.length === 0) {
-          break;
-        }
-
-        page += 1;
+      // Backward compatibility: if endpoint returns an array (legacy), just return it
+      if (Array.isArray(data)) {
+        return data;
       }
 
-      return allChannels;
+      allChannels.concat(Array.isArray(data?.results) ? data.results : []);
+
+      const totalPages = Math.max(1, Math.ceil(data.count / pageSize)) - 1;
+      const apiCalls = [];
+      for (let page = 2; page <= totalPages; page++) {
+        apiCalls.push(
+          new Promise(async (resolve) => {
+            const response = await request(
+              `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+            );
+
+            return resolve(
+              Array.isArray(response?.results) ? response.results : []
+            );
+          })
+        );
+      }
+
+      const allResults = await Limiter.all(5, apiCalls);
+
+      return allResults;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
     }
@@ -2829,6 +2872,35 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to fetch users', e);
+    }
+  }
+
+  static async generateApiKey({ user_id = null, name = '' } = {}) {
+    try {
+      const body = {};
+      if (user_id) body.user_id = user_id;
+      if (name) body.name = name;
+
+      const response = await request(
+        `${host}/api/accounts/api-keys/generate/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to generate API key', e);
     }
   }
 

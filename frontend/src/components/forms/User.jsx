@@ -17,10 +17,12 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { RotateCcwKey, X } from 'lucide-react';
+import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
+import { copyToClipboard } from '../../utils';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -29,6 +31,9 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
+  const [generating, setGenerating] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState(null);
+  const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -139,6 +144,10 @@ const User = ({ user = null, isOpen, onClose }) => {
       if (customProps.xc_password) {
         setEnableXC(true);
       }
+
+      if (user?.api_key) {
+        setUserAPIKey(user.api_key);
+      }
     } else {
       form.reset();
     }
@@ -156,6 +165,34 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const showPermissions =
     authUser.user_level == USER_LEVELS.ADMIN && authUser.id !== user?.id;
+
+  const canGenerateKey =
+    authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
+
+  const onGenerateKey = async () => {
+    if (!canGenerateKey) {
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const payload = {};
+      if (authUser.user_level == USER_LEVELS.ADMIN && user?.id) {
+        payload.user_id = user.id;
+      }
+
+      const resp = await API.generateApiKey(payload);
+      const newKey = resp && (resp.key || resp.raw_key);
+      if (newKey) {
+        setGeneratedKey(newKey);
+        setUserAPIKey(newKey);
+      }
+    } catch (e) {
+      // API shows notifications
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
@@ -268,6 +305,45 @@ const User = ({ user = null, isOpen, onClose }) => {
                   />
                 </Tooltip>
               </Box>
+            )}
+
+            {canGenerateKey && (
+              <Stack>
+                {userAPIKey && (
+                  <TextInput
+                    label="API Key"
+                    disabled={true}
+                    value={userAPIKey}
+                    rightSection={
+                      <ActionIcon
+                        variant="transparent"
+                        size="sm"
+                        color="white"
+                        onClick={() =>
+                          copyToClipboard(userAPIKey, {
+                            successTitle: 'API Key Copied!',
+                            successMessage:
+                              'The API Key has been copied to your clipboard.',
+                          })
+                        }
+                      >
+                        <Copy />
+                      </ActionIcon>
+                    }
+                  />
+                )}
+
+                <Button
+                  leftSection={<Key size={14} />}
+                  size="xs"
+                  onClick={onGenerateKey}
+                  loading={generating}
+                  color="blue"
+                  variant="light"
+                >
+                  {userAPIKey ? 'Regenerate API Key' : 'Generate API Key'}
+                </Button>
+              </Stack>
             )}
           </Stack>
         </Group>
