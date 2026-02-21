@@ -9,6 +9,7 @@ from rest_framework import viewsets, status, serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 import json
+import secrets
 from .permissions import IsAdmin, Authenticated
 from dispatcharr.utils import network_access_allowed
 
@@ -316,6 +317,59 @@ class GroupViewSet(viewsets.ModelViewSet):
     @extend_schema(description="Delete a group")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
+
+
+# API Key management
+class APIKeyViewSet(viewsets.ViewSet):
+    permission_classes = [Authenticated]
+
+    def list(self, request):
+        user = request.user
+        return Response({"key": user.api_key})
+
+    @action(detail=False, methods=["post"], url_path="generate")
+    def generate(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to create keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        raw = secrets.token_urlsafe(40)
+        target_user.api_key = raw
+        target_user.save(update_fields=["api_key"])
+
+        user_data = UserSerializer(target_user).data
+        return Response({"key": raw, "user": user_data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="revoke")
+    def revoke(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to revoke keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        target_user.api_key = None
+        target_user.save(update_fields=["api_key"])
+
+        return Response({"success": True})
 
 
 # 🔹 4) Permissions List API
