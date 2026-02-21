@@ -129,39 +129,42 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
             return None, None, False, None
 
-        # Look up the Stream and Profile objects
+        # get_stream() allocated a connection slot - ensure it's released on any error
         try:
+            # Look up the Stream and Profile objects
             stream = Stream.objects.get(id=stream_id)
             profile = M3UAccountProfile.objects.get(id=profile_id)
-        except (Stream.DoesNotExist, M3UAccountProfile.DoesNotExist) as e:
-            logger.error(f"Error getting stream or profile: {e}")
+
+            # Get the M3U account profile for URL pattern
+            m3u_profile = profile
+
+            # Get the appropriate user agent
+            m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
+            stream_user_agent = m3u_account.get_user_agent().user_agent
+
+            if stream_user_agent is None:
+                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+
+            # Generate stream URL based on the selected profile
+            input_url = stream.url
+            stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
+
+            # Check if transcoding is needed
+            stream_profile = channel.get_stream_profile()
+            if stream_profile.is_proxy() or stream_profile is None:
+                transcode = False
+            else:
+                transcode = True
+
+            stream_profile_id = stream_profile.id
+
+            return stream_url, stream_user_agent, transcode, stream_profile_id
+        except Exception as e:
+            logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
+            if not channel.release_stream():
+                logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
             return None, None, False, None
-
-        # Get the M3U account profile for URL pattern
-        m3u_profile = profile
-
-        # Get the appropriate user agent
-        m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
-        stream_user_agent = m3u_account.get_user_agent().user_agent
-
-        if stream_user_agent is None:
-            stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-            logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
-
-        # Generate stream URL based on the selected profile
-        input_url = stream.url
-        stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
-
-        # Check if transcoding is needed
-        stream_profile = channel.get_stream_profile()
-        if stream_profile.is_proxy() or stream_profile is None:
-            transcode = False
-        else:
-            transcode = True
-
-        stream_profile_id = stream_profile.id
-
-        return stream_url, stream_user_agent, transcode, stream_profile_id
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
         return None, None, False, None

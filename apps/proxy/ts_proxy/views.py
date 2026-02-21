@@ -54,6 +54,7 @@ def stream_ts(request, channel_id):
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
+    connection_allocated = False  # Track if connection slot was allocated via get_stream()
 
     try:
         # Generate a unique client ID
@@ -219,9 +220,10 @@ def stream_ts(request, channel_id):
                     )
 
             if stream_url is None:
-                # Release the channel's stream lock if one was acquired
-                # Note: Only call this if get_stream() actually assigned a stream
-                # In our case, if stream_url is None, no stream was ever assigned, so don't release
+                # Release any connection slot that may have been allocated
+                # by the error-checking get_stream() call during retries
+                if not channel.release_stream():
+                    logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                 # Get the specific error message if available
                 wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -237,8 +239,23 @@ def stream_ts(request, channel_id):
                     {"error": error_msg, "waited": wait_duration}, status=503
                 )  # 503 Service Unavailable is appropriate here
 
-            # Get the stream ID from the channel
-            stream_id, m3u_profile_id, _ = channel.get_stream()
+            # generate_stream_url() called get_stream() which allocated a connection
+            # slot (INCR'd profile_connections) - track this for cleanup on error
+            if needs_initialization:
+                connection_allocated = True
+
+            # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
+            # Avoid calling get_stream() again — (INCR profile counter)
+            # It could double-allocate if the keys were cleared by a concurrent release.
+            stream_id = None
+            m3u_profile_id = None
+            if proxy_server.redis_client:
+                stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                if stream_id_bytes:
+                    stream_id = int(stream_id_bytes)
+                    profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                    if profile_id_bytes:
+                        m3u_profile_id = int(profile_id_bytes)
             logger.info(
                 f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
             )
@@ -308,7 +325,8 @@ def stream_ts(request, channel_id):
                                 f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                             )
                 # Release stream lock before redirecting
-                channel.release_stream()
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream before redirect")
                 # Final decision based on validation results
                 if is_valid:
                     logger.info(
@@ -344,9 +362,16 @@ def stream_ts(request, channel_id):
             )
 
             if not success:
+                if connection_allocated:
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream after init failure")
+                    connection_allocated = False
                 return JsonResponse(
                     {"error": "Failed to initialize channel"}, status=500
                 )
+
+            # Channel initialized - cleanup lifecycle now owns the connection release
+            connection_allocated = False
 
             # If we're the owner, wait for connection to establish
             if proxy_server.am_i_owner(channel_id):
@@ -507,6 +532,12 @@ def stream_ts(request, channel_id):
 
     except Exception as e:
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
+        if connection_allocated:
+            try:
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream in exception handler")
+            except Exception:
+                pass
         return JsonResponse({"error": str(e)}, status=500)
 
 

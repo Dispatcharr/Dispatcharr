@@ -1402,17 +1402,25 @@ class VODConnectionManager:
                         client_id = session_id
 
                         # Remove individual connection tracking keys created during streaming
+                        # Check if connection key exists first - remove_connection()
+                        # handles the profile DECR when the key exists, but skips it
+                        # if the key already expired by TTL
+                        connection_key_exists = False
                         if content_type and content_uuid:
+                            connection_key = self._get_connection_key(content_type, content_uuid, client_id)
+                            connection_key_exists = bool(self.redis_client.exists(connection_key))
                             logger.info(f"[{session_id}] Cleaning up connection tracking keys")
                             self.remove_connection(content_type, content_uuid, client_id)
 
-                        # Remove from profile connections if counted (additional safety check)
-                        if session_data.get(b'connection_counted') == b'True' and profile_id:
-                            profile_key = self._get_profile_connections_key(int(profile_id.decode('utf-8')))
-                            current_count = int(self.redis_client.get(profile_key) or 0)
-                            if current_count > 0:
-                                self.redis_client.decr(profile_key)
-                                logger.info(f"[{session_id}] Decremented profile {profile_id.decode('utf-8')} connections")
+                        # Fallback DECR: only if the connection tracking key had already
+                        # expired (remove_connection skips DECR in that case)
+                        if not connection_key_exists:
+                            if session_data.get(b'connection_counted') == b'True' and profile_id:
+                                profile_key = self._get_profile_connections_key(int(profile_id.decode('utf-8')))
+                                current_count = int(self.redis_client.get(profile_key) or 0)
+                                if current_count > 0:
+                                    self.redis_client.decr(profile_key)
+                                    logger.info(f"[{session_id}] Decremented profile {profile_id.decode('utf-8')} connections (fallback)")
 
                     # Remove session tracking key
                     self.redis_client.delete(session_key)

@@ -1154,9 +1154,10 @@ class MultiWorkerVODConnectionManager:
                 self._decrement_profile_connections(m3u_profile.id)
 
                 # Also clean up the Redis connection state since we won't be using it
+                # Pass connection_manager=None since we already decremented above
                 if redis_connection:
                     try:
-                        redis_connection.cleanup(connection_manager=self, current_worker_id=self.worker_id)
+                        redis_connection.cleanup(current_worker_id=self.worker_id)
                     except Exception as cleanup_error:
                         logger.error(f"[{client_id}] Error during cleanup after connection failure: {cleanup_error}")
 
@@ -1380,12 +1381,14 @@ class MultiWorkerVODConnectionManager:
                 profile_id = connection_data.get('m3u_profile_id')
                 if profile_id:
                     profile_connections_key = f"profile_connections:{profile_id}"
+                    current_count = int(self.redis_client.get(profile_connections_key) or 0)
 
                     # Use pipeline for atomic operations
                     pipe = self.redis_client.pipeline()
                     pipe.delete(connection_key)
                     pipe.srem(content_connections_key, client_id)
-                    pipe.decr(profile_connections_key)
+                    if current_count > 0:
+                        pipe.decr(profile_connections_key)
                     pipe.execute()
 
                     logger.info(f"Removed Redis-backed connection: {client_id}")
