@@ -3295,4 +3295,144 @@ export default class API {
       errorNotification('Failed to fetch connect logs', e);
     }
   }
+
+  static async getMediaServerIntegrations() {
+    try {
+      return await request(`${host}/api/media-servers/integrations/`);
+    } catch (e) {
+      errorNotification('Failed to fetch media server integrations', e);
+    }
+  }
+
+  static async createMediaServerIntegration(values) {
+    try {
+      return await request(`${host}/api/media-servers/integrations/`, {
+        method: 'POST',
+        body: values,
+      });
+    } catch (e) {
+      errorNotification('Failed to create media server integration', e);
+    }
+  }
+
+  static async updateMediaServerIntegration(id, values) {
+    try {
+      return await request(`${host}/api/media-servers/integrations/${id}/`, {
+        method: 'PATCH',
+        body: values,
+      });
+    } catch (e) {
+      errorNotification('Failed to update media server integration', e);
+    }
+  }
+
+  static async deleteMediaServerIntegration(id) {
+    try {
+      await request(`${host}/api/media-servers/integrations/${id}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete media server integration', e);
+      throw e;
+    }
+  }
+
+  static async testMediaServerIntegration(id) {
+    try {
+      return await request(
+        `${host}/api/media-servers/integrations/${id}/test-connection/`,
+        {
+          method: 'POST',
+        }
+      );
+    } catch (e) {
+      errorNotification('Media server connection test failed', e);
+      throw e;
+    }
+  }
+
+  static async testMediaServerIntegrationConfig(values) {
+    try {
+      return await request(
+        `${host}/api/media-servers/integrations/test-connection/`,
+        {
+          method: 'POST',
+          body: values,
+        }
+      );
+    } catch (e) {
+      errorNotification('Media server connection test failed', e);
+      throw e;
+    }
+  }
+
+  static async syncMediaServerIntegration(id) {
+    try {
+      return await request(`${host}/api/media-servers/integrations/${id}/sync/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to start media server sync', e);
+      throw e;
+    }
+  }
+
+  static async getMediaServerIntegrationLibraries(id) {
+    try {
+      return await request(
+        `${host}/api/media-servers/integrations/${id}/libraries/`
+      );
+    } catch (e) {
+      errorNotification('Failed to load media server libraries', e);
+      throw e;
+    }
+  }
+
+  static async startPlexAuth(clientIdentifier = '') {
+    try {
+      return await request(
+        `${host}/api/media-servers/integrations/plex-auth/start/`,
+        {
+          method: 'POST',
+          body: clientIdentifier
+            ? { client_identifier: clientIdentifier }
+            : {},
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to start Plex sign-in', e);
+      throw e;
+    }
+  }
+
+  static async checkPlexAuth(pinId, clientIdentifier) {
+    try {
+      const search = new URLSearchParams({
+        pin_id: String(pinId || ''),
+        client_identifier: String(clientIdentifier || ''),
+      });
+      return await request(
+        `${host}/api/media-servers/integrations/plex-auth/check/?${search.toString()}`
+      );
+    } catch (e) {
+      errorNotification('Failed to check Plex sign-in', e);
+      throw e;
+    }
+  }
+
+  static async getPlexServers(authToken, clientIdentifier) {
+    try {
+      const search = new URLSearchParams({
+        auth_token: String(authToken || ''),
+        client_identifier: String(clientIdentifier || ''),
+      });
+      return await request(
+        `${host}/api/media-servers/integrations/plex-auth/servers/?${search.toString()}`
+      );
+    } catch (e) {
+      errorNotification('Failed to load Plex servers', e);
+      throw e;
+    }
+  }
 }

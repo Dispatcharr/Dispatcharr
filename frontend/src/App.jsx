@@ -16,6 +16,7 @@ import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
 import ConnectPage from './pages/Connect';
 import ConnectLogsPage from './pages/ConnectLogs';
+import MediaServersPage from './pages/MediaServers';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
@@ -158,6 +159,10 @@ const App = () => {
                         <Route
                           path="/connect/logs"
                           element={<ConnectLogsPage />}
+                        />
+                        <Route
+                          path="/media-servers"
+                          element={<MediaServersPage />}
                         />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />

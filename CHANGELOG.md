@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Media server integrations for VOD import: Added a new `media_servers` app with full backend support for Plex, Emby, and Jellyfin integrations.
+- Media Servers management UI: Added a dedicated `/media-servers` page with integration cards and actions (create, edit, delete, enable/disable, manual sync, connection test), plus navigation entry under System.
+- Plex account PIN flow support: Added backend and frontend support for Plex auth start/check/server discovery, including automatic server URL/token population from selected Plex server.
+- Pre-save connection testing: Added `POST /api/media-servers/integrations/test-connection/` so users can validate credentials and server URL before saving an integration.
+- Library selection and scheduling controls: Added support for selecting included media libraries per integration and configuring auto-sync interval (hours/days/weeks; `0` disables schedule).
+- TV series depth import for media servers: Added provider and sync pipeline support to ingest series with seasons/episodes (not just movies), and map them into VOD relations/categories with provider metadata and direct stream source URLs.
+- Media server managed account priority: Integration-created VOD accounts now enforce high provider priority (`1000`) so media-server relations are preferred when duplicate content exists across providers.
+
 - Lightweight channel summary API endpoint: Added a new `/api/channels/summary/` endpoint that returns only the minimal channel data needed for TV Guide and DVR scheduling (id, name, logo), avoiding the overhead of serializing full channel objects for high-frequency UI operations.
 - Custom Dummy EPG subtitle template support: Added optional subtitle template field to custom dummy EPG configuration. Users can now define subtitle patterns using extracted regex groups and time/date placeholders (e.g., `{starttime} - {endtime}`). (Closes #942)
 - Event-driven webhooks and script execution (Connect): Added new Connect feature that enables event-driven execution of custom scripts and webhooks in response to system events. Supports multiple event types including channel lifecycle (start, stop, reconnect, error, failover), stream operations (switch), recording events (start, end), data refreshes (EPG, M3U), and client activity (connect, disconnect). Event data is available as environment variables in scripts (prefixed with `DISPATCHARR_`), POST payloads for webhooks, and plugin execution payloads. Plugins can now subscribe to events by specifying an `events` array in their action definitions. Includes connection testing endpoint with dummy payloads for validation. (Closes #203)

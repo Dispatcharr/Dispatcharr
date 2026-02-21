@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   MonitorCog,
+  ServerCog,
 } from 'lucide-react';
 import {
   Avatar,
@@ -78,7 +79,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
 
 function NavGroup({ label, icon, paths, location, collapsed }) {
   const [open, setOpen] = useState(() =>
-    location.pathname.startsWith('/connect')
+    paths.some((path) => location.pathname.startsWith(path.path))
   );
 
   const parentActive = paths
@@ -218,6 +219,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 label: 'Settings',
                 icon: <LucideSettings size={20} />,
                 path: '/settings',
+              },
+              {
+                label: 'Media Servers',
+                icon: <ServerCog size={20} />,
+                path: '/media-servers',
               },
             ],
           },

@@ -243,6 +243,11 @@ class M3UMovieRelation(models.Model):
 
     def get_stream_url(self):
         """Get the full stream URL for this movie from this provider"""
+        custom_props = self.custom_properties or {}
+        direct_source = custom_props.get('direct_source')
+        if direct_source:
+            return direct_source
+
         # Build URL dynamically for XtreamCodes accounts
         if self.m3u_account.account_type == 'XC':
             from core.xtream_codes import Client as XCClient
@@ -284,6 +289,11 @@ class M3UEpisodeRelation(models.Model):
 
     def get_stream_url(self):
         """Get the full stream URL for this episode from this provider"""
+        custom_props = self.custom_properties or {}
+        direct_source = custom_props.get('direct_source')
+        if direct_source:
+            return direct_source
+
         from core.xtream_codes import Client as XtreamCodesClient
 
         if self.m3u_account.account_type == 'XC':
