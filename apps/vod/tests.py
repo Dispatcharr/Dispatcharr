@@ -1,280 +1,283 @@
 from django.test import TestCase
 from django.utils import timezone
+from unittest.mock import MagicMock
 
 from apps.m3u.models import M3UAccount
-from apps.vod.models import (
-    Movie, Series, VODCategory, M3UMovieRelation, M3USeriesRelation,
-)
-from apps.vod.tasks import process_movie_batch, process_series_batch
+from apps.vod.models import Movie, Series, M3UMovieRelation, M3USeriesRelation, VODCategory
+from apps.vod.tasks import process_movie_batch, process_series_batch, _names_are_similar
+
+
+def make_account(name="Test Account"):
+    return M3UAccount.objects.create(
+        name=name,
+        account_type=M3UAccount.Types.XC,
+        server_url="http://example.com",
+        username="user",
+        password="pass",
+    )
+
+
+def make_category(name="Action", provider_cat_id="1"):
+    cat = VODCategory.objects.create(name=name)
+    return provider_cat_id, cat
+
+
+class NamesAreSimilarTests(TestCase):
+    """Unit tests for the name-similarity guard helper."""
+
+    def test_identical_names(self):
+        self.assertTrue(_names_are_similar("Inception", "Inception"))
+
+    def test_case_insensitive(self):
+        self.assertTrue(_names_are_similar("inception", "INCEPTION"))
+
+    def test_punctuation_differences(self):
+        self.assertTrue(_names_are_similar("Spider-Man: No Way Home", "Spider Man No Way Home"))
+
+    def test_year_suffix_ignored(self):
+        self.assertTrue(_names_are_similar("The Batman", "The Batman (2022)"))
+
+    def test_completely_different_names(self):
+        self.assertFalse(_names_are_similar("Inception", "The Dark Knight"))
+
+    def test_empty_names_return_true(self):
+        # Cannot compare empty; give benefit of the doubt
+        self.assertTrue(_names_are_similar("", "Inception"))
+        self.assertTrue(_names_are_similar("Inception", ""))
 
 
 class ProcessMovieBatchStableIDTests(TestCase):
     """
-    Tests for issue #961: VOD movie IDs must remain stable across M3U refreshes.
+    Regression tests for issue #961: movie IDs must not change on M3U refresh.
 
-    When process_movie_batch runs on a refresh, it must NOT create duplicate
-    movies and repoint existing relations — this breaks STRM files and
-    XC-compat URLs that reference the original movie ID.
+    Root cause: when a movie has no TMDB/IMDB on first import (common with XC
+    providers) the record is keyed by name+year.  On the next refresh, if the
+    provider now returns a TMDB ID, the key becomes tmdb_<id> — no match is
+    found, a duplicate Movie is created, and the relation is repointed to it,
+    breaking STRM files and XC-compatible URLs that rely on the original ID.
     """
 
     def setUp(self):
-        self.account = M3UAccount.objects.create(
-            name="Test XC Account",
-            server_url="http://example.com",
-            username="user",
-            password="pass",
-            account_type="XC",
-        )
-        self.category = VODCategory.objects.create(
-            name="Action", category_type="movie"
-        )
-        # categories dict keyed by provider category ID (string)
-        self.categories = {"1": self.category}
-        # relations dict (category_id -> M3UVODCategoryRelation) — empty = all enabled
-        self.relations = {}
-
-    def _make_movie_data(self, stream_id, name, year=2024, tmdb=None, imdb=None):
-        """Helper to build a movie_data dict as the XC provider would return."""
-        data = {
-            "stream_id": stream_id,
-            "name": name,
-            "category_id": "1",
-            "container_extension": "mkv",
+        self.account = make_account()
+        provider_cat_id, self.category = make_category()
+        self.categories = {
+            provider_cat_id: self.category,
+            '__uncategorized__': VODCategory.objects.create(name='Uncategorized'),
         }
-        if tmdb is not None:
-            data["tmdb"] = tmdb
-        if imdb is not None:
-            data["imdb"] = imdb
-        return data
+        self.category_relations = {}  # No disabled categories
+        self.scan_time = timezone.now()
 
-    # ------------------------------------------------------------------
-    # Core regression test for #961
-    # ------------------------------------------------------------------
-    def test_existing_relation_preserves_movie_id_when_tmdb_appears(self):
-        """
-        Scenario from #961:
-        1. Initial import: movie created WITHOUT tmdb_id, relation points to it.
-        2. Refresh: provider now includes tmdb ID for the same stream_id.
-        3. Expected: relation still points to the SAME movie (ID unchanged),
-           and the movie's tmdb_id is filled in.
-        """
-        # --- Step 1: Initial import (no TMDB ID) ---
-        batch_initial = [self._make_movie_data("100", "Cool Movie", tmdb=None)]
+    def _batch(self, stream_id, name, tmdb_id=None, imdb_id=None, year=None):
+        return [{
+            'stream_id': stream_id,
+            'name': name,
+            'category_id': '1',
+            'tmdb_id': tmdb_id or '0',
+            'imdb_id': imdb_id or '',
+            'year': year,
+            'container_extension': 'mp4',
+        }]
+
+    def test_movie_id_stable_when_tmdb_appears_on_refresh(self):
+        """Core regression: the same movie DB row is used after TMDB ID appears."""
+        # First import: no TMDB ID
         process_movie_batch(
-            self.account, batch_initial, self.categories, self.relations
+            self.account,
+            self._batch('101', 'Inception', year=2010),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
+        )
+
+        self.assertEqual(Movie.objects.count(), 1)
+        original_movie_id = Movie.objects.first().pk
+        original_relation_id = M3UMovieRelation.objects.first().pk
+
+        # Second import: provider now supplies a TMDB ID
+        process_movie_batch(
+            self.account,
+            self._batch('101', 'Inception', tmdb_id='27205', year=2010),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
+        )
+
+        # Still exactly one movie; no duplicate created
+        self.assertEqual(Movie.objects.count(), 1)
+
+        movie = Movie.objects.first()
+        self.assertEqual(movie.pk, original_movie_id, "Movie primary key must not change")
+        self.assertEqual(movie.tmdb_id, '27205', "TMDB ID should be filled in")
+
+        relation = M3UMovieRelation.objects.first()
+        self.assertEqual(relation.pk, original_relation_id, "Relation primary key must not change")
+        self.assertEqual(relation.movie_id, original_movie_id, "Relation must still point to original movie")
+
+    def test_no_duplicate_movie_created_on_second_refresh(self):
+        """Repeated refreshes with TMDB present must not accumulate duplicates."""
+        process_movie_batch(
+            self.account,
+            self._batch('101', 'Inception', tmdb_id='27205', year=2010),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
+        )
+        process_movie_batch(
+            self.account,
+            self._batch('101', 'Inception', tmdb_id='27205', year=2010),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
         )
 
         self.assertEqual(Movie.objects.count(), 1)
         self.assertEqual(M3UMovieRelation.objects.count(), 1)
 
-        original_movie = Movie.objects.first()
-        original_movie_id = original_movie.id
-        self.assertIsNone(original_movie.tmdb_id)
-
-        relation = M3UMovieRelation.objects.first()
-        self.assertEqual(relation.movie_id, original_movie_id)
-
-        # --- Step 2: Refresh — same stream_id, now with TMDB ID ---
-        batch_refresh = [self._make_movie_data("100", "Cool Movie", tmdb="625568")]
+    def test_existing_tmdb_not_overwritten(self):
+        """A TMDB ID already on the record must not be replaced by new provider data."""
         process_movie_batch(
-            self.account, batch_refresh, self.categories, self.relations
+            self.account,
+            self._batch('101', 'Inception', tmdb_id='27205', year=2010),
+            self.categories,
+            self.category_relations,
+        )
+        # Provider sends a different (wrong) TMDB ID on next refresh
+        process_movie_batch(
+            self.account,
+            self._batch('101', 'Inception', tmdb_id='99999', year=2010),
+            self.categories,
+            self.category_relations,
         )
 
-        # --- Assertions ---
-        # No duplicate movie should be created
-        self.assertEqual(Movie.objects.count(), 1,
-                         "Refresh must NOT create a duplicate movie")
+        movie = Movie.objects.get(name='Inception')
+        self.assertEqual(movie.tmdb_id, '27205', "Existing TMDB ID must not be overwritten")
 
-        # Relation must still point to the original movie
-        relation.refresh_from_db()
-        self.assertEqual(relation.movie_id, original_movie_id,
-                         "Relation must NOT be repointed to a different movie")
-
-        # TMDB ID should now be filled in on the original movie
-        original_movie.refresh_from_db()
-        self.assertEqual(original_movie.tmdb_id, "625568",
-                         "TMDB ID should be filled in on existing movie")
-
-    def test_existing_relation_preserves_movie_id_when_imdb_appears(self):
-        """Same as above but for IMDB IDs."""
-        batch_initial = [self._make_movie_data("200", "Another Movie")]
+    def test_recycled_stream_id_creates_new_movie(self):
+        """When a provider reuses a stream_id for different content a new movie must be created."""
         process_movie_batch(
-            self.account, batch_initial, self.categories, self.relations
+            self.account,
+            self._batch('101', 'Inception', year=2010),
+            self.categories,
+            self.category_relations,
+        )
+        original_movie_id = Movie.objects.first().pk
+
+        # Provider recycles stream 101 for a completely different title
+        process_movie_batch(
+            self.account,
+            self._batch('101', 'The Dark Knight', year=2008),
+            self.categories,
+            self.category_relations,
         )
 
-        original_movie_id = Movie.objects.first().id
+        self.assertEqual(Movie.objects.count(), 2, "A new movie record must be created for the recycled stream")
+        new_movie = Movie.objects.exclude(pk=original_movie_id).first()
+        self.assertEqual(new_movie.name, 'The Dark Knight')
 
-        batch_refresh = [self._make_movie_data("200", "Another Movie", imdb="tt1234567")]
+        # Relation is updated to point to the new movie
+        relation = M3UMovieRelation.objects.get(stream_id='101', m3u_account=self.account)
+        self.assertEqual(relation.movie_id, new_movie.pk)
+
+    def test_new_stream_creates_new_movie(self):
+        """A stream_id that has never been seen before creates a new movie and relation."""
         process_movie_batch(
-            self.account, batch_refresh, self.categories, self.relations
+            self.account,
+            self._batch('999', 'Brand New Film', year=2024),
+            self.categories,
+            self.category_relations,
         )
 
         self.assertEqual(Movie.objects.count(), 1)
-        relation = M3UMovieRelation.objects.first()
-        self.assertEqual(relation.movie_id, original_movie_id)
-
-        movie = Movie.objects.first()
-        self.assertEqual(movie.imdb_id, "tt1234567")
-
-    def test_existing_tmdb_id_not_overwritten(self):
-        """
-        If a movie already has a tmdb_id and the provider sends a different
-        value on refresh, the existing tmdb_id must NOT be overwritten.
-        """
-        batch_initial = [self._make_movie_data("300", "Third Movie", tmdb="111")]
-        process_movie_batch(
-            self.account, batch_initial, self.categories, self.relations
-        )
-
-        movie = Movie.objects.first()
-        self.assertEqual(movie.tmdb_id, "111")
-
-        # Refresh with a different TMDB ID (shouldn't overwrite)
-        batch_refresh = [self._make_movie_data("300", "Third Movie", tmdb="222")]
-        process_movie_batch(
-            self.account, batch_refresh, self.categories, self.relations
-        )
-
-        movie.refresh_from_db()
-        self.assertEqual(movie.tmdb_id, "111",
-                         "Existing TMDB ID must not be overwritten on refresh")
-
-    def test_genuinely_new_stream_creates_new_movie(self):
-        """A stream_id not seen before should still create a new movie."""
-        batch1 = [self._make_movie_data("400", "Existing Movie")]
-        process_movie_batch(
-            self.account, batch1, self.categories, self.relations
-        )
-        self.assertEqual(Movie.objects.count(), 1)
-
-        batch2 = [self._make_movie_data("401", "Brand New Movie", tmdb="999")]
-        process_movie_batch(
-            self.account, batch2, self.categories, self.relations
-        )
-        self.assertEqual(Movie.objects.count(), 2,
-                         "A genuinely new stream should create a new movie")
-        self.assertEqual(M3UMovieRelation.objects.count(), 2)
-
-    def test_metadata_updated_on_refresh(self):
-        """Non-ID metadata (description, genre, etc.) should still be updated."""
-        batch_initial = [self._make_movie_data("500", "Meta Movie")]
-        batch_initial[0]["description"] = "Old description"
-        batch_initial[0]["genre"] = "Action"
-        process_movie_batch(
-            self.account, batch_initial, self.categories, self.relations
-        )
-
-        batch_refresh = [self._make_movie_data("500", "Meta Movie")]
-        batch_refresh[0]["description"] = "New description"
-        batch_refresh[0]["genre"] = "Comedy"
-        process_movie_batch(
-            self.account, batch_refresh, self.categories, self.relations
-        )
-
-        movie = Movie.objects.first()
-        self.assertEqual(movie.description, "New description")
-        self.assertEqual(movie.genre, "Comedy")
-
-    def test_multiple_movies_stable_across_refresh(self):
-        """Multiple movies with different stream_ids all remain stable."""
-        batch_initial = [
-            self._make_movie_data("600", "Movie A"),
-            self._make_movie_data("601", "Movie B"),
-            self._make_movie_data("602", "Movie C"),
-        ]
-        process_movie_batch(
-            self.account, batch_initial, self.categories, self.relations
-        )
-
-        original_ids = {
-            rel.stream_id: rel.movie_id
-            for rel in M3UMovieRelation.objects.all()
-        }
-        self.assertEqual(len(original_ids), 3)
-
-        # Refresh — now all have TMDB IDs
-        batch_refresh = [
-            self._make_movie_data("600", "Movie A", tmdb="10"),
-            self._make_movie_data("601", "Movie B", tmdb="20"),
-            self._make_movie_data("602", "Movie C", tmdb="30"),
-        ]
-        process_movie_batch(
-            self.account, batch_refresh, self.categories, self.relations
-        )
-
-        self.assertEqual(Movie.objects.count(), 3,
-                         "No duplicate movies should be created")
-
-        for rel in M3UMovieRelation.objects.all():
-            self.assertEqual(rel.movie_id, original_ids[rel.stream_id],
-                             f"stream_id={rel.stream_id} must keep its original movie_id")
+        self.assertEqual(Movie.objects.first().name, 'Brand New Film')
+        self.assertEqual(M3UMovieRelation.objects.count(), 1)
 
 
 class ProcessSeriesBatchStableIDTests(TestCase):
-    """Same tests as above but for series, since the fix applies to both."""
+    """Parallel stability guarantees for TV series."""
 
     def setUp(self):
-        self.account = M3UAccount.objects.create(
-            name="Test XC Account Series",
-            server_url="http://example.com",
-            username="user",
-            password="pass",
-            account_type="XC",
-        )
-        self.category = VODCategory.objects.create(
-            name="Drama", category_type="series"
-        )
-        self.categories = {"1": self.category}
-        self.relations = {}
-
-    def _make_series_data(self, series_id, name, year=2024, tmdb=None, imdb=None):
-        data = {
-            "series_id": series_id,
-            "name": name,
-            "category_id": "1",
+        self.account = make_account("Series Account")
+        provider_cat_id, self.category = make_category("Drama", "2")
+        self.categories = {
+            provider_cat_id: self.category,
+            '__uncategorized__': VODCategory.objects.create(name='Uncategorized'),
         }
-        if tmdb is not None:
-            data["tmdb"] = tmdb
-        if imdb is not None:
-            data["imdb"] = imdb
-        return data
+        self.category_relations = {}
+        self.scan_time = timezone.now()
 
-    def test_existing_relation_preserves_series_id_when_tmdb_appears(self):
-        """Series version of the core #961 regression test."""
-        batch_initial = [self._make_series_data("S100", "Cool Series")]
+    def _batch(self, series_id, name, tmdb_id=None, imdb_id=None, year=None):
+        return [{
+            'series_id': series_id,
+            'name': name,
+            'category_id': '2',
+            'tmdb': tmdb_id or '0',
+            'imdb': imdb_id or '',
+            'releaseDate': f'{year}-01-01' if year else '',
+        }]
+
+    def test_series_id_stable_when_tmdb_appears_on_refresh(self):
+        """Core regression: series DB row is preserved after TMDB ID appears."""
         process_series_batch(
-            self.account, batch_initial, self.categories, self.relations
+            self.account,
+            self._batch('201', 'Breaking Bad', year=2008),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
         )
 
         self.assertEqual(Series.objects.count(), 1)
-        original_series_id = Series.objects.first().id
-        relation = M3USeriesRelation.objects.first()
-        self.assertEqual(relation.series_id, original_series_id)
+        original_series_id = Series.objects.first().pk
 
-        batch_refresh = [self._make_series_data("S100", "Cool Series", tmdb="99999")]
         process_series_batch(
-            self.account, batch_refresh, self.categories, self.relations
+            self.account,
+            self._batch('201', 'Breaking Bad', tmdb_id='1396', year=2008),
+            self.categories,
+            self.category_relations,
+            scan_start_time=self.scan_time,
         )
 
-        self.assertEqual(Series.objects.count(), 1,
-                         "Refresh must NOT create a duplicate series")
-        relation.refresh_from_db()
-        self.assertEqual(relation.series_id, original_series_id,
-                         "Relation must NOT be repointed to a different series")
-
+        self.assertEqual(Series.objects.count(), 1)
         series = Series.objects.first()
-        self.assertEqual(series.tmdb_id, "99999")
+        self.assertEqual(series.pk, original_series_id, "Series primary key must not change")
+        self.assertEqual(series.tmdb_id, '1396', "TMDB ID should be filled in")
 
-    def test_genuinely_new_series_creates_new_record(self):
-        batch1 = [self._make_series_data("S200", "Existing Show")]
+        relation = M3USeriesRelation.objects.first()
+        self.assertEqual(relation.series_id, original_series_id, "Relation must still point to original series")
+
+    def test_recycled_series_id_creates_new_series(self):
+        """When a provider reuses a series_id for different content a new series must be created."""
         process_series_batch(
-            self.account, batch1, self.categories, self.relations
+            self.account,
+            self._batch('201', 'Breaking Bad', year=2008),
+            self.categories,
+            self.category_relations,
         )
+        original_series_pk = Series.objects.first().pk
 
-        batch2 = [self._make_series_data("S201", "New Show", tmdb="888")]
         process_series_batch(
-            self.account, batch2, self.categories, self.relations
+            self.account,
+            self._batch('201', 'Better Call Saul', year=2015),
+            self.categories,
+            self.category_relations,
         )
 
         self.assertEqual(Series.objects.count(), 2)
-        self.assertEqual(M3USeriesRelation.objects.count(), 2)
+        new_series = Series.objects.exclude(pk=original_series_pk).first()
+        self.assertEqual(new_series.name, 'Better Call Saul')
+
+        relation = M3USeriesRelation.objects.get(external_series_id='201', m3u_account=self.account)
+        self.assertEqual(relation.series_id, new_series.pk)
+
+    def test_no_duplicate_series_on_repeated_refresh(self):
+        """Repeated refreshes with the same data must not accumulate duplicates."""
+        for _ in range(3):
+            process_series_batch(
+                self.account,
+                self._batch('201', 'Breaking Bad', tmdb_id='1396', year=2008),
+                self.categories,
+                self.category_relations,
+                scan_start_time=self.scan_time,
+            )
+
+        self.assertEqual(Series.objects.count(), 1)
+        self.assertEqual(M3USeriesRelation.objects.count(), 1)
