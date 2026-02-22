@@ -1,5 +1,6 @@
 import logging
 from datetime import date
+from time import monotonic
 from typing import Optional
 
 from celery import shared_task
@@ -7,7 +8,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from apps.m3u.models import M3UAccount
-from apps.media_servers.models import MediaServerIntegration
+from apps.media_servers.models import MediaServerIntegration, MediaServerSyncRun
 from apps.media_servers.providers import (
     ProviderEpisode,
     ProviderMovie,
@@ -25,12 +26,137 @@ from apps.vod.models import (
     VODCategory,
     VODLogo,
 )
+from core.utils import send_websocket_update
 
 logger = logging.getLogger(__name__)
 
 MEDIA_SERVER_ACCOUNT_PREFIX = 'Media Server'
 MEDIA_SERVER_ACCOUNT_PRIORITY = 1000
 UNCATEGORIZED_NAME = 'Uncategorized'
+STAGE_DISCOVERY = 'discovery'
+STAGE_IMPORT = 'import'
+STAGE_CLEANUP = 'cleanup'
+SYNC_WS_UPDATE_INTERVAL_SECONDS = 1.0
+
+
+class SyncCancelled(Exception):
+    pass
+
+
+def _default_sync_stages() -> dict:
+    return {
+        STAGE_DISCOVERY: {'status': 'pending', 'processed': 0, 'total': 0},
+        STAGE_IMPORT: {'status': 'pending', 'processed': 0, 'total': 0},
+        STAGE_CLEANUP: {'status': 'pending', 'processed': 0, 'total': 0},
+    }
+
+
+def _sync_run_payload(sync_run: MediaServerSyncRun) -> dict:
+    return {
+        'id': sync_run.id,
+        'integration': sync_run.integration_id,
+        'integration_name': sync_run.integration.name,
+        'provider_type': sync_run.integration.provider_type,
+        'status': sync_run.status,
+        'summary': sync_run.summary,
+        'stages': sync_run.stages or {},
+        'processed_items': sync_run.processed_items,
+        'total_items': sync_run.total_items,
+        'created_items': sync_run.created_items,
+        'updated_items': sync_run.updated_items,
+        'removed_items': sync_run.removed_items,
+        'skipped_items': sync_run.skipped_items,
+        'error_count': sync_run.error_count,
+        'message': sync_run.message,
+        'extra': sync_run.extra,
+        'task_id': sync_run.task_id,
+        'created_at': sync_run.created_at.isoformat() if sync_run.created_at else None,
+        'updated_at': sync_run.updated_at.isoformat() if sync_run.updated_at else None,
+        'started_at': sync_run.started_at.isoformat() if sync_run.started_at else None,
+        'finished_at': sync_run.finished_at.isoformat() if sync_run.finished_at else None,
+    }
+
+
+def _broadcast_sync_run_update(
+    sync_run: MediaServerSyncRun,
+    ws_state: dict[str, float],
+    *,
+    force: bool = False,
+) -> None:
+    now = monotonic()
+    if not force and now - ws_state.get('last_sent', 0.0) < SYNC_WS_UPDATE_INTERVAL_SECONDS:
+        return
+    ws_state['last_sent'] = now
+    send_websocket_update(
+        'updates',
+        'update',
+        {
+            'type': 'media_server_sync_updated',
+            'sync_run': _sync_run_payload(sync_run),
+        },
+    )
+
+
+def _update_sync_stage(
+    sync_run: MediaServerSyncRun,
+    stage_key: str,
+    *,
+    status: Optional[str] = None,
+    processed: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
+    stages = sync_run.stages or {}
+    stage = stages.get(stage_key) or {'status': 'pending', 'processed': 0, 'total': 0}
+    if status is not None:
+        stage['status'] = status
+    if processed is not None:
+        stage['processed'] = processed
+    if total is not None:
+        stage['total'] = total
+    stages[stage_key] = stage
+    sync_run.stages = stages
+    sync_run.save(update_fields=['stages', 'updated_at'])
+
+
+def _update_sync_metrics(
+    sync_run: MediaServerSyncRun,
+    *,
+    processed_items: int,
+    total_items: int,
+    created_items: int,
+    updated_items: int,
+    removed_items: int,
+    skipped_items: int,
+    error_count: int,
+    extra: Optional[dict] = None,
+) -> None:
+    sync_run.processed_items = processed_items
+    sync_run.total_items = total_items
+    sync_run.created_items = created_items
+    sync_run.updated_items = updated_items
+    sync_run.removed_items = removed_items
+    sync_run.skipped_items = skipped_items
+    sync_run.error_count = error_count
+    if extra is not None:
+        sync_run.extra = extra
+    sync_run.save(
+        update_fields=[
+            'processed_items',
+            'total_items',
+            'created_items',
+            'updated_items',
+            'removed_items',
+            'skipped_items',
+            'error_count',
+            'extra',
+            'updated_at',
+        ]
+    )
+
+
+def _is_http_stream(url: Optional[str]) -> bool:
+    value = str(url or '').strip().lower()
+    return value.startswith('http://') or value.startswith('https://')
 
 
 def _set_sync_state(
@@ -163,6 +289,24 @@ def _ensure_logo(*, title: str, poster_url: str) -> Optional[VODLogo]:
     return logo
 
 
+def _should_update_logo(*, current_logo: Optional[VODLogo], next_logo: Optional[VODLogo]) -> bool:
+    if not next_logo:
+        return False
+    if not current_logo:
+        return True
+    if current_logo.id == next_logo.id:
+        return False
+
+    current_is_http = _is_http_stream(str(getattr(current_logo, 'url', '') or '').strip())
+    next_is_http = _is_http_stream(str(getattr(next_logo, 'url', '') or '').strip())
+
+    # Keep existing behavior for HTTP->HTTP updates, but allow local/non-HTTP
+    # artwork to replace TMDB URLs when it becomes available.
+    if current_is_http and next_is_http:
+        return False
+    return True
+
+
 def _normalize_air_date(value: Optional[str]) -> Optional[date]:
     raw = str(value or '').strip()
     if not raw:
@@ -243,7 +387,7 @@ def _sync_movie(provider_movie: ProviderMovie) -> tuple[Movie, bool, bool]:
             movie.duration_secs = provider_movie.duration_secs
             updated = True
 
-        if not movie.logo and logo:
+        if _should_update_logo(current_logo=movie.logo, next_logo=logo):
             movie.logo = logo
             updated = True
 
@@ -318,7 +462,7 @@ def _sync_series(provider_series: ProviderSeries) -> tuple[Series, bool, bool]:
         updated |= _set_if_blank(series, 'tmdb_id', tmdb_id)
         updated |= _set_if_blank(series, 'imdb_id', imdb_id)
 
-        if not series.logo and logo:
+        if _should_update_logo(current_logo=series.logo, next_logo=logo):
             series.logo = logo
             updated = True
 
@@ -460,7 +604,7 @@ def _movie_relation_custom_properties(
     integration: MediaServerIntegration,
     provider_movie: ProviderMovie,
 ) -> dict:
-    return {
+    payload = {
         'managed_source': 'media_server',
         'source': 'media_server',
         'integration_id': integration.id,
@@ -468,9 +612,14 @@ def _movie_relation_custom_properties(
         'provider': integration.provider_type,
         'provider_item_id': provider_movie.external_id,
         'provider_library': provider_movie.category_name,
-        'direct_source': provider_movie.stream_url,
         'poster_url': provider_movie.poster_url,
+        'file_path': provider_movie.local_path,
+        'file_name': provider_movie.local_file_name,
+        'file_size_bytes': provider_movie.local_file_size,
     }
+    if _is_http_stream(provider_movie.stream_url):
+        payload['direct_source'] = provider_movie.stream_url
+    return payload
 
 
 def _series_relation_custom_properties(
@@ -496,7 +645,7 @@ def _episode_relation_custom_properties(
     provider_series: ProviderSeries,
     provider_episode: ProviderEpisode,
 ) -> dict:
-    return {
+    payload = {
         'managed_source': 'media_server',
         'source': 'media_server',
         'integration_id': integration.id,
@@ -505,9 +654,14 @@ def _episode_relation_custom_properties(
         'provider_item_id': provider_episode.external_id,
         'provider_series_item_id': provider_series.external_id,
         'provider_library': provider_series.category_name,
-        'direct_source': provider_episode.stream_url,
         'poster_url': provider_series.poster_url,
+        'file_path': provider_episode.local_path,
+        'file_name': provider_episode.local_file_name,
+        'file_size_bytes': provider_episode.local_file_size,
     }
+    if _is_http_stream(provider_episode.stream_url):
+        payload['direct_source'] = provider_episode.stream_url
+    return payload
 
 
 def _delete_orphan_series(series_ids: list[int]) -> None:
@@ -554,12 +708,59 @@ def cleanup_integration_vod(integration: MediaServerIntegration) -> None:
 
 
 @shared_task(bind=True)
-def sync_media_server_integration(self, integration_id: int):
+def sync_media_server_integration(self, integration_id: int, sync_run_id: Optional[int] = None):
     try:
         integration = MediaServerIntegration.objects.get(id=integration_id)
     except MediaServerIntegration.DoesNotExist:
         logger.warning('Media server integration %s not found', integration_id)
         return f'Integration {integration_id} not found'
+
+    scan_started = timezone.now()
+    ws_state = {'last_sent': 0.0}
+
+    sync_run = None
+    if sync_run_id:
+        sync_run = (
+            MediaServerSyncRun.objects.select_related('integration')
+            .filter(id=sync_run_id, integration_id=integration.id)
+            .first()
+        )
+    if not sync_run:
+        sync_run = MediaServerSyncRun.objects.create(
+            integration=integration,
+            status=MediaServerSyncRun.Status.QUEUED,
+            summary='Scheduled sync',
+            message='Sync queued.',
+            stages=_default_sync_stages(),
+        )
+
+    if sync_run.status == MediaServerSyncRun.Status.CANCELLED:
+        return f'Sync run {sync_run.id} already cancelled'
+
+    sync_run.task_id = getattr(self.request, 'id', '') or sync_run.task_id
+    sync_run.status = MediaServerSyncRun.Status.RUNNING
+    sync_run.summary = 'Sync running'
+    sync_run.message = 'Sync started.'
+    sync_run.started_at = scan_started
+    sync_run.finished_at = None
+    if not isinstance(sync_run.stages, dict) or not sync_run.stages:
+        sync_run.stages = _default_sync_stages()
+    sync_run.save(
+        update_fields=[
+            'task_id',
+            'status',
+            'summary',
+            'message',
+            'started_at',
+            'finished_at',
+            'stages',
+            'updated_at',
+        ]
+    )
+    _update_sync_stage(sync_run, STAGE_DISCOVERY, status='running', processed=0, total=0)
+    _update_sync_stage(sync_run, STAGE_IMPORT, status='pending', processed=0, total=0)
+    _update_sync_stage(sync_run, STAGE_CLEANUP, status='pending', processed=0, total=0)
+    _broadcast_sync_run_update(sync_run, ws_state, force=True)
 
     _set_sync_state(
         integration,
@@ -569,6 +770,15 @@ def sync_media_server_integration(self, integration_id: int):
 
     if not integration.add_to_vod:
         message = 'Integration is configured not to add content to VOD.'
+        sync_run.status = MediaServerSyncRun.Status.COMPLETED
+        sync_run.summary = 'Sync skipped'
+        sync_run.message = message
+        sync_run.finished_at = timezone.now()
+        sync_run.save(update_fields=['status', 'summary', 'message', 'finished_at', 'updated_at'])
+        _update_sync_stage(sync_run, STAGE_DISCOVERY, status='completed', processed=0, total=0)
+        _update_sync_stage(sync_run, STAGE_IMPORT, status='skipped', processed=0, total=0)
+        _update_sync_stage(sync_run, STAGE_CLEANUP, status='skipped', processed=0, total=0)
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
         _set_sync_state(
             integration,
             status=MediaServerIntegration.SyncStatus.SUCCESS,
@@ -579,6 +789,25 @@ def sync_media_server_integration(self, integration_id: int):
 
     if not integration.enabled:
         message = 'Integration is disabled.'
+        sync_run.status = MediaServerSyncRun.Status.FAILED
+        sync_run.summary = 'Sync failed'
+        sync_run.message = message
+        sync_run.error_count = 1
+        sync_run.finished_at = timezone.now()
+        sync_run.save(
+            update_fields=[
+                'status',
+                'summary',
+                'message',
+                'error_count',
+                'finished_at',
+                'updated_at',
+            ]
+        )
+        _update_sync_stage(sync_run, STAGE_DISCOVERY, status='failed', processed=0, total=0)
+        _update_sync_stage(sync_run, STAGE_IMPORT, status='skipped', processed=0, total=0)
+        _update_sync_stage(sync_run, STAGE_CLEANUP, status='skipped', processed=0, total=0)
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
         _set_sync_state(
             integration,
             status=MediaServerIntegration.SyncStatus.ERROR,
@@ -586,7 +815,6 @@ def sync_media_server_integration(self, integration_id: int):
         )
         return message
 
-    scan_started = timezone.now()
     account = ensure_integration_vod_account(integration)
     category_cache: dict[str, VODCategory] = {}
 
@@ -611,14 +839,138 @@ def sync_media_server_integration(self, integration_id: int):
     processed_episodes = 0
     skipped_episodes = 0
 
+    removed_movie_relations = 0
+    removed_series_relations = 0
+    removed_episode_relations = 0
+
+    cleanup_step = 0
+    cleanup_total_steps = 6
+    cancel_check_counter = 0
+    last_metric_flush = 0.0
+
+    def _metrics_extra() -> dict:
+        return {
+            'movies': {
+                'processed': processed_movies,
+                'created': created_movies,
+                'updated': updated_movies,
+                'relations_created': created_movie_relations,
+                'relations_updated': updated_movie_relations,
+                'skipped': skipped_movies,
+                'relations_removed': removed_movie_relations,
+            },
+            'series': {
+                'processed': processed_series,
+                'created': created_series,
+                'updated': updated_series,
+                'relations_created': created_series_relations,
+                'relations_updated': updated_series_relations,
+                'skipped': skipped_series,
+                'relations_removed': removed_series_relations,
+            },
+            'episodes': {
+                'processed': processed_episodes,
+                'created': created_episodes,
+                'updated': updated_episodes,
+                'relations_created': created_episode_relations,
+                'relations_updated': updated_episode_relations,
+                'skipped': skipped_episodes,
+                'relations_removed': removed_episode_relations,
+            },
+        }
+
+    def _flush_metrics(
+        *,
+        force: bool = False,
+        stage_status: Optional[str] = None,
+    ) -> None:
+        nonlocal last_metric_flush
+        now = monotonic()
+        if not force and now - last_metric_flush < 1.0:
+            return
+        last_metric_flush = now
+        processed_items = processed_movies + processed_series + processed_episodes
+        created_items = created_movies + created_series + created_episodes
+        updated_items = updated_movies + updated_series + updated_episodes
+        skipped_items = skipped_movies + skipped_series + skipped_episodes
+        removed_items = (
+            removed_movie_relations + removed_series_relations + removed_episode_relations
+        )
+        total_items = processed_items
+        if not force and sync_run.status == MediaServerSyncRun.Status.RUNNING:
+            total_items = processed_items + 1 if processed_items > 0 else 0
+
+        _update_sync_metrics(
+            sync_run,
+            processed_items=processed_items,
+            total_items=total_items,
+            created_items=created_items,
+            updated_items=updated_items,
+            removed_items=removed_items,
+            skipped_items=skipped_items,
+            error_count=sync_run.error_count,
+            extra=_metrics_extra(),
+        )
+        effective_stage_status = stage_status
+        if not effective_stage_status:
+            if sync_run.status == MediaServerSyncRun.Status.RUNNING:
+                effective_stage_status = 'running'
+            else:
+                effective_stage_status = (
+                    (sync_run.stages or {}).get(STAGE_IMPORT, {}).get('status')
+                    or 'completed'
+                )
+        _update_sync_stage(
+            sync_run,
+            STAGE_IMPORT,
+            status=effective_stage_status,
+            processed=processed_items,
+            total=total_items,
+        )
+        _broadcast_sync_run_update(sync_run, ws_state, force=force)
+
+    def _check_cancel() -> None:
+        nonlocal cancel_check_counter
+        cancel_check_counter += 1
+        if cancel_check_counter % 25 != 0 and sync_run.status != MediaServerSyncRun.Status.CANCELLED:
+            return
+        sync_run.refresh_from_db(fields=['status'])
+        if sync_run.status == MediaServerSyncRun.Status.CANCELLED:
+            raise SyncCancelled('Sync cancelled by user.')
+
     try:
         with get_provider_client(integration) as client:
-            client.ping()
+            _check_cancel()
+            try:
+                client.ping()
+            except FileNotFoundError as exc:
+                if (
+                    integration.provider_type
+                    == MediaServerIntegration.ProviderTypes.LOCAL
+                ):
+                    logger.warning(
+                        'Local sync continuing with missing path(s) for integration %s: %s',
+                        integration.id,
+                        exc,
+                    )
+                else:
+                    raise
             libraries = client.list_libraries()
 
             if integration.selected_library_ids:
                 allowed = integration.selected_library_ids
                 libraries = [library for library in libraries if library.id in allowed]
+
+            library_total = len(libraries)
+            _update_sync_stage(
+                sync_run,
+                STAGE_DISCOVERY,
+                status='completed',
+                processed=library_total,
+                total=library_total,
+            )
+            _update_sync_stage(sync_run, STAGE_IMPORT, status='running', processed=0, total=0)
+            _broadcast_sync_run_update(sync_run, ws_state, force=True)
 
             movie_libraries = [
                 library for library in libraries if library.content_type in {'movie', 'mixed'}
@@ -628,9 +980,11 @@ def sync_media_server_integration(self, integration_id: int):
             ]
 
             for provider_movie in client.iter_movies(movie_libraries):
+                _check_cancel()
                 processed_movies += 1
-                if not provider_movie.stream_url:
+                if not provider_movie.stream_url and not provider_movie.local_path:
                     skipped_movies += 1
+                    _flush_metrics(force=False)
                     continue
 
                 category = _ensure_category(
@@ -664,11 +1018,14 @@ def sync_media_server_integration(self, integration_id: int):
                     created_movie_relations += 1
                 else:
                     updated_movie_relations += 1
+                _flush_metrics(force=False)
 
             for provider_series in client.iter_series(series_libraries):
+                _check_cancel()
                 processed_series += 1
                 if not provider_series.episodes:
                     skipped_series += 1
+                    _flush_metrics(force=False)
                     continue
 
                 category = _ensure_category(
@@ -702,11 +1059,14 @@ def sync_media_server_integration(self, integration_id: int):
                     created_series_relations += 1
                 else:
                     updated_series_relations += 1
+                _flush_metrics(force=False)
 
                 for provider_episode in provider_series.episodes:
+                    _check_cancel()
                     processed_episodes += 1
-                    if not provider_episode.stream_url:
+                    if not provider_episode.stream_url and not provider_episode.local_path:
                         skipped_episodes += 1
+                        _flush_metrics(force=False)
                         continue
 
                     episode, episode_created, episode_updated = _sync_episode(
@@ -739,6 +1099,27 @@ def sync_media_server_integration(self, integration_id: int):
                         created_episode_relations += 1
                     else:
                         updated_episode_relations += 1
+                    _flush_metrics(force=False)
+
+        _flush_metrics(force=True)
+        processed_items = processed_movies + processed_series + processed_episodes
+        _update_sync_stage(
+            sync_run,
+            STAGE_IMPORT,
+            status='completed',
+            processed=processed_items,
+            total=processed_items,
+        )
+
+        _check_cancel()
+        _update_sync_stage(
+            sync_run,
+            STAGE_CLEANUP,
+            status='running',
+            processed=cleanup_step,
+            total=cleanup_total_steps,
+        )
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
 
         stale_movie_relation_ids = []
         stale_movie_ids = []
@@ -746,13 +1127,8 @@ def sync_media_server_integration(self, integration_id: int):
             m3u_account=account,
             last_seen__lt=scan_started,
         ).only('id', 'movie_id', 'custom_properties'):
-            custom_props = relation.custom_properties or {}
-            if (
-                custom_props.get('managed_source') == 'media_server'
-                and custom_props.get('integration_id') == integration.id
-            ):
-                stale_movie_relation_ids.append(relation.id)
-                stale_movie_ids.append(relation.movie_id)
+            stale_movie_relation_ids.append(relation.id)
+            stale_movie_ids.append(relation.movie_id)
 
         stale_series_relation_ids = []
         stale_series_ids = []
@@ -760,13 +1136,8 @@ def sync_media_server_integration(self, integration_id: int):
             m3u_account=account,
             last_seen__lt=scan_started,
         ).only('id', 'series_id', 'custom_properties'):
-            custom_props = relation.custom_properties or {}
-            if (
-                custom_props.get('managed_source') == 'media_server'
-                and custom_props.get('integration_id') == integration.id
-            ):
-                stale_series_relation_ids.append(relation.id)
-                stale_series_ids.append(relation.series_id)
+            stale_series_relation_ids.append(relation.id)
+            stale_series_ids.append(relation.series_id)
 
         stale_episode_relation_ids = []
         stale_episode_ids = []
@@ -774,37 +1145,50 @@ def sync_media_server_integration(self, integration_id: int):
             m3u_account=account,
             last_seen__lt=scan_started,
         ).only('id', 'episode_id', 'custom_properties'):
-            custom_props = relation.custom_properties or {}
-            if (
-                custom_props.get('managed_source') == 'media_server'
-                and custom_props.get('integration_id') == integration.id
-            ):
-                stale_episode_relation_ids.append(relation.id)
-                stale_episode_ids.append(relation.episode_id)
+            stale_episode_relation_ids.append(relation.id)
+            stale_episode_ids.append(relation.episode_id)
+        cleanup_step += 1
+        _update_sync_stage(
+            sync_run,
+            STAGE_CLEANUP,
+            status='running',
+            processed=cleanup_step,
+            total=cleanup_total_steps,
+        )
+        _check_cancel()
 
-        removed_movie_relations = 0
         if stale_movie_relation_ids:
             removed_movie_relations, _ = M3UMovieRelation.objects.filter(
                 id__in=stale_movie_relation_ids
             ).delete()
+        cleanup_step += 1
+        _update_sync_stage(sync_run, STAGE_CLEANUP, processed=cleanup_step, total=cleanup_total_steps)
+        _check_cancel()
 
-        removed_series_relations = 0
         if stale_series_relation_ids:
             removed_series_relations, _ = M3USeriesRelation.objects.filter(
                 id__in=stale_series_relation_ids
             ).delete()
+        cleanup_step += 1
+        _update_sync_stage(sync_run, STAGE_CLEANUP, processed=cleanup_step, total=cleanup_total_steps)
+        _check_cancel()
 
-        removed_episode_relations = 0
         if stale_episode_relation_ids:
             removed_episode_relations, _ = M3UEpisodeRelation.objects.filter(
                 id__in=stale_episode_relation_ids
             ).delete()
+        cleanup_step += 1
+        _update_sync_stage(sync_run, STAGE_CLEANUP, processed=cleanup_step, total=cleanup_total_steps)
+        _check_cancel()
 
         if stale_movie_ids:
             Movie.objects.filter(
                 id__in=stale_movie_ids,
                 m3u_relations__isnull=True,
             ).delete()
+        cleanup_step += 1
+        _update_sync_stage(sync_run, STAGE_CLEANUP, processed=cleanup_step, total=cleanup_total_steps)
+        _check_cancel()
 
         if stale_episode_ids:
             Episode.objects.filter(
@@ -813,6 +1197,14 @@ def sync_media_server_integration(self, integration_id: int):
             ).delete()
 
         _delete_orphan_series(stale_series_ids)
+        cleanup_step += 1
+        _update_sync_stage(
+            sync_run,
+            STAGE_CLEANUP,
+            status='completed',
+            processed=cleanup_step,
+            total=cleanup_total_steps,
+        )
 
         summary = (
             f'Movies: {processed_movies} processed '
@@ -828,6 +1220,33 @@ def sync_media_server_integration(self, integration_id: int):
             f'Episode relations: {created_episode_relations} created, '
             f'{updated_episode_relations} updated, {removed_episode_relations} removed.'
         )
+
+        processed_items = processed_movies + processed_series + processed_episodes
+        created_items = created_movies + created_series + created_episodes
+        updated_items = updated_movies + updated_series + updated_episodes
+        skipped_items = skipped_movies + skipped_series + skipped_episodes
+        removed_items = (
+            removed_movie_relations + removed_series_relations + removed_episode_relations
+        )
+        _update_sync_metrics(
+            sync_run,
+            processed_items=processed_items,
+            total_items=processed_items,
+            created_items=created_items,
+            updated_items=updated_items,
+            removed_items=removed_items,
+            skipped_items=skipped_items,
+            error_count=sync_run.error_count,
+            extra=_metrics_extra(),
+        )
+
+        sync_run.status = MediaServerSyncRun.Status.COMPLETED
+        sync_run.summary = 'Sync completed'
+        sync_run.message = summary
+        sync_run.finished_at = timezone.now()
+        sync_run.save(update_fields=['status', 'summary', 'message', 'finished_at', 'updated_at'])
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
+
         _set_sync_state(
             integration,
             status=MediaServerIntegration.SyncStatus.SUCCESS,
@@ -835,12 +1254,71 @@ def sync_media_server_integration(self, integration_id: int):
             update_synced_at=True,
         )
         return summary
+    except SyncCancelled as exc:
+        logger.info(
+            'Media server sync cancelled for integration %s (%s)',
+            integration.id,
+            integration.name,
+        )
+        stages = sync_run.stages or {}
+        for stage_key in (STAGE_DISCOVERY, STAGE_IMPORT, STAGE_CLEANUP):
+            stage = stages.get(stage_key) or {'status': 'pending', 'processed': 0, 'total': 0}
+            current_status = str(stage.get('status') or 'pending')
+            if current_status == 'pending':
+                stage['status'] = 'skipped'
+            elif current_status == 'running':
+                stage['status'] = 'cancelled'
+            stages[stage_key] = stage
+        sync_run.stages = stages
+        sync_run.status = MediaServerSyncRun.Status.CANCELLED
+        sync_run.summary = 'Sync cancelled'
+        sync_run.message = str(exc)
+        sync_run.finished_at = timezone.now()
+        sync_run.save(update_fields=['stages', 'status', 'summary', 'message', 'finished_at', 'updated_at'])
+        _flush_metrics(force=True, stage_status='cancelled')
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
+
+        _set_sync_state(
+            integration,
+            status=MediaServerIntegration.SyncStatus.ERROR,
+            message='Sync cancelled by user.',
+        )
+        return 'Sync cancelled by user.'
     except Exception as exc:
         logger.exception(
             'Media server sync failed for integration %s (%s)',
             integration.id,
             integration.name,
         )
+        stages = sync_run.stages or {}
+        for stage_key in (STAGE_DISCOVERY, STAGE_IMPORT, STAGE_CLEANUP):
+            stage = stages.get(stage_key) or {'status': 'pending', 'processed': 0, 'total': 0}
+            current_status = str(stage.get('status') or 'pending')
+            if current_status == 'running':
+                stage['status'] = 'failed'
+            elif current_status == 'pending':
+                stage['status'] = 'skipped'
+            stages[stage_key] = stage
+        sync_run.stages = stages
+        sync_run.status = MediaServerSyncRun.Status.FAILED
+        sync_run.summary = 'Sync failed'
+        sync_run.message = f'Sync failed: {exc}'
+        sync_run.error_count = (sync_run.error_count or 0) + 1
+        sync_run.finished_at = timezone.now()
+        sync_run.save(
+            update_fields=[
+                'stages',
+                'status',
+                'summary',
+                'message',
+                'error_count',
+                'finished_at',
+                'updated_at',
+            ]
+        )
+        _flush_metrics(force=True, stage_status='failed')
+        _broadcast_sync_run_update(sync_run, ws_state, force=True)
+
         _set_sync_state(
             integration,
             status=MediaServerIntegration.SyncStatus.ERROR,

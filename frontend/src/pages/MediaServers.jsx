@@ -20,6 +20,7 @@ import {
   CircleX,
   FolderKanban,
   RefreshCw,
+  ScanSearch,
   Server,
   SquarePlus,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ import API from '../api';
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import MediaServerIntegrationForm from '../components/forms/MediaServerIntegrationForm';
+import MediaServerSyncDrawer from '../components/MediaServerSyncDrawer';
 
 function statusColor(status) {
   switch (status) {
@@ -64,6 +66,8 @@ function ProviderBadge({ provider }) {
         ? 'Emby'
         : normalized === 'jellyfin'
           ? 'Jellyfin'
+          : normalized === 'local'
+            ? 'Local'
           : provider || 'Unknown';
   return (
     <Badge variant="light" color="indigo">
@@ -95,6 +99,8 @@ export default function MediaServersPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [activeIntegration, setActiveIntegration] = useState(null);
   const [busyById, setBusyById] = useState({});
+  const [scanDrawerOpen, setScanDrawerOpen] = useState(false);
+  const [scanIntegrationId, setScanIntegrationId] = useState(null);
 
   const setBusy = (id, value) => {
     setBusyById((prev) => ({ ...prev, [id]: value }));
@@ -145,7 +151,8 @@ export default function MediaServersPage() {
     }
   };
 
-  const runSync = async (integration) => {
+  const runSync = async (integration, options = {}) => {
+    const { suppressRefresh = false } = options;
     setBusy(integration.id, true);
     try {
       const response = await API.syncMediaServerIntegration(integration.id);
@@ -154,7 +161,10 @@ export default function MediaServersPage() {
         message: response?.message || `Sync started for ${integration.name}`,
         color: 'blue',
       });
-      await fetchIntegrations();
+      if (!suppressRefresh) {
+        await fetchIntegrations();
+      }
+      return response;
     } finally {
       setBusy(integration.id, false);
     }
@@ -183,11 +193,27 @@ export default function MediaServersPage() {
     setBusy(integration.id, true);
     try {
       await API.deleteMediaServerIntegration(integration.id);
+      if (scanIntegrationId === integration.id) {
+        setScanDrawerOpen(false);
+        setScanIntegrationId(null);
+      }
       await fetchIntegrations();
     } finally {
       setBusy(integration.id, false);
     }
   };
+
+  const openScanDrawer = (integration) => {
+    setScanIntegrationId(integration.id);
+    setScanDrawerOpen(true);
+  };
+
+  const closeScanDrawer = () => {
+    setScanDrawerOpen(false);
+  };
+
+  const activeScanIntegration =
+    integrations.find((integration) => integration.id === scanIntegrationId) || null;
 
   let content = null;
   if (loading) {
@@ -208,7 +234,7 @@ export default function MediaServersPage() {
           <Server size={24} />
           <Text fw={600}>No media server integrations configured</Text>
           <Text size="sm" c="dimmed" ta="center">
-            Add Plex, Emby, or Jellyfin and sync movie and series libraries into VOD.
+            Add Plex, Emby, Jellyfin, or Local and sync movie and series libraries into VOD.
           </Text>
         </Stack>
       </Card>
@@ -240,7 +266,9 @@ export default function MediaServersPage() {
                       <Text fw={700}>{integration.name}</Text>
                     </Group>
                     <Text size="xs" c="dimmed">
-                      {integration.base_url}
+                      {integration.provider_type === 'local'
+                        ? 'Local filesystem import'
+                        : integration.base_url}
                     </Text>
                   </Stack>
                   <Switch
@@ -315,6 +343,15 @@ export default function MediaServersPage() {
                   <Button
                     size="xs"
                     variant="default"
+                    leftSection={<ScanSearch size={14} />}
+                    onClick={() => openScanDrawer(integration)}
+                    disabled={busy}
+                  >
+                    View Scan
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="default"
                     onClick={() => openEdit(integration)}
                     disabled={busy}
                   >
@@ -369,6 +406,13 @@ export default function MediaServersPage() {
         isOpen={formOpen}
         onClose={closeForm}
         onSaved={onSaved}
+      />
+      <MediaServerSyncDrawer
+        opened={scanDrawerOpen}
+        onClose={closeScanDrawer}
+        integration={activeScanIntegration}
+        onRefreshIntegrations={fetchIntegrations}
+        onRunSync={runSync}
       />
     </Box>
   );

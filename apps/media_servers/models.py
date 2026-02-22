@@ -7,6 +7,7 @@ class MediaServerIntegration(models.Model):
         PLEX = 'plex', 'Plex'
         EMBY = 'emby', 'Emby'
         JELLYFIN = 'jellyfin', 'Jellyfin'
+        LOCAL = 'local', 'Local'
 
     class SyncStatus(models.TextChoices):
         IDLE = 'idle', 'Idle'
@@ -16,7 +17,7 @@ class MediaServerIntegration(models.Model):
 
     name = models.CharField(max_length=255, unique=True)
     provider_type = models.CharField(max_length=32, choices=ProviderTypes.choices)
-    base_url = models.URLField(max_length=1000)
+    base_url = models.URLField(max_length=1000, blank=True, default='')
     api_token = models.CharField(max_length=1024, blank=True, default='')
     username = models.CharField(max_length=255, blank=True, default='')
     password = models.CharField(max_length=255, blank=True, default='')
@@ -28,6 +29,7 @@ class MediaServerIntegration(models.Model):
         help_text='Auto-sync interval in hours (0 disables scheduled sync)',
     )
     include_libraries = models.JSONField(default=list, blank=True)
+    provider_config = models.JSONField(default=dict, blank=True)
     sync_task = models.ForeignKey(
         PeriodicTask,
         on_delete=models.SET_NULL,
@@ -70,3 +72,50 @@ class MediaServerIntegration(models.Model):
     def selected_library_ids(self) -> set[str]:
         values = self.include_libraries if isinstance(self.include_libraries, list) else []
         return {str(value).strip() for value in values if str(value).strip()}
+
+
+class MediaServerSyncRun(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        QUEUED = 'queued', 'Queued'
+        RUNNING = 'running', 'Running'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    integration = models.ForeignKey(
+        MediaServerIntegration,
+        on_delete=models.CASCADE,
+        related_name='sync_runs',
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.QUEUED,
+    )
+    summary = models.CharField(max_length=255, blank=True, default='')
+    stages = models.JSONField(default=dict, blank=True, null=True)
+    processed_items = models.PositiveIntegerField(default=0)
+    total_items = models.PositiveIntegerField(default=0)
+    created_items = models.PositiveIntegerField(default=0)
+    updated_items = models.PositiveIntegerField(default=0)
+    removed_items = models.PositiveIntegerField(default=0)
+    skipped_items = models.PositiveIntegerField(default=0)
+    error_count = models.PositiveIntegerField(default=0)
+    message = models.TextField(blank=True, default='')
+    extra = models.JSONField(blank=True, null=True)
+    task_id = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['integration', 'created_at']),
+            models.Index(fields=['integration', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.integration.name} ({self.status})'

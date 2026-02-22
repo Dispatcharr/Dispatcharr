@@ -1,7 +1,10 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from apps.media_servers.api_views import MediaServerIntegrationViewSet
+from apps.media_servers.api_views import (
+    MediaServerIntegrationViewSet,
+    MediaServerSyncRunViewSet,
+)
 
 app_name = 'media_servers'
 
@@ -10,6 +13,11 @@ router.register(
     r'integrations',
     MediaServerIntegrationViewSet,
     basename='media-server-integration',
+)
+router.register(
+    r'sync-runs',
+    MediaServerSyncRunViewSet,
+    basename='media-server-sync-run',
 )
 
 urlpatterns = [
