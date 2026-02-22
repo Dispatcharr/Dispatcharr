@@ -33,6 +33,7 @@ export const saveChangedSettings = async (settings, changedSettings) => {
     'm3u_hash_key',
     'preferred_region',
     'auto_import_mapped_files',
+    'tmdb_api_key',
   ];
   const epgFields = [
     'epg_match_mode',
@@ -199,6 +200,11 @@ export const getChangedSettings = (values, settings) => {
       continue;
     }
 
+    if (settingKey === 'tmdb_api_key') {
+      changedSettings[settingKey] = String(actualValue || '');
+      continue;
+    }
+
     // Handle EPG fields specially - keep as arrays, don't skip empty arrays
     if (epgFields.includes(settingKey)) {
       if (!Array.isArray(actualValue)) {
@@ -250,6 +256,7 @@ export const parseSettings = (settings) => {
         : null;
     parsed.preferred_region = streamSettings.preferred_region;
     parsed.auto_import_mapped_files = streamSettings.auto_import_mapped_files;
+    parsed.tmdb_api_key = String(streamSettings.tmdb_api_key || '');
 
     // m3u_hash_key should be array
     const hashKey = streamSettings.m3u_hash_key;
@@ -259,6 +266,18 @@ export const parseSettings = (settings) => {
       parsed.m3u_hash_key = hashKey;
     } else {
       parsed.m3u_hash_key = [];
+    }
+  }
+
+  if (!parsed.tmdb_api_key) {
+    const mediaLibrarySettings = settings['media_library_settings']?.value;
+    if (mediaLibrarySettings && typeof mediaLibrarySettings === 'object') {
+      parsed.tmdb_api_key = String(mediaLibrarySettings.tmdb_api_key || '');
+    } else {
+      const legacyTmdb = settings['tmdb-api-key']?.value;
+      if (legacyTmdb != null) {
+        parsed.tmdb_api_key = String(legacyTmdb);
+      }
     }
   }
 

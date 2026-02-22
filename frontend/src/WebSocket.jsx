@@ -294,6 +294,16 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
+            case 'media_server_sync_updated':
+              if (parsedEvent.data?.sync_run?.id) {
+                window.dispatchEvent(
+                  new CustomEvent('media_server_sync_updated', {
+                    detail: parsedEvent.data.sync_run,
+                  })
+                );
+              }
+              break;
+
             case 'channel_stats':
               setChannelStats(JSON.parse(parsedEvent.data.stats));
               break;

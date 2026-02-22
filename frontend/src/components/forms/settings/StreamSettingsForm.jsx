@@ -12,10 +12,14 @@ import {
 } from '../../../utils/pages/SettingsUtils.js';
 import {
   Alert,
+  Anchor,
   Button,
   Flex,
   Group,
+  List,
+  Modal,
   MultiSelect,
+  PasswordInput,
   Select,
   Switch,
   Text,
@@ -42,6 +46,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
   const [rehashingStreams, setRehashingStreams] = useState(false);
   const [rehashSuccess, setRehashSuccess] = useState(false);
   const [rehashConfirmOpen, setRehashConfirmOpen] = useState(false);
+  const [tmdbHelpOpen, setTmdbHelpOpen] = useState(false);
 
   // Add a new state to track the dialog type
   const [rehashDialogType, setRehashDialogType] = useState(null); // 'save' or 'rehash'
@@ -208,6 +213,25 @@ const StreamSettingsForm = React.memo(({ active }) => {
           />
         </Group>
 
+        <PasswordInput
+          id="tmdb_api_key"
+          name="tmdb_api_key"
+          label="TMDB API Key"
+          placeholder="Enter TMDB API key"
+          description="Required for Local media provider metadata and artwork lookups."
+          {...form.getInputProps('tmdb_api_key')}
+        />
+        <Group justify="flex-start">
+          <Button
+            type="button"
+            variant="subtle"
+            size="xs"
+            onClick={() => setTmdbHelpOpen(true)}
+          >
+            Where do I get this?
+          </Button>
+        </Group>
+
         <MultiSelect
           id="m3u_hash_key"
           name="m3u_hash_key"
@@ -293,6 +317,51 @@ Please ensure you have time to let this complete before proceeding.`}
         onSuppressChange={suppressWarning}
         size="md"
       />
+
+      <Modal
+        opened={tmdbHelpOpen}
+        onClose={() => setTmdbHelpOpen(false)}
+        title="How to get a TMDB API key"
+        size="lg"
+        overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
+      >
+        <Text size="sm" mb="sm">
+          Dispatcharr uses TMDB (The Movie Database) for artwork and metadata.
+          You can create a key in a few minutes:
+        </Text>
+        <List size="sm" spacing="xs">
+          <List.Item>
+            Visit{' '}
+            <Anchor
+              href="https://www.themoviedb.org/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              themoviedb.org
+            </Anchor>{' '}
+            and sign in or create a free account.
+          </List.Item>
+          <List.Item>
+            Open your{' '}
+            <Anchor
+              href="https://www.themoviedb.org/settings/api"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              TMDB account settings
+            </Anchor>{' '}
+            and choose <Text component="span" fw={500}>API</Text>.
+          </List.Item>
+          <List.Item>
+            Complete the short API application and copy the v3 API key into
+            the field above.
+          </List.Item>
+        </List>
+        <Text size="sm" c="dimmed" mt="sm">
+          TMDB issues separate v3 and v4 keys. Dispatcharr only needs the v3
+          API key for metadata lookups.
+        </Text>
+      </Modal>
     </>
   );
 });

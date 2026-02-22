@@ -156,6 +156,8 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+MEDIA_LIBRARY_SETTINGS_KEY = "media_library_settings"
+TMDB_API_KEY = "tmdb-api-key"
 
 
 class CoreSettings(models.Model):
@@ -206,6 +208,7 @@ class CoreSettings(models.Model):
             "m3u_hash_key": "",
             "preferred_region": None,
             "auto_import_mapped_files": None,
+            "tmdb_api_key": "",
         })
 
     @classmethod
@@ -227,6 +230,35 @@ class CoreSettings(models.Model):
     @classmethod
     def get_auto_import_mapped_files(cls):
         return cls.get_stream_settings().get("auto_import_mapped_files")
+
+    @classmethod
+    def get_tmdb_api_key(cls):
+        """Return configured TMDB API key or None when unset."""
+        stream_settings = cls.get_stream_settings()
+        if isinstance(stream_settings, dict):
+            value = stream_settings.get("tmdb_api_key")
+            if value is not None:
+                value = str(value).strip()
+                if value:
+                    return value
+
+        settings_obj = cls.objects.filter(key=MEDIA_LIBRARY_SETTINGS_KEY).first()
+        if settings_obj and isinstance(settings_obj.value, dict):
+            value = settings_obj.value.get("tmdb_api_key")
+            if value is not None:
+                value = str(value).strip()
+                if value:
+                    return value
+
+        try:
+            value = cls.objects.get(key=TMDB_API_KEY).value
+        except cls.DoesNotExist:
+            return None
+
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
 
     # EPG Settings
     @classmethod

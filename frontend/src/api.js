@@ -3378,6 +3378,65 @@ export default class API {
     }
   }
 
+  static async getMediaServerSyncRuns(integrationId) {
+    try {
+      const params = new URLSearchParams();
+      params.set('page_size', '50');
+      if (integrationId !== undefined && integrationId !== null) {
+        params.set('integration', String(integrationId));
+      }
+      const response = await request(
+        `${host}/api/media-servers/sync-runs/${params.toString() ? `?${params.toString()}` : ''}`
+      );
+      if (Array.isArray(response)) return response;
+      return Array.isArray(response?.results) ? response.results : [];
+    } catch (e) {
+      errorNotification('Failed to load media server scans', e);
+      throw e;
+    }
+  }
+
+  static async cancelMediaServerSyncRun(runId) {
+    try {
+      return await request(`${host}/api/media-servers/sync-runs/${runId}/cancel/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to cancel media server scan', e);
+      throw e;
+    }
+  }
+
+  static async deleteMediaServerSyncRun(runId) {
+    try {
+      await request(`${host}/api/media-servers/sync-runs/${runId}/`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch (e) {
+      errorNotification('Failed to remove queued media server scan', e);
+      throw e;
+    }
+  }
+
+  static async purgeMediaServerSyncRuns(integrationId) {
+    try {
+      const params = new URLSearchParams();
+      if (integrationId !== undefined && integrationId !== null) {
+        params.set('integration', String(integrationId));
+      }
+      return await request(
+        `${host}/api/media-servers/sync-runs/purge/${params.toString() ? `?${params.toString()}` : ''}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    } catch (e) {
+      errorNotification('Failed to clear finished media server scans', e);
+      throw e;
+    }
+  }
+
   static async getMediaServerIntegrationLibraries(id) {
     try {
       return await request(
@@ -3385,6 +3444,19 @@ export default class API {
       );
     } catch (e) {
       errorNotification('Failed to load media server libraries', e);
+      throw e;
+    }
+  }
+
+  static async browseLocalMediaPath(path = '') {
+    try {
+      const params = new URLSearchParams();
+      if (path) params.set('path', path);
+      return await request(
+        `${host}/api/media-servers/integrations/browse-local-path/?${params.toString()}`
+      );
+    } catch (e) {
+      errorNotification('Failed to browse local media paths', e);
       throw e;
     }
   }

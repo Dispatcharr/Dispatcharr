@@ -1,28 +1,47 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Badge,
+  Box,
   Button,
+  Divider,
   Flex,
   Group,
+  Loader,
   Modal,
   MultiSelect,
   NumberInput,
+  Paper,
   PasswordInput,
+  ScrollArea,
   Select,
   Stack,
   Switch,
   Text,
   TextInput,
+  UnstyledButton,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import { CircleAlert, ShieldCheck } from 'lucide-react';
+import {
+  ArrowUp,
+  ChevronRight,
+  CircleAlert,
+  Folder,
+  FolderOpen,
+  Home,
+  Plus,
+  Search,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
 import API from '../../api';
 
 const PROVIDER_OPTIONS = [
   { value: 'plex', label: 'Plex' },
   { value: 'emby', label: 'Emby' },
   { value: 'jellyfin', label: 'Jellyfin' },
+  { value: 'local', label: 'Local' },
 ];
 
 const AUTH_MODE_OPTIONS = [
@@ -41,6 +60,50 @@ const HOURS_PER_INTERVAL_UNIT = {
   days: 24,
   weeks: 168,
 };
+
+const LOCAL_CONTENT_TYPE_OPTIONS = [
+  { value: 'movie', label: 'Movies' },
+  { value: 'series', label: 'Series' },
+  { value: 'mixed', label: 'Mixed' },
+];
+
+function defaultLocalLocation() {
+  return {
+    path: '',
+    content_type: 'movie',
+    include_subdirectories: true,
+    name: '',
+  };
+}
+
+function buildBreadcrumbs(inputPath) {
+  const normalized = (inputPath || '/').replace(/\\/g, '/');
+  const hasDrivePrefix = /^[A-Za-z]:\//.test(normalized);
+
+  if (hasDrivePrefix) {
+    const drive = normalized.slice(0, 2);
+    const crumbs = [{ label: drive, path: `${drive}/` }];
+    const parts = normalized
+      .slice(3)
+      .split('/')
+      .filter(Boolean);
+    let current = `${drive}/`;
+    parts.forEach((part) => {
+      current = current.endsWith('/') ? `${current}${part}` : `${current}/${part}`;
+      crumbs.push({ label: part, path: current });
+    });
+    return crumbs;
+  }
+
+  const parts = normalized.split('/').filter(Boolean);
+  const crumbs = [{ label: '/', path: '/' }];
+  let current = '';
+  parts.forEach((part) => {
+    current = `${current}/${part}`;
+    crumbs.push({ label: part, path: current });
+  });
+  return crumbs;
+}
 
 function decomposeSyncInterval(hours) {
   const normalized = Math.max(0, Number(hours) || 0);
@@ -68,6 +131,44 @@ function composeSyncIntervalHours(value, unit) {
   return numericValue * (HOURS_PER_INTERVAL_UNIT[unit] || 1);
 }
 
+function extractApiErrorMessage(body, fallback = '') {
+  if (!body || typeof body !== 'object') {
+    return fallback;
+  }
+
+  const directMessage = [body.error, body.detail].find(
+    (value) => typeof value === 'string' && value.trim()
+  );
+  if (directMessage) {
+    return directMessage.trim();
+  }
+
+  for (const value of Object.values(body)) {
+    if (Array.isArray(value)) {
+      const first = value.find(
+        (entry) => typeof entry === 'string' && entry.trim()
+      );
+      if (first) {
+        return first.trim();
+      }
+      continue;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (value && typeof value === 'object') {
+      const nested = extractApiErrorMessage(value, '');
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return fallback;
+}
+
 const initialValues = {
   name: '',
   provider_type: 'plex',
@@ -82,6 +183,7 @@ const initialValues = {
   sync_interval_value: 0,
   sync_interval_unit: 'hours',
   include_libraries: [],
+  local_locations: [defaultLocalLocation()],
 };
 
 export default function MediaServerIntegrationForm({
@@ -101,6 +203,16 @@ export default function MediaServerIntegrationForm({
   const [plexServerMap, setPlexServerMap] = useState({});
   const [selectedPlexServer, setSelectedPlexServer] = useState('');
   const [testingConnection, setTestingConnection] = useState(false);
+  const [browser, setBrowser] = useState({
+    open: false,
+    index: null,
+    path: '',
+    parent: null,
+    entries: [],
+    loading: false,
+    error: null,
+  });
+  const [browserSearch, setBrowserSearch] = useState('');
   const plexPollRef = useRef(null);
 
   const isEdit = Boolean(integration?.id);
@@ -112,7 +224,8 @@ export default function MediaServerIntegrationForm({
       name: (value) => (!value?.trim() ? 'Name is required' : null),
       provider_type: (value) =>
         !value?.trim() ? 'Provider type is required' : null,
-      base_url: (value) => {
+      base_url: (value, values) => {
+        if (values.provider_type === 'local') return null;
         const trimmed = (value || '').trim();
         if (!trimmed) return 'Base URL is required';
         try {
@@ -142,6 +255,7 @@ export default function MediaServerIntegrationForm({
       },
       username: (value, values) => {
         if (
+          values.provider_type !== 'local' &&
           values.provider_type !== 'plex' &&
           values.auth_mode === 'credentials' &&
           !(value || '').trim()
@@ -158,6 +272,7 @@ export default function MediaServerIntegrationForm({
           integration?.provider_type &&
           integration.provider_type !== values.provider_type;
         if (
+          values.provider_type !== 'local' &&
           values.provider_type !== 'plex' &&
           values.auth_mode === 'credentials' &&
           !isEdit &&
@@ -166,6 +281,7 @@ export default function MediaServerIntegrationForm({
           return 'Password is required';
         }
         if (
+          values.provider_type !== 'local' &&
           values.provider_type !== 'plex' &&
           values.auth_mode === 'credentials' &&
           isEdit &&
@@ -174,6 +290,25 @@ export default function MediaServerIntegrationForm({
           username
         ) {
           return 'Password is required when switching providers with username login';
+        }
+        return null;
+      },
+      local_locations: (value, values) => {
+        if (values.provider_type !== 'local') return null;
+        const locations = Array.isArray(value) ? value : [];
+        if (locations.length === 0) {
+          return 'Add at least one local media location';
+        }
+        for (let i = 0; i < locations.length; i += 1) {
+          const location = locations[i] || {};
+          const path = (location.path || '').trim();
+          if (!path) {
+            return `Location ${i + 1} is missing a path`;
+          }
+          const contentType = String(location.content_type || '').trim();
+          if (!['movie', 'series', 'mixed'].includes(contentType)) {
+            return `Location ${i + 1} has an invalid media type`;
+          }
         }
         return null;
       },
@@ -196,6 +331,69 @@ export default function MediaServerIntegrationForm({
     setSelectedPlexServer('');
   }
 
+  const loadDirectory = async (targetPath) => {
+    const normalizedPath = targetPath ?? '';
+    setBrowser((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const response = await API.browseLocalMediaPath(normalizedPath);
+      setBrowser((prev) => ({
+        ...prev,
+        path: response.path ?? normalizedPath,
+        parent: response.parent || null,
+        entries: Array.isArray(response.entries) ? response.entries : [],
+        loading: false,
+      }));
+    } catch (error) {
+      console.error('Failed to browse local paths', error);
+      setBrowser((prev) => ({
+        ...prev,
+        loading: false,
+        error: 'Unable to load directories. Check permissions and try again.',
+      }));
+    }
+  };
+
+  const openLocalBrowser = (locationIndex) => {
+    const current = form.values.local_locations?.[locationIndex]?.path || '';
+    setBrowserSearch('');
+    setBrowser({
+      open: true,
+      index: locationIndex,
+      path: current,
+      parent: null,
+      entries: [],
+      loading: true,
+      error: null,
+    });
+    void loadDirectory(current);
+  };
+
+  const closeLocalBrowser = () => {
+    setBrowserSearch('');
+    setBrowser({
+      open: false,
+      index: null,
+      path: '',
+      parent: null,
+      entries: [],
+      loading: false,
+      error: null,
+    });
+  };
+
+  const handleSelectDirectory = (path) => {
+    void loadDirectory(path ?? '');
+  };
+
+  const handleUseDirectory = () => {
+    if (browser.index == null) {
+      closeLocalBrowser();
+      return;
+    }
+    form.setFieldValue(`local_locations.${browser.index}.path`, browser.path || '');
+    closeLocalBrowser();
+  };
+
   useEffect(() => {
     return () => {
       stopPlexPolling();
@@ -212,6 +410,7 @@ export default function MediaServerIntegrationForm({
       setLibraryOptions([]);
       setLibraryLoadError('');
       resetPlexAuthState();
+      closeLocalBrowser();
       return;
     }
 
@@ -240,12 +439,22 @@ export default function MediaServerIntegrationForm({
       include_libraries: Array.isArray(integration.include_libraries)
         ? integration.include_libraries.map((entry) => String(entry))
         : [],
+      local_locations: Array.isArray(integration.provider_config?.locations)
+        ? integration.provider_config.locations.map((location) => ({
+            id: location.id || '',
+            path: location.path || '',
+            content_type: location.content_type || 'movie',
+            include_subdirectories: location.include_subdirectories ?? true,
+            name: location.name || '',
+          }))
+        : [defaultLocalLocation()],
     });
     form.resetDirty();
     form.clearErrors();
     setApiError('');
     setLibraryLoadError('');
     resetPlexAuthState();
+    closeLocalBrowser();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, integration]);
 
@@ -290,10 +499,27 @@ export default function MediaServerIntegrationForm({
   const handleProviderChange = (value) => {
     const providerType = value || 'plex';
     form.setFieldValue('provider_type', providerType);
+    setApiError('');
+
     if (providerType === 'plex') {
       form.setFieldValue('auth_mode', 'plex_signin');
       form.setFieldValue('username', '');
       form.setFieldValue('password', '');
+      return;
+    }
+
+    if (providerType === 'local') {
+      resetPlexAuthState();
+      form.setFieldValue('auth_mode', 'credentials');
+      form.setFieldValue('base_url', '');
+      form.setFieldValue('api_token', '');
+      form.setFieldValue('username', '');
+      form.setFieldValue('password', '');
+      form.setFieldValue('include_libraries', []);
+      const locations = form.values.local_locations;
+      if (!Array.isArray(locations) || locations.length === 0) {
+        form.setFieldValue('local_locations', [defaultLocalLocation()]);
+      }
       return;
     }
 
@@ -419,6 +645,7 @@ export default function MediaServerIntegrationForm({
     setApiError('');
     form.clearErrors();
     resetPlexAuthState();
+    closeLocalBrowser();
     onClose?.();
   };
 
@@ -430,11 +657,23 @@ export default function MediaServerIntegrationForm({
         isEdit &&
         integration?.provider_type &&
         integration.provider_type !== values.provider_type;
+      const normalizedLocalLocations = Array.isArray(values.local_locations)
+        ? values.local_locations
+            .map((location) => ({
+              id: (location.id || '').trim(),
+              path: (location.path || '').trim(),
+              name: (location.name || '').trim(),
+              content_type: (location.content_type || 'movie').trim(),
+              include_subdirectories: location.include_subdirectories ?? true,
+            }))
+            .filter((location) => location.path)
+        : [];
 
       const payload = {
         name: values.name.trim(),
         provider_type: values.provider_type,
-        base_url: values.base_url.trim(),
+        base_url:
+          values.provider_type === 'local' ? '' : (values.base_url || '').trim(),
         verify_ssl: values.verify_ssl,
         enabled: values.enabled,
         add_to_vod: values.add_to_vod,
@@ -442,12 +681,21 @@ export default function MediaServerIntegrationForm({
           values.sync_interval_value,
           values.sync_interval_unit
         ),
-        include_libraries: (values.include_libraries || []).map((entry) =>
-          String(entry)
-        ),
+        include_libraries:
+          values.provider_type === 'local'
+            ? []
+            : (values.include_libraries || []).map((entry) => String(entry)),
+        provider_config:
+          values.provider_type === 'local'
+            ? { locations: normalizedLocalLocations }
+            : {},
       };
 
-      if (values.provider_type === 'plex') {
+      if (values.provider_type === 'local') {
+        payload.api_token = '';
+        payload.username = '';
+        payload.password = '';
+      } else if (values.provider_type === 'plex') {
         payload.username = '';
         payload.password = '';
         const token = (values.api_token || '').trim();
@@ -499,8 +747,9 @@ export default function MediaServerIntegrationForm({
         if (Object.keys(fieldErrors).length > 0) {
           form.setErrors(fieldErrors);
         }
-        if (body.detail) {
-          setApiError(String(body.detail));
+        const backendMessage = extractApiErrorMessage(body, '');
+        if (backendMessage) {
+          setApiError(backendMessage);
         } else if (!Object.keys(fieldErrors).length) {
           setApiError(JSON.stringify(body));
         }
@@ -519,21 +768,28 @@ export default function MediaServerIntegrationForm({
     form.clearFieldError('api_token');
     form.clearFieldError('username');
     form.clearFieldError('password');
+    form.clearFieldError('local_locations');
 
     const providerError = form.validateField('provider_type');
-    const baseUrlError = form.validateField('base_url');
+    const localLocationsError = form.validateField('local_locations');
+    const isLocal = values.provider_type === 'local';
+    const baseUrlError = isLocal ? null : form.validateField('base_url');
     if (providerError?.hasError || baseUrlError?.hasError) {
       setApiError('Provider and server URL are required before testing.');
       return;
     }
+    if (isLocal && localLocationsError?.hasError) {
+      setApiError(String(localLocationsError.error));
+      return;
+    }
 
-    if (values.provider_type === 'plex' || values.auth_mode === 'token') {
+    if (!isLocal && (values.provider_type === 'plex' || values.auth_mode === 'token')) {
       const apiTokenError = form.validateField('api_token');
       if (apiTokenError?.hasError) {
         setApiError(String(apiTokenError.error));
         return;
       }
-    } else if (values.provider_type !== 'plex') {
+    } else if (!isLocal && values.provider_type !== 'plex') {
       const usernameError = form.validateField('username');
       const passwordError = form.validateField('password');
       if (usernameError?.hasError || passwordError?.hasError) {
@@ -547,21 +803,34 @@ export default function MediaServerIntegrationForm({
     const payload = {
       integration_id: integration?.id,
       provider_type: values.provider_type,
-      base_url: values.base_url?.trim() || '',
+      base_url: isLocal ? '' : (values.base_url?.trim() || ''),
       verify_ssl: values.verify_ssl,
-      include_libraries: (values.include_libraries || []).map((entry) =>
-        String(entry)
-      ),
+      include_libraries: isLocal
+        ? []
+        : (values.include_libraries || []).map((entry) => String(entry)),
     };
+    if (isLocal) {
+      payload.provider_config = {
+        locations: (values.local_locations || [])
+          .map((location) => ({
+            id: (location.id || '').trim(),
+            path: (location.path || '').trim(),
+            name: (location.name || '').trim(),
+            content_type: (location.content_type || 'movie').trim(),
+            include_subdirectories: location.include_subdirectories ?? true,
+          }))
+          .filter((location) => location.path),
+      };
+    }
     const name = (values.name || '').trim();
     if (name) {
       payload.name = name;
     }
 
     const token = (values.api_token || '').trim();
-    if (values.provider_type === 'plex' || values.auth_mode === 'token') {
+    if (!isLocal && (values.provider_type === 'plex' || values.auth_mode === 'token')) {
       if (token) payload.api_token = token;
-    } else {
+    } else if (!isLocal) {
       payload.username = (values.username || '').trim();
       const password = (values.password || '').trim();
       if (password) payload.password = password;
@@ -591,10 +860,7 @@ export default function MediaServerIntegrationForm({
       });
     } catch (error) {
       console.error('Media server connection test failed', error);
-      const backendMessage =
-        (typeof error?.body === 'object' &&
-          (error.body.error || error.body.detail)) ||
-        '';
+      const backendMessage = extractApiErrorMessage(error?.body, '');
       setApiError(
         String(
           backendMessage || error?.message || 'Connection test failed'
@@ -610,25 +876,60 @@ export default function MediaServerIntegrationForm({
       (entry) => entry.value === form.values.provider_type
     )?.label || 'Provider';
 
+  const isLocalProvider = form.values.provider_type === 'local';
   const showTokenInput =
-    form.values.provider_type === 'plex' || form.values.auth_mode === 'token';
+    !isLocalProvider &&
+    (form.values.provider_type === 'plex' || form.values.auth_mode === 'token');
   const showCredentialsInputs =
+    !isLocalProvider &&
     form.values.provider_type !== 'plex' &&
     form.values.auth_mode === 'credentials';
+  const currentBrowserPath = browser.path || '/';
+  const breadcrumbs = useMemo(
+    () => buildBreadcrumbs(currentBrowserPath),
+    [currentBrowserPath]
+  );
+
+  const filteredEntries = useMemo(() => {
+    const entries = Array.isArray(browser.entries) ? browser.entries : [];
+    const query = browserSearch.trim().toLowerCase();
+    if (!query) return entries;
+    return entries.filter((entry) => {
+      const name = (entry.name || '').toLowerCase();
+      const path = (entry.path || '').toLowerCase();
+      return name.includes(query) || path.includes(query);
+    });
+  }, [browser.entries, browserSearch]);
+
+  const addLocalLocation = () => {
+    form.insertListItem('local_locations', defaultLocalLocation());
+  };
+
+  const removeLocalLocation = (index) => {
+    const current = Array.isArray(form.values.local_locations)
+      ? form.values.local_locations
+      : [];
+    if (current.length <= 1) {
+      form.setFieldValue('local_locations', [defaultLocalLocation()]);
+      return;
+    }
+    form.removeListItem('local_locations', index);
+  };
 
   return (
-    <Modal
-      opened={isOpen}
-      onClose={handleClose}
-      size="lg"
-      title={
-        isEdit
-          ? 'Edit Media Server Integration'
-          : 'New Media Server Integration'
-      }
-    >
-      <form onSubmit={form.onSubmit(onSubmit)}>
-        <Stack gap="md">
+    <>
+      <Modal
+        opened={isOpen}
+        onClose={handleClose}
+        size="lg"
+        title={
+          isEdit
+            ? 'Edit Media Server Integration'
+            : 'New Media Server Integration'
+        }
+      >
+        <form onSubmit={form.onSubmit(onSubmit)}>
+          <Stack gap="md">
           {apiError ? (
             <Alert
               color="red"
@@ -657,6 +958,15 @@ export default function MediaServerIntegrationForm({
             <Text size="xs" c="dimmed">
               Uses Plex account sign-in (PIN flow), then you select a Plex server.
             </Text>
+          ) : isLocalProvider ? (
+            <Stack gap={6}>
+              <Text size="xs" c="dimmed">
+                Local provider imports files directly from folders on this server.
+              </Text>
+              <Alert color="yellow" icon={<CircleAlert size={14} />}>
+                Local provider requires a TMDB API key. Set it in Settings &gt; Stream Settings before saving.
+              </Alert>
+            </Stack>
           ) : (
             <Text size="xs" c="dimmed">
               {providerLabel} integrations can use account login or an API key.
@@ -701,7 +1011,7 @@ export default function MediaServerIntegrationForm({
                 />
               ) : null}
             </Stack>
-          ) : (
+          ) : !isLocalProvider ? (
             <Select
               label={`${providerLabel} Authentication`}
               data={AUTH_MODE_OPTIONS}
@@ -710,18 +1020,109 @@ export default function MediaServerIntegrationForm({
                 form.setFieldValue('auth_mode', value || 'credentials')
               }
             />
-          )}
+          ) : null}
 
-          <TextInput
-            label="Server URL"
-            placeholder={
-              form.values.provider_type === 'plex'
-                ? 'http://192.168.1.10:32400'
-                : 'http://192.168.1.20:8096'
-            }
-            {...form.getInputProps('base_url')}
-            key={form.key('base_url')}
-          />
+          {!isLocalProvider ? (
+            <TextInput
+              label="Server URL"
+              placeholder={
+                form.values.provider_type === 'plex'
+                  ? 'http://192.168.1.10:32400'
+                  : 'http://192.168.1.20:8096'
+              }
+              {...form.getInputProps('base_url')}
+              key={form.key('base_url')}
+            />
+          ) : null}
+
+          {isLocalProvider ? (
+            <Stack gap="xs">
+              <Group justify="space-between" align="center">
+                <Text fw={500}>Local Media Locations</Text>
+                <Button
+                  type="button"
+                  variant="light"
+                  size="xs"
+                  leftSection={<Plus size={14} />}
+                  onClick={addLocalLocation}
+                >
+                  Add Location
+                </Button>
+              </Group>
+
+              {(form.values.local_locations || []).map((location, index) => (
+                <Stack key={`local-location-${index}`} gap={6}>
+                  <Group grow align="end">
+                    <TextInput
+                      label={index === 0 ? 'Path' : undefined}
+                      placeholder="/mnt/media/movies"
+                      value={location.path || ''}
+                      onChange={(event) =>
+                        form.setFieldValue(
+                          `local_locations.${index}.path`,
+                          event.currentTarget.value
+                        )
+                      }
+                    />
+                    <Select
+                      label={index === 0 ? 'Type' : undefined}
+                      data={LOCAL_CONTENT_TYPE_OPTIONS}
+                      value={location.content_type || 'movie'}
+                      onChange={(value) =>
+                        form.setFieldValue(
+                          `local_locations.${index}.content_type`,
+                          value || 'movie'
+                        )
+                      }
+                    />
+                  </Group>
+                  <Group justify="space-between" align="center">
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="xs"
+                      leftSection={<FolderOpen size={14} />}
+                      onClick={() => openLocalBrowser(index)}
+                    >
+                      Choose Folder
+                    </Button>
+                    <Group gap="xs">
+                      <Switch
+                        label="Recursive"
+                        checked={location.include_subdirectories ?? true}
+                        onChange={(event) =>
+                          form.setFieldValue(
+                            `local_locations.${index}.include_subdirectories`,
+                            event.currentTarget.checked
+                          )
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="subtle"
+                        color="red"
+                        size="xs"
+                        leftSection={<Trash2 size={14} />}
+                        onClick={() => removeLocalLocation(index)}
+                      >
+                        Remove
+                      </Button>
+                    </Group>
+                  </Group>
+                  {index < (form.values.local_locations || []).length - 1 ? (
+                    <Divider my={4} />
+                  ) : null}
+                </Stack>
+              ))}
+
+              {form.errors.local_locations ? (
+                <Text size="xs" c="red">
+                  {String(form.errors.local_locations)}
+                </Text>
+              ) : null}
+            </Stack>
+          ) : null}
+
           <Group justify="flex-start">
             <Button
               type="button"
@@ -730,7 +1131,7 @@ export default function MediaServerIntegrationForm({
               loading={testingConnection}
               disabled={submitting}
             >
-              Test Connection
+              {isLocalProvider ? 'Test Local Paths' : 'Test Connection'}
             </Button>
           </Group>
 
@@ -764,35 +1165,42 @@ export default function MediaServerIntegrationForm({
             </Group>
           ) : null}
 
-          <MultiSelect
-            searchable
-            clearable
-            label="Include Libraries"
-            placeholder={
-              isEdit || libraryOptions.length > 0
-                ? loadingLibraries
-                  ? 'Loading libraries...'
-                  : 'All media libraries'
-                : 'Run test to discover libraries'
-            }
-            data={libraryOptions}
-            disabled={loadingLibraries || (!isEdit && libraryOptions.length === 0)}
-            {...form.getInputProps('include_libraries')}
-            key={form.key('include_libraries')}
-          />
+          {!isLocalProvider ? (
+            <>
+              <MultiSelect
+                searchable
+                clearable
+                label="Include Libraries"
+                placeholder={
+                  isEdit || libraryOptions.length > 0
+                    ? loadingLibraries
+                      ? 'Loading libraries...'
+                      : 'All media libraries'
+                    : 'Run test to discover libraries'
+                }
+                data={libraryOptions}
+                disabled={loadingLibraries || (!isEdit && libraryOptions.length === 0)}
+                {...form.getInputProps('include_libraries')}
+                key={form.key('include_libraries')}
+              />
 
-          <Text size="xs" c="dimmed">
-            Leave libraries empty to include all detected movie and series libraries.
-          </Text>
-          {!loadingLibraries && !libraryLoadError && (isEdit || libraryOptions.length > 0) && libraryOptions.length === 0 ? (
-            <Text size="xs" c="yellow">
-              No supported movie or series libraries were discovered on this server.
-            </Text>
-          ) : null}
-          {libraryLoadError ? (
-            <Text size="xs" c="yellow">
-              Could not load libraries: {libraryLoadError}
-            </Text>
+              <Text size="xs" c="dimmed">
+                Leave libraries empty to include all detected movie and series libraries.
+              </Text>
+              {!loadingLibraries &&
+              !libraryLoadError &&
+              (isEdit || libraryOptions.length > 0) &&
+              libraryOptions.length === 0 ? (
+                <Text size="xs" c="yellow">
+                  No supported movie or series libraries were discovered on this server.
+                </Text>
+              ) : null}
+              {libraryLoadError ? (
+                <Text size="xs" c="yellow">
+                  Could not load libraries: {libraryLoadError}
+                </Text>
+              ) : null}
+            </>
           ) : null}
 
           <Group align="flex-end" grow>
@@ -814,11 +1222,13 @@ export default function MediaServerIntegrationForm({
           </Group>
 
           <Group grow>
-            <Switch
-              label="Verify SSL"
-              {...form.getInputProps('verify_ssl', { type: 'checkbox' })}
-              key={form.key('verify_ssl')}
-            />
+            {!isLocalProvider ? (
+              <Switch
+                label="Verify SSL"
+                {...form.getInputProps('verify_ssl', { type: 'checkbox' })}
+                key={form.key('verify_ssl')}
+              />
+            ) : null}
             <Switch
               label="Enabled"
               {...form.getInputProps('enabled', { type: 'checkbox' })}
@@ -839,8 +1249,151 @@ export default function MediaServerIntegrationForm({
               Save
             </Button>
           </Flex>
+          </Stack>
+        </form>
+      </Modal>
+
+      <Modal
+        opened={browser.open}
+        onClose={closeLocalBrowser}
+        title="Select local media directory"
+        size="xl"
+        overlayProps={{ backgroundOpacity: 0.6, blur: 4 }}
+        zIndex={410}
+      >
+        <Stack gap="md">
+          <Paper withBorder radius="md" p="sm">
+            <Group justify="space-between" align="center" wrap="nowrap">
+              <ScrollArea type="auto" offsetScrollbars style={{ flex: 1 }}>
+                <Group gap={6} wrap="nowrap">
+                  <FolderOpen size={16} />
+                  {breadcrumbs.map((crumb, index) => (
+                    <Group key={`${crumb.path}-${index}`} gap={6} wrap="nowrap">
+                      <Button
+                        variant="subtle"
+                        size="compact-xs"
+                        leftSection={
+                          index === 0 ? <Home size={12} /> : undefined
+                        }
+                        onClick={() => handleSelectDirectory(crumb.path)}
+                        type="button"
+                      >
+                        {crumb.label}
+                      </Button>
+                      {index < breadcrumbs.length - 1 ? (
+                        <ChevronRight size={12} color="var(--mantine-color-dimmed)" />
+                      ) : null}
+                    </Group>
+                  ))}
+                </Group>
+              </ScrollArea>
+              <Badge variant="light" color="gray">
+                {browser.entries.length} folders
+              </Badge>
+            </Group>
+          </Paper>
+
+          <Group gap="sm" align="flex-end">
+            <TextInput
+              label="Filter folders"
+              placeholder="Search current directory"
+              value={browserSearch}
+              onChange={(event) => setBrowserSearch(event.currentTarget.value)}
+              leftSection={<Search size={14} />}
+              style={{ flex: 1 }}
+            />
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<ArrowUp size={14} />}
+              onClick={() => handleSelectDirectory(browser.parent)}
+              disabled={!browser.parent || browser.loading}
+              type="button"
+            >
+              Up one level
+            </Button>
+          </Group>
+
+          {browser.error ? (
+            <Text size="sm" c="red">
+              {browser.error}
+            </Text>
+          ) : null}
+
+          <Paper withBorder radius="md" p={4}>
+            <ScrollArea h={320} offsetScrollbars>
+              {browser.loading ? (
+                <Group justify="center" py="xl">
+                  <Loader size="sm" />
+                </Group>
+              ) : filteredEntries.length === 0 ? (
+                <Stack align="center" py="xl" gap={4}>
+                  <Text c="dimmed" size="sm">
+                    {browser.entries.length === 0
+                      ? 'No subdirectories found.'
+                      : 'No folders match your search.'}
+                  </Text>
+                </Stack>
+              ) : (
+                <Stack gap={4}>
+                  {filteredEntries.map((entry) => (
+                    <UnstyledButton
+                      key={entry.path}
+                      onClick={() => handleSelectDirectory(entry.path)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 8,
+                        border: '1px solid rgba(148, 163, 184, 0.18)',
+                        background: 'rgba(15, 23, 42, 0.35)',
+                      }}
+                    >
+                      <Group justify="space-between" align="center" wrap="nowrap">
+                        <Group gap="sm" align="center" wrap="nowrap" style={{ minWidth: 0 }}>
+                          <Folder size={16} />
+                          <Box style={{ minWidth: 0 }}>
+                            <Text size="sm" fw={600} lineClamp={1}>
+                              {entry.name || entry.path}
+                            </Text>
+                            <Text size="xs" c="dimmed" lineClamp={1}>
+                              {entry.path}
+                            </Text>
+                          </Box>
+                        </Group>
+                        <ChevronRight size={14} color="var(--mantine-color-dimmed)" />
+                      </Group>
+                    </UnstyledButton>
+                  ))}
+                </Stack>
+              )}
+            </ScrollArea>
+          </Paper>
+
+          <Group justify="space-between">
+            <Button
+              variant="light"
+              size="xs"
+              onClick={() => void loadDirectory(browser.path)}
+              loading={browser.loading}
+              type="button"
+            >
+              Refresh
+            </Button>
+            <Group gap="sm">
+              <Button
+                type="button"
+                variant="subtle"
+                onClick={closeLocalBrowser}
+              >
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleUseDirectory}>
+                Use this folder
+              </Button>
+            </Group>
+          </Group>
         </Stack>
-      </form>
-    </Modal>
+      </Modal>
+    </>
   );
 }

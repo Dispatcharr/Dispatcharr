@@ -1,8 +1,10 @@
 import logging
+import os
 from urllib.parse import urlencode
 import uuid
 
 import requests
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import serializers, status, viewsets
@@ -10,14 +12,18 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.accounts.permissions import Authenticated, IsAdmin, permission_classes_by_action
-from apps.media_servers.models import MediaServerIntegration
+from apps.media_servers.models import MediaServerIntegration, MediaServerSyncRun
 from apps.media_servers.providers import get_provider_client
-from apps.media_servers.serializers import MediaServerIntegrationSerializer
+from apps.media_servers.serializers import (
+    MediaServerIntegrationSerializer,
+    MediaServerSyncRunSerializer,
+)
 from apps.media_servers.tasks import (
     cleanup_integration_vod,
     ensure_integration_vod_account,
     sync_media_server_integration,
 )
+from core.utils import send_websocket_update
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,25 @@ def _as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {'1', 'true', 'yes', 'on'}
     return False
+
+
+def _default_sync_stages() -> dict:
+    return {
+        'discovery': {'status': 'pending', 'processed': 0, 'total': 0},
+        'import': {'status': 'pending', 'processed': 0, 'total': 0},
+        'cleanup': {'status': 'pending', 'processed': 0, 'total': 0},
+    }
+
+
+def _broadcast_sync_run_update(run: MediaServerSyncRun) -> None:
+    send_websocket_update(
+        'updates',
+        'update',
+        {
+            'type': 'media_server_sync_updated',
+            'sync_run': MediaServerSyncRunSerializer(run).data,
+        },
+    )
 
 
 def _plex_headers(client_identifier: str, auth_token: str | None = None) -> dict:
@@ -147,6 +172,7 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
             'enabled',
             'add_to_vod',
             'include_libraries',
+            'provider_config',
         ):
             setattr(integration, field_name, getattr(source, field_name, None))
 
@@ -157,7 +183,11 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError(
                 {'provider_type': 'Provider type is required.'}
             )
-        if not str(integration.base_url or '').strip():
+        provider_type = str(integration.provider_type or '').strip().lower()
+        if (
+            provider_type != MediaServerIntegration.ProviderTypes.LOCAL
+            and not str(integration.base_url or '').strip()
+        ):
             raise serializers.ValidationError({'base_url': 'Server URL is required.'})
 
         return integration
@@ -165,11 +195,22 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='sync', permission_classes=[IsAdmin])
     def sync(self, request, pk=None):
         integration = self.get_object()
-        task = sync_media_server_integration.delay(integration.id)
+        sync_run = MediaServerSyncRun.objects.create(
+            integration=integration,
+            status=MediaServerSyncRun.Status.QUEUED,
+            summary='Manual sync',
+            message='Sync queued.',
+            stages=_default_sync_stages(),
+        )
+        task = sync_media_server_integration.delay(integration.id, sync_run.id)
+        sync_run.task_id = task.id
+        sync_run.save(update_fields=['task_id', 'updated_at'])
+        _broadcast_sync_run_update(sync_run)
         return Response(
             {
                 'message': f'Sync started for {integration.name}',
                 'task_id': task.id,
+                'sync_run': MediaServerSyncRunSerializer(sync_run).data,
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -186,6 +227,11 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
             return Response(self._run_connection_test(integration))
         except serializers.ValidationError:
             raise
+        except (ValueError, OSError) as exc:
+            return Response(
+                {'ok': False, 'error': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except requests.RequestException as exc:
             logger.warning('Media server payload connection test failed: %s', exc)
             return Response(
@@ -209,6 +255,11 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
         integration = self.get_object()
         try:
             return Response(self._run_connection_test(integration))
+        except (ValueError, OSError) as exc:
+            return Response(
+                {'ok': False, 'error': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except requests.RequestException as exc:
             logger.warning(
                 'Media server connection test failed for %s: %s',
@@ -249,6 +300,11 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
                     }
                     for library in libraries
                 ]
+            )
+        except (ValueError, OSError) as exc:
+            return Response(
+                {'error': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except requests.RequestException as exc:
             return Response(
@@ -448,3 +504,107 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
                 {'error': str(exc)},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path='browse-local-path',
+        permission_classes=[IsAdmin],
+    )
+    def browse_local_path(self, request):
+        raw_path = str(request.query_params.get('path') or '').strip()
+        if not raw_path:
+            path = os.path.abspath(os.sep)
+        else:
+            path = os.path.abspath(os.path.expanduser(raw_path))
+
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return Response(
+                {'detail': 'Path not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        parent = os.path.dirname(path.rstrip(os.sep))
+        if parent == path:
+            parent = None
+
+        entries = []
+        try:
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    if entry.is_dir():
+                        entries.append({'name': entry.name, 'path': entry.path})
+        except PermissionError:
+            return Response(
+                {'detail': 'Permission denied.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        entries.sort(key=lambda item: item['name'].lower())
+        return Response({'path': path, 'parent': parent, 'entries': entries})
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class MediaServerSyncRunViewSet(viewsets.ModelViewSet):
+    queryset = MediaServerSyncRun.objects.select_related('integration')
+    serializer_class = MediaServerSyncRunSerializer
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def get_permissions(self):
+        return [IsAdmin()]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        integration_id = self.request.query_params.get('integration')
+        if integration_id:
+            try:
+                integration_value = int(integration_id)
+            except (TypeError, ValueError):
+                return queryset.none()
+            queryset = queryset.filter(integration_id=integration_value)
+        return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        sync_run = self.get_object()
+        if sync_run.status not in {
+            MediaServerSyncRun.Status.PENDING,
+            MediaServerSyncRun.Status.QUEUED,
+        }:
+            return Response(
+                {'detail': 'Only pending or queued sync runs can be deleted.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='cancel', permission_classes=[IsAdmin])
+    def cancel(self, request, pk=None):
+        sync_run = self.get_object()
+        if sync_run.status not in {
+            MediaServerSyncRun.Status.PENDING,
+            MediaServerSyncRun.Status.QUEUED,
+            MediaServerSyncRun.Status.RUNNING,
+        }:
+            return Response(
+                {'detail': 'Sync run is not cancelable.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sync_run.status = MediaServerSyncRun.Status.CANCELLED
+        sync_run.message = 'Sync cancelled by user.'
+        if not sync_run.finished_at:
+            sync_run.finished_at = timezone.now()
+        sync_run.save(update_fields=['status', 'message', 'finished_at', 'updated_at'])
+        _broadcast_sync_run_update(sync_run)
+        return Response(self.get_serializer(sync_run).data)
+
+    @action(detail=False, methods=['delete'], url_path='purge', permission_classes=[IsAdmin])
+    def purge(self, request):
+        queryset = self.get_queryset().filter(
+            status__in=[
+                MediaServerSyncRun.Status.COMPLETED,
+                MediaServerSyncRun.Status.FAILED,
+                MediaServerSyncRun.Status.CANCELLED,
+            ]
+        )
+        deleted, _ = queryset.delete()
+        return Response({'deleted': deleted})

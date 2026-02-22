@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../api';
+import { resolveLogoUrl, resolveMediaUrl } from '../utils/mediaUrl';
 
 const getFetchContentParams = (state) => {
   const params = new URLSearchParams();
@@ -26,7 +27,7 @@ const getMovieDetails = (response, movieId) => {
     rating: response.rating || '',
     duration_secs: response.duration_secs || null,
     stream_url: response.url || '',
-    logo: response.logo_url || null,
+    logo: resolveMediaUrl(response.logo_url) || null,
     type: 'movie',
     director: response.director || '',
     actors: response.actors || '',
@@ -47,7 +48,10 @@ const getMovieDetailsWithProvider = (response, movieId) => {
     rating: response.rating || '',
     duration_secs: response.duration_secs || null,
     stream_url: response.stream_url || '',
-    logo: response.logo || response.cover || null,
+    logo:
+      resolveLogoUrl(response.logo) ||
+      resolveMediaUrl(response.cover) ||
+      null,
     type: 'movie',
     director: response.director || '',
     actors: response.actors || response.cast || '',
@@ -57,7 +61,7 @@ const getMovieDetailsWithProvider = (response, movieId) => {
     // Additional provider fields
     backdrop_path: response.backdrop_path || [],
     release_date: response.release_date || response.releasedate || '',
-    movie_image: response.movie_image || null,
+    movie_image: resolveMediaUrl(response.movie_image) || null,
     o_name: response.o_name || '',
     age: response.age || '',
     episode_run_time: response.episode_run_time || null,
@@ -75,7 +79,7 @@ const getSeriesDetails = (response, seriesId) => {
     year: response.year || null,
     genre: response.genre || '',
     rating: response.rating || '',
-    logo: response.cover || null,
+    logo: resolveMediaUrl(response.cover) || null,
     type: 'series',
     director: response.custom_properties?.director || '',
     cast: response.custom_properties?.cast || '',
@@ -86,7 +90,7 @@ const getSeriesDetails = (response, seriesId) => {
     // Additional provider fields
     backdrop_path: response.custom_properties?.backdrop_path || [],
     release_date: response.release_date || '',
-    series_image: response.series_image || null,
+    series_image: resolveMediaUrl(response.series_image) || null,
     o_name: response.o_name || '',
     age: response.age || '',
     m3u_account: response.m3u_account || '',
@@ -95,6 +99,7 @@ const getSeriesDetails = (response, seriesId) => {
 };
 
 const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
+  const episodeImage = resolveMediaUrl(episode.movie_image);
   return {
     id: episode.id,
     stream_id: episode.id,
@@ -111,9 +116,9 @@ const getEpisodeDetails = (episode, seasonNumber, seriesInfo) => {
     },
     type: 'episode',
     uuid: episode.uuid,
-    logo: episode.movie_image ? { url: episode.movie_image } : null,
+    logo: episodeImage ? { url: episodeImage } : null,
     air_date: episode.air_date || null,
-    movie_image: episode.movie_image || null,
+    movie_image: episodeImage || null,
     tmdb_id: episode.tmdb_id || '',
     imdb_id: episode.imdb_id || '',
   };
@@ -162,12 +167,22 @@ const useVODStore = create((set, get) => ({
       let allResults = [];
       let totalCount = 0;
 
+      const normalizeContentItem = (item) => ({
+        ...item,
+        logo: resolveLogoUrl(item.logo),
+        movie_image: resolveMediaUrl(item.movie_image),
+        series_image: resolveMediaUrl(item.series_image),
+      });
+
       if (state.filters.type === 'movies') {
         // Fetch only movies
         const response = await api.getMovies(params);
         const results = response.results || response;
 
-        allResults = results.map((item) => ({ ...item, contentType: 'movie' }));
+        allResults = results.map((item) => ({
+          ...normalizeContentItem(item),
+          contentType: 'movie',
+        }));
         totalCount = response.count || results.length;
       } else if (state.filters.type === 'series') {
         // Fetch only series
@@ -175,7 +190,7 @@ const useVODStore = create((set, get) => ({
         const results = response.results || response;
 
         allResults = results.map((item) => ({
-          ...item,
+          ...normalizeContentItem(item),
           contentType: 'series',
         }));
         totalCount = response.count || results.length;
@@ -195,7 +210,7 @@ const useVODStore = create((set, get) => ({
 
         // The backend already provides content_type and proper sorting/pagination
         allResults = results.map((item) => ({
-          ...item,
+          ...normalizeContentItem(item),
           contentType: item.content_type, // Backend provides this field
         }));
         totalCount = response.count || results.length;

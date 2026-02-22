@@ -10,6 +10,7 @@ from django.http import StreamingHttpResponse, HttpResponse, FileResponse
 from django.db.models import Q
 import django_filters
 import logging
+import mimetypes
 import os
 import requests
 from apps.accounts.permissions import (
@@ -808,16 +809,17 @@ class VODLogoViewSet(viewsets.ModelViewSet):
         if not logo.url:
             return HttpResponse(status=404)
 
-        # Check if this is a local file path
-        if logo.url.startswith('/data/'):
-            # It's a local file
+        # Check if this is a local file path.
+        # Keep /data behavior and also support absolute local paths used by local media imports.
+        if logo.url.startswith('/data/') or os.path.isabs(logo.url):
             file_path = logo.url
             if not os.path.exists(file_path):
                 logger.error(f"VOD logo file not found: {file_path}")
                 return HttpResponse(status=404)
 
             try:
-                return FileResponse(open(file_path, 'rb'), content_type='image/png')
+                content_type = mimetypes.guess_type(file_path)[0] or 'image/png'
+                return FileResponse(open(file_path, 'rb'), content_type=content_type)
             except Exception as e:
                 logger.error(f"Error serving VOD logo file {file_path}: {str(e)}")
                 return HttpResponse(status=500)
@@ -896,4 +898,3 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
