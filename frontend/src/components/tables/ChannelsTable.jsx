@@ -426,7 +426,15 @@ const ChannelsTable = ({ onReady }) => {
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      let sortField = sorting[0].id;
+      // Map frontend column ids to backend ordering field names
+      const fieldMapping = {
+        channel_group: 'channel_group__name',
+        epg: 'epg_data__name',
+      };
+      if (fieldMapping[sortField]) {
+        sortField = fieldMapping[sortField];
+      }
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -918,7 +926,7 @@ const ChannelsTable = ({ onReady }) => {
           />
         ),
         size: columnSizing.epg || 200,
-        minSize: 80,
+        minSize: 120,
       },
       {
         id: 'channel_group',
@@ -929,8 +937,8 @@ const ChannelsTable = ({ onReady }) => {
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
-        size: columnSizing.channel_group || 175,
-        minSize: 100,
+        size: columnSizing.channel_group || 200,
+        minSize: 120,
       },
       {
         id: 'logo',
@@ -1012,6 +1020,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('epg');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
       case 'enabled':
@@ -1023,11 +1040,16 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'channel_number':
         return (
-          <Flex gap={2}>
+          <Flex gap={2} align="center">
             #
-            <Center>
+            <Center
+              onClick={(e) => {
+                e.stopPropagation();
+                onSortingChange('channel_number');
+              }}
+              style={{ cursor: 'pointer' }}
+            >
               {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('channel_number'),
                 size: 14,
               })}
             </Center>
@@ -1036,25 +1058,27 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'name':
         return (
-          <Flex gap="sm">
-            <TextInput
-              name="name"
-              placeholder="Name"
-              value={filters.name || ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={handleFilterChange}
-              size="xs"
-              variant="unstyled"
-              className="table-input-header"
-              leftSection={<Search size={14} opacity={0.5} />}
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
-                size: 14,
-              })}
-            </Center>
-          </Flex>
+          <TextInput
+            name="name"
+            placeholder="Name"
+            value={filters.name || ''}
+            onClick={(e) => e.stopPropagation()}
+            onChange={handleFilterChange}
+            size="xs"
+            variant="unstyled"
+            className="table-input-header"
+            leftSection={<Search size={14} opacity={0.5} />}
+            style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('name');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
+          />
         );
 
       case 'channel_group':
@@ -1077,6 +1101,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('channel_group');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
     }
