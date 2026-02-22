@@ -69,6 +69,55 @@ def _find_artwork_in_parent_dirs(
     return None, None
 
 
+def _is_http_url(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    return value.startswith('http://') or value.startswith('https://')
+
+
+def _prefer_tmdb_artwork(
+    metadata: dict,
+    *,
+    local_poster: Optional[str] = None,
+    local_backdrop: Optional[str] = None,
+) -> tuple[dict, Optional[str], Optional[str]]:
+    """
+    Treat local filesystem artwork as fallback so TMDB URLs can become primary.
+    """
+    poster_fallback = None
+    backdrop_fallback = None
+
+    existing_poster = str(metadata.get('poster_url') or '').strip()
+    if existing_poster and not _is_http_url(existing_poster):
+        poster_fallback = existing_poster
+        metadata.pop('poster_url', None)
+
+    existing_backdrop = str(metadata.get('backdrop_url') or '').strip()
+    if existing_backdrop and not _is_http_url(existing_backdrop):
+        backdrop_fallback = existing_backdrop
+        metadata.pop('backdrop_url', None)
+
+    if local_poster:
+        poster_fallback = local_poster
+    if local_backdrop:
+        backdrop_fallback = local_backdrop
+
+    return metadata, poster_fallback, backdrop_fallback
+
+
+def _apply_artwork_fallback(
+    metadata: dict,
+    *,
+    poster_fallback: Optional[str] = None,
+    backdrop_fallback: Optional[str] = None,
+) -> dict:
+    if poster_fallback and not str(metadata.get('poster_url') or '').strip():
+        metadata['poster_url'] = poster_fallback
+    if backdrop_fallback and not str(metadata.get('backdrop_url') or '').strip():
+        metadata['backdrop_url'] = backdrop_fallback
+    return metadata
+
+
 @dataclass
 class ProviderLibrary:
     id: str
@@ -1223,14 +1272,20 @@ class LocalClient(BaseMediaServerClient):
                 local_poster, local_backdrop = find_local_artwork_files(
                     os.path.dirname(full_path)
                 )
-                if local_poster:
-                    metadata['poster_url'] = local_poster
-                if local_backdrop:
-                    metadata['backdrop_url'] = local_backdrop
+                metadata, poster_fallback, backdrop_fallback = _prefer_tmdb_artwork(
+                    metadata,
+                    local_poster=local_poster,
+                    local_backdrop=local_backdrop,
+                )
                 metadata, _tmdb_error = enrich_movie_metadata_with_tmdb(
                     metadata,
                     title=classification.title or os.path.splitext(file_name)[0],
                     year=classification.year,
+                )
+                metadata = _apply_artwork_fallback(
+                    metadata,
+                    poster_fallback=poster_fallback,
+                    backdrop_fallback=backdrop_fallback,
                 )
                 title = (
                     str(metadata.get('title') or '').strip()
@@ -1315,14 +1370,20 @@ class LocalClient(BaseMediaServerClient):
                         os.path.dirname(full_path),
                         stop_dir=base_path,
                     )
-                    if local_poster:
-                        series_meta['poster_url'] = local_poster
-                    if local_backdrop:
-                        series_meta['backdrop_url'] = local_backdrop
+                    series_meta, poster_fallback, backdrop_fallback = _prefer_tmdb_artwork(
+                        series_meta,
+                        local_poster=local_poster,
+                        local_backdrop=local_backdrop,
+                    )
                     series_meta, _tmdb_error = enrich_series_metadata_with_tmdb(
                         series_meta,
                         title=series_title,
                         year=classification.year,
+                    )
+                    series_meta = _apply_artwork_fallback(
+                        series_meta,
+                        poster_fallback=poster_fallback,
+                        backdrop_fallback=backdrop_fallback,
                     )
                     external_series_id = hashlib.sha1(
                         series_key.encode('utf-8')
