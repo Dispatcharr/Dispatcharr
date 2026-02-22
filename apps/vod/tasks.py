@@ -1220,6 +1220,25 @@ def parse_date(date_string):
 def refresh_series_episodes(account, series, external_series_id, episodes_data=None):
     """Refresh episodes for a series - only called on-demand"""
     try:
+        if account.account_type != M3UAccount.Types.XC:
+            logger.debug(
+                "Skipping Xtream episode refresh for non-XC account %s (%s)",
+                account.id,
+                account.account_type,
+            )
+            series_relation = M3USeriesRelation.objects.filter(
+                series=series,
+                m3u_account=account,
+            ).first()
+            if series_relation:
+                custom_props = series_relation.custom_properties or {}
+                custom_props['episodes_fetched'] = True
+                custom_props['detailed_fetched'] = True
+                series_relation.custom_properties = custom_props
+                series_relation.last_episode_refresh = timezone.now()
+                series_relation.save(update_fields=['custom_properties', 'last_episode_refresh'])
+            return "Episode refresh skipped for non-XC account"
+
         if not episodes_data:
             # Fetch detailed series info including episodes
             with XtreamCodesClient(
@@ -2065,6 +2084,19 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
 
         account = relation.m3u_account
         movie = relation.movie
+
+        if account.account_type != M3UAccount.Types.XC:
+            logger.debug(
+                "Skipping Xtream movie advanced refresh for non-XC account %s (%s)",
+                account.id,
+                account.account_type,
+            )
+            relation_custom_props = relation.custom_properties or {}
+            relation_custom_props['detailed_fetched'] = True
+            relation.custom_properties = relation_custom_props
+            relation.last_advanced_refresh = now
+            relation.save(update_fields=['custom_properties', 'last_advanced_refresh'])
+            return "Advanced data refresh skipped for non-XC account."
 
         from core.xtream_codes import Client as XtreamCodesClient
 
