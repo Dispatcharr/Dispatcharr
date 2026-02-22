@@ -1011,6 +1011,7 @@ def sync_media_server_integration(self, integration_id: int, sync_run_id: Option
                         'custom_properties': _movie_relation_custom_properties(
                             integration, provider_movie
                         ),
+                        'last_advanced_refresh': scan_started,
                         'last_seen': scan_started,
                     },
                 )
