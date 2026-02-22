@@ -81,7 +81,6 @@ class RedisClient:
 
                     # Validate connection with ping
                     client.ping()
-                    client.flushdb()
 
                     # Disable persistence on first connection - improves performance
                     # Only try to disable if not in a read-only environment

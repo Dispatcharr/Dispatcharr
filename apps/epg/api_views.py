@@ -13,7 +13,7 @@ from .serializers import (
     EPGSourceSerializer,
     EPGDataSerializer,
 )  # Updated serializer
-from .tasks import refresh_epg_data
+from .tasks import refresh_epg_data, find_current_program_for_tvg_id
 from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_action,
@@ -447,14 +447,92 @@ class CurrentProgramsAPIView(APIView):
                     allow_null=True,
                     help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
                 ),
+                "epg_data_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    allow_null=True,
+                    help_text="Array of EPG data IDs. Can be used instead of channel_ids.",
+                ),
             },
         ),
         responses={200: ProgramDataSerializer(many=True)},
     )
     def post(self, request, format=None):
-        # Get channel IDs from request body
+        # Get IDs from request body
         channel_ids = request.data.get('channel_ids', None)
+        epg_data_ids = request.data.get('epg_data_ids', None)
 
+        # Validate that at most one type of ID is provided
+        if channel_ids is not None and epg_data_ids is not None:
+            return Response(
+                {"error": "Provide either channel_ids or epg_data_ids, not both"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get current time
+        now = timezone.now()
+
+        # If epg_data_ids are provided, query directly by EPG data
+        if epg_data_ids is not None:
+            if not isinstance(epg_data_ids, list):
+                return Response(
+                    {"error": "epg_data_ids must be an array of integers or null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                epg_data_ids = [int(eid) for eid in epg_data_ids]
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "epg_data_ids must contain valid integers"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Limit to 50 IDs per request
+            epg_data_ids = epg_data_ids[:50]
+
+            epg_data_entries = EPGData.objects.select_related('epg_source').filter(id__in=epg_data_ids)
+
+            # Batch-fetch current programs for all requested EPG entries in one query
+            db_programs = ProgramData.objects.filter(
+                epg__in=epg_data_entries, start_time__lte=now, end_time__gt=now
+            ).select_related('epg')
+            # Map epg_data id -> first matching program
+            programs_by_epg = {}
+            for prog in db_programs:
+                if prog.epg_id not in programs_by_epg:
+                    programs_by_epg[prog.epg_id] = prog
+
+            current_programs = []
+            for epg_data in epg_data_entries:
+                # Check batch-fetched DB results first
+                program = programs_by_epg.get(epg_data.id)
+
+                if program:
+                    program_data = ProgramDataSerializer(program).data
+                    program_data['epg_data_id'] = epg_data.id
+                    current_programs.append(program_data)
+                    continue
+
+                # Skip dummy sources
+                if epg_data.epg_source and epg_data.epg_source.source_type == 'dummy':
+                    continue
+
+                # Fall back to byte-offset index lookup, pass the object to avoid re-fetch
+                result = find_current_program_for_tvg_id(epg_data)
+
+                if result == "timeout":
+                    current_programs.append({
+                        "epg_data_id": epg_data.id,
+                        "parsing": True,
+                    })
+                elif result is not None:
+                    result['epg_data_id'] = epg_data.id
+                    current_programs.append(result)
+
+            return Response(current_programs, status=status.HTTP_200_OK)
+
+        # Otherwise, use channel-based query
         # Import Channel model
         from apps.channels.models import Channel
 

@@ -11,7 +11,6 @@ import {
   Center,
   Flex,
   Group,
-  Progress,
   Select,
   Stack,
   Text,
@@ -19,18 +18,16 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import {
-  ChevronDown,
-  ChevronRight,
   CirclePlay,
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
-  Radio,
   SquareX,
   Timer,
   Users,
   Video,
 } from 'lucide-react';
+import ProgramPreview from '../ProgramPreview';
 import {
   toFriendlyDuration,
   useDateTimeFormat,
@@ -74,7 +71,7 @@ const StreamConnectionCard = ({
   const [currentM3UProfile, setCurrentM3UProfile] = useState(null); // Add state for current M3U profile
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
-  const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+
 
   const theme = useMantineTheme();
 
@@ -529,89 +526,10 @@ const StreamConnectionCard = ({
 
         {/* Display current program on its own line */}
         {currentProgram && (
-          <Group gap={5} mt={-9} wrap="nowrap">
-            <Radio size="14" style={{ color: '#22c55e', flexShrink: 0 }} />
-            <Text size="xs" fw={500} c="green.5" style={{ flexShrink: 0 }}>
-              Now Playing:
-            </Text>
-            <Text size="xs" c="dimmed" truncate>
-              {currentProgram.title}
-            </Text>
-            <ActionIcon
-              size="xs"
-              variant="subtle"
-              onClick={() => setIsProgramDescExpanded(!isProgramDescExpanded)}
-              style={{ flexShrink: 0 }}
-            >
-              {isProgramDescExpanded ? (
-                <ChevronDown size="14" />
-              ) : (
-                <ChevronRight size="14" />
-              )}
-            </ActionIcon>
-          </Group>
+          <Box mt={-9}>
+            <ProgramPreview program={currentProgram} />
+          </Box>
         )}
-
-        {/* Expandable program description */}
-        {currentProgram &&
-          isProgramDescExpanded &&
-          currentProgram.description && (
-            <Box mt={4} ml={24}>
-              <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
-                {currentProgram.description}
-              </Text>
-            </Box>
-          )}
-
-        {/* Program progress bar */}
-        {currentProgram &&
-          isProgramDescExpanded &&
-          currentProgram.start_time &&
-          currentProgram.end_time &&
-          (() => {
-            const now = new Date();
-            const startTime = new Date(currentProgram.start_time);
-            const endTime = new Date(currentProgram.end_time);
-            const totalDuration = (endTime - startTime) / 1000; // in seconds
-            const elapsed = (now - startTime) / 1000; // in seconds
-            const remaining = (endTime - now) / 1000; // in seconds
-            const percentage = Math.min(
-              100,
-              Math.max(0, (elapsed / totalDuration) * 100)
-            );
-
-            const formatProgramTime = (seconds) => {
-              const absSeconds = Math.abs(seconds);
-              const hours = Math.floor(absSeconds / 3600);
-              const minutes = Math.floor((absSeconds % 3600) / 60);
-              const secs = Math.floor(absSeconds % 60);
-              if (hours > 0) {
-                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-              }
-              return `${minutes}:${secs.toString().padStart(2, '0')}`;
-            };
-
-            return (
-              <Stack gap="xs" mt={4}>
-                <Group justify="space-between" align="center">
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(elapsed)} elapsed
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(remaining)} remaining
-                  </Text>
-                </Group>
-                <Progress
-                  value={percentage}
-                  size="sm"
-                  color="#3BA882"
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                  }}
-                />
-              </Stack>
-            );
-          })()}
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (
