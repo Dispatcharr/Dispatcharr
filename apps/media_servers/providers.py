@@ -1,3 +1,4 @@
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -6,6 +7,21 @@ from urllib.parse import urlencode, urljoin, urlparse
 import requests
 
 from apps.media_servers.models import MediaServerIntegration
+from apps.media_servers.local_classification import (
+    LocalClassificationResult,
+    classify_media_entry,
+)
+from apps.media_servers.local_metadata import (
+    enrich_episode_metadata_with_tmdb,
+    enrich_movie_metadata_with_tmdb,
+    enrich_series_metadata_with_tmdb,
+    find_local_artwork_files,
+    find_movie_nfo_metadata,
+    find_series_nfo_metadata,
+    find_episode_nfo_metadata,
+    has_tmdb_api_key,
+    parse_nfo_episode_entries,
+)
 
 
 def _extract_extension_from_path(value: Optional[str]) -> Optional[str]:
@@ -23,6 +39,34 @@ def _safe_int(value) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _find_artwork_in_parent_dirs(
+    start_dir: str,
+    *,
+    stop_dir: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    current = os.path.abspath(start_dir)
+    stop = os.path.abspath(stop_dir) if stop_dir else None
+    while True:
+        poster, backdrop = find_local_artwork_files(current)
+        if poster or backdrop:
+            return poster, backdrop
+
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+
+        if stop:
+            try:
+                if os.path.commonpath([stop, parent]) != stop:
+                    break
+            except ValueError:
+                break
+
+        current = parent
+
+    return None, None
 
 
 @dataclass
@@ -47,6 +91,9 @@ class ProviderMovie:
     tmdb_id: Optional[str] = None
     imdb_id: Optional[str] = None
     container_extension: Optional[str] = None
+    local_path: Optional[str] = None
+    local_file_name: Optional[str] = None
+    local_file_size: Optional[int] = None
 
     def __post_init__(self):
         if self.genres is None:
@@ -68,6 +115,9 @@ class ProviderEpisode:
     tmdb_id: Optional[str] = None
     imdb_id: Optional[str] = None
     container_extension: Optional[str] = None
+    local_path: Optional[str] = None
+    local_file_name: Optional[str] = None
+    local_file_size: Optional[int] = None
 
 
 @dataclass
@@ -1014,6 +1064,401 @@ class JellyfinClient(EmbyCompatibleClient):
     pass
 
 
+class LocalClient(BaseMediaServerClient):
+    VIDEO_EXTENSIONS = {
+        '.mkv',
+        '.mp4',
+        '.m4v',
+        '.avi',
+        '.mov',
+        '.wmv',
+        '.mpg',
+        '.mpeg',
+        '.ts',
+        '.m2ts',
+        '.webm',
+    }
+
+    def __init__(self, integration: MediaServerIntegration):
+        super().__init__(integration)
+        self._location_by_id = self._load_locations()
+
+    def close(self):
+        self.session.close()
+
+    def _load_locations(self) -> dict[str, dict]:
+        provider_config = (
+            self.integration.provider_config
+            if isinstance(self.integration.provider_config, dict)
+            else {}
+        )
+        raw_locations = provider_config.get('locations', [])
+        if not isinstance(raw_locations, list):
+            raw_locations = []
+
+        locations: dict[str, dict] = {}
+        for index, raw in enumerate(raw_locations, start=1):
+            if not isinstance(raw, dict):
+                continue
+            raw_path = str(raw.get('path') or '').strip()
+            if not raw_path:
+                continue
+            path = os.path.abspath(os.path.expanduser(raw_path))
+            content_type = str(raw.get('content_type') or 'movie').strip().lower()
+            if content_type not in {'movie', 'series', 'mixed'}:
+                content_type = 'movie'
+            include_subdirectories = bool(raw.get('include_subdirectories', True))
+            name = str(raw.get('name') or '').strip() or os.path.basename(path) or path
+            location_id = str(raw.get('id') or '').strip()
+            if not location_id:
+                location_id = hashlib.sha1(
+                    f'{path}:{content_type}:{index}'.encode('utf-8')
+                ).hexdigest()[:16]
+            locations[location_id] = {
+                'id': location_id,
+                'name': name,
+                'path': path,
+                'content_type': content_type,
+                'include_subdirectories': include_subdirectories,
+            }
+        return locations
+
+    def _iter_location_files(self, base_path: str, include_subdirectories: bool):
+        if include_subdirectories:
+            for root, _dirs, files in os.walk(base_path):
+                for file_name in files:
+                    yield os.path.join(root, file_name)
+            return
+        for entry in os.scandir(base_path):
+            if entry.is_file():
+                yield entry.path
+
+    def _is_media_file(self, file_name: str) -> bool:
+        _base, ext = os.path.splitext(file_name)
+        return ext.lower() in self.VIDEO_EXTENSIONS
+
+    def _file_size(self, path: str) -> Optional[int]:
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+
+    def _relative_parent_path(self, full_path: str, base_path: str) -> str:
+        try:
+            relative = os.path.relpath(os.path.dirname(full_path), base_path)
+        except ValueError:
+            return ''
+        return '' if relative == '.' else relative
+
+    def _episode_nfo_path(self, file_path: str) -> str | None:
+        directory = os.path.dirname(file_path)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        for candidate_name in (f'{base_name}.nfo', 'episode.nfo'):
+            candidate = os.path.join(directory, candidate_name)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def ping(self) -> None:
+        if not self._location_by_id:
+            raise ValueError('Local provider requires at least one location.')
+        if not has_tmdb_api_key():
+            raise ValueError(
+                'Local provider requires a TMDB API key. '
+                'Configure it in Settings > Stream Settings.'
+            )
+        missing = [
+            location['path']
+            for location in self._location_by_id.values()
+            if not os.path.isdir(location['path'])
+        ]
+        if missing:
+            raise FileNotFoundError(
+                f'Local path(s) not found: {", ".join(missing)}'
+            )
+
+    def list_libraries(self) -> list[ProviderLibrary]:
+        libraries = []
+        for location in self._location_by_id.values():
+            libraries.append(
+                ProviderLibrary(
+                    id=location['id'],
+                    name=location['name'],
+                    content_type=location['content_type'],
+                )
+            )
+        return libraries
+
+    def iter_movies(self, libraries: list[ProviderLibrary]) -> Iterable[ProviderMovie]:
+        for library in libraries:
+            if library.content_type not in {'movie', 'mixed'}:
+                continue
+            location = self._location_by_id.get(library.id)
+            if not location:
+                continue
+
+            base_path = location['path']
+            if not os.path.isdir(base_path):
+                continue
+
+            for full_path in self._iter_location_files(
+                base_path,
+                include_subdirectories=location['include_subdirectories'],
+            ):
+                file_name = os.path.basename(full_path)
+                if not self._is_media_file(file_name):
+                    continue
+
+                relative_path = self._relative_parent_path(full_path, base_path)
+                classification = classify_media_entry(
+                    'movie' if library.content_type == 'movie' else 'mixed',
+                    relative_path=relative_path,
+                    file_name=file_name,
+                )
+                if classification.detected_type != 'movie':
+                    continue
+
+                metadata, _metadata_error = find_movie_nfo_metadata(full_path)
+                metadata = metadata or {}
+                local_poster, local_backdrop = find_local_artwork_files(
+                    os.path.dirname(full_path)
+                )
+                if local_poster:
+                    metadata['poster_url'] = local_poster
+                if local_backdrop:
+                    metadata['backdrop_url'] = local_backdrop
+                metadata, _tmdb_error = enrich_movie_metadata_with_tmdb(
+                    metadata,
+                    title=classification.title or os.path.splitext(file_name)[0],
+                    year=classification.year,
+                )
+                title = (
+                    str(metadata.get('title') or '').strip()
+                    or classification.title
+                    or os.path.splitext(file_name)[0]
+                )
+                movie_hash_source = f'{location["id"]}:{full_path}'
+                external_id = hashlib.sha1(
+                    movie_hash_source.encode('utf-8')
+                ).hexdigest()
+                extension = os.path.splitext(file_name)[1].lstrip('.').lower() or None
+
+                yield ProviderMovie(
+                    external_id=external_id,
+                    title=title,
+                    category_name=library.name,
+                    stream_url='',
+                    year=_safe_int(metadata.get('year')) or classification.year,
+                    description=str(metadata.get('description') or '').strip(),
+                    rating=str(metadata.get('rating') or '').strip(),
+                    duration_secs=_safe_int(metadata.get('duration_secs')),
+                    genres=[
+                        str(entry).strip()
+                        for entry in (metadata.get('genres') or [])
+                        if str(entry).strip()
+                    ],
+                    poster_url=str(metadata.get('poster_url') or '').strip(),
+                    tmdb_id=str(metadata.get('tmdb_id') or '').strip() or None,
+                    imdb_id=str(metadata.get('imdb_id') or '').strip() or None,
+                    container_extension=extension,
+                    local_path=full_path,
+                    local_file_name=file_name,
+                    local_file_size=self._file_size(full_path),
+                )
+
+    def iter_series(self, libraries: list[ProviderLibrary]) -> Iterable[ProviderSeries]:
+        for library in libraries:
+            if library.content_type not in {'series', 'mixed'}:
+                continue
+            location = self._location_by_id.get(library.id)
+            if not location:
+                continue
+
+            base_path = location['path']
+            if not os.path.isdir(base_path):
+                continue
+
+            series_map: dict[str, ProviderSeries] = {}
+            series_episode_ids: dict[str, set[str]] = {}
+
+            for full_path in self._iter_location_files(
+                base_path,
+                include_subdirectories=location['include_subdirectories'],
+            ):
+                file_name = os.path.basename(full_path)
+                if not self._is_media_file(file_name):
+                    continue
+
+                relative_path = self._relative_parent_path(full_path, base_path)
+                classification: LocalClassificationResult = classify_media_entry(
+                    'series',
+                    relative_path=relative_path,
+                    file_name=file_name,
+                )
+                if classification.detected_type != 'episode':
+                    continue
+
+                series_title = classification.title or os.path.splitext(file_name)[0]
+                series_key = (
+                    f'{location["id"]}:'
+                    f'{series_title.strip().lower()}:'
+                    f'{classification.year or ""}'
+                )
+                provider_series = series_map.get(series_key)
+                if not provider_series:
+                    series_meta, _series_error = find_series_nfo_metadata(
+                        full_path,
+                        base_path=base_path,
+                    )
+                    series_meta = series_meta or {}
+                    local_poster, local_backdrop = _find_artwork_in_parent_dirs(
+                        os.path.dirname(full_path),
+                        stop_dir=base_path,
+                    )
+                    if local_poster:
+                        series_meta['poster_url'] = local_poster
+                    if local_backdrop:
+                        series_meta['backdrop_url'] = local_backdrop
+                    series_meta, _tmdb_error = enrich_series_metadata_with_tmdb(
+                        series_meta,
+                        title=series_title,
+                        year=classification.year,
+                    )
+                    external_series_id = hashlib.sha1(
+                        series_key.encode('utf-8')
+                    ).hexdigest()
+                    provider_series = ProviderSeries(
+                        external_id=external_series_id,
+                        title=(
+                            str(series_meta.get('title') or '').strip()
+                            or series_title
+                        ),
+                        category_name=library.name,
+                        year=_safe_int(series_meta.get('year')) or classification.year,
+                        description=str(series_meta.get('description') or '').strip(),
+                        rating=str(series_meta.get('rating') or '').strip(),
+                        genres=[
+                            str(entry).strip()
+                            for entry in (series_meta.get('genres') or [])
+                            if str(entry).strip()
+                        ],
+                        poster_url=str(series_meta.get('poster_url') or '').strip(),
+                        tmdb_id=str(series_meta.get('tmdb_id') or '').strip() or None,
+                        imdb_id=str(series_meta.get('imdb_id') or '').strip() or None,
+                    )
+                    series_map[series_key] = provider_series
+                    series_episode_ids[series_key] = set()
+
+                episode_numbers = []
+                if classification.episode is not None:
+                    episode_numbers.append(classification.episode)
+                if classification.episode_list:
+                    episode_numbers.extend(
+                        [value for value in classification.episode_list if value is not None]
+                    )
+                seen_episode_numbers = set()
+                deduped_episode_numbers = []
+                for value in episode_numbers:
+                    if value in seen_episode_numbers:
+                        continue
+                    seen_episode_numbers.add(value)
+                    deduped_episode_numbers.append(value)
+                episode_numbers = deduped_episode_numbers or [classification.episode]
+
+                episode_title_map: dict[int, str] = {}
+                if len(episode_numbers) <= 1:
+                    nfo_path = self._episode_nfo_path(full_path)
+                    if nfo_path:
+                        nfo_entries, _nfo_error = parse_nfo_episode_entries(nfo_path)
+                        nfo_entries = [
+                            entry for entry in nfo_entries if entry.get('episode') is not None
+                        ]
+                        if len(nfo_entries) > 1:
+                            episode_numbers = []
+                            for entry in nfo_entries:
+                                ep_num = entry.get('episode')
+                                if ep_num in episode_numbers:
+                                    continue
+                                episode_numbers.append(ep_num)
+                                if entry.get('title'):
+                                    episode_title_map[ep_num] = str(entry['title']).strip()
+                            if classification.season is None:
+                                seasons = {
+                                    entry.get('season')
+                                    for entry in nfo_entries
+                                    if entry.get('season') is not None
+                                }
+                                if len(seasons) == 1:
+                                    classification.season = seasons.pop()
+
+                extension = os.path.splitext(file_name)[1].lstrip('.').lower() or None
+                for episode_number in episode_numbers:
+                    if episode_number is None:
+                        continue
+                    episode_key = (
+                        f'{full_path}:{classification.season or ""}:{episode_number}'
+                    )
+                    external_episode_id = hashlib.sha1(
+                        episode_key.encode('utf-8')
+                    ).hexdigest()
+                    if external_episode_id in series_episode_ids[series_key]:
+                        continue
+
+                    episode_meta, _episode_error = find_episode_nfo_metadata(
+                        full_path,
+                        season_number=classification.season,
+                        episode_number=episode_number,
+                    )
+                    episode_meta = episode_meta or {}
+                    episode_meta, _tmdb_error = enrich_episode_metadata_with_tmdb(
+                        episode_meta,
+                        series_tmdb_id=provider_series.tmdb_id,
+                        series_title=provider_series.title,
+                        series_year=provider_series.year,
+                        season_number=classification.season,
+                        episode_number=episode_number,
+                    )
+                    episode_title = (
+                        str(episode_meta.get('title') or '').strip()
+                        or episode_title_map.get(episode_number)
+                        or classification.episode_title
+                        or os.path.splitext(file_name)[0]
+                    )
+
+                    provider_series.episodes.append(
+                        ProviderEpisode(
+                            external_id=external_episode_id,
+                            title=episode_title,
+                            series_external_id=provider_series.external_id,
+                            stream_url='',
+                            season_number=classification.season,
+                            episode_number=episode_number,
+                            description=str(episode_meta.get('description') or '').strip(),
+                            rating=str(episode_meta.get('rating') or '').strip(),
+                            duration_secs=_safe_int(episode_meta.get('duration_secs')),
+                            air_date=str(episode_meta.get('air_date') or '').strip() or None,
+                            tmdb_id=str(episode_meta.get('tmdb_id') or '').strip() or None,
+                            imdb_id=str(episode_meta.get('imdb_id') or '').strip() or None,
+                            container_extension=extension,
+                            local_path=full_path,
+                            local_file_name=file_name,
+                            local_file_size=self._file_size(full_path),
+                        )
+                    )
+                    series_episode_ids[series_key].add(external_episode_id)
+
+            for provider_series in series_map.values():
+                provider_series.episodes.sort(
+                    key=lambda entry: (
+                        entry.season_number if entry.season_number is not None else 10_000,
+                        entry.episode_number if entry.episode_number is not None else 10_000,
+                        entry.external_id,
+                    )
+                )
+                if provider_series.episodes:
+                    yield provider_series
+
+
 def get_provider_client(integration: MediaServerIntegration) -> BaseMediaServerClient:
     provider = integration.provider_type
     if provider == MediaServerIntegration.ProviderTypes.PLEX:
@@ -1022,4 +1467,6 @@ def get_provider_client(integration: MediaServerIntegration) -> BaseMediaServerC
         return EmbyClient(integration)
     if provider == MediaServerIntegration.ProviderTypes.JELLYFIN:
         return JellyfinClient(integration)
+    if provider == MediaServerIntegration.ProviderTypes.LOCAL:
+        return LocalClient(integration)
     raise ValueError(f'Unsupported provider type: {provider}')

@@ -6,6 +6,7 @@ Supports M3U profiles for authentication and URL transformation.
 import time
 import random
 import logging
+import os
 import requests
 from django.http import StreamingHttpResponse, JsonResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
@@ -145,6 +146,7 @@ class VODStreamView(View):
             # Extract preferred M3U account ID and stream ID from query parameters
             preferred_m3u_account_id = request.GET.get('m3u_account_id')
             preferred_stream_id = request.GET.get('stream_id')
+            include_inactive = request.GET.get('include_inactive') in ('1', 'true', 'yes')
 
             if preferred_m3u_account_id:
                 try:
@@ -157,7 +159,13 @@ class VODStreamView(View):
                 logger.info(f"[VOD-PARAM] Preferred stream ID: {preferred_stream_id}")
 
             # Get the content object and its relation
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+            content_obj, relation = self._get_content_and_relation(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                include_inactive=include_inactive,
+            )
             if not content_obj or not relation:
                 logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
                 raise Http404(f"Content not found: {content_type} {content_id}")
@@ -167,6 +175,21 @@ class VODStreamView(View):
             # Get M3U account from relation
             m3u_account = relation.m3u_account
             logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
+
+            local_path = self._get_local_file_path(relation)
+            if local_path:
+                logger.info(f"[VOD-LOCAL] Streaming local file via connection manager: {local_path}")
+                connection_manager = MultiWorkerVODConnectionManager.get_instance()
+                return connection_manager.stream_local_file_with_session(
+                    session_id=session_id,
+                    content_obj=content_obj,
+                    file_path=local_path,
+                    relation=relation,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    request=request,
+                    range_header=range_header,
+                )
 
             # Get stream URL from relation
             stream_url = self._get_stream_url_from_relation(relation)
@@ -256,6 +279,7 @@ class VODStreamView(View):
             # Extract preferred M3U account ID and stream ID from query parameters
             preferred_m3u_account_id = request.GET.get('m3u_account_id')
             preferred_stream_id = request.GET.get('stream_id')
+            include_inactive = request.GET.get('include_inactive') in ('1', 'true', 'yes')
 
             if preferred_m3u_account_id:
                 try:
@@ -268,10 +292,30 @@ class VODStreamView(View):
                 logger.info(f"[VOD-HEAD] Preferred stream ID: {preferred_stream_id}")
 
             # Get content and relation (same as GET)
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+            content_obj, relation = self._get_content_and_relation(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                include_inactive=include_inactive,
+            )
             if not content_obj or not relation:
                 logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
                 return HttpResponse("Content not found", status=404)
+
+            local_path = self._get_local_file_path(relation)
+            if local_path:
+                logger.info(f"[VOD-HEAD] HEAD for local file via connection manager: {local_path}")
+                connection_manager = MultiWorkerVODConnectionManager.get_instance()
+                return connection_manager.head_local_file_with_session(
+                    session_id=session_id,
+                    content_obj=content_obj,
+                    file_path=local_path,
+                    relation=relation,
+                    client_ip=client_ip,
+                    client_user_agent=client_user_agent,
+                    session_url=session_url,
+                )
 
             # Get M3U account and stream URL
             m3u_account = relation.m3u_account
@@ -394,7 +438,14 @@ class VODStreamView(View):
             logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
             return HttpResponse(f"HEAD error: {str(e)}", status=500)
 
-    def _get_content_and_relation(self, content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
+    def _get_content_and_relation(
+        self,
+        content_type,
+        content_id,
+        preferred_m3u_account_id=None,
+        preferred_stream_id=None,
+        include_inactive=False,
+    ):
         """Get the content object and its M3U relation"""
         try:
             logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
@@ -408,7 +459,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = content_obj.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -439,7 +492,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = content_obj.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -477,7 +532,9 @@ class VODStreamView(View):
                 logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
 
                 # Filter by preferred stream ID first (most specific)
-                relations_query = episode.m3u_relations.filter(m3u_account__is_active=True)
+                relations_query = episode.m3u_relations.all()
+                if not include_inactive:
+                    relations_query = relations_query.filter(m3u_account__is_active=True)
                 if preferred_stream_id:
                     specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
                     if specific_relation:
@@ -532,6 +589,23 @@ class VODStreamView(View):
         except Exception as e:
             logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
             return None
+
+    def _get_local_file_path(self, relation):
+        props = getattr(relation, 'custom_properties', None)
+        if not isinstance(props, dict):
+            return None
+
+        path = str(props.get('file_path') or '').strip()
+        if not path:
+            direct_source = str(props.get('direct_source') or '').strip()
+            if direct_source.startswith('file://'):
+                path = direct_source[7:]
+        if not path:
+            return None
+        if not os.path.exists(path):
+            logger.warning("[VOD-LOCAL] File not found at %s", path)
+            return None
+        return path
 
     def _get_m3u_profile(self, m3u_account, profile_id, session_id=None):
         """Get appropriate M3U profile for streaming using Redis-based viewer counts
@@ -1078,5 +1152,4 @@ def stop_vod_client(request):
     except Exception as e:
         logger.error(f"Error stopping VOD client: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
-
 
