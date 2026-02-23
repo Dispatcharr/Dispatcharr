@@ -65,6 +65,10 @@ def refresh_vod_content(account_id):
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
         cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
+        
+        # Trigger episode relation refresh after VOD cleanup
+        logger.info(f"Triggering episode relation refresh for account {account_id}")
+        batch_refresh_series_episodes.delay(account_id)
 
         # Send completion notification
         send_m3u_update(account_id, "vod_refresh", 100, status="success",
