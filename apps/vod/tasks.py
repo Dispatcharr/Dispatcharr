@@ -1258,12 +1258,6 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Clear existing episodes for this account to handle deletions
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account=account
-        ).delete()
-
         # Process all episodes in batch
         batch_process_episodes(account, series, episodes_data)
 
