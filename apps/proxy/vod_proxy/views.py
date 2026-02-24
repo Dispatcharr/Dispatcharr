@@ -463,6 +463,39 @@ class VODStreamView(View):
                 if relation:
                     logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
+                # On-demand refresh if no relation found (e.g. fresh setup, new series added
+                # between scheduled refreshes, or partial refresh failure)
+                if not relation:
+                    from core.utils import RedisClient
+                    from apps.vod.models import M3USeriesRelation
+                    from apps.vod.tasks import refresh_series_episodes
+                    lock_key = f"vod_episode_refresh:{content_obj.series_id}"
+                    redis_client = RedisClient.get_client()
+                    if redis_client:
+                        lock_acquired = redis_client.set(lock_key, 1, nx=True, ex=30)
+                        if lock_acquired:
+                            try:
+                                logger.info(f"[ON-DEMAND] No relation found, triggering refresh for series {content_obj.series.name}")
+                                series_relation = M3USeriesRelation.objects.filter(
+                                    series=content_obj.series,
+                                    m3u_account__is_active=True
+                                ).order_by('-m3u_account__priority').first()
+                                if series_relation:
+                                    refresh_series_episodes(series_relation.m3u_account, content_obj.series, series_relation.external_series_id)
+                                    relation = relations_query.order_by('-m3u_account__priority', 'id').first()
+                                    if relation:
+                                        logger.info(f"[ON-DEMAND] Relation created successfully for {content_obj.series.name}")
+                                    else:
+                                        logger.error(f"[ON-DEMAND] Refresh completed but still no relation for {content_obj.series.name}")
+                            finally:
+                                redis_client.delete(lock_key)
+                        else:
+                            logger.info(f"[ON-DEMAND] Refresh in progress for {content_obj.series.name}, waiting...")
+                            time.sleep(3)
+                            relation = relations_query.order_by('-m3u_account__priority', 'id').first()
+                            if relation:
+                                logger.info(f"[ON-DEMAND] Relation available after wait for {content_obj.series.name}")
+
                 return content_obj, relation
 
             elif content_type == 'series':
