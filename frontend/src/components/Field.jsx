@@ -4,6 +4,7 @@ import React from 'react';
 export const Field = ({ field, value, onChange }) => {
   const common = { label: field.label, description: field.help_text };
   const effective = value ?? field.default;
+
   switch (field.type) {
     case 'boolean':
       return (

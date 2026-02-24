@@ -5,7 +5,6 @@ import {
   ListOrdered,
   Play,
   Database,
-  SlidersHorizontal,
   LayoutGrid,
   Settings as LucideSettings,
   Copy,
@@ -18,7 +17,6 @@ import {
 } from 'lucide-react';
 import {
   Avatar,
-  AppShell,
   Group,
   Stack,
   Box,
@@ -26,9 +24,8 @@ import {
   UnstyledButton,
   TextInput,
   ActionIcon,
-  Menu,
+  AppShellNavbar,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
@@ -61,7 +58,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
         </Text>
       )}
       {!collapsed && item.badge && (
-        <Text size="sm" style={{ color: '#D4D4D8', whiteSpace: 'nowrap' }}>
+        <Text size="sm" c='#D4D4D8' style={{ whiteSpace: 'nowrap' }}>
           {item.badge}
         </Text>
       )}
@@ -150,21 +147,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     });
   };
 
-  const onLogout = async () => {
-    await logout();
-    window.location.reload();
-  };
-
   return (
-    <AppShell.Navbar
+    <AppShellNavbar
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
+      mih="100vh"
+      display='flex'
       style={{
         backgroundColor: '#1A1A1E',
-        // transition: 'width 0.3s ease',
         borderRight: '1px solid #2A2A2E',
-        minHeight: '100vh',
-        display: 'flex',
         flexDirection: 'column',
       }}
     >
@@ -172,15 +163,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       <Group
         onClick={toggleDrawer}
         spacing="sm"
+        display="flex"
+        p={'16px 12px'}
+        fz={18}
+        fw={600}
+        color="#FFFFFF"
         style={{
           cursor: 'pointer',
-          display: 'flex',
           alignItems: 'center',
           gap: 12,
-          padding: '16px 12px',
-          fontSize: 18,
-          fontWeight: 600,
-          color: '#FFFFFF',
           justifyContent: collapsed ? 'center' : 'flex-start',
           whiteSpace: 'nowrap',
         }}
@@ -221,10 +212,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
       {/* Profile Section */}
       <Box
+        mt='auto'
+        p={16}
+        display='flex'
         style={{
-          marginTop: 'auto',
-          padding: '16px',
-          display: 'flex',
           alignItems: 'center',
           gap: 10,
           borderTop: '1px solid #2A2A2E',
@@ -286,14 +277,14 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
       {/* Version is always shown when sidebar is expanded, regardless of auth status */}
       {!collapsed && (
-        <Text size="xs" style={{ padding: '0 16px 16px' }} c="dimmed">
+        <Text size="xs" p={'0 16px 16px'} c="dimmed">
           v{appVersion?.version || '0.0.0'}
           {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
         </Text>
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
-    </AppShell.Navbar>
+    </AppShellNavbar>
   );
 };
 

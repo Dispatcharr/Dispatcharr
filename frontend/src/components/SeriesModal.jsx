@@ -1,128 +1,345 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActionIcon,
+  Badge,
   Box,
   Button,
+  Divider,
   Flex,
   Group,
   Image,
+  Loader,
+  Modal,
+  Select,
+  Stack,
+  Table,
+  TableTbody,
+  TableTd,
+  TableTh,
+  TableThead,
+  TableTr,
+  Tabs,
+  TabsList,
+  TabsPanel,
+  TabsTab,
   Text,
   Title,
-  Select,
-  Badge,
-  Loader,
-  Stack,
-  ActionIcon,
-  Modal,
-  Tabs,
-  Table,
-  Divider,
 } from '@mantine/core';
-import { Play, Copy } from 'lucide-react';
-import { notifications } from '@mantine/notifications';
+import { Copy, Play } from 'lucide-react';
 import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
+import {
+  formatDuration,
+  formatStreamLabel,
+  getEpisodeAirdate,
+  getEpisodeStreamUrl,
+  getTmdbUrlLink,
+  getYouTubeEmbedUrl,
+  groupEpisodesBySeason,
+  imdbUrl,
+  sortBySeasonNumber,
+  sortEpisodesList,
+  tmdbUrl,
+} from '../utils/components/SeriesModalUtils.js';
+import { YouTubeTrailerModal } from './modals/YouTubeTrailerModal.jsx';
 
-const imdbUrl = (imdb_id) =>
-  imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
-const tmdbUrl = (tmdb_id, type = 'movie') =>
-  tmdb_id ? `https://www.themoviedb.org/${type}/${tmdb_id}` : '';
-const formatDuration = (seconds) => {
-  if (!seconds) return '';
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m ${secs}s`;
+const Series = ({ displaySeries, onClickYouTubeTrailer }) => {
+  return (
+    <Flex gap="md">
+      {displaySeries.series_image || displaySeries.logo?.url ? (
+        <Box style={{ flexShrink: 0 }}>
+          <Image
+            src={displaySeries.series_image || displaySeries.logo.url}
+            width={200}
+            height={300}
+            alt={displaySeries.name}
+            fit="contain"
+            bdrs={8}
+          />
+        </Box>
+      ) : (
+        <Box
+          w={200}
+          h={300}
+          display="flex"
+          bdrs={8}
+          style={{
+            backgroundColor: '#404040',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <Play size={48} color="#666" />
+        </Box>
+      )}
+
+      <Stack spacing="md" flex={1}>
+        <Title order={3}>{displaySeries.name}</Title>
+
+        {/* Original name if different */}
+        {displaySeries.o_name &&
+          displaySeries.o_name !== displaySeries.name && (
+            <Text size="sm" c="dimmed" fs="italic">
+              Original: {displaySeries.o_name}
+            </Text>
+          )}
+
+        <Group spacing="md">
+          {displaySeries.year && (
+            <Badge color="blue">{displaySeries.year}</Badge>
+          )}
+          {displaySeries.rating && (
+            <Badge color="yellow">{displaySeries.rating}</Badge>
+          )}
+          {displaySeries.age && (
+            <Badge color="orange">{displaySeries.age}</Badge>
+          )}
+          <Badge color="purple">Series</Badge>
+          {displaySeries.episode_count && (
+            <Badge color="gray">{displaySeries.episode_count} episodes</Badge>
+          )}
+          {/* imdb_id and tmdb_id badges */}
+          {displaySeries.imdb_id && (
+            <Badge
+              color="yellow"
+              component="a"
+              href={imdbUrl(displaySeries.imdb_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ cursor: 'pointer' }}
+            >
+              IMDb
+            </Badge>
+          )}
+          {displaySeries.tmdb_id && (
+            <Badge
+              color="cyan"
+              component="a"
+              href={tmdbUrl(displaySeries.tmdb_id, 'tv')}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ cursor: 'pointer' }}
+            >
+              TMDb
+            </Badge>
+          )}
+        </Group>
+
+        {/* Release date */}
+        {displaySeries.release_date && (
+          <Text size="sm" c="dimmed">
+            <strong>Release Date:</strong> {displaySeries.release_date}
+          </Text>
+        )}
+
+        {displaySeries.genre && (
+          <Text size="sm" c="dimmed">
+            <strong>Genre:</strong> {displaySeries.genre}
+          </Text>
+        )}
+
+        {displaySeries.director && (
+          <Text size="sm" c="dimmed">
+            <strong>Director:</strong> {displaySeries.director}
+          </Text>
+        )}
+
+        {displaySeries.cast && (
+          <Text size="sm" c="dimmed">
+            <strong>Cast:</strong> {displaySeries.cast}
+          </Text>
+        )}
+
+        {displaySeries.country && (
+          <Text size="sm" c="dimmed">
+            <strong>Country:</strong> {displaySeries.country}
+          </Text>
+        )}
+
+        {/* Description */}
+        {displaySeries.description && (
+          <Box>
+            <Text size="sm" weight={500} mb={8}>
+              Description
+            </Text>
+            <Text size="sm">{displaySeries.description}</Text>
+          </Box>
+        )}
+
+        {/* Watch Trailer button if available */}
+        {displaySeries.youtube_trailer && (
+          <Button
+            variant="outline"
+            color="red"
+            mt="auto"
+            style={{ alignSelf: 'flex-start' }}
+            onClick={onClickYouTubeTrailer}
+          >
+            Watch Trailer
+          </Button>
+        )}
+      </Stack>
+    </Flex>
+  );
 };
 
-const formatStreamLabel = (relation) => {
-  // Create a label for the stream that includes provider name and stream-specific info
-  const provider = relation.m3u_account.name;
-  const streamId = relation.stream_id;
+const Episode = ({ episode, displaySeries }) => {
+  return (
+    <Stack spacing="sm">
+      {/* Episode Image and Description Row */}
+      <Flex gap="md">
+        {/* Episode Image */}
+        {episode.movie_image && (
+          <Box style={{ flexShrink: 0 }}>
+            <Image
+              src={episode.movie_image}
+              width={120}
+              height={160}
+              alt={episode.name}
+              fit="cover"
+              bdrs={4}
+            />
+          </Box>
+        )}
 
-  // Try to extract quality info - prioritizing the new quality_info field from backend
-  let qualityInfo = '';
+        {/* Episode Description */}
+        <Box flex={1}>
+          {episode.description && (
+            <Box>
+              <Text size="sm" weight={500} mb={4}>
+                Description
+              </Text>
+              <Text size="sm" c="dimmed">
+                {episode.description}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      </Flex>
 
-  // 1. Check the new quality_info field from backend (PRIMARY)
-  if (relation.quality_info) {
-    if (relation.quality_info.quality) {
-      qualityInfo = ` - ${relation.quality_info.quality}`;
-    } else if (relation.quality_info.resolution) {
-      qualityInfo = ` - ${relation.quality_info.resolution}`;
-    } else if (relation.quality_info.bitrate) {
-      qualityInfo = ` - ${relation.quality_info.bitrate}`;
-    }
-  }
+      {/* Additional Episode Details */}
+      <Group spacing="xl">
+        {episode.rating && (
+          <Box>
+            <Text size="xs" weight={500} c="dimmed" mb={2}>
+              Rating
+            </Text>
+            <Badge color="yellow" size="sm">
+              {episode.rating}
+            </Badge>
+          </Box>
+        )}
+        {/* IMDb and TMDb badges for episode */}
+        {(episode.imdb_id || displaySeries.tmdb_id) && (
+          <Box>
+            <Text size="xs" weight={500} c="dimmed" mb={2}>
+              Links
+            </Text>
+            {episode.imdb_id && (
+              <Badge
+                color="yellow"
+                component="a"
+                href={imdbUrl(episode.imdb_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ cursor: 'pointer' }}
+              >
+                IMDb
+              </Badge>
+            )}
+            {displaySeries.tmdb_id && (
+              <Badge
+                color="cyan"
+                component="a"
+                href={getTmdbUrlLink(displaySeries, episode)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ cursor: 'pointer' }}
+              >
+                TMDb
+              </Badge>
+            )}
+          </Box>
+        )}
 
-  // 2. Fallback: Check custom_properties detailed info structure
-  if (qualityInfo === '' && relation.custom_properties) {
-    const props = relation.custom_properties;
+        {episode.director && (
+          <Box>
+            <Text size="xs" weight={500} c="dimmed" mb={2}>
+              Director
+            </Text>
+            <Text size="sm">{episode.director}</Text>
+          </Box>
+        )}
 
-    // Check detailed_info structure (where the real data is!)
-    if (qualityInfo === '' && props.detailed_info) {
-      const detailedInfo = props.detailed_info;
+        {episode.actors && (
+          <Box>
+            <Text size="xs" weight={500} c="dimmed" mb={2}>
+              Cast
+            </Text>
+            <Text size="sm" lineClamp={2}>
+              {episode.actors}
+            </Text>
+          </Box>
+        )}
+      </Group>
 
-      // Extract from video resolution
-      if (
-        detailedInfo.video &&
-        detailedInfo.video.width &&
-        detailedInfo.video.height
-      ) {
-        const width = detailedInfo.video.width;
-        const height = detailedInfo.video.height;
+      {/* Technical Details */}
+      {(episode.bitrate || episode.video || episode.audio) && (
+        <Box>
+          <Text size="xs" weight={500} c="dimmed" mb={4}>
+            Technical Details
+          </Text>
+          <Stack spacing={2}>
+            {episode.bitrate && episode.bitrate > 0 && (
+              <Text size="xs" c="dimmed">
+                <strong>Bitrate:</strong> {episode.bitrate} kbps
+              </Text>
+            )}
+            {episode.video && Object.keys(episode.video).length > 0 && (
+              <Text size="xs" c="dimmed">
+                <strong>Video:</strong>{' '}
+                {episode.video.codec_long_name || episode.video.codec_name}
+                {episode.video.width && episode.video.height
+                  ? `, ${episode.video.width}x${episode.video.height}`
+                  : ''}
+              </Text>
+            )}
+            {episode.audio && Object.keys(episode.audio).length > 0 && (
+              <Text size="xs" c="dimmed">
+                <strong>Audio:</strong>{' '}
+                {episode.audio.codec_long_name || episode.audio.codec_name}
+                {episode.audio.channels
+                  ? `, ${episode.audio.channels} channels`
+                  : ''}
+              </Text>
+            )}
+          </Stack>
+        </Box>
+      )}
 
-        // Prioritize width for quality detection (handles ultrawide/cinematic aspect ratios)
-        if (width >= 3840) {
-          qualityInfo = ' - 4K';
-        } else if (width >= 1920) {
-          qualityInfo = ' - 1080p';
-        } else if (width >= 1280) {
-          qualityInfo = ' - 720p';
-        } else if (width >= 854) {
-          qualityInfo = ' - 480p';
-        } else {
-          qualityInfo = ` - ${width}x${height}`;
-        }
-      }
-
-      // Extract from movie name in detailed_info
-      if (qualityInfo === '' && detailedInfo.name) {
-        const name = detailedInfo.name;
-        if (name.includes('4K') || name.includes('2160p')) {
-          qualityInfo = ' - 4K';
-        } else if (name.includes('1080p') || name.includes('FHD')) {
-          qualityInfo = ' - 1080p';
-        } else if (name.includes('720p') || name.includes('HD')) {
-          qualityInfo = ' - 720p';
-        } else if (name.includes('480p')) {
-          qualityInfo = ' - 480p';
-        }
-      }
-    }
-  }
-
-  // 3. Final fallback: Check stream name for quality markers
-  if (qualityInfo === '' && relation.stream_name) {
-    const streamName = relation.stream_name;
-    if (streamName.includes('4K') || streamName.includes('2160p')) {
-      qualityInfo = ' - 4K';
-    } else if (streamName.includes('1080p') || streamName.includes('FHD')) {
-      qualityInfo = ' - 1080p';
-    } else if (streamName.includes('720p') || streamName.includes('HD')) {
-      qualityInfo = ' - 720p';
-    } else if (streamName.includes('480p')) {
-      qualityInfo = ' - 480p';
-    }
-  }
-
-  return `${provider}${qualityInfo}${streamId ? ` (Stream ${streamId})` : ''}`;
+      {/* Provider Information */}
+      {episode.m3u_account && (
+        <Group spacing="md">
+          <Text size="xs" weight={500} c="dimmed">
+            Provider:
+          </Text>
+          <Badge color="blue" variant="light" size="sm">
+            {episode.m3u_account.name || episode.m3u_account}
+          </Badge>
+        </Group>
+      )}
+    </Stack>
+  );
 };
 
 const SeriesModal = ({ series, opened, onClose }) => {
   const { fetchSeriesInfo, fetchSeriesProviders } = useVODStore();
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
+
   const [detailedSeries, setDetailedSeries] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [activeTab, setActiveTab] = useState(null);
@@ -192,12 +409,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
     // Try to get episodes from the fetched data
     if (detailedSeries.episodesList) {
-      return detailedSeries.episodesList.sort((a, b) => {
-        if (a.season_number !== b.season_number) {
-          return (a.season_number || 0) - (b.season_number || 0);
-        }
-        return (a.episode_number || 0) - (b.episode_number || 0);
-      });
+      return sortEpisodesList(detailedSeries.episodesList);
     }
 
     // If no episodes in detailed series, return empty array
@@ -206,22 +418,12 @@ const SeriesModal = ({ series, opened, onClose }) => {
 
   // Group episodes by season
   const episodesBySeason = React.useMemo(() => {
-    const grouped = {};
-    seriesEpisodes.forEach((episode) => {
-      const season = episode.season_number || 1;
-      if (!grouped[season]) {
-        grouped[season] = [];
-      }
-      grouped[season].push(episode);
-    });
-    return grouped;
+    return groupEpisodesBySeason(seriesEpisodes);
   }, [seriesEpisodes]);
 
   // Get available seasons sorted
   const seasons = React.useMemo(() => {
-    return Object.keys(episodesBySeason)
-      .map(Number)
-      .sort((a, b) => a - b);
+    return sortBySeasonNumber(episodesBySeason);
   }, [episodesBySeason]);
 
   // Update active tab when seasons change or modal opens
@@ -244,49 +446,12 @@ const SeriesModal = ({ series, opened, onClose }) => {
   }, [opened]);
 
   const handlePlayEpisode = (episode) => {
-    let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
-
-    // Add selected provider as query parameter if available
-    if (selectedProvider) {
-      // Use stream_id for most specific selection, fallback to account_id
-      if (selectedProvider.stream_id) {
-        streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
-      } else {
-        streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
-      }
-    }
-
-    if (env_mode === 'dev') {
-      streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;
-    } else {
-      streamUrl = `${window.location.origin}${streamUrl}`;
-    }
+    const streamUrl = getEpisodeStreamUrl(episode, selectedProvider, env_mode);
     showVideo(streamUrl, 'vod', episode);
   };
 
-  const getEpisodeStreamUrl = (episode) => {
-    let streamUrl = `/proxy/vod/episode/${episode.uuid}`;
-
-    // Add selected provider as query parameter if available
-    if (selectedProvider) {
-      // Use stream_id for most specific selection, fallback to account_id
-      if (selectedProvider.stream_id) {
-        streamUrl += `?stream_id=${encodeURIComponent(selectedProvider.stream_id)}`;
-      } else {
-        streamUrl += `?m3u_account_id=${selectedProvider.m3u_account.id}`;
-      }
-    }
-
-    if (env_mode === 'dev') {
-      streamUrl = `${window.location.protocol}//${window.location.hostname}:5656${streamUrl}`;
-    } else {
-      streamUrl = `${window.location.origin}${streamUrl}`;
-    }
-    return streamUrl;
-  };
-
   const handleCopyEpisodeLink = async (episode) => {
-    const streamUrl = getEpisodeStreamUrl(episode);
+    const streamUrl = getEpisodeStreamUrl(episode, selectedProvider, env_mode);
     await copyToClipboard(streamUrl, {
       successTitle: 'Link Copied!',
       successMessage: 'Episode link copied to clipboard',
@@ -297,13 +462,14 @@ const SeriesModal = ({ series, opened, onClose }) => {
     setExpandedEpisode(expandedEpisode === episode.id ? null : episode.id);
   };
 
-  // Helper to get embeddable YouTube URL
-  const getEmbedUrl = (url) => {
-    if (!url) return '';
-    // Accepts full YouTube URLs or just IDs
-    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]+)/);
-    const videoId = match ? match[1] : url;
-    return `https://www.youtube.com/embed/${videoId}`;
+  const onClickYouTubeTrailer = () => {
+    setTrailerUrl(getYouTubeEmbedUrl(displaySeries.youtube_trailer));
+    setTrailerModalOpened(true);
+  };
+
+  const onChangeSelectedProvider = (value) => {
+    const provider = providers.find((p) => p.id.toString() === value);
+    setSelectedProvider(provider);
   };
 
   if (!series) return null;
@@ -320,7 +486,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
         size="xl"
         centered
       >
-        <Box style={{ position: 'relative', minHeight: 400 }}>
+        <Box pos="relative" mih={400}>
           {/* Backdrop image as background */}
           {displaySeries.backdrop_path &&
             displaySeries.backdrop_path.length > 0 && (
@@ -329,203 +495,58 @@ const SeriesModal = ({ series, opened, onClose }) => {
                   src={displaySeries.backdrop_path[0]}
                   alt={`${displaySeries.name} backdrop`}
                   fit="cover"
+                  pos="absolute"
+                  top={0}
+                  left={0}
+                  w={'100%'}
+                  h={'100%'}
+                  bdrs={8}
                   style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
                     objectFit: 'cover',
                     zIndex: 0,
-                    borderRadius: 8,
                     filter: 'blur(2px) brightness(0.5)',
                   }}
                 />
                 {/* Overlay for readability */}
                 <Box
+                  pos="absolute"
+                  top={0}
+                  left={0}
+                  w={'100%'}
+                  h={'100%'}
+                  bdrs={8}
                   style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
                     background:
                       'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
                     zIndex: 1,
-                    borderRadius: 8,
                   }}
                 />
               </>
             )}
 
           {/* Modal content above backdrop */}
-          <Box style={{ position: 'relative', zIndex: 2 }}>
+          <Box pos="relative" style={{ zIndex: 2 }}>
             <Stack spacing="md">
               {loadingDetails && (
                 <Group spacing="xs" mb={8}>
                   <Loader size="xs" />
-                  <Text size="xs" color="dimmed">
+                  <Text size="xs" c="dimmed">
                     Loading series details and episodes...
                   </Text>
                 </Group>
               )}
 
               {/* Series poster and basic info */}
-              <Flex gap="md">
-                {displaySeries.series_image || displaySeries.logo?.url ? (
-                  <Box style={{ flexShrink: 0 }}>
-                    <Image
-                      src={displaySeries.series_image || displaySeries.logo.url}
-                      width={200}
-                      height={300}
-                      alt={displaySeries.name}
-                      fit="contain"
-                      style={{ borderRadius: '8px' }}
-                    />
-                  </Box>
-                ) : (
-                  <Box
-                    style={{
-                      width: 200,
-                      height: 300,
-                      backgroundColor: '#404040',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: '8px',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Play size={48} color="#666" />
-                  </Box>
-                )}
-
-                <Stack spacing="md" style={{ flex: 1 }}>
-                  <Title order={3}>{displaySeries.name}</Title>
-
-                  {/* Original name if different */}
-                  {displaySeries.o_name &&
-                    displaySeries.o_name !== displaySeries.name && (
-                      <Text
-                        size="sm"
-                        color="dimmed"
-                        style={{ fontStyle: 'italic' }}
-                      >
-                        Original: {displaySeries.o_name}
-                      </Text>
-                    )}
-
-                  <Group spacing="md">
-                    {displaySeries.year && (
-                      <Badge color="blue">{displaySeries.year}</Badge>
-                    )}
-                    {displaySeries.rating && (
-                      <Badge color="yellow">{displaySeries.rating}</Badge>
-                    )}
-                    {displaySeries.age && (
-                      <Badge color="orange">{displaySeries.age}</Badge>
-                    )}
-                    <Badge color="purple">Series</Badge>
-                    {displaySeries.episode_count && (
-                      <Badge color="gray">
-                        {displaySeries.episode_count} episodes
-                      </Badge>
-                    )}
-                    {/* imdb_id and tmdb_id badges */}
-                    {displaySeries.imdb_id && (
-                      <Badge
-                        color="yellow"
-                        component="a"
-                        href={imdbUrl(displaySeries.imdb_id)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ cursor: 'pointer' }}
-                      >
-                        IMDb
-                      </Badge>
-                    )}
-                    {displaySeries.tmdb_id && (
-                      <Badge
-                        color="cyan"
-                        component="a"
-                        href={tmdbUrl(displaySeries.tmdb_id, 'tv')}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ cursor: 'pointer' }}
-                      >
-                        TMDb
-                      </Badge>
-                    )}
-                  </Group>
-
-                  {/* Release date */}
-                  {displaySeries.release_date && (
-                    <Text size="sm" color="dimmed">
-                      <strong>Release Date:</strong>{' '}
-                      {displaySeries.release_date}
-                    </Text>
-                  )}
-
-                  {displaySeries.genre && (
-                    <Text size="sm" color="dimmed">
-                      <strong>Genre:</strong> {displaySeries.genre}
-                    </Text>
-                  )}
-
-                  {displaySeries.director && (
-                    <Text size="sm" color="dimmed">
-                      <strong>Director:</strong> {displaySeries.director}
-                    </Text>
-                  )}
-
-                  {displaySeries.cast && (
-                    <Text size="sm" color="dimmed">
-                      <strong>Cast:</strong> {displaySeries.cast}
-                    </Text>
-                  )}
-
-                  {displaySeries.country && (
-                    <Text size="sm" color="dimmed">
-                      <strong>Country:</strong> {displaySeries.country}
-                    </Text>
-                  )}
-
-                  {/* Description */}
-                  {displaySeries.description && (
-                    <Box>
-                      <Text size="sm" weight={500} mb={8}>
-                        Description
-                      </Text>
-                      <Text size="sm">{displaySeries.description}</Text>
-                    </Box>
-                  )}
-
-                  {/* Watch Trailer button if available */}
-                  {displaySeries.youtube_trailer && (
-                    <Button
-                      variant="outline"
-                      color="red"
-                      style={{ marginTop: 'auto', alignSelf: 'flex-start' }}
-                      onClick={() => {
-                        setTrailerUrl(
-                          getEmbedUrl(displaySeries.youtube_trailer)
-                        );
-                        setTrailerModalOpened(true);
-                      }}
-                    >
-                      Watch Trailer
-                    </Button>
-                  )}
-                </Stack>
-              </Flex>
+              <Series
+                displaySeries={displaySeries}
+                onClickYouTubeTrailer={onClickYouTubeTrailer}
+              />
 
               {/* Provider Information */}
               <Box mt="md">
                 <Text size="sm" weight={500} mb={4}>
                   Stream Selection
-                  {loadingProviders && (
-                    <Loader size="xs" style={{ marginLeft: 8 }} />
-                  )}
+                  {loadingProviders && <Loader size="xs" ml={8} />}
                 </Text>
                 {providers.length === 0 &&
                 !loadingProviders &&
@@ -553,14 +574,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
                       label: formatStreamLabel(provider),
                     }))}
                     value={selectedProvider?.id?.toString() || ''}
-                    onChange={(value) => {
-                      const provider = providers.find(
-                        (p) => p.id.toString() === value
-                      );
-                      setSelectedProvider(provider);
-                    }}
+                    onChange={(value) => onChangeSelectedProvider(value)}
                     placeholder="Select stream..."
-                    style={{ maxWidth: 350 }}
+                    maw={350}
                     disabled={loadingProviders}
                   />
                 ) : null}
@@ -579,69 +595,61 @@ const SeriesModal = ({ series, opened, onClose }) => {
                 </Flex>
               ) : seasons.length > 0 ? (
                 <Tabs value={activeTab} onChange={setActiveTab}>
-                  <Tabs.List>
+                  <TabsList>
                     {seasons.map((season) => (
-                      <Tabs.Tab key={season} value={`season-${season}`}>
+                      <TabsTab key={season} value={`season-${season}`}>
                         Season {season}
-                      </Tabs.Tab>
+                      </TabsTab>
                     ))}
-                  </Tabs.List>
+                  </TabsList>
 
                   {seasons.map((season) => (
-                    <Tabs.Panel key={season} value={`season-${season}`} pt="md">
+                    <TabsPanel key={season} value={`season-${season}`} pt="md">
                       <Table striped highlightOnHover>
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th style={{ width: '60px' }}>Ep</Table.Th>
-                            <Table.Th>Title</Table.Th>
-                            <Table.Th style={{ width: '80px' }}>
-                              Duration
-                            </Table.Th>
-                            <Table.Th style={{ width: '60px' }}>Date</Table.Th>
-                            <Table.Th style={{ width: '80px' }}>
-                              Action
-                            </Table.Th>
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
+                        <TableThead>
+                          <TableTr>
+                            <TableTh w={60}>Ep</TableTh>
+                            <TableTh>Title</TableTh>
+                            <TableTh w={80}>Duration</TableTh>
+                            <TableTh w={60}>Date</TableTh>
+                            <TableTh w={80}>Action</TableTh>
+                          </TableTr>
+                        </TableThead>
+                        <TableTbody>
                           {episodesBySeason[season]?.map((episode) => (
                             <React.Fragment key={episode.id}>
-                              <Table.Tr
+                              <TableTr
                                 style={{ cursor: 'pointer' }}
                                 onClick={() => handleEpisodeRowClick(episode)}
                               >
-                                <Table.Td>
+                                <TableTd>
                                   <Badge size="sm" variant="outline">
                                     {episode.episode_number || '?'}
                                   </Badge>
-                                </Table.Td>
-                                <Table.Td>
+                                </TableTd>
+                                <TableTd>
                                   <Stack spacing={2}>
                                     <Text size="sm" weight={500}>
                                       {episode.name}
                                     </Text>
                                     {episode.genre && (
-                                      <Text size="xs" color="dimmed">
+                                      <Text size="xs" c="dimmed">
                                         {episode.genre}
                                       </Text>
                                     )}
                                   </Stack>
-                                </Table.Td>
-                                <Table.Td>
-                                  <Text size="xs" color="dimmed">
+                                </TableTd>
+                                <TableTd>
+                                  <Text size="xs" c="dimmed">
                                     {formatDuration(episode.duration_secs)}
                                   </Text>
-                                </Table.Td>
-                                <Table.Td>
-                                  <Text size="xs" color="dimmed">
-                                    {episode.air_date
-                                      ? new Date(
-                                          episode.air_date
-                                        ).toLocaleDateString()
-                                      : 'N/A'}
+                                </TableTd>
+                                <TableTd>
+                                  <Text size="xs" c="dimmed">
+                                    {getEpisodeAirdate(episode)}
                                   </Text>
-                                </Table.Td>
-                                <Table.Td>
+                                </TableTd>
+                                <TableTd>
                                   <Group spacing="xs">
                                     <ActionIcon
                                       variant="filled"
@@ -670,236 +678,33 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                       <Copy size={12} />
                                     </ActionIcon>
                                   </Group>
-                                </Table.Td>
-                              </Table.Tr>
+                                </TableTd>
+                              </TableTr>
                               {expandedEpisode === episode.id && (
-                                <Table.Tr>
-                                  <Table.Td
+                                <TableTr>
+                                  <TableTd
                                     colSpan={5}
+                                    p={16}
                                     style={{
                                       backgroundColor: '#2A2A2E',
-                                      padding: '16px',
                                     }}
                                   >
-                                    <Stack spacing="sm">
-                                      {/* Episode Image and Description Row */}
-                                      <Flex gap="md">
-                                        {/* Episode Image */}
-                                        {episode.movie_image && (
-                                          <Box style={{ flexShrink: 0 }}>
-                                            <Image
-                                              src={episode.movie_image}
-                                              width={120}
-                                              height={160}
-                                              alt={episode.name}
-                                              fit="cover"
-                                              style={{ borderRadius: '4px' }}
-                                            />
-                                          </Box>
-                                        )}
-
-                                        {/* Episode Description */}
-                                        <Box style={{ flex: 1 }}>
-                                          {episode.description && (
-                                            <Box>
-                                              <Text
-                                                size="sm"
-                                                weight={500}
-                                                mb={4}
-                                              >
-                                                Description
-                                              </Text>
-                                              <Text size="sm" color="dimmed">
-                                                {episode.description}
-                                              </Text>
-                                            </Box>
-                                          )}
-                                        </Box>
-                                      </Flex>
-
-                                      {/* Additional Episode Details */}
-                                      <Group spacing="xl">
-                                        {episode.rating && (
-                                          <Box>
-                                            <Text
-                                              size="xs"
-                                              weight={500}
-                                              color="dimmed"
-                                              mb={2}
-                                            >
-                                              Rating
-                                            </Text>
-                                            <Badge color="yellow" size="sm">
-                                              {episode.rating}
-                                            </Badge>
-                                          </Box>
-                                        )}
-                                        {/* IMDb and TMDb badges for episode */}
-                                        {(episode.imdb_id ||
-                                          displaySeries.tmdb_id) && (
-                                          <Box>
-                                            <Text
-                                              size="xs"
-                                              weight={500}
-                                              color="dimmed"
-                                              mb={2}
-                                            >
-                                              Links
-                                            </Text>
-                                            {episode.imdb_id && (
-                                              <Badge
-                                                color="yellow"
-                                                component="a"
-                                                href={imdbUrl(episode.imdb_id)}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                style={{ cursor: 'pointer' }}
-                                              >
-                                                IMDb
-                                              </Badge>
-                                            )}
-                                            {displaySeries.tmdb_id && (
-                                              <Badge
-                                                color="cyan"
-                                                component="a"
-                                                href={
-                                                  tmdbUrl(
-                                                    displaySeries.tmdb_id,
-                                                    'tv'
-                                                  ) +
-                                                  (episode.season_number &&
-                                                  episode.episode_number
-                                                    ? `/season/${episode.season_number}/episode/${episode.episode_number}`
-                                                    : '')
-                                                }
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                style={{ cursor: 'pointer' }}
-                                              >
-                                                TMDb
-                                              </Badge>
-                                            )}
-                                          </Box>
-                                        )}
-
-                                        {episode.director && (
-                                          <Box>
-                                            <Text
-                                              size="xs"
-                                              weight={500}
-                                              color="dimmed"
-                                              mb={2}
-                                            >
-                                              Director
-                                            </Text>
-                                            <Text size="sm">
-                                              {episode.director}
-                                            </Text>
-                                          </Box>
-                                        )}
-
-                                        {episode.actors && (
-                                          <Box>
-                                            <Text
-                                              size="xs"
-                                              weight={500}
-                                              color="dimmed"
-                                              mb={2}
-                                            >
-                                              Cast
-                                            </Text>
-                                            <Text size="sm" lineClamp={2}>
-                                              {episode.actors}
-                                            </Text>
-                                          </Box>
-                                        )}
-                                      </Group>
-
-                                      {/* Technical Details */}
-                                      {(episode.bitrate ||
-                                        episode.video ||
-                                        episode.audio) && (
-                                        <Box>
-                                          <Text
-                                            size="xs"
-                                            weight={500}
-                                            color="dimmed"
-                                            mb={4}
-                                          >
-                                            Technical Details
-                                          </Text>
-                                          <Stack spacing={2}>
-                                            {episode.bitrate &&
-                                              episode.bitrate > 0 && (
-                                                <Text size="xs" color="dimmed">
-                                                  <strong>Bitrate:</strong>{' '}
-                                                  {episode.bitrate} kbps
-                                                </Text>
-                                              )}
-                                            {episode.video &&
-                                              Object.keys(episode.video)
-                                                .length > 0 && (
-                                                <Text size="xs" color="dimmed">
-                                                  <strong>Video:</strong>{' '}
-                                                  {episode.video
-                                                    .codec_long_name ||
-                                                    episode.video.codec_name}
-                                                  {episode.video.width &&
-                                                  episode.video.height
-                                                    ? `, ${episode.video.width}x${episode.video.height}`
-                                                    : ''}
-                                                </Text>
-                                              )}
-                                            {episode.audio &&
-                                              Object.keys(episode.audio)
-                                                .length > 0 && (
-                                                <Text size="xs" color="dimmed">
-                                                  <strong>Audio:</strong>{' '}
-                                                  {episode.audio
-                                                    .codec_long_name ||
-                                                    episode.audio.codec_name}
-                                                  {episode.audio.channels
-                                                    ? `, ${episode.audio.channels} channels`
-                                                    : ''}
-                                                </Text>
-                                              )}
-                                          </Stack>
-                                        </Box>
-                                      )}
-
-                                      {/* Provider Information */}
-                                      {episode.m3u_account && (
-                                        <Group spacing="md">
-                                          <Text
-                                            size="xs"
-                                            weight={500}
-                                            color="dimmed"
-                                          >
-                                            Provider:
-                                          </Text>
-                                          <Badge
-                                            color="blue"
-                                            variant="light"
-                                            size="sm"
-                                          >
-                                            {episode.m3u_account.name ||
-                                              episode.m3u_account}
-                                          </Badge>
-                                        </Group>
-                                      )}
-                                    </Stack>
-                                  </Table.Td>
-                                </Table.Tr>
+                                    <Episode
+                                      episode={episode}
+                                      displaySeries={displaySeries}
+                                    />
+                                  </TableTd>
+                                </TableTr>
                               )}
                             </React.Fragment>
                           ))}
-                        </Table.Tbody>
+                        </TableTbody>
                       </Table>
-                    </Tabs.Panel>
+                    </TabsPanel>
                   ))}
                 </Tabs>
               ) : (
-                <Text color="dimmed" align="center" py="xl">
+                <Text c="dimmed" align="center" py="xl">
                   No episodes found for this series.
                 </Text>
               )}
@@ -909,36 +714,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
       </Modal>
 
       {/* YouTube Trailer Modal */}
-      <Modal
+      <YouTubeTrailerModal
         opened={trailerModalOpened}
         onClose={() => setTrailerModalOpened(false)}
-        title="Trailer"
-        size="xl"
-        centered
-      >
-        <Box
-          style={{ position: 'relative', paddingBottom: '56.25%', height: 0 }}
-        >
-          {trailerUrl && (
-            <iframe
-              src={trailerUrl}
-              title="YouTube Trailer"
-              frameBorder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              referrerPolicy="strict-origin-when-cross-origin"
-              allowFullScreen
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                borderRadius: 8,
-              }}
-            />
-          )}
-        </Box>
-      </Modal>
+        trailerUrl={trailerUrl}
+      />
     </>
   );
 };
