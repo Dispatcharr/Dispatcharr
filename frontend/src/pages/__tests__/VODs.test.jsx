@@ -16,7 +16,7 @@ vi.mock('../../components/SeriesModal', () => ({
         <div data-testid="series-name">{series?.name}</div>
         <button onClick={onClose}>Close</button>
       </div>
-    ) : null
+    ) : null,
 }));
 vi.mock('../../components/VODModal', () => ({
   default: ({ opened, vod, onClose }) =>
@@ -25,26 +25,30 @@ vi.mock('../../components/VODModal', () => ({
         <div data-testid="vod-name">{vod?.name}</div>
         <button onClick={onClose}>Close</button>
       </div>
-    ) : null
+    ) : null,
 }));
 vi.mock('../../components/cards/VODCard', () => ({
   default: ({ vod, onClick }) => (
     <div data-testid="vod-card" onClick={() => onClick(vod)}>
       <div>{vod.name}</div>
     </div>
-  )
+  ),
 }));
 vi.mock('../../components/cards/SeriesCard', () => ({
   default: ({ series, onClick }) => (
     <div data-testid="series-card" onClick={() => onClick(series)}>
       <div>{series.name}</div>
     </div>
-  )
+  ),
 }));
 
 vi.mock('@mantine/core', () => {
-  const gridComponent = ({ children, ...props }) => <div {...props}>{children}</div>;
-  gridComponent.Col = ({ children, ...props }) => <div {...props}>{children}</div>;
+  const gridComponent = ({ children, ...props }) => (
+    <div {...props}>{children}</div>
+  );
+  gridComponent.Col = ({ children, ...props }) => (
+    <div {...props}>{children}</div>
+  );
 
   return {
     Box: ({ children, ...props }) => <div {...props}>{children}</div>,
@@ -97,7 +101,9 @@ vi.mock('@mantine/core', () => {
         <button onClick={() => onChange(page - 1)} disabled={page === 1}>
           Prev
         </button>
-        <span>{page} of {total}</span>
+        <span>
+          {page} of {total}
+        </span>
         <button onClick={() => onChange(page + 1)} disabled={page === total}>
           Next
         </button>
@@ -208,9 +214,7 @@ describe('VODsPage', () => {
   it('renders series cards for series', async () => {
     const stateWithSeries = {
       ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Series 1', contentType: 'series' },
-      ],
+      currentPageContent: [{ id: 1, name: 'Series 1', contentType: 'series' }],
     };
     useVODStore.mockImplementation((selector) => selector(stateWithSeries));
 
@@ -224,9 +228,7 @@ describe('VODsPage', () => {
   it('opens VOD modal when VOD card is clicked', async () => {
     const stateWithMovies = {
       ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Test Movie', contentType: 'movie' },
-      ],
+      currentPageContent: [{ id: 1, name: 'Test Movie', contentType: 'movie' }],
     };
     useVODStore.mockImplementation((selector) => selector(stateWithMovies));
 
@@ -262,9 +264,7 @@ describe('VODsPage', () => {
   it('closes VOD modal when close button is clicked', async () => {
     const stateWithMovies = {
       ...defaultStoreState,
-      currentPageContent: [
-        { id: 1, name: 'Test Movie', contentType: 'movie' },
-      ],
+      currentPageContent: [{ id: 1, name: 'Test Movie', contentType: 'movie' }],
     };
     useVODStore.mockImplementation((selector) => selector(stateWithMovies));
 
@@ -326,9 +326,7 @@ describe('VODsPage', () => {
   });
 
   it('updates filters and resets page when category changes', async () => {
-    getCategoryOptions.mockReturnValue([
-      { value: 'action', label: 'Action' },
-    ]);
+    getCategoryOptions.mockReturnValue([{ value: 'action', label: 'Action' }]);
 
     render(<VODsPage />);
 
@@ -370,9 +368,7 @@ describe('VODsPage', () => {
       totalCount: 25,
       pageSize: 12,
     };
-    useVODStore.mockImplementation((selector) =>
-      selector(stateWithPagination)
-    );
+    useVODStore.mockImplementation((selector) => selector(stateWithPagination));
 
     render(<VODsPage />);
 
@@ -405,9 +401,7 @@ describe('VODsPage', () => {
       pageSize: 12,
       currentPage: 1,
     };
-    useVODStore.mockImplementation((selector) =>
-      selector(stateWithPagination)
-    );
+    useVODStore.mockImplementation((selector) => selector(stateWithPagination));
 
     render(<VODsPage />);
 

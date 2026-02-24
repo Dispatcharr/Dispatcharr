@@ -47,7 +47,9 @@ describe('useUserAgentsStore', () => {
     const mockError = new Error('Network error');
     api.getUserAgents.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useUserAgentsStore());
 
@@ -57,7 +59,10 @@ describe('useUserAgentsStore', () => {
 
     expect(result.current.error).toBe('Failed to load userAgents.');
     expect(result.current.isLoading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch userAgents:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch userAgents:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -125,7 +130,11 @@ describe('useUserAgentsStore', () => {
     });
 
     const { result } = renderHook(() => useUserAgentsStore());
-    const updatedUserAgent = { id: 1, name: 'Chrome Updated', string: 'Mozilla/5.0 Updated...' };
+    const updatedUserAgent = {
+      id: 1,
+      name: 'Chrome Updated',
+      string: 'Mozilla/5.0 Updated...',
+    };
 
     act(() => {
       result.current.updateUserAgent(updatedUserAgent);
@@ -146,13 +155,21 @@ describe('useUserAgentsStore', () => {
     });
 
     const { result } = renderHook(() => useUserAgentsStore());
-    const updatedUserAgent = { id: 1, name: 'Chrome Updated', string: 'Mozilla/5.0 Updated...' };
+    const updatedUserAgent = {
+      id: 1,
+      name: 'Chrome Updated',
+      string: 'Mozilla/5.0 Updated...',
+    };
 
     act(() => {
       result.current.updateUserAgent(updatedUserAgent);
     });
 
-    expect(result.current.userAgents[1]).toEqual({ id: 2, name: 'Firefox', string: 'Mozilla/5.0...' });
+    expect(result.current.userAgents[1]).toEqual({
+      id: 2,
+      name: 'Firefox',
+      string: 'Mozilla/5.0...',
+    });
   });
 
   it('should not modify user agents when updating non-existent user agent', () => {
@@ -166,7 +183,11 @@ describe('useUserAgentsStore', () => {
     });
 
     const { result } = renderHook(() => useUserAgentsStore());
-    const nonExistentUserAgent = { id: 999, name: 'Non-existent', string: 'Mozilla/5.0...' };
+    const nonExistentUserAgent = {
+      id: 999,
+      name: 'Non-existent',
+      string: 'Mozilla/5.0...',
+    };
 
     act(() => {
       result.current.updateUserAgent(nonExistentUserAgent);

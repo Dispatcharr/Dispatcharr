@@ -3,7 +3,10 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LogosPage from '../Logos';
 import useLogosStore from '../../store/logos';
 import useVODLogosStore from '../../store/vodLogos';
-import { showNotification, updateNotification } from '../../utils/notificationUtils.js';
+import {
+  showNotification,
+  updateNotification,
+} from '../../utils/notificationUtils.js';
 
 vi.mock('../../store/logos');
 vi.mock('../../store/vodLogos');
@@ -12,16 +15,21 @@ vi.mock('../../utils/notificationUtils.js', () => ({
   updateNotification: vi.fn(),
 }));
 vi.mock('../../components/tables/LogosTable', () => ({
-  default: () => <div data-testid="logos-table">LogosTable</div>
+  default: () => <div data-testid="logos-table">LogosTable</div>,
 }));
 vi.mock('../../components/tables/VODLogosTable', () => ({
-  default: () => <div data-testid="vod-logos-table">VODLogosTable</div>
+  default: () => <div data-testid="vod-logos-table">VODLogosTable</div>,
 }));
 vi.mock('@mantine/core', () => {
-  const tabsComponent = ({ children, value, onChange }) =>
-    <div data-testid="tabs" data-value={value} onClick={() => onChange('vod')}>{children}</div>;
+  const tabsComponent = ({ children, value, onChange }) => (
+    <div data-testid="tabs" data-value={value} onClick={() => onChange('vod')}>
+      {children}
+    </div>
+  );
   tabsComponent.List = ({ children }) => <div>{children}</div>;
-  tabsComponent.Tab = ({ children, value }) => <button data-value={value}>{children}</button>;
+  tabsComponent.Tab = ({ children, value }) => (
+    <button data-value={value}>{children}</button>
+  );
 
   return {
     Box: ({ children, ...props }) => <div {...props}>{children}</div>,
@@ -113,7 +121,9 @@ describe('LogosPage', () => {
   });
 
   it('shows error notification when fetching logos fails', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     const error = new Error('Failed to fetch');
     mockFetchAllLogos.mockRejectedValue(error);
 

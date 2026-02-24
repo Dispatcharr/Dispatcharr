@@ -24,9 +24,11 @@ export const getCurrentPrograms = async (channelHistory, channelsByUUID) => {
   try {
     // Get all active channel IDs that have actual channels (not just streams)
     const activeChannelIds = Object.values(channelHistory)
-      .filter(ch => ch.name && channelsByUUID && channelsByUUID[ch.channel_id])
-      .map(ch => channelsByUUID[ch.channel_id])
-      .filter(id => id !== undefined);
+      .filter(
+        (ch) => ch.name && channelsByUUID && channelsByUUID[ch.channel_id]
+      )
+      .map((ch) => channelsByUUID[ch.channel_id])
+      .filter((id) => id !== undefined);
 
     if (activeChannelIds.length === 0) {
       return {};
@@ -37,7 +39,7 @@ export const getCurrentPrograms = async (channelHistory, channelsByUUID) => {
     // Convert array to map keyed by channel UUID for easy lookup
     const programsMap = {};
     if (programs && Array.isArray(programs)) {
-      programs.forEach(program => {
+      programs.forEach((program) => {
         // Find the channel UUID from the channel ID
         const channelEntry = Object.entries(channelsByUUID).find(
           ([uuid, id]) => id === program.channel_id

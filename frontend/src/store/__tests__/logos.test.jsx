@@ -58,7 +58,11 @@ describe('useLogosStore', () => {
     it('should add logo to main logos store', () => {
       const { result } = renderHook(() => useLogosStore());
 
-      const newLogo = { id: 'logo1', name: 'Logo 1', url: 'http://example.com/logo1.png' };
+      const newLogo = {
+        id: 'logo1',
+        name: 'Logo 1',
+        url: 'http://example.com/logo1.png',
+      };
 
       act(() => {
         result.current.addLogo(newLogo);
@@ -76,7 +80,11 @@ describe('useLogosStore', () => {
         useLogosStore.setState({ hasLoadedChannelLogos: true });
       });
 
-      const newLogo = { id: 'logo1', name: 'Logo 1', url: 'http://example.com/logo1.png' };
+      const newLogo = {
+        id: 'logo1',
+        name: 'Logo 1',
+        url: 'http://example.com/logo1.png',
+      };
 
       act(() => {
         result.current.addLogo(newLogo);
@@ -89,7 +97,11 @@ describe('useLogosStore', () => {
     it('should not add logo to channelLogos if hasLoadedChannelLogos is false', () => {
       const { result } = renderHook(() => useLogosStore());
 
-      const newLogo = { id: 'logo1', name: 'Logo 1', url: 'http://example.com/logo1.png' };
+      const newLogo = {
+        id: 'logo1',
+        name: 'Logo 1',
+        url: 'http://example.com/logo1.png',
+      };
 
       act(() => {
         result.current.addLogo(newLogo);
@@ -104,8 +116,16 @@ describe('useLogosStore', () => {
     it('should update logo in main logos store', () => {
       const { result } = renderHook(() => useLogosStore());
 
-      const originalLogo = { id: 'logo1', name: 'Original', url: 'http://example.com/original.png' };
-      const updatedLogo = { id: 'logo1', name: 'Updated', url: 'http://example.com/updated.png' };
+      const originalLogo = {
+        id: 'logo1',
+        name: 'Original',
+        url: 'http://example.com/original.png',
+      };
+      const updatedLogo = {
+        id: 'logo1',
+        name: 'Updated',
+        url: 'http://example.com/updated.png',
+      };
 
       act(() => {
         useLogosStore.setState({ logos: { logo1: originalLogo } });
@@ -121,8 +141,16 @@ describe('useLogosStore', () => {
     it('should update logo in channelLogos if it exists there', () => {
       const { result } = renderHook(() => useLogosStore());
 
-      const originalLogo = { id: 'logo1', name: 'Original', url: 'http://example.com/original.png' };
-      const updatedLogo = { id: 'logo1', name: 'Updated', url: 'http://example.com/updated.png' };
+      const originalLogo = {
+        id: 'logo1',
+        name: 'Original',
+        url: 'http://example.com/original.png',
+      };
+      const updatedLogo = {
+        id: 'logo1',
+        name: 'Updated',
+        url: 'http://example.com/updated.png',
+      };
 
       act(() => {
         useLogosStore.setState({
@@ -142,8 +170,16 @@ describe('useLogosStore', () => {
     it('should not update channelLogos if logo does not exist there', () => {
       const { result } = renderHook(() => useLogosStore());
 
-      const originalLogo = { id: 'logo1', name: 'Original', url: 'http://example.com/original.png' };
-      const updatedLogo = { id: 'logo1', name: 'Updated', url: 'http://example.com/updated.png' };
+      const originalLogo = {
+        id: 'logo1',
+        name: 'Original',
+        url: 'http://example.com/original.png',
+      };
+      const updatedLogo = {
+        id: 'logo1',
+        name: 'Updated',
+        url: 'http://example.com/updated.png',
+      };
 
       act(() => {
         useLogosStore.setState({ logos: { logo1: originalLogo } });
@@ -249,7 +285,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Network error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await expect(
@@ -261,7 +299,10 @@ describe('useLogosStore', () => {
       await waitFor(() => {
         expect(result.current.error).toBe('Failed to load logos.');
         expect(result.current.isLoading).toBe(false);
-        expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch logos:', mockError);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Failed to fetch logos:',
+          mockError
+        );
       });
 
       consoleSpy.mockRestore();
@@ -354,7 +395,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('API error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await expect(
@@ -366,7 +409,10 @@ describe('useLogosStore', () => {
       await waitFor(() => {
         expect(result.current.error).toBe('Failed to load all logos.');
         expect(result.current.isLoading).toBe(false);
-        expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch all logos:', mockError);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Failed to fetch all logos:',
+          mockError
+        );
       });
 
       consoleSpy.mockRestore();
@@ -396,7 +442,10 @@ describe('useLogosStore', () => {
         logo2: { id: 'logo2', name: 'Used Logo 2' },
       });
       expect(result.current.isLoading).toBe(false);
-      expect(api.getLogos).toHaveBeenCalledWith({ used: 'true', page_size: 100 });
+      expect(api.getLogos).toHaveBeenCalledWith({
+        used: 'true',
+        page_size: 100,
+      });
       expect(response).toEqual(mockResponse);
     });
 
@@ -426,7 +475,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Fetch error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await expect(
@@ -437,7 +488,10 @@ describe('useLogosStore', () => {
 
       await waitFor(() => {
         expect(result.current.error).toBe('Failed to load used logos.');
-        expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch used logos:', mockError);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Failed to fetch used logos:',
+          mockError
+        );
       });
 
       consoleSpy.mockRestore();
@@ -537,7 +591,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Fetch error');
       api.getLogosByIds.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await expect(
@@ -546,7 +602,10 @@ describe('useLogosStore', () => {
         })
       ).rejects.toThrow('Fetch error');
 
-      expect(consoleSpy).toHaveBeenCalledWith('Failed to fetch logos by IDs:', mockError);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Failed to fetch logos by IDs:',
+        mockError
+      );
 
       consoleSpy.mockRestore();
     });
@@ -565,9 +624,7 @@ describe('useLogosStore', () => {
         next: null,
       };
 
-      api.getLogos
-        .mockResolvedValueOnce(page1)
-        .mockResolvedValueOnce(page2);
+      api.getLogos.mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
 
       const { result } = renderHook(() => useLogosStore());
 
@@ -589,7 +646,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Network error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await act(async () => {
@@ -597,7 +656,10 @@ describe('useLogosStore', () => {
       });
 
       expect(result.current.backgroundLoading).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith('Background logo loading failed:', mockError);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Background logo loading failed:',
+        mockError
+      );
 
       consoleSpy.mockRestore();
     });
@@ -665,7 +727,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Fetch error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       result.current.backgroundLoadAllLogos();
@@ -675,7 +739,10 @@ describe('useLogosStore', () => {
       });
 
       expect(result.current.backgroundLoading).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith('Background all logos loading failed:', mockError);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Background all logos loading failed:',
+        mockError
+      );
 
       consoleSpy.mockRestore();
 
@@ -713,7 +780,10 @@ describe('useLogosStore', () => {
     });
 
     it('should not start if channelLogos already has many items', async () => {
-      const channelLogos = Array.from({ length: 150 }, (_, i) => [`logo${i}`, { id: `logo${i}` }]);
+      const channelLogos = Array.from({ length: 150 }, (_, i) => [
+        `logo${i}`,
+        { id: `logo${i}` },
+      ]);
       const channelLogosObj = Object.fromEntries(channelLogos);
 
       const { result } = renderHook(() => useLogosStore());
@@ -747,8 +817,12 @@ describe('useLogosStore', () => {
       expect(result.current.hasLoadedChannelLogos).toBe(true);
       expect(result.current.backgroundLoading).toBe(false);
       expect(Object.keys(result.current.channelLogos).length).toBe(2);
-      expect(consoleSpy).toHaveBeenCalledWith('Background loading channel logos...');
-      expect(consoleSpy).toHaveBeenCalledWith('Background loaded 2 channel logos');
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Background loading channel logos...'
+      );
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Background loaded 2 channel logos'
+      );
 
       consoleSpy.mockRestore();
     });
@@ -757,8 +831,12 @@ describe('useLogosStore', () => {
       const mockError = new Error('Fetch error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const consoleLogSpy = vi
+        .spyOn(console, 'log')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       await act(async () => {
@@ -766,7 +844,10 @@ describe('useLogosStore', () => {
       });
 
       expect(result.current.backgroundLoading).toBe(false);
-      expect(consoleErrorSpy).toHaveBeenCalledWith('Background channel logo loading failed:', mockError);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Background channel logo loading failed:',
+        mockError
+      );
 
       consoleErrorSpy.mockRestore();
       consoleLogSpy.mockRestore();
@@ -801,7 +882,9 @@ describe('useLogosStore', () => {
       const mockError = new Error('Background error');
       api.getLogos.mockRejectedValue(mockError);
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       const { result } = renderHook(() => useLogosStore());
 
       result.current.startBackgroundLoading();

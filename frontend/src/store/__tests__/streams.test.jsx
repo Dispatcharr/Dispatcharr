@@ -53,7 +53,9 @@ describe('useStreamsStore', () => {
     const mockError = new Error('Network error');
     api.getStreams.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useStreamsStore());
 
@@ -63,7 +65,10 @@ describe('useStreamsStore', () => {
 
     expect(result.current.error).toBe('Failed to load streams.');
     expect(result.current.isLoading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch streams:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch streams:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -131,7 +136,11 @@ describe('useStreamsStore', () => {
     });
 
     const { result } = renderHook(() => useStreamsStore());
-    const updatedStream = { id: 1, name: 'Updated Stream', url: 'http://example.com/updated' };
+    const updatedStream = {
+      id: 1,
+      name: 'Updated Stream',
+      url: 'http://example.com/updated',
+    };
 
     act(() => {
       result.current.updateStream(updatedStream);
@@ -152,13 +161,21 @@ describe('useStreamsStore', () => {
     });
 
     const { result } = renderHook(() => useStreamsStore());
-    const updatedStream = { id: 1, name: 'Updated Stream', url: 'http://example.com/updated' };
+    const updatedStream = {
+      id: 1,
+      name: 'Updated Stream',
+      url: 'http://example.com/updated',
+    };
 
     act(() => {
       result.current.updateStream(updatedStream);
     });
 
-    expect(result.current.streams[1]).toEqual({ id: 2, name: 'Stream 2', url: 'http://example.com/2' });
+    expect(result.current.streams[1]).toEqual({
+      id: 2,
+      name: 'Stream 2',
+      url: 'http://example.com/2',
+    });
   });
 
   it('should not modify streams when updating non-existent stream', () => {
@@ -172,7 +189,11 @@ describe('useStreamsStore', () => {
     });
 
     const { result } = renderHook(() => useStreamsStore());
-    const nonExistentStream = { id: 999, name: 'Non-existent', url: 'http://example.com/999' };
+    const nonExistentStream = {
+      id: 999,
+      name: 'Non-existent',
+      url: 'http://example.com/999',
+    };
 
     act(() => {
       result.current.updateStream(nonExistentStream);

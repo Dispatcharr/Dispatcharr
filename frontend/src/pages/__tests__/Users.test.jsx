@@ -5,7 +5,7 @@ import useAuthStore from '../../store/auth';
 
 vi.mock('../../store/auth');
 vi.mock('../../components/tables/UsersTable', () => ({
-  default: () => <div data-testid="users-table">UsersTable</div>
+  default: () => <div data-testid="users-table">UsersTable</div>,
 }));
 vi.mock('@mantine/core', () => ({
   Box: ({ children, ...props }) => <div {...props}>{children}</div>,

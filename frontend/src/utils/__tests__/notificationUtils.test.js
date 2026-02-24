@@ -74,7 +74,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, notificationObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(notificationId, notificationObject);
+      expect(notifications.update).toHaveBeenCalledWith(
+        notificationId,
+        notificationObject
+      );
       expect(notifications.update).toHaveBeenCalledTimes(1);
     });
 
@@ -82,7 +85,9 @@ describe('notificationUtils', () => {
       const mockReturnValue = { success: true };
       notifications.update.mockReturnValue(mockReturnValue);
 
-      const result = notificationUtils.updateNotification('id', { message: 'test' });
+      const result = notificationUtils.updateNotification('id', {
+        message: 'test',
+      });
 
       expect(result).toBe(mockReturnValue);
     });
@@ -98,7 +103,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(notificationId, updateObject);
+      expect(notifications.update).toHaveBeenCalledWith(
+        notificationId,
+        updateObject
+      );
     });
 
     it('should handle loading to error transition', () => {
@@ -112,7 +120,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(notificationId, updateObject);
+      expect(notifications.update).toHaveBeenCalledWith(
+        notificationId,
+        updateObject
+      );
     });
 
     it('should handle partial updates', () => {
@@ -123,7 +134,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(notificationId, updateObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(notificationId, updateObject);
+      expect(notifications.update).toHaveBeenCalledWith(
+        notificationId,
+        updateObject
+      );
     });
 
     it('should handle empty notification id', () => {
@@ -139,7 +153,10 @@ describe('notificationUtils', () => {
 
       notificationUtils.updateNotification(null, notificationObject);
 
-      expect(notifications.update).toHaveBeenCalledWith(null, notificationObject);
+      expect(notifications.update).toHaveBeenCalledWith(
+        null,
+        notificationObject
+      );
     });
   });
 });

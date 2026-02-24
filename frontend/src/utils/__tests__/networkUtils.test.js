@@ -8,7 +8,9 @@ describe('networkUtils', () => {
       expect(networkUtils.IPV4_CIDR_REGEX.test('10.0.0.0/8')).toBe(true);
       expect(networkUtils.IPV4_CIDR_REGEX.test('172.16.0.0/12')).toBe(true);
       expect(networkUtils.IPV4_CIDR_REGEX.test('0.0.0.0/0')).toBe(true);
-      expect(networkUtils.IPV4_CIDR_REGEX.test('255.255.255.255/32')).toBe(true);
+      expect(networkUtils.IPV4_CIDR_REGEX.test('255.255.255.255/32')).toBe(
+        true
+      );
     });
 
     it('should not match invalid IPv4 CIDR notation', () => {
@@ -29,7 +31,11 @@ describe('networkUtils', () => {
       expect(networkUtils.IPV6_CIDR_REGEX.test('2001:db8::/32')).toBe(true);
       expect(networkUtils.IPV6_CIDR_REGEX.test('fe80::/10')).toBe(true);
       expect(networkUtils.IPV6_CIDR_REGEX.test('::/0')).toBe(true);
-      expect(networkUtils.IPV6_CIDR_REGEX.test('2001:0db8:85a3:0000:0000:8a2e:0370:7334/64')).toBe(true);
+      expect(
+        networkUtils.IPV6_CIDR_REGEX.test(
+          '2001:0db8:85a3:0000:0000:8a2e:0370:7334/64'
+        )
+      ).toBe(true);
     });
 
     it('should match compressed IPv6 CIDR notation', () => {
@@ -38,7 +44,9 @@ describe('networkUtils', () => {
     });
 
     it('should match IPv6 with embedded IPv4', () => {
-      expect(networkUtils.IPV6_CIDR_REGEX.test('::ffff:192.168.1.1/96')).toBe(true);
+      expect(networkUtils.IPV6_CIDR_REGEX.test('::ffff:192.168.1.1/96')).toBe(
+        true
+      );
     });
 
     it('should not match invalid IPv6 CIDR notation', () => {

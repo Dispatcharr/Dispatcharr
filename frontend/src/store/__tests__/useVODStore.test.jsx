@@ -103,7 +103,12 @@ describe('useVODStore', () => {
     expect(api.getAllContent).toHaveBeenCalled();
     expect(result.current.currentPageContent).toEqual([
       { id: 1, name: 'Movie 1', content_type: 'movie', contentType: 'movie' },
-      { id: 2, name: 'Series 1', content_type: 'series', contentType: 'series' },
+      {
+        id: 2,
+        name: 'Series 1',
+        content_type: 'series',
+        contentType: 'series',
+      },
     ]);
     expect(result.current.totalCount).toBe(2);
     expect(result.current.loading).toBe(false);
@@ -171,7 +176,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Network error');
     api.getAllContent.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -181,7 +188,10 @@ describe('useVODStore', () => {
 
     expect(result.current.error).toBe('Failed to load content.');
     expect(result.current.loading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch content:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch content:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -189,7 +199,9 @@ describe('useVODStore', () => {
   it('should handle invalid response format', async () => {
     api.getAllContent.mockResolvedValue({ results: 'not-an-array' });
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -234,7 +246,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Not found');
     api.getMovieDetails.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -248,7 +262,10 @@ describe('useVODStore', () => {
 
     expect(result.current.error).toBe('Failed to load movie details.');
     expect(result.current.loading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch movie details:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch movie details:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -283,7 +300,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Provider error');
     api.getMovieProviderInfo.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -295,8 +314,13 @@ describe('useVODStore', () => {
       }
     });
 
-    expect(result.current.error).toBe('Failed to load movie details from provider.');
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch movie details from provider:', mockError);
+    expect(result.current.error).toBe(
+      'Failed to load movie details from provider.'
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch movie details from provider:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -324,7 +348,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Providers error');
     api.getMovieProviders.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -336,7 +362,10 @@ describe('useVODStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch movie providers:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch movie providers:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -361,7 +390,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Series providers error');
     api.getSeriesProviders.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -373,7 +404,10 @@ describe('useVODStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch series providers:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch series providers:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -428,7 +462,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Series not found');
     api.getSeriesInfo.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -442,7 +478,10 @@ describe('useVODStore', () => {
 
     expect(result.current.error).toBe('Failed to load series details.');
     expect(result.current.loading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch series info:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch series info:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -494,7 +533,9 @@ describe('useVODStore', () => {
     const mockError = new Error('Categories error');
     api.getVODCategories.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODStore());
 
@@ -503,7 +544,10 @@ describe('useVODStore', () => {
     });
 
     expect(result.current.error).toBe('Failed to load categories.');
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch VOD categories:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch VOD categories:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });

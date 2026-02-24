@@ -16,7 +16,7 @@ const localStorageMock = (() => {
     }),
     removeItem: vi.fn((key) => {
       delete store[key];
-    })
+    }),
   };
 })();
 
@@ -58,7 +58,7 @@ describe('useStreamsTableStore', () => {
         pagination: {
           pageIndex: 0,
           pageSize: JSON.parse(localStorage.getItem('streams-page-size')) || 50,
-        }
+        },
       });
 
       const { result } = renderHook(() => useStreamsTableStore());
@@ -74,7 +74,7 @@ describe('useStreamsTableStore', () => {
         pagination: {
           pageIndex: 0,
           pageSize: JSON.parse(localStorage.getItem('streams-page-size')) || 50,
-        }
+        },
       });
 
       const { result } = renderHook(() => useStreamsTableStore());
@@ -112,10 +112,7 @@ describe('useStreamsTableStore', () => {
       const mockParams = new URLSearchParams({ page_size: '25' });
 
       act(() => {
-        result.current.queryStreams(
-          { results: [], count: 75 },
-          mockParams
-        );
+        result.current.queryStreams({ results: [], count: 75 }, mockParams);
       });
 
       expect(result.current.pageCount).toBe(3); // Math.ceil(75 / 25)
@@ -127,10 +124,7 @@ describe('useStreamsTableStore', () => {
       const mockParams = new URLSearchParams({ page_size: '50' });
 
       act(() => {
-        result.current.queryStreams(
-          { results: [], count: 0 },
-          mockParams
-        );
+        result.current.queryStreams({ results: [], count: 0 }, mockParams);
       });
 
       expect(result.current.streams).toEqual([]);
@@ -340,7 +334,9 @@ describe('useStreamsTableStore', () => {
       expect(result.current.totalCount).toBe(50);
       expect(result.current.pageCount).toBe(2);
       expect(result.current.pagination).toEqual({ pageIndex: 0, pageSize: 25 });
-      expect(result.current.sorting).toEqual([{ id: 'created_at', desc: true }]);
+      expect(result.current.sorting).toEqual([
+        { id: 'created_at', desc: true },
+      ]);
       expect(result.current.allQueryIds).toEqual([1, 2, 3, 4, 5]);
       expect(result.current.selectedStreamIds).toEqual([1, 2]);
       expect(result.current.lastQueryParams).toBe(mockParams);

@@ -13,7 +13,7 @@ describe('DvrSettingsFormUtils', () => {
     it('should call API.getComskipConfig and return result', async () => {
       const mockConfig = {
         enabled: true,
-        custom_path: '/path/to/comskip'
+        custom_path: '/path/to/comskip',
       };
       API.getComskipConfig.mockResolvedValue(mockConfig);
 
@@ -27,13 +27,17 @@ describe('DvrSettingsFormUtils', () => {
       const error = new Error('API Error');
       API.getComskipConfig.mockRejectedValue(error);
 
-      await expect(DvrSettingsFormUtils.getComskipConfig()).rejects.toThrow('API Error');
+      await expect(DvrSettingsFormUtils.getComskipConfig()).rejects.toThrow(
+        'API Error'
+      );
     });
   });
 
   describe('uploadComskipIni', () => {
     it('should call API.uploadComskipIni with file and return result', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
       const mockResponse = { success: true };
       API.uploadComskipIni.mockResolvedValue(mockResponse);
 
@@ -44,11 +48,15 @@ describe('DvrSettingsFormUtils', () => {
     });
 
     it('should handle API errors', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
       const error = new Error('Upload failed');
       API.uploadComskipIni.mockRejectedValue(error);
 
-      await expect(DvrSettingsFormUtils.uploadComskipIni(mockFile)).rejects.toThrow('Upload failed');
+      await expect(
+        DvrSettingsFormUtils.uploadComskipIni(mockFile)
+      ).rejects.toThrow('Upload failed');
     });
   });
 
@@ -57,14 +65,14 @@ describe('DvrSettingsFormUtils', () => {
       const result = DvrSettingsFormUtils.getDvrSettingsFormInitialValues();
 
       expect(result).toEqual({
-        'tv_template': '',
-        'movie_template': '',
-        'tv_fallback_template': '',
-        'movie_fallback_template': '',
-        'comskip_enabled': false,
-        'comskip_custom_path': '',
-        'pre_offset_minutes': 0,
-        'post_offset_minutes': 0,
+        tv_template: '',
+        movie_template: '',
+        tv_fallback_template: '',
+        movie_fallback_template: '',
+        comskip_enabled: false,
+        comskip_custom_path: '',
+        pre_offset_minutes: 0,
+        post_offset_minutes: 0,
       });
     });
 

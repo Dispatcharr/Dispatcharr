@@ -3,7 +3,7 @@ from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import M3UAccount
 from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
-from django_celery_beat.models import PeriodicTask, IntervalSchedule
+from core.scheduling import create_or_update_periodic_task, delete_periodic_task
 import json
 import logging
 
@@ -23,48 +23,26 @@ def refresh_account_on_save(sender, instance, created, **kwargs):
 def create_or_update_refresh_task(sender, instance, **kwargs):
     """
     Create or update a Celery Beat periodic task when an M3UAccount is created/updated.
+    Supports both interval-based and cron-based scheduling via the shared utility.
     """
     task_name = f"m3u_account-refresh-{instance.id}"
+    should_be_enabled = instance.is_active
 
-    interval, _ = IntervalSchedule.objects.get_or_create(
-        every=int(instance.refresh_interval),
-        period=IntervalSchedule.HOURS
+    # Read cron_expression from transient attribute set by the serializer
+    cron_expr = getattr(instance, "_cron_expression", "")
+
+    task = create_or_update_periodic_task(
+        task_name=task_name,
+        celery_task_path="apps.m3u.tasks.refresh_single_m3u_account",
+        kwargs={"account_id": instance.id},
+        interval_hours=int(instance.refresh_interval),
+        cron_expression=cron_expr,
+        enabled=should_be_enabled,
     )
 
-    # Task should be enabled only if refresh_interval != 0 AND account is active
-    should_be_enabled = (instance.refresh_interval != 0) and instance.is_active
-
-    # First check if the task already exists to avoid validation errors
-    try:
-        task = PeriodicTask.objects.get(name=task_name)
-        # Task exists, just update it
-        updated_fields = []
-
-        if task.enabled != should_be_enabled:
-            task.enabled = should_be_enabled
-            updated_fields.append("enabled")
-
-        if task.interval != interval:
-            task.interval = interval
-            updated_fields.append("interval")
-
-        if updated_fields:
-            task.save(update_fields=updated_fields)
-
-        # Ensure instance has the task
-        if instance.refresh_task_id != task.id:
-            M3UAccount.objects.filter(id=instance.id).update(refresh_task=task)
-
-    except PeriodicTask.DoesNotExist:
-        # Create new task if it doesn't exist
-        refresh_task = PeriodicTask.objects.create(
-            name=task_name,
-            interval=interval,
-            task="apps.m3u.tasks.refresh_single_m3u_account",
-            kwargs=json.dumps({"account_id": instance.id}),
-            enabled=should_be_enabled,
-        )
-        M3UAccount.objects.filter(id=instance.id).update(refresh_task=refresh_task)
+    # Ensure instance has the task linked
+    if instance.refresh_task_id != task.id:
+        M3UAccount.objects.filter(id=instance.id).update(refresh_task=task)
 
 @receiver(post_delete, sender=M3UAccount)
 def delete_refresh_task(sender, instance, **kwargs):

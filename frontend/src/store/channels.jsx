@@ -12,9 +12,15 @@ const reduceChannels = (channels) => {
     return acc;
   }, {});
   return { channelsByUUID, channelsByID };
-}
+};
 
-const showNotificationIfNewChannel = (currentStats, oldChannels, ch, channelsByUUID, channels) => {
+const showNotificationIfNewChannel = (
+  currentStats,
+  oldChannels,
+  ch,
+  channelsByUUID,
+  channels
+) => {
   if (currentStats.channels) {
     if (oldChannels[ch.channel_id] === undefined) {
       // Add null checks to prevent accessing properties on undefined
@@ -30,7 +36,7 @@ const showNotificationIfNewChannel = (currentStats, oldChannels, ch, channelsByU
       }
     }
   }
-}
+};
 
 const showNotificationIfNewClient = (currentStats, oldClients, client) => {
   // This check prevents the notifications if streams are active on page load
@@ -43,9 +49,15 @@ const showNotificationIfNewClient = (currentStats, oldClients, client) => {
       });
     }
   }
-}
+};
 
-const showNotificationIfChannelStopped = (currentStats, oldChannels, newChannels, channelsByUUID, channels) => {
+const showNotificationIfChannelStopped = (
+  currentStats,
+  oldChannels,
+  newChannels,
+  channelsByUUID,
+  channels
+) => {
   // This check prevents the notifications if streams are active on page load
   if (currentStats.channels) {
     for (const uuid in oldChannels) {
@@ -70,9 +82,13 @@ const showNotificationIfChannelStopped = (currentStats, oldChannels, newChannels
       }
     }
   }
-}
+};
 
-const showNotificationIfClientStopped = (currentStats, oldClients, newClients) => {
+const showNotificationIfClientStopped = (
+  currentStats,
+  oldClients,
+  newClients
+) => {
   if (currentStats.channels) {
     for (const clientId in oldClients) {
       if (newClients[clientId] === undefined) {
@@ -84,10 +100,11 @@ const showNotificationIfClientStopped = (currentStats, oldClients, newClients) =
       }
     }
   }
-}
+};
 
 const useChannelsStore = create((set, get) => ({
   channels: [],
+  channelIds: [],
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
@@ -104,6 +121,19 @@ const useChannelsStore = create((set, get) => ({
 
   triggerUpdate: () => {
     set({ forceUpdate: new Date() });
+  },
+
+  fetchChannelIds: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const channelIds = await api.getAllChannelIds();
+      set({
+        channelIds,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ error: error.message, isLoading: false });
+    }
   },
 
   fetchChannels: async () => {
@@ -228,7 +258,7 @@ const useChannelsStore = create((set, get) => ({
       );
       return;
     }
-    
+
     const { channelsByUUID, updatedChannels } = reduceChannels(channels);
 
     set((state) => ({
@@ -247,8 +277,10 @@ const useChannelsStore = create((set, get) => ({
     set((state) => {
       const updatedChannels = { ...state.channels };
       const channelsByUUID = { ...state.channelsByUUID };
+      const channelIdsSet = new Set(state.channelIds); // Convert to Set for O(1) lookups
       for (const id of channelIds) {
         delete updatedChannels[id];
+        channelIdsSet.delete(id);
 
         for (const uuid in channelsByUUID) {
           if (channelsByUUID[uuid] == id) {
@@ -258,7 +290,12 @@ const useChannelsStore = create((set, get) => ({
         }
       }
 
-      return { channels: updatedChannels, channelsByUUID };
+      console.log(channelIdsSet);
+      return {
+        channels: updatedChannels,
+        channelsByUUID,
+        channelIds: Array.from(channelIdsSet),
+      };
     });
   },
 
@@ -383,24 +420,36 @@ const useChannelsStore = create((set, get) => ({
         channelsByUUID,
       } = state;
       const newClients = {};
-      
+
       const newChannels = stats.channels.reduce((acc, ch) => {
         acc[ch.channel_id] = ch;
         return acc;
       }, {});
 
-      stats.channels.forEach(ch => {
-        showNotificationIfNewChannel(currentStats, oldChannels, ch, channelsByUUID, channels);
+      stats.channels.forEach((ch) => {
+        showNotificationIfNewChannel(
+          currentStats,
+          oldChannels,
+          ch,
+          channelsByUUID,
+          channels
+        );
 
-        ch.clients.forEach(client => {
-            newClients[client.client_id] = client;
-            showNotificationIfNewClient(currentStats, oldClients, client);
-          });
+        ch.clients.forEach((client) => {
+          newClients[client.client_id] = client;
+          showNotificationIfNewClient(currentStats, oldClients, client);
+        });
       });
 
-      showNotificationIfChannelStopped(currentStats, oldChannels, newChannels, channelsByUUID, channels);
+      showNotificationIfChannelStopped(
+        currentStats,
+        oldChannels,
+        newChannels,
+        channelsByUUID,
+        channels
+      );
       showNotificationIfClientStopped(currentStats, oldClients, newClients);
-      
+
       return {
         stats,
         activeChannels: newChannels,

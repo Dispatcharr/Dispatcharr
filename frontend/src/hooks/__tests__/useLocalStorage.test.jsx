@@ -16,7 +16,7 @@ const localStorageMock = (() => {
     }),
     removeItem: vi.fn((key) => {
       delete store[key];
-    })
+    }),
   };
 })();
 
@@ -32,7 +32,9 @@ describe('useLocalStorage', () => {
   });
 
   it('should initialize with default value when localStorage is empty', () => {
-    const { result } = renderHook(() => useLocalStorage('testKey', 'defaultValue'));
+    const { result } = renderHook(() =>
+      useLocalStorage('testKey', 'defaultValue')
+    );
 
     expect(result.current[0]).toBe('defaultValue');
   });
@@ -40,7 +42,9 @@ describe('useLocalStorage', () => {
   it('should initialize with value from localStorage if available', () => {
     localStorageMock.setItem('testKey', JSON.stringify('storedValue'));
 
-    const { result } = renderHook(() => useLocalStorage('testKey', 'defaultValue'));
+    const { result } = renderHook(() =>
+      useLocalStorage('testKey', 'defaultValue')
+    );
 
     expect(result.current[0]).toBe('storedValue');
   });
@@ -52,14 +56,19 @@ describe('useLocalStorage', () => {
       result.current[1]('updated');
     });
 
-    expect(localStorageMock.setItem).toHaveBeenCalledWith('testKey', JSON.stringify('updated'));
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      'testKey',
+      JSON.stringify('updated')
+    );
     expect(result.current[0]).toBe('updated');
   });
 
   it('should handle complex objects', () => {
     const complexObject = { name: 'test', count: 42, nested: { value: true } };
 
-    const { result } = renderHook(() => useLocalStorage('testKey', complexObject));
+    const { result } = renderHook(() =>
+      useLocalStorage('testKey', complexObject)
+    );
 
     act(() => {
       result.current[1]({ name: 'updated', count: 100 });
@@ -73,7 +82,9 @@ describe('useLocalStorage', () => {
       throw new Error('Read error');
     });
 
-    const { result } = renderHook(() => useLocalStorage('testKey', 'defaultValue'));
+    const { result } = renderHook(() =>
+      useLocalStorage('testKey', 'defaultValue')
+    );
 
     expect(result.current[0]).toBe('defaultValue');
     expect(console.error).toHaveBeenCalledWith(
@@ -102,7 +113,9 @@ describe('useLocalStorage', () => {
   it('should handle invalid JSON in localStorage', () => {
     localStorageMock.getItem.mockReturnValueOnce('invalid json{');
 
-    const { result } = renderHook(() => useLocalStorage('testKey', 'defaultValue'));
+    const { result } = renderHook(() =>
+      useLocalStorage('testKey', 'defaultValue')
+    );
 
     expect(result.current[0]).toBe('defaultValue');
     expect(console.error).toHaveBeenCalled();

@@ -15,7 +15,7 @@ describe('RecordingDetailsModalUtils', () => {
         audio_codec: 'AAC',
         audio_channels: 2,
         sample_rate: 48000,
-        audio_bitrate: 128
+        audio_bitrate: 128,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
@@ -28,49 +28,45 @@ describe('RecordingDetailsModalUtils', () => {
         ['Audio Codec', 'AAC'],
         ['Audio Channels', 2],
         ['Sample Rate', '48000 Hz'],
-        ['Audio Bitrate', '128 kb/s']
+        ['Audio Bitrate', '128 kb/s'],
       ]);
     });
 
     it('should use width x height when resolution is not present', () => {
       const stats = {
         width: 1280,
-        height: 720
+        height: 720,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
-      expect(result).toEqual([
-        ['Resolution', '1280x720']
-      ]);
+      expect(result).toEqual([['Resolution', '1280x720']]);
     });
 
     it('should prefer resolution over width/height', () => {
       const stats = {
         resolution: '1920x1080',
         width: 1280,
-        height: 720
+        height: 720,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
-      expect(result).toEqual([
-        ['Resolution', '1920x1080']
-      ]);
+      expect(result).toEqual([['Resolution', '1920x1080']]);
     });
 
     it('should filter out null values', () => {
       const stats = {
         video_codec: 'H.264',
         resolution: null,
-        source_fps: 30
+        source_fps: 30,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
       expect(result).toEqual([
         ['Video Codec', 'H.264'],
-        ['FPS', 30]
+        ['FPS', 30],
       ]);
     });
 
@@ -78,74 +74,68 @@ describe('RecordingDetailsModalUtils', () => {
       const stats = {
         video_codec: 'H.264',
         source_fps: undefined,
-        audio_codec: 'AAC'
+        audio_codec: 'AAC',
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
       expect(result).toEqual([
         ['Video Codec', 'H.264'],
-        ['Audio Codec', 'AAC']
+        ['Audio Codec', 'AAC'],
       ]);
     });
 
     it('should filter out empty strings', () => {
       const stats = {
         video_codec: '',
-        audio_codec: 'AAC'
+        audio_codec: 'AAC',
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
-      expect(result).toEqual([
-        ['Audio Codec', 'AAC']
-      ]);
+      expect(result).toEqual([['Audio Codec', 'AAC']]);
     });
 
     it('should handle missing width or height gracefully', () => {
       const stats = {
         width: 1920,
-        video_codec: 'H.264'
+        video_codec: 'H.264',
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
-      expect(result).toEqual([
-        ['Video Codec', 'H.264']
-      ]);
+      expect(result).toEqual([['Video Codec', 'H.264']]);
     });
 
     it('should format bitrates correctly', () => {
       const stats = {
         video_bitrate: 2500,
-        audio_bitrate: 192
+        audio_bitrate: 192,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
       expect(result).toEqual([
         ['Video Bitrate', '2500 kb/s'],
-        ['Audio Bitrate', '192 kb/s']
+        ['Audio Bitrate', '192 kb/s'],
       ]);
     });
 
     it('should format sample rate correctly', () => {
       const stats = {
-        sample_rate: 44100
+        sample_rate: 44100,
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
 
-      expect(result).toEqual([
-        ['Sample Rate', '44100 Hz']
-      ]);
+      expect(result).toEqual([['Sample Rate', '44100 Hz']]);
     });
 
     it('should return empty array when no valid stats', () => {
       const stats = {
         video_codec: null,
         resolution: undefined,
-        source_fps: ''
+        source_fps: '',
       };
 
       const result = RecordingDetailsModalUtils.getStatRows(stats);
@@ -193,7 +183,7 @@ describe('RecordingDetailsModalUtils', () => {
     it('should return rating from program custom_properties', () => {
       const customProps = {};
       const program = {
-        custom_properties: { rating: 'TV-14' }
+        custom_properties: { rating: 'TV-14' },
       };
 
       const result = RecordingDetailsModalUtils.getRating(customProps, program);
@@ -204,7 +194,7 @@ describe('RecordingDetailsModalUtils', () => {
     it('should prefer customProps rating over program rating', () => {
       const customProps = { rating: 'TV-MA' };
       const program = {
-        custom_properties: { rating: 'TV-14' }
+        custom_properties: { rating: 'TV-14' },
       };
 
       const result = RecordingDetailsModalUtils.getRating(customProps, program);
@@ -215,7 +205,7 @@ describe('RecordingDetailsModalUtils', () => {
     it('should prefer rating_value over program rating', () => {
       const customProps = { rating_value: 'PG-13' };
       const program = {
-        custom_properties: { rating: 'TV-14' }
+        custom_properties: { rating: 'TV-14' },
       };
 
       const result = RecordingDetailsModalUtils.getRating(customProps, program);
@@ -294,16 +284,16 @@ describe('RecordingDetailsModalUtils', () => {
           start_time: '2024-01-02T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
         },
         {
           start_time: '2024-01-02T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show2', title: 'Other Show' }
-          }
-        }
+            program: { tvg_id: 'show2', title: 'Other Show' },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -325,16 +315,16 @@ describe('RecordingDetailsModalUtils', () => {
           start_time: '2023-12-31T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
         },
         {
           start_time: '2024-01-02T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -358,8 +348,8 @@ describe('RecordingDetailsModalUtils', () => {
           custom_properties: {
             season: 1,
             episode: 5,
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
         },
         {
           start_time: '2024-01-02T18:00:00',
@@ -367,9 +357,9 @@ describe('RecordingDetailsModalUtils', () => {
           custom_properties: {
             season: 1,
             episode: 5,
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -391,17 +381,17 @@ describe('RecordingDetailsModalUtils', () => {
           channel: 'ch1',
           custom_properties: {
             onscreen_episode: 'S01E05',
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
         },
         {
           start_time: '2024-01-02T18:00:00',
           channel: 'ch2',
           custom_properties: {
             onscreen_episode: 's01e05',
-            program: { tvg_id: 'show1', title: 'Test Show' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show' },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -425,9 +415,9 @@ describe('RecordingDetailsModalUtils', () => {
             program: {
               tvg_id: 'show1',
               title: 'Test Show',
-              sub_title: 'The Beginning'
-            }
-          }
+              sub_title: 'The Beginning',
+            },
+          },
         },
         {
           start_time: '2024-01-02T18:00:00',
@@ -436,10 +426,10 @@ describe('RecordingDetailsModalUtils', () => {
             program: {
               tvg_id: 'show1',
               title: 'Test Show',
-              sub_title: 'The Beginning'
-            }
-          }
-        }
+              sub_title: 'The Beginning',
+            },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -460,16 +450,16 @@ describe('RecordingDetailsModalUtils', () => {
           start_time: '2024-01-02T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 123 }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 123 },
+          },
         },
         {
           start_time: '2024-01-02T18:00:00',
           channel: 'ch2',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 123 }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 123 },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -491,25 +481,25 @@ describe('RecordingDetailsModalUtils', () => {
           end_time: '2024-01-03T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 3 }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 3 },
+          },
         },
         {
           start_time: '2024-01-02T12:00:00',
           end_time: '2024-01-02T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 1 }
-          }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 1 },
+          },
         },
         {
           start_time: '2024-01-04T12:00:00',
           end_time: '2024-01-04T13:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 4 }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 4 },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -533,9 +523,9 @@ describe('RecordingDetailsModalUtils', () => {
           start_time: '2024-01-02T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'Test Show', id: 1 }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'Test Show', id: 1 },
+          },
+        },
       };
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -556,9 +546,9 @@ describe('RecordingDetailsModalUtils', () => {
           start_time: '2024-01-02T12:00:00',
           channel: 'ch1',
           custom_properties: {
-            program: { tvg_id: 'show1', title: 'test show' }
-          }
-        }
+            program: { tvg_id: 'show1', title: 'test show' },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -582,9 +572,9 @@ describe('RecordingDetailsModalUtils', () => {
             program: {
               tvg_id: 'show1',
               title: 'Test Show',
-              custom_properties: { season: 2, episode: 3 }
-            }
-          }
+              custom_properties: { season: 2, episode: 3 },
+            },
+          },
         },
         {
           start_time: '2024-01-02T18:00:00',
@@ -593,10 +583,10 @@ describe('RecordingDetailsModalUtils', () => {
             program: {
               tvg_id: 'show1',
               title: 'Test Show',
-              custom_properties: { season: 2, episode: 3 }
-            }
-          }
-        }
+              custom_properties: { season: 2, episode: 3 },
+            },
+          },
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(
@@ -615,8 +605,8 @@ describe('RecordingDetailsModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-02T12:00:00',
-          channel: 'ch1'
-        }
+          channel: 'ch1',
+        },
       ];
 
       const result = RecordingDetailsModalUtils.getUpcomingEpisodes(

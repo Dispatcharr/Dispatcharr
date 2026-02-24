@@ -10,7 +10,7 @@ import {
   format,
   getNow,
   getNowMs,
-  roundToNearest
+  roundToNearest,
 } from '../utils/dateTimeUtils.js';
 import API from '../api.js';
 
@@ -28,7 +28,7 @@ export function buildChannelIdMap(channels, tvgsById, epgs = {}) {
     const tvgRecord = channel.epg_data_id
       ? tvgsById[channel.epg_data_id]
       : null;
-    
+
     // For dummy EPG sources, ALWAYS use channel UUID to ensure unique programs per channel
     // This prevents multiple channels with the same dummy EPG from showing identical data
     let tvgId;
@@ -45,7 +45,7 @@ export function buildChannelIdMap(channels, tvgsById, epgs = {}) {
       // No EPG data: use channel UUID
       tvgId = channel.uuid;
     }
-    
+
     if (tvgId) {
       const tvgKey = String(tvgId);
       if (!map.has(tvgKey)) {
@@ -138,19 +138,25 @@ export const fetchPrograms = async () => {
 export const sortChannels = (channels) => {
   // Include ALL channels, sorted by channel number - don't filter by EPG data
   const sortedChannels = Object.values(channels).sort(
-      (a, b) =>
-          (a.channel_number || Infinity) - (b.channel_number || Infinity)
+    (a, b) => (a.channel_number || Infinity) - (b.channel_number || Infinity)
   );
 
   console.log(`Using all ${sortedChannels.length} available channels`);
   return sortedChannels;
-}
+};
 
-export const filterGuideChannels = (guideChannels, searchQuery, selectedGroupId, selectedProfileId, profiles) => {
+export const filterGuideChannels = (
+  guideChannels,
+  searchQuery,
+  selectedGroupId,
+  selectedProfileId,
+  profiles
+) => {
   return guideChannels.filter((channel) => {
     // Search filter
     if (searchQuery) {
-      if (!channel.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (!channel.name.toLowerCase().includes(searchQuery.toLowerCase()))
+        return false;
     }
 
     // Channel group filter
@@ -162,17 +168,17 @@ export const filterGuideChannels = (guideChannels, searchQuery, selectedGroupId,
     if (selectedProfileId !== 'all') {
       const profileChannels = profiles[selectedProfileId]?.channels || [];
       const enabledChannelIds = Array.isArray(profileChannels)
-          ? profileChannels.filter((pc) => pc.enabled).map((pc) => pc.id)
-          : profiles[selectedProfileId]?.channels instanceof Set
-              ? Array.from(profiles[selectedProfileId].channels)
-              : [];
+        ? profileChannels.filter((pc) => pc.enabled).map((pc) => pc.id)
+        : profiles[selectedProfileId]?.channels instanceof Set
+          ? Array.from(profiles[selectedProfileId].channels)
+          : [];
 
       if (!enabledChannelIds.includes(channel.id)) return false;
     }
 
     return true;
   });
-}
+};
 
 export const calculateEarliestProgramStart = (programs, defaultStart) => {
   if (!programs.length) return defaultStart;
@@ -180,7 +186,7 @@ export const calculateEarliestProgramStart = (programs, defaultStart) => {
     const s = initializeTime(p.start_time);
     return isBefore(s, acc) ? s : acc;
   }, defaultStart);
-}
+};
 
 export const calculateLatestProgramEnd = (programs, defaultEnd) => {
   if (!programs.length) return defaultEnd;
@@ -188,17 +194,17 @@ export const calculateLatestProgramEnd = (programs, defaultEnd) => {
     const e = initializeTime(p.end_time);
     return isAfter(e, acc) ? e : acc;
   }, defaultEnd);
-}
+};
 
 export const calculateStart = (earliestProgramStart, defaultStart) => {
   return isBefore(earliestProgramStart, defaultStart)
     ? earliestProgramStart
     : defaultStart;
-}
+};
 
 export const calculateEnd = (latestProgramEnd, defaultEnd) => {
   return isAfter(latestProgramEnd, defaultEnd) ? latestProgramEnd : defaultEnd;
-}
+};
 
 export const mapChannelsById = (guideChannels) => {
   const map = new Map();
@@ -206,7 +212,7 @@ export const mapChannelsById = (guideChannels) => {
     map.set(channel.id, channel);
   });
   return map;
-}
+};
 
 export const mapRecordingsByProgramId = (recordings) => {
   const map = new Map();
@@ -217,7 +223,7 @@ export const mapRecordingsByProgramId = (recordings) => {
     }
   });
   return map;
-}
+};
 
 export const formatTime = (time, dateFormat) => {
   const today = startOfDay(getNow());
@@ -236,7 +242,7 @@ export const formatTime = (time, dateFormat) => {
     // Beyond a week, show month and day
     return format(time, dateFormat);
   }
-}
+};
 
 export const calculateHourTimeline = (start, end, formatDayLabel) => {
   const hours = [];
@@ -262,7 +268,7 @@ export const calculateHourTimeline = (start, end, formatDayLabel) => {
     current = add(current, 1, 'hour');
   }
   return hours;
-}
+};
 
 export const calculateNowPosition = (now, start, end) => {
   if (isBefore(now, start) || isAfter(now, end)) return -1;
@@ -286,11 +292,11 @@ export const matchChannelByTvgId = (channelIdByTvgId, channelById, tvgId) => {
   }
   // Return the first channel that matches this TVG ID
   return channelById.get(channelIds[0]) || null;
-}
+};
 
 export const fetchRules = async () => {
   return await API.listSeriesRules();
-}
+};
 
 export const getRuleByProgram = (rules, program) => {
   return (rules || []).find(
@@ -298,7 +304,7 @@ export const getRuleByProgram = (rules, program) => {
       String(r.tvg_id) === String(program.tvg_id) &&
       (!r.title || r.title === program.title)
   );
-}
+};
 
 export const createRecording = async (channel, program) => {
   await API.createRecording({
@@ -307,7 +313,7 @@ export const createRecording = async (channel, program) => {
     end_time: program.end_time,
     custom_properties: { program },
   });
-}
+};
 
 export const createSeriesRule = async (program, mode) => {
   await API.createSeriesRule({
@@ -315,15 +321,14 @@ export const createSeriesRule = async (program, mode) => {
     mode,
     title: program.title,
   });
-}
+};
 
 export const evaluateSeriesRule = async (program) => {
   await API.evaluateSeriesRules(program.tvg_id);
-}
+};
 
 export const calculateLeftScrollPosition = (program, start) => {
-  const programStartMs =
-    program.startMs ?? convertToMs(program.start_time);
+  const programStartMs = program.startMs ?? convertToMs(program.start_time);
   const startOffsetMinutes = (programStartMs - convertToMs(start)) / 60000;
 
   return (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
@@ -331,9 +336,13 @@ export const calculateLeftScrollPosition = (program, start) => {
 
 export const calculateDesiredScrollPosition = (leftPx) => {
   return Math.max(0, leftPx - 20);
-}
+};
 
-export const calculateScrollPositionByTimeClick = (event, clickedTime, start) => {
+export const calculateScrollPositionByTimeClick = (
+  event,
+  clickedTime,
+  start
+) => {
   const rect = event.currentTarget.getBoundingClientRect();
   const clickPositionX = event.clientX - rect.left;
   const percentageAcross = clickPositionX / rect.width;
@@ -341,9 +350,10 @@ export const calculateScrollPositionByTimeClick = (event, clickedTime, start) =>
 
   const snappedMinute = Math.round(minuteWithinHour / 15) * 15;
 
-  const adjustedTime = (snappedMinute === 60)
-    ? add(clickedTime, 1, 'hour').minute(0)
-    : clickedTime.minute(snappedMinute);
+  const adjustedTime =
+    snappedMinute === 60
+      ? add(clickedTime, 1, 'hour').minute(0)
+      : clickedTime.minute(snappedMinute);
 
   const snappedOffset = diff(adjustedTime, start, 'minute');
   return (snappedOffset / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
@@ -372,7 +382,7 @@ export const getGroupOptions = (channelGroups, guideChannels) => {
       });
   }
   return options;
-}
+};
 
 export const getProfileOptions = (profiles) => {
   const options = [{ value: 'all', label: 'All Profiles' }];
@@ -390,12 +400,12 @@ export const getProfileOptions = (profiles) => {
   }
 
   return options;
-}
+};
 
 export const deleteSeriesRuleByTvgId = async (tvg_id) => {
   await API.deleteSeriesRule(tvg_id);
-}
+};
 
 export const evaluateSeriesRulesByTvgId = async (tvg_id) => {
   await API.evaluateSeriesRules(tvg_id);
-}
+};

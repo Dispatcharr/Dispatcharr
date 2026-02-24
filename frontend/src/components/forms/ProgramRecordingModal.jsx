@@ -74,23 +74,33 @@ export default function ProgramRecordingModal({
           Just this one
         </Button>
 
-        <Button variant="light" onClick={() => {
-          onRecordSeriesAll();
-          onClose();
-        }}>
+        <Button
+          variant="light"
+          onClick={() => {
+            onRecordSeriesAll();
+            onClose();
+          }}
+        >
           Every episode
         </Button>
 
-        <Button variant="light" onClick={() => {
-          onRecordSeriesNew();
-          onClose();
-        }}>
+        <Button
+          variant="light"
+          onClick={() => {
+            onRecordSeriesNew();
+            onClose();
+          }}
+        >
           New episodes only
         </Button>
 
         {recording && (
           <>
-            <Button color="orange" variant="light" onClick={handleRemoveRecording}>
+            <Button
+              color="orange"
+              variant="light"
+              onClick={handleRemoveRecording}
+            >
               Remove this recording
             </Button>
             <Button color="red" variant="light" onClick={handleRemoveSeries}>

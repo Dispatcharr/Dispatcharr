@@ -12,12 +12,12 @@ const PageContent = () => {
       <UsersTable />
     </Box>
   );
-}
+};
 
 const UsersPage = () => {
   return (
     <ErrorBoundary>
-      <PageContent/>
+      <PageContent />
     </ErrorBoundary>
   );
 };

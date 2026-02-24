@@ -47,7 +47,9 @@ describe('useStreamProfilesStore', () => {
     const mockError = new Error('Network error');
     api.getStreamProfiles.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useStreamProfilesStore());
 
@@ -57,7 +59,10 @@ describe('useStreamProfilesStore', () => {
 
     expect(result.current.error).toBe('Failed to load profiles.');
     expect(result.current.isLoading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch profiles:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch profiles:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -152,7 +157,11 @@ describe('useStreamProfilesStore', () => {
       result.current.updateStreamProfile(updatedProfile);
     });
 
-    expect(result.current.profiles[1]).toEqual({ id: 2, name: 'Profile 2', bitrate: 8000 });
+    expect(result.current.profiles[1]).toEqual({
+      id: 2,
+      name: 'Profile 2',
+      bitrate: 8000,
+    });
   });
 
   it('should not modify profiles when updating non-existent profile', () => {
@@ -166,7 +175,11 @@ describe('useStreamProfilesStore', () => {
     });
 
     const { result } = renderHook(() => useStreamProfilesStore());
-    const nonExistentProfile = { id: 999, name: 'Non-existent', bitrate: 10000 };
+    const nonExistentProfile = {
+      id: 999,
+      name: 'Non-existent',
+      bitrate: 10000,
+    };
 
     act(() => {
       result.current.updateStreamProfile(nonExistentProfile);
@@ -246,9 +259,7 @@ describe('useStreamProfilesStore', () => {
   });
 
   it('should handle empty array when removing profiles', () => {
-    const initialProfiles = [
-      { id: 1, name: 'Profile 1', bitrate: 5000 },
-    ];
+    const initialProfiles = [{ id: 1, name: 'Profile 1', bitrate: 5000 }];
 
     useStreamProfilesStore.setState({
       profiles: initialProfiles,

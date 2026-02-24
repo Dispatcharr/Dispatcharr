@@ -156,7 +156,9 @@ describe('RecordingCardUtils', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'dev');
 
-      expect(result).toMatch(/^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123$/);
+      expect(result).toMatch(
+        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123$/
+      );
     });
   });
 
@@ -208,7 +210,9 @@ describe('RecordingCardUtils', () => {
 
     it('handles bulk remove error gracefully', async () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation();
-      API.bulkRemoveSeriesRecordings.mockRejectedValue(new Error('Bulk remove failed'));
+      API.bulkRemoveSeriesRecordings.mockRejectedValue(
+        new Error('Bulk remove failed')
+      );
       API.deleteSeriesRule.mockResolvedValue();
       const seriesInfo = { tvg_id: 'series-123', title: 'Test Series' };
 

@@ -765,3 +765,227 @@ def cleanup_vod_persistent_connections():
 
     except Exception as e:
         logger.error(f"Error during VOD persistent connection cleanup: {e}")
+
+
+@shared_task
+def check_for_version_update():
+    """
+    Check for new Dispatcharr versions on GitHub and create a notification if available.
+    This task should be run periodically (e.g., daily) via Celery Beat.
+
+    For dev builds (identified by __timestamp__), checks for stable releases only.
+    For production builds, checks for stable releases.
+
+    Note: Dev builds are container images from the dev branch and don't have GitHub releases.
+    This checks if a stable release is available so dev users know when to upgrade.
+    """
+    import requests
+    from datetime import datetime, timezone
+    from packaging import version as pkg_version
+    from version import __version__, __timestamp__
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification
+
+    try:
+        is_dev_build = __timestamp__ is not None
+        DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+        if is_dev_build:
+            # Check Docker Hub for newer dev builds
+            docker_hub_url = "https://hub.docker.com/v2/repositories/dispatcharr/dispatcharr/tags/dev"
+
+            response = requests.get(docker_hub_url, headers=DISPATCHARR_HEADERS, timeout=10)
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to check Docker Hub for dev updates: HTTP {response.status_code}")
+                return
+
+            dev_tag_data = response.json()
+            docker_last_updated = dev_tag_data.get("last_updated")
+
+            if not docker_last_updated:
+                logger.warning("No last_updated timestamp found in Docker Hub response")
+                return
+
+            # Parse timestamps for comparison
+            local_dt = datetime.strptime(__timestamp__, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            docker_dt = datetime.fromisoformat(docker_last_updated.replace('Z', '+00:00'))
+
+            # Calculate difference in minutes
+            diff_minutes = (docker_dt - local_dt).total_seconds() / 60
+
+            # Threshold to account for build/push time differences
+            THRESHOLD_MINUTES = 10
+
+            if diff_minutes > THRESHOLD_MINUTES:
+                logger.info(f"New dev build available on Docker Hub (updated {int(diff_minutes)} minutes after current build)")
+
+                # Delete any old version update notifications (both dev and stable, in case user switched)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+                if deleted_count > 0:
+                    logger.debug(f"Deleted {deleted_count} old dev build notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+                # Create notification for new dev build
+                notification, created = SystemNotification.objects.get_or_create(
+                    notification_key=f'version-dev-{docker_last_updated}',
+                    defaults={
+                        'notification_type': 'version_update',
+                        'title': 'New Dev Build Available',
+                        'message': f'A newer development build is available on Docker Hub (v{__version__}-dev)',
+                        'priority': 'medium',
+                        'action_data': {
+                            'current_version': __version__,
+                            'current_timestamp': __timestamp__,
+                            'docker_updated': docker_last_updated,
+                            'update_url': 'https://hub.docker.com/r/dispatcharr/dispatcharr/tags'
+                        },
+                        'is_active': True,
+                        'admin_only': True,
+                    }
+                )
+
+                if created:
+                    # Only send WebSocket for newly created notifications
+                    send_websocket_notification(notification)
+                    logger.info(f"New dev build notification created and sent via WebSocket")
+            else:
+                logger.debug(f"Dev build is up to date (Docker Hub image is {abs(int(diff_minutes))} minutes {'newer' if diff_minutes > 0 else 'older'})")
+
+                # Delete all version update notifications when up to date (both dev and stable)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+
+                if deleted_count > 0:
+                    logger.info(f"Deleted {deleted_count} outdated dev build notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+        else:
+            # Production build - check GitHub for stable releases
+            github_api_url = "https://api.github.com/repos/Dispatcharr/Dispatcharr/releases/latest"
+            headers = {"Accept": "application/vnd.github.v3+json", **DISPATCHARR_HEADERS}
+            response = requests.get(
+                github_api_url,
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to check for updates: HTTP {response.status_code}")
+                return
+
+            release_data = response.json()
+            latest_version = release_data.get("tag_name", "").lstrip("v")
+            release_url = release_data.get("html_url", "")
+
+            if not latest_version:
+                logger.warning("No version tag found in GitHub release")
+                return
+
+            # Compare versions
+            current = pkg_version.parse(__version__)
+            latest = pkg_version.parse(latest_version)
+            if latest > current:
+                logger.info(f"New stable version available: {latest_version} (current: {__version__})")
+
+                # Delete any old version update notifications (superseded by this one)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).exclude(
+                    notification_key=f"version-{latest_version}"
+                ).delete()[0]
+                if deleted_count > 0:
+                    logger.debug(f"Deleted {deleted_count} old version notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+                # Create or update the notification for the new version
+                notification, created = SystemNotification.create_version_notification(
+                    version=latest_version,
+                    release_url=release_url,
+                )
+
+                if created:
+                    # Only send WebSocket for newly created notifications
+                    send_websocket_notification(notification)
+                    logger.info(f"New version notification created and sent via WebSocket")
+            else:
+                logger.debug(f"Dispatcharr is up to date (v{__version__})")
+
+                # Delete ALL version update notifications when up to date (no longer needed)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+
+                if deleted_count > 0:
+                    logger.info(f"Deleted {deleted_count} outdated version notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+    except requests.RequestException as e:
+        logger.warning(f"Network error checking for updates: {e}")
+    except Exception as e:
+        logger.error(f"Error checking for version updates: {e}")
+
+
+def create_setting_recommendation(setting_key, recommended_value, reason, current_value=None):
+    """
+    Create a setting recommendation notification.
+    This is a helper function that can be called from anywhere in the codebase.
+
+    Args:
+        setting_key: The setting key (e.g., 'proxy_settings.buffering_timeout')
+        recommended_value: The recommended value for the setting
+        reason: Why this setting is recommended
+        current_value: The current value (optional)
+
+    Returns:
+        The created SystemNotification instance
+    """
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification
+
+    notification, created = SystemNotification.create_setting_recommendation(
+        setting_key=setting_key,
+        recommended_value=recommended_value,
+        reason=reason,
+        current_value=current_value
+    )
+
+    # Only send via WebSocket for newly created notifications
+    if created:
+        send_websocket_notification(notification)
+
+    return notification
+

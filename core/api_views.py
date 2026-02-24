@@ -3,6 +3,7 @@
 import json
 import ipaddress
 import logging
+from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -466,3 +467,159 @@ def get_system_events(request):
         return Response({
             'error': 'Failed to fetch system events'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ─────────────────────────────
+# System Notifications API
+# ─────────────────────────────
+from .models import SystemNotification, NotificationDismissal
+from .serializers import SystemNotificationSerializer, NotificationDismissalSerializer
+from django.utils import timezone as dj_timezone
+
+
+class SystemNotificationViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for system notifications.
+    Users can view active notifications and dismiss them.
+    Admins can create and manage notifications.
+    """
+    serializer_class = SystemNotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Return notifications based on user permissions.
+        Filter out expired and dismissed notifications for regular users.
+        Evaluate conditions for developer notifications.
+        """
+        from core.developer_notifications import evaluate_conditions
+        from django.core.cache import cache
+
+        user = self.request.user
+        now = dj_timezone.now()
+
+        queryset = SystemNotification.objects.filter(is_active=True)
+
+        # Filter out expired notifications
+        queryset = queryset.filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now)
+        )
+
+        # Filter admin-only notifications for non-admins
+        if not getattr(user, 'is_superuser', False) and getattr(user, 'user_level', 0) < 10:
+            queryset = queryset.filter(admin_only=False)
+
+        # For developer notifications, evaluate conditions
+        # Cache the evaluation per notification to avoid repeated condition checks
+        notifications_to_exclude = []
+        developer_notifications = queryset.filter(source=SystemNotification.Source.DEVELOPER)
+
+        for notification in developer_notifications:
+            action_data = notification.action_data or {}
+            conditions = action_data.get('condition', [])
+
+            if not conditions:
+                continue
+
+            # Cache key based on notification ID and current settings
+            # Cache for 5 minutes to balance freshness with performance
+            cache_key = f'dev_notif_condition_{notification.id}_{user.id}'
+            should_show = cache.get(cache_key)
+
+            if should_show is None:
+                should_show = evaluate_conditions(conditions, user)
+                cache.set(cache_key, should_show, timeout=300)  # 5 minutes
+
+            if not should_show:
+                notifications_to_exclude.append(notification.id)
+
+        if notifications_to_exclude:
+            queryset = queryset.exclude(id__in=notifications_to_exclude)
+
+        return queryset
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+    def list(self, request):
+        """
+        List all active notifications for the current user.
+        Optionally filter by dismissed status.
+        """
+        queryset = self.get_queryset()
+
+        # Optional: filter out already dismissed notifications
+        include_dismissed = request.query_params.get('include_dismissed', 'false').lower() == 'true'
+        if not include_dismissed:
+            dismissed_ids = NotificationDismissal.objects.filter(
+                user=request.user
+            ).values_list('notification_id', flat=True)
+            queryset = queryset.exclude(id__in=dismissed_ids)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({
+            'notifications': serializer.data,
+            'count': len(serializer.data),
+            'unread_count': queryset.count()
+        })
+
+    @action(detail=True, methods=['post'], url_path='dismiss')
+    def dismiss(self, request, pk=None):
+        """Dismiss a notification for the current user."""
+        notification = self.get_object()
+        action_taken = request.data.get('action_taken', None)
+
+        dismissal, created = NotificationDismissal.objects.get_or_create(
+            user=request.user,
+            notification=notification,
+            defaults={'action_taken': action_taken}
+        )
+
+        if not created and action_taken:
+            dismissal.action_taken = action_taken
+            dismissal.save()
+
+        return Response({
+            'success': True,
+            'message': 'Notification dismissed',
+            'notification_key': notification.notification_key
+        })
+
+    @action(detail=False, methods=['post'], url_path='dismiss-all')
+    def dismiss_all(self, request):
+        """Dismiss all notifications for the current user."""
+        notifications = self.get_queryset()
+
+        # Get notifications not yet dismissed
+        dismissed_ids = NotificationDismissal.objects.filter(
+            user=request.user
+        ).values_list('notification_id', flat=True)
+        to_dismiss = notifications.exclude(id__in=dismissed_ids)
+
+        # Create dismissals for all
+        dismissals = [
+            NotificationDismissal(user=request.user, notification=n)
+            for n in to_dismiss
+        ]
+        NotificationDismissal.objects.bulk_create(dismissals, ignore_conflicts=True)
+
+        return Response({
+            'success': True,
+            'dismissed_count': len(dismissals)
+        })
+
+    @action(detail=False, methods=['get'], url_path='count')
+    def unread_count(self, request):
+        """Get count of unread notifications."""
+        queryset = self.get_queryset()
+        dismissed_ids = NotificationDismissal.objects.filter(
+            user=request.user
+        ).values_list('notification_id', flat=True)
+        unread_count = queryset.exclude(id__in=dismissed_ids).count()
+
+        return Response({
+            'unread_count': unread_count
+        })
+

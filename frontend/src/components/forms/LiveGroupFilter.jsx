@@ -314,17 +314,119 @@ const LiveGroupFilter = ({
 
                   {group.auto_channel_sync && group.enabled && (
                     <>
-                      <NumberInput
-                        label="Start Channel #"
-                        value={group.auto_sync_channel_start}
-                        onChange={(value) =>
-                          updateChannelStart(group.channel_group, value)
+                      <Tooltip
+                        label={
+                          <div>
+                            <div>
+                              <strong>Fixed:</strong> Start at a specific number
+                              and increment
+                            </div>
+                            <div>
+                              <strong>Provider:</strong> Use channel numbers
+                              from the M3U source
+                            </div>
+                            <div>
+                              <strong>Next Available:</strong> Auto-assign
+                              starting from 1, skipping used numbers
+                            </div>
+                          </div>
                         }
-                        min={1}
-                        step={1}
-                        size="xs"
-                        precision={1}
-                      />
+                        withArrow
+                        multiline
+                        w={280}
+                        openDelay={500}
+                      >
+                        <Select
+                          label="Channel Numbering Mode"
+                          placeholder="Select mode..."
+                          value={
+                            group.custom_properties?.channel_numbering_mode ||
+                            'fixed'
+                          }
+                          onChange={(value) => {
+                            setGroupStates(
+                              groupStates.map((state) => {
+                                if (
+                                  state.channel_group === group.channel_group
+                                ) {
+                                  return {
+                                    ...state,
+                                    custom_properties: {
+                                      ...state.custom_properties,
+                                      channel_numbering_mode: value || 'fixed',
+                                    },
+                                  };
+                                }
+                                return state;
+                              })
+                            );
+                          }}
+                          data={[
+                            {
+                              value: 'fixed',
+                              label: 'Fixed Start Number',
+                            },
+                            {
+                              value: 'provider',
+                              label: 'Use Provider Number',
+                            },
+                            {
+                              value: 'next_available',
+                              label: 'Next Available',
+                            },
+                          ]}
+                          size="xs"
+                        />
+                      </Tooltip>
+
+                      {(!group.custom_properties?.channel_numbering_mode ||
+                        group.custom_properties?.channel_numbering_mode ===
+                          'fixed') && (
+                        <NumberInput
+                          label="Start Channel #"
+                          value={group.auto_sync_channel_start}
+                          onChange={(value) =>
+                            updateChannelStart(group.channel_group, value)
+                          }
+                          min={1}
+                          step={1}
+                          size="xs"
+                          precision={0}
+                        />
+                      )}
+
+                      {group.custom_properties?.channel_numbering_mode ===
+                        'provider' && (
+                        <NumberInput
+                          label="Fallback Channel # (if provider # missing)"
+                          value={
+                            group.custom_properties
+                              ?.channel_numbering_fallback || 1
+                          }
+                          onChange={(value) => {
+                            setGroupStates(
+                              groupStates.map((state) => {
+                                if (
+                                  state.channel_group === group.channel_group
+                                ) {
+                                  return {
+                                    ...state,
+                                    custom_properties: {
+                                      ...state.custom_properties,
+                                      channel_numbering_fallback: value || 1,
+                                    },
+                                  };
+                                }
+                                return state;
+                              })
+                            );
+                          }}
+                          min={1}
+                          step={1}
+                          size="xs"
+                          precision={0}
+                        />
+                      )}
 
                       {/* Auto Channel Sync Options Multi-Select */}
                       <MultiSelect

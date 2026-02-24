@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  getConfirmationDetails,
-} from '../PluginCardUtils';
+import { getConfirmationDetails } from '../PluginCardUtils';
 
 describe('PluginCardUtils', () => {
   describe('getConfirmationDetails', () => {
@@ -13,7 +11,8 @@ describe('PluginCardUtils', () => {
       expect(result).toEqual({
         requireConfirm: true,
         confirmTitle: 'Run Test Action?',
-        confirmMessage: 'You\'re about to run "Test Action" from "Test Plugin".',
+        confirmMessage:
+          'You\'re about to run "Test Action" from "Test Plugin".',
       });
     });
 

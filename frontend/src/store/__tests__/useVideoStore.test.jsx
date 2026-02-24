@@ -68,7 +68,9 @@ describe('useVideoStore', () => {
     const { result } = renderHook(() => useVideoStore());
 
     act(() => {
-      result.current.showVideo('http://example.com/stream.ts', 'vod', { title: 'Test' });
+      result.current.showVideo('http://example.com/stream.ts', 'vod', {
+        title: 'Test',
+      });
     });
 
     expect(result.current.isVisible).toBe(true);
@@ -121,7 +123,7 @@ describe('useVideoStore', () => {
     const metadata = {
       title: 'Test Video',
       duration: 120,
-      thumbnailUrl: 'http://example.com/thumb.jpg'
+      thumbnailUrl: 'http://example.com/thumb.jpg',
     };
 
     act(() => {
@@ -139,13 +141,21 @@ describe('useVideoStore', () => {
     const secondMetadata = { title: 'Second Video' };
 
     act(() => {
-      result.current.showVideo('http://example.com/first.mp4', 'vod', firstMetadata);
+      result.current.showVideo(
+        'http://example.com/first.mp4',
+        'vod',
+        firstMetadata
+      );
     });
 
     expect(result.current.metadata).toEqual(firstMetadata);
 
     act(() => {
-      result.current.showVideo('http://example.com/second.mp4', 'vod', secondMetadata);
+      result.current.showVideo(
+        'http://example.com/second.mp4',
+        'vod',
+        secondMetadata
+      );
     });
 
     expect(result.current.metadata).toEqual(secondMetadata);

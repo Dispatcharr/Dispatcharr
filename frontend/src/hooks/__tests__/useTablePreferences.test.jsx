@@ -16,7 +16,7 @@ const localStorageMock = (() => {
     }),
     removeItem: vi.fn((key) => {
       delete store[key];
-    })
+    }),
   };
 })();
 
@@ -50,7 +50,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should initialize headerPinned from localStorage', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ headerPinned: true }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ headerPinned: true })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
 
@@ -58,7 +61,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should initialize tableSize from localStorage', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ tableSize: 'compact' }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ tableSize: 'compact' })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
 
@@ -66,7 +72,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should initialize both preferences from localStorage', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ headerPinned: true, tableSize: 'comfortable' }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ headerPinned: true, tableSize: 'comfortable' })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
 
@@ -83,7 +92,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should prefer new localStorage location over old location', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ tableSize: 'comfortable' }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ tableSize: 'comfortable' })
+      );
       localStorageMock.setItem('table-size', JSON.stringify('compact'));
 
       const { result } = renderHook(() => useTablePreferences());
@@ -127,7 +139,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should preserve existing preferences when updating headerPinned', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ tableSize: 'compact' }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ tableSize: 'compact' })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
 
@@ -205,7 +220,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should preserve existing preferences when updating tableSize', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ headerPinned: true }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ headerPinned: true })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
 
@@ -320,7 +338,10 @@ describe('useTablePreferences', () => {
     });
 
     it('should not update if value is the same', () => {
-      localStorageMock.setItem('table-preferences', JSON.stringify({ headerPinned: true }));
+      localStorageMock.setItem(
+        'table-preferences',
+        JSON.stringify({ headerPinned: true })
+      );
 
       const { result } = renderHook(() => useTablePreferences());
       const initialHeaderPinned = result.current.headerPinned;

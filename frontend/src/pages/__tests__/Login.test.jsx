@@ -5,10 +5,10 @@ import useAuthStore from '../../store/auth';
 
 vi.mock('../../store/auth');
 vi.mock('../../components/forms/LoginForm', () => ({
-  default: () => <div data-testid="login-form">LoginForm</div>
+  default: () => <div data-testid="login-form">LoginForm</div>,
 }));
 vi.mock('../../components/forms/SuperuserForm', () => ({
-  default: () => <div data-testid="superuser-form">SuperuserForm</div>
+  default: () => <div data-testid="superuser-form">SuperuserForm</div>,
 }));
 vi.mock('@mantine/core', () => ({
   Text: ({ children }) => <div>{children}</div>,
@@ -18,7 +18,7 @@ describe('Login', () => {
   it('renders SuperuserForm when superuser does not exist', async () => {
     useAuthStore.mockReturnValue(false);
 
-    render(<Login/>);
+    render(<Login />);
 
     await waitFor(() => {
       expect(screen.getByTestId('superuser-form')).toBeInTheDocument();
@@ -29,7 +29,7 @@ describe('Login', () => {
   it('renders LoginForm when superuser exists', () => {
     useAuthStore.mockReturnValue(true);
 
-    render(<Login/>);
+    render(<Login />);
 
     expect(screen.getByTestId('login-form')).toBeInTheDocument();
     expect(screen.queryByTestId('superuser-form')).not.toBeInTheDocument();

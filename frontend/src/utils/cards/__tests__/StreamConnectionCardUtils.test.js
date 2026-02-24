@@ -14,31 +14,43 @@ describe('StreamConnectionCardUtils', () => {
   describe('getBufferingSpeedThreshold', () => {
     it('should return parsed buffering_speed from proxy settings', () => {
       const proxySetting = {
-        value: { buffering_speed: 2.5 }
+        value: { buffering_speed: 2.5 },
       };
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)).toBe(2.5);
+      expect(
+        StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
+      ).toBe(2.5);
     });
 
     it('should return 1.0 for invalid JSON', () => {
       const proxySetting = { value: { buffering_speed: 'invalid' } };
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)).toBe(1.0);
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      expect(
+        StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
+      ).toBe(1.0);
       consoleSpy.mockRestore();
     });
 
     it('should return 1.0 when buffering_speed is not a number', () => {
       const proxySetting = {
-        value: JSON.stringify({ buffering_speed: 'not a number' })
+        value: JSON.stringify({ buffering_speed: 'not a number' }),
       };
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)).toBe(1.0);
+      expect(
+        StreamConnectionCardUtils.getBufferingSpeedThreshold(proxySetting)
+      ).toBe(1.0);
     });
 
     it('should return 1.0 when proxySetting is null', () => {
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(null)).toBe(1.0);
+      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold(null)).toBe(
+        1.0
+      );
     });
 
     it('should return 1.0 when value is missing', () => {
-      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold({})).toBe(1.0);
+      expect(StreamConnectionCardUtils.getBufferingSpeedThreshold({})).toBe(
+        1.0
+      );
     });
   });
 
@@ -60,17 +72,14 @@ describe('StreamConnectionCardUtils', () => {
     it('should create map from m3u accounts array', () => {
       const m3uAccounts = [
         { id: 1, name: 'Account 1' },
-        { id: 2, name: 'Account 2' }
+        { id: 2, name: 'Account 2' },
       ];
       const result = StreamConnectionCardUtils.getM3uAccountsMap(m3uAccounts);
       expect(result).toEqual({ 1: 'Account 1', 2: 'Account 2' });
     });
 
     it('should handle accounts without id', () => {
-      const m3uAccounts = [
-        { name: 'Account 1' },
-        { id: 2, name: 'Account 2' }
-      ];
+      const m3uAccounts = [{ name: 'Account 1' }, { id: 2, name: 'Account 2' }];
       const result = StreamConnectionCardUtils.getM3uAccountsMap(m3uAccounts);
       expect(result).toEqual({ 2: 'Account 2' });
     });
@@ -100,7 +109,7 @@ describe('StreamConnectionCardUtils', () => {
     it('should find stream when channelUrl includes stream url', () => {
       const streamData = [
         { id: 1, url: 'http://example.com/stream1' },
-        { id: 2, url: 'http://example.com/stream2' }
+        { id: 2, url: 'http://example.com/stream2' },
       ];
       const result = StreamConnectionCardUtils.getMatchingStreamByUrl(
         streamData,
@@ -111,7 +120,7 @@ describe('StreamConnectionCardUtils', () => {
 
     it('should find stream when stream url includes channelUrl', () => {
       const streamData = [
-        { id: 1, url: 'http://example.com/stream1/playlist.m3u8' }
+        { id: 1, url: 'http://example.com/stream1/playlist.m3u8' },
       ];
       const result = StreamConnectionCardUtils.getMatchingStreamByUrl(
         streamData,
@@ -134,7 +143,7 @@ describe('StreamConnectionCardUtils', () => {
     it('should find stream by id as string', () => {
       const streams = [
         { id: 1, name: 'Stream 1' },
-        { id: 2, name: 'Stream 2' }
+        { id: 2, name: 'Stream 2' },
       ];
       const result = StreamConnectionCardUtils.getSelectedStream(streams, '2');
       expect(result).toEqual(streams[1]);
@@ -167,11 +176,20 @@ describe('StreamConnectionCardUtils', () => {
       dateTimeUtils.subtract.mockReturnValue(mockConnectedTime);
       dateTimeUtils.format.mockReturnValue('01/01/2024 10:00:00');
 
-      const accessor = StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY, HH:mm:ss');
+      const accessor = StreamConnectionCardUtils.connectedAccessor(
+        'MM/DD/YYYY, HH:mm:ss'
+      );
       const result = accessor({ connected_since: 7200 });
 
-      expect(dateTimeUtils.subtract).toHaveBeenCalledWith(mockNow, 7200, 'second');
-      expect(dateTimeUtils.format).toHaveBeenCalledWith(mockConnectedTime, 'MM/DD/YYYY, HH:mm:ss');
+      expect(dateTimeUtils.subtract).toHaveBeenCalledWith(
+        mockNow,
+        7200,
+        'second'
+      );
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(
+        mockConnectedTime,
+        'MM/DD/YYYY, HH:mm:ss'
+      );
       expect(result).toBe('01/01/2024 10:00:00');
     });
 
@@ -181,7 +199,8 @@ describe('StreamConnectionCardUtils', () => {
       dateTimeUtils.initializeTime.mockReturnValue(mockTime);
       dateTimeUtils.format.mockReturnValue('01/01/2024 10:00:00');
 
-      const accessor = StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
+      const accessor =
+        StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
       const result = accessor({ connected_at: 1704103200 });
 
       expect(dateTimeUtils.initializeTime).toHaveBeenCalledWith(1704103200000);
@@ -189,7 +208,8 @@ describe('StreamConnectionCardUtils', () => {
     });
 
     it('should return Unknown when no time data available', () => {
-      const accessor = StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
+      const accessor =
+        StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
       const result = accessor({});
       expect(result).toBe('Unknown');
     });
@@ -202,7 +222,10 @@ describe('StreamConnectionCardUtils', () => {
       const accessor = StreamConnectionCardUtils.durationAccessor();
       const result = accessor({ connected_since: 9000 });
 
-      expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(9000, 'seconds');
+      expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(
+        9000,
+        'seconds'
+      );
       expect(result).toBe('2h 30m');
     });
 
@@ -212,7 +235,10 @@ describe('StreamConnectionCardUtils', () => {
       const accessor = StreamConnectionCardUtils.durationAccessor();
       const result = accessor({ connection_duration: 4500 });
 
-      expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(4500, 'seconds');
+      expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(
+        4500,
+        'seconds'
+      );
       expect(result).toBe('1h 15m');
     });
 
@@ -226,15 +252,23 @@ describe('StreamConnectionCardUtils', () => {
   describe('getLogoUrl', () => {
     it('should return cache_url from logos map when logoId exists', () => {
       const logos = {
-        'logo-123': { cache_url: '/api/logos/logo-123/cache/' }
+        'logo-123': { cache_url: '/api/logos/logo-123/cache/' },
       };
-      const result = StreamConnectionCardUtils.getLogoUrl('logo-123', logos, null);
+      const result = StreamConnectionCardUtils.getLogoUrl(
+        'logo-123',
+        logos,
+        null
+      );
       expect(result).toBe('/api/logos/logo-123/cache/');
     });
 
     it('should fallback to previewedStream logo_url when logoId not in map', () => {
       const previewedStream = { logo_url: 'http://example.com/logo.png' };
-      const result = StreamConnectionCardUtils.getLogoUrl('logo-456', {}, previewedStream);
+      const result = StreamConnectionCardUtils.getLogoUrl(
+        'logo-456',
+        {},
+        previewedStream
+      );
       expect(result).toBe('http://example.com/logo.png');
     });
 
@@ -260,15 +294,18 @@ describe('StreamConnectionCardUtils', () => {
     it('should format stream options with account names from map', () => {
       const streams = [
         { id: 1, name: 'Stream 1', m3u_account: 100 },
-        { id: 2, name: 'Stream 2', m3u_account: 200 }
+        { id: 2, name: 'Stream 2', m3u_account: 200 },
       ];
       const accountsMap = { 100: 'Premium Account', 200: 'Basic Account' };
 
-      const result = StreamConnectionCardUtils.getStreamOptions(streams, accountsMap);
+      const result = StreamConnectionCardUtils.getStreamOptions(
+        streams,
+        accountsMap
+      );
 
       expect(result).toEqual([
         { value: '1', label: 'Stream 1 [Premium Account]' },
-        { value: '2', label: 'Stream 2 [Basic Account]' }
+        { value: '2', label: 'Stream 2 [Basic Account]' },
       ]);
     });
 
@@ -284,7 +321,10 @@ describe('StreamConnectionCardUtils', () => {
       const streams = [{ id: 5, m3u_account: 100 }];
       const accountsMap = { 100: 'Account' };
 
-      const result = StreamConnectionCardUtils.getStreamOptions(streams, accountsMap);
+      const result = StreamConnectionCardUtils.getStreamOptions(
+        streams,
+        accountsMap
+      );
 
       expect(result[0].label).toBe('Stream #5 [Account]');
     });

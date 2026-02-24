@@ -47,7 +47,9 @@ describe('useUsersStore', () => {
     const mockError = new Error('Network error');
     api.getUsers.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useUsersStore());
 
@@ -57,7 +59,10 @@ describe('useUsersStore', () => {
 
     expect(result.current.error).toBe('Failed to load users.');
     expect(result.current.isLoading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch users:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch users:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -125,7 +130,11 @@ describe('useUsersStore', () => {
     });
 
     const { result } = renderHook(() => useUsersStore());
-    const updatedUser = { id: 1, name: 'Updated User', email: 'updated@example.com' };
+    const updatedUser = {
+      id: 1,
+      name: 'Updated User',
+      email: 'updated@example.com',
+    };
 
     act(() => {
       result.current.updateUser(updatedUser);
@@ -146,13 +155,21 @@ describe('useUsersStore', () => {
     });
 
     const { result } = renderHook(() => useUsersStore());
-    const updatedUser = { id: 1, name: 'Updated User', email: 'updated@example.com' };
+    const updatedUser = {
+      id: 1,
+      name: 'Updated User',
+      email: 'updated@example.com',
+    };
 
     act(() => {
       result.current.updateUser(updatedUser);
     });
 
-    expect(result.current.users[1]).toEqual({ id: 2, name: 'User 2', email: 'user2@example.com' });
+    expect(result.current.users[1]).toEqual({
+      id: 2,
+      name: 'User 2',
+      email: 'user2@example.com',
+    });
   });
 
   it('should not modify users when updating non-existent user', () => {
@@ -166,7 +183,11 @@ describe('useUsersStore', () => {
     });
 
     const { result } = renderHook(() => useUsersStore());
-    const nonExistentUser = { id: 999, name: 'Non-existent', email: 'none@example.com' };
+    const nonExistentUser = {
+      id: 999,
+      name: 'Non-existent',
+      email: 'none@example.com',
+    };
 
     act(() => {
       result.current.updateUser(nonExistentUser);
@@ -252,7 +273,15 @@ describe('useUsersStore', () => {
       result.current.removeUser(2);
     });
 
-    expect(result.current.users[0]).toEqual({ id: 1, name: 'User 1', email: 'user1@example.com' });
-    expect(result.current.users[1]).toEqual({ id: 3, name: 'User 3', email: 'user3@example.com' });
+    expect(result.current.users[0]).toEqual({
+      id: 1,
+      name: 'User 1',
+      email: 'user1@example.com',
+    });
+    expect(result.current.users[1]).toEqual({
+      id: 3,
+      name: 'User 3',
+      email: 'user3@example.com',
+    });
   });
 });

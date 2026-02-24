@@ -139,6 +139,7 @@ COMMON_EXTRANEOUS_WORDS = [
 def normalize_name(name: str) -> str:
     """
     A more aggressive normalization that:
+      - Removes user-configured prefixes/suffixes/custom strings (only if mode is 'advanced')
       - Lowercases
       - Removes bracketed/parenthesized text
       - Removes punctuation
@@ -148,7 +149,76 @@ def normalize_name(name: str) -> str:
     if not name:
         return ""
 
-    norm = name.lower()
+    # Load user-configured EPG matching rules (fail gracefully)
+    prefixes = []
+    suffixes = []
+    custom_strings = []
+
+    try:
+        from core.models import CoreSettings
+        settings = CoreSettings.get_epg_settings()
+
+        # Check if user has enabled advanced mode
+        mode = settings.get("epg_match_mode", "default")
+
+        # Only use custom settings if mode is 'advanced'
+        if mode == "advanced":
+            prefixes = settings.get("epg_match_ignore_prefixes", [])
+            suffixes = settings.get("epg_match_ignore_suffixes", [])
+            custom_strings = settings.get("epg_match_ignore_custom", [])
+
+            # Ensure we have lists
+            if not isinstance(prefixes, list):
+                prefixes = []
+            if not isinstance(suffixes, list):
+                suffixes = []
+            if not isinstance(custom_strings, list):
+                custom_strings = []
+
+    except Exception as e:
+        # Settings unavailable or error - continue with empty lists (graceful degradation)
+        logger.debug(f"Could not load EPG matching settings: {e}")
+        prefixes = []
+        suffixes = []
+        custom_strings = []
+
+    result = name
+
+    # Step 1: Remove prefixes (from START only - exact string match)
+    for prefix in prefixes:
+        # Skip empty or non-string entries
+        if not prefix or not isinstance(prefix, str):
+            continue
+        # Exact match at start
+        if result.startswith(prefix):
+            result = result[len(prefix):]
+            break  # Only remove first matching prefix
+
+    # Step 2: Remove suffixes (from END only - exact string match)
+    for suffix in suffixes:
+        # Skip empty or non-string entries
+        if not suffix or not isinstance(suffix, str):
+            continue
+        # Exact match at end
+        if result.endswith(suffix):
+            result = result[:-len(suffix)]
+            break  # Only remove first matching suffix
+
+    # Step 3: Remove custom strings (from ANYWHERE - exact string match)
+    for custom in custom_strings:
+        # Skip empty or non-string entries
+        if not custom or not isinstance(custom, str):
+            continue
+        try:
+            # Exact string removal (replace with empty string)
+            result = result.replace(custom, "")
+        except Exception as e:
+            # If removal fails for any reason, skip this entry
+            logger.debug(f"Failed to remove custom string '{custom}': {e}")
+            continue
+
+    # Step 4: Existing normalization logic (unchanged)
+    norm = result.lower()
     norm = re.sub(r"\[.*?\]", "", norm)
 
     # Extract and preserve important call signs from parentheses before removing them

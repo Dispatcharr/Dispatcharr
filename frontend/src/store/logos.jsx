@@ -2,10 +2,8 @@ import { create } from 'zustand';
 import api from '../api';
 
 const getLogosArray = (response) => {
-  return Array.isArray(response)
-    ? response
-    : response.results || [];
-}
+  return Array.isArray(response) ? response : response.results || [];
+};
 
 const useLogosStore = create((set, get) => ({
   logos: {},

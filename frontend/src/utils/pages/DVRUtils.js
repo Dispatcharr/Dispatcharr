@@ -40,7 +40,7 @@ const dedupeById = (list, toUserTime, completed, now, inProgress, upcoming) => {
       else completed.push(rec);
     }
   }
-}
+};
 
 export const categorizeRecordings = (recordings, toUserTime, now) => {
   const inProgress = [];
@@ -87,4 +87,4 @@ export const categorizeRecordings = (recordings, toUserTime, now) => {
     upcoming: upcomingGrouped,
     completed,
   };
-}
+};

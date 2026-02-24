@@ -105,7 +105,9 @@ describe('useVODLogosStore', () => {
     const mockError = new Error('Network error');
     api.getVODLogos.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODLogosStore());
 
@@ -119,7 +121,10 @@ describe('useVODLogosStore', () => {
 
     expect(result.current.error).toBe('Failed to load VOD logos.');
     expect(result.current.isLoading).toBe(false);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch VOD logos:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch VOD logos:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -205,9 +210,7 @@ describe('useVODLogosStore', () => {
     expect(result.current.vodLogos).toEqual({
       2: { id: 2, name: 'Logo 2' },
     });
-    expect(result.current.logos).toEqual([
-      { id: 2, name: 'Logo 2' },
-    ]);
+    expect(result.current.logos).toEqual([{ id: 2, name: 'Logo 2' }]);
     expect(result.current.totalCount).toBe(1);
   });
 
@@ -236,9 +239,7 @@ describe('useVODLogosStore', () => {
     expect(result.current.vodLogos).toEqual({
       2: { id: 2, name: 'Logo 2' },
     });
-    expect(result.current.logos).toEqual([
-      { id: 2, name: 'Logo 2' },
-    ]);
+    expect(result.current.logos).toEqual([{ id: 2, name: 'Logo 2' }]);
     expect(result.current.totalCount).toBe(1);
   });
 
@@ -246,7 +247,9 @@ describe('useVODLogosStore', () => {
     const mockError = new Error('Delete failed');
     api.deleteVODLogo.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODLogosStore());
 
@@ -258,7 +261,10 @@ describe('useVODLogosStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to delete VOD logo:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to delete VOD logo:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -290,9 +296,7 @@ describe('useVODLogosStore', () => {
     expect(result.current.vodLogos).toEqual({
       3: { id: 3, name: 'Logo 3' },
     });
-    expect(result.current.logos).toEqual([
-      { id: 3, name: 'Logo 3' },
-    ]);
+    expect(result.current.logos).toEqual([{ id: 3, name: 'Logo 3' }]);
     expect(result.current.totalCount).toBe(1);
   });
 
@@ -300,7 +304,9 @@ describe('useVODLogosStore', () => {
     const mockError = new Error('Bulk delete failed');
     api.deleteVODLogos.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODLogosStore());
 
@@ -312,7 +318,10 @@ describe('useVODLogosStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to delete VOD logos:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to delete VOD logos:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -348,7 +357,9 @@ describe('useVODLogosStore', () => {
     const mockError = new Error('Cleanup failed');
     api.cleanupUnusedVODLogos.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODLogosStore());
 
@@ -360,7 +371,10 @@ describe('useVODLogosStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to cleanup unused VOD logos:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to cleanup unused VOD logos:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
@@ -517,7 +531,9 @@ describe('useVODLogosStore', () => {
     const mockError = new Error('Failed to fetch count');
     api.getVODLogos.mockRejectedValue(mockError);
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useVODLogosStore());
 
@@ -529,7 +545,10 @@ describe('useVODLogosStore', () => {
       }
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch unused logos count:', mockError);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to fetch unused logos count:',
+      mockError
+    );
 
     consoleErrorSpy.mockRestore();
   });
