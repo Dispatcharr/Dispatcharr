@@ -1,5 +1,6 @@
 import hashlib
 import os
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from urllib.parse import urlencode, urljoin, urlparse
@@ -258,18 +259,17 @@ class PlexClient(BaseMediaServerClient):
         return payload
 
     def ping(self) -> None:
-        self._get_json(
+        self._get_sections_payload()
+
+    def _get_sections_payload(self) -> dict:
+        return self._get_json(
             '/library/sections',
             params=self._with_token(),
             headers={'Accept': 'application/json'},
         )
 
     def list_libraries(self) -> list[ProviderLibrary]:
-        payload = self._get_json(
-            '/library/sections',
-            params=self._with_token(),
-            headers={'Accept': 'application/json'},
-        )
+        payload = self._get_sections_payload()
         directories = (payload.get('MediaContainer') or {}).get('Directory') or []
         libraries = []
         for entry in directories:
@@ -287,6 +287,135 @@ class PlexClient(BaseMediaServerClient):
                     ProviderLibrary(id=library_id, name=name, content_type=content_type)
                 )
         return libraries
+
+    @staticmethod
+    def _parse_refreshing_flag(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return int(value) != 0
+        normalized = str(value or '').strip().lower()
+        return normalized in {'1', 'true', 'yes', 'on'}
+
+    def _get_sections_xml(self) -> Optional[ET.Element]:
+        response = self.session.get(
+            self._build_url('/library/sections'),
+            params=self._with_token(),
+            headers={'Accept': 'application/xml,text/xml;q=0.9,*/*;q=0.8'},
+            timeout=self.timeout_seconds,
+            verify=self.verify_ssl,
+        )
+        response.raise_for_status()
+        try:
+            return ET.fromstring(response.content)
+        except ET.ParseError:
+            return None
+
+    def trigger_library_scan(self, library_ids: Optional[list[str]] = None) -> dict:
+        requested_ids = [
+            str(value).strip()
+            for value in (library_ids or [])
+            if str(value).strip()
+        ]
+        if not requested_ids:
+            requested_ids = [library.id for library in self.list_libraries()]
+
+        triggered_ids = []
+        for library_id in requested_ids:
+            last_error = None
+            for method in ('get', 'put'):
+                try:
+                    response = self.session.request(
+                        method.upper(),
+                        self._build_url(f'/library/sections/{library_id}/refresh'),
+                        params=self._with_token(),
+                        headers={'Accept': 'application/json'},
+                        timeout=self.timeout_seconds,
+                        verify=self.verify_ssl,
+                    )
+                    if response.status_code < 400:
+                        triggered_ids.append(library_id)
+                        last_error = None
+                        break
+                    response.raise_for_status()
+                except requests.RequestException as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+
+        return {
+            'requested_library_ids': requested_ids,
+            'triggered_library_ids': triggered_ids,
+            'triggered_count': len(triggered_ids),
+        }
+
+    def get_library_refresh_state(self, library_ids: Optional[list[str]] = None) -> dict:
+        requested_ids = {
+            str(value).strip()
+            for value in (library_ids or [])
+            if str(value).strip()
+        }
+        payload = self._get_sections_payload()
+        directories = (payload.get('MediaContainer') or {}).get('Directory') or []
+        libraries = []
+        unknown_state = True
+
+        for entry in directories:
+            library_id = str(entry.get('key') or '').strip()
+            if not library_id:
+                continue
+            if requested_ids and library_id not in requested_ids:
+                continue
+            raw_refreshing = (
+                entry.get('refreshing')
+                if isinstance(entry, dict)
+                else None
+            )
+            if raw_refreshing is None and isinstance(entry, dict):
+                raw_refreshing = entry.get('Refreshing')
+            if raw_refreshing is None and isinstance(entry, dict):
+                raw_refreshing = entry.get('scanning')
+            refreshing = self._parse_refreshing_flag(raw_refreshing)
+            if raw_refreshing is not None:
+                unknown_state = False
+            libraries.append(
+                {
+                    'id': library_id,
+                    'name': str(entry.get('title') or '').strip(),
+                    'refreshing': refreshing,
+                }
+            )
+
+        if unknown_state:
+            xml_root = self._get_sections_xml()
+            if xml_root is not None:
+                libraries = []
+                for element in xml_root.findall('.//Directory'):
+                    library_id = str(element.attrib.get('key') or '').strip()
+                    if not library_id:
+                        continue
+                    if requested_ids and library_id not in requested_ids:
+                        continue
+                    refreshing = self._parse_refreshing_flag(
+                        element.attrib.get('refreshing')
+                        or element.attrib.get('scanning')
+                    )
+                    libraries.append(
+                        {
+                            'id': library_id,
+                            'name': str(element.attrib.get('title') or '').strip(),
+                            'refreshing': refreshing,
+                        }
+                    )
+
+        refreshing_library_ids = [
+            library['id'] for library in libraries if library.get('refreshing')
+        ]
+        return {
+            'libraries': libraries,
+            'refreshing_library_ids': refreshing_library_ids,
+            'any_refreshing': bool(refreshing_library_ids),
+        }
 
     def iter_movies(self, libraries: list[ProviderLibrary]) -> Iterable[ProviderMovie]:
         for library in libraries:

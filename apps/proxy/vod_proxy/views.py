@@ -247,7 +247,7 @@ class VODStreamView(View):
 
     def head(self, request, content_type, content_id, session_id=None, profile_id=None):
         """
-        Handle HEAD requests for FUSE filesystem integration
+        Handle HEAD requests for session-aware VOD playback clients.
 
         Returns content length and session URL header for subsequent GET requests
         """
@@ -393,15 +393,14 @@ class VODStreamView(View):
             except Exception as e:
                 logger.error(f"[VOD-HEAD] Failed to store content length in Redis: {e}")
 
-            # Now create a persistent connection for the session (if one doesn't exist)
-            # This ensures the FUSE GET requests will reuse the same connection
+            # Now create a persistent connection for the session (if one doesn't exist).
+            # This helps subsequent GET requests reuse the same session state.
 
             connection_manager = MultiWorkerVODConnectionManager.get_instance()
 
             logger.info(f"[VOD-HEAD] Pre-creating persistent connection for session: {session_id}")
 
-            # We don't actually stream content here, just ensure connection is ready
-            # The actual GET requests from FUSE will use the persistent connection
+            # We don't stream content here; we only prepare session metadata.
 
             # Use the total_size we extracted from the range response
             provider_content_type = response.headers.get('Content-Type')
@@ -427,7 +426,7 @@ class VODStreamView(View):
             head_response['Content-Type'] = content_type_header
             head_response['Accept-Ranges'] = 'bytes'
 
-            # Custom header with session URL for FUSE
+            # Custom header with the session URL for the follow-up GET request.
             head_response['X-Session-URL'] = session_url
             head_response['X-Dispatcharr-Session'] = session_id
 
@@ -1152,4 +1151,3 @@ def stop_vod_client(request):
     except Exception as e:
         logger.error(f"Error stopping VOD client: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
-
