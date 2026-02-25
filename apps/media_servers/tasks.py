@@ -1,7 +1,10 @@
+import json
 import logging
+import os
+import uuid as uuid_lib
 from datetime import date
 from time import monotonic
-from typing import Optional
+from typing import Any, Optional
 
 from celery import shared_task
 from django.db import IntegrityError
@@ -15,6 +18,12 @@ from apps.media_servers.providers import (
     ProviderSeries,
     get_provider_client,
 )
+from apps.media_servers.output_paths import (
+    DEFAULT_STRM_OUTPUT_PATH,
+    normalize_strm_output_path,
+    sanitize_output_settings_paths,
+)
+from apps.media_servers.strm_export import build_strm_nfo_snapshot
 from apps.vod.models import (
     Episode,
     M3UEpisodeRelation,
@@ -26,7 +35,13 @@ from apps.vod.models import (
     VODCategory,
     VODLogo,
 )
-from core.utils import send_websocket_update
+from core.models import CoreSettings, LEGACY_OUTPUT_SETTINGS_KEY, OUTPUT_SETTINGS_KEY
+from core.utils import (
+    RedisClient,
+    acquire_task_lock,
+    release_task_lock,
+    send_websocket_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +52,11 @@ STAGE_DISCOVERY = 'discovery'
 STAGE_IMPORT = 'import'
 STAGE_CLEANUP = 'cleanup'
 SYNC_WS_UPDATE_INTERVAL_SECONDS = 1.0
+OUTPUT_EXPORT_SYNC_TASK_LOCK_NAME = 'media_servers_output_export_sync'
+OUTPUT_EXPORT_SYNC_TASK_LOCK_ID = 'global'
+OUTPUT_EXPORT_SYNC_DEBOUNCE_KEY = 'media_servers:output_export_sync:queued'
+OUTPUT_EXPORT_SYNC_DEBOUNCE_SECONDS = 30
+OUTPUT_EXPORT_SYNC_QUEUE_DELAY_SECONDS = 8
 
 
 class SyncCancelled(Exception):
@@ -174,6 +194,440 @@ def _set_sync_state(
         update_fields.append('last_synced_at')
     integration.save(update_fields=update_fields)
 
+
+def _as_bool_output(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off', ''}:
+            return False
+    return default
+
+
+def _normalize_settings_payload(raw_value: Any) -> dict:
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _derive_output_export_mode(target_provider: Any, export_mode: Any = '') -> str:
+    return 'strm_nfo'
+
+
+def _legacy_output_configured(settings_value: dict) -> bool:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    return bool(
+        _as_bool_output(raw.get('export_enabled'), default=False)
+        or str(raw.get('updated_at') or '').strip()
+        or str(raw.get('strm_last_built_at') or '').strip()
+        or str(raw.get('strm_output_path') or '').strip()
+        or str(raw.get('integration_name') or '').strip()
+    )
+
+
+def _build_legacy_output_profile(settings_value: dict) -> dict:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    target_provider = str(raw.get('target_provider') or '').strip().lower() or 'jellyfin_emby'
+    return {
+        'id': '__legacy-output__',
+        'integration_name': str(raw.get('integration_name') or '').strip() or 'Dispatcharr Output',
+        'target_provider': target_provider,
+        'export_mode': 'strm_nfo',
+        'export_enabled': _as_bool_output(raw.get('export_enabled'), default=True),
+        'target_base_url': '',
+        'target_api_token': '',
+        'target_verify_ssl': True,
+        'strm_output_path': normalize_strm_output_path(
+            raw.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        ),
+        'strm_include_nfo': _as_bool_output(raw.get('strm_include_nfo'), default=True),
+        'strm_last_built_at': str(raw.get('strm_last_built_at') or '').strip(),
+        'strm_last_build_summary': (
+            raw.get('strm_last_build_summary')
+            if isinstance(raw.get('strm_last_build_summary'), dict)
+            else None
+        ),
+        'scan_last_run_at': str(raw.get('scan_last_run_at') or '').strip(),
+        'scan_last_status': str(raw.get('scan_last_status') or '').strip(),
+        'scan_last_message': str(raw.get('scan_last_message') or '').strip(),
+        'scan_last_summary': (
+            raw.get('scan_last_summary')
+            if isinstance(raw.get('scan_last_summary'), dict)
+            else None
+        ),
+        'updated_at': str(raw.get('updated_at') or '').strip(),
+    }
+
+
+def _extract_output_profiles_from_settings(settings_value: dict) -> list[dict]:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    raw_profiles = raw.get('output_integrations')
+    if isinstance(raw_profiles, list):
+        profiles = []
+        used_ids: set[str] = set()
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            profile = dict(raw_profile)
+            profile_id = str(profile.get('id') or profile.get('integration_id') or '').strip()
+            if not profile_id:
+                profile_id = f'output-{uuid_lib.uuid4()}'
+            if profile_id in used_ids:
+                continue
+            used_ids.add(profile_id)
+            profile['id'] = profile_id
+            profile.setdefault('integration_name', 'Dispatcharr Output')
+            profile.setdefault(
+                'target_provider',
+                str(profile.get('target_provider') or '').strip().lower()
+                or 'jellyfin_emby',
+            )
+            profile['export_mode'] = 'strm_nfo'
+            profile['export_enabled'] = _as_bool_output(
+                profile.get('export_enabled'),
+                default=True,
+            )
+            profile['target_base_url'] = ''
+            profile['target_api_token'] = ''
+            profile['target_verify_ssl'] = True
+            profile['strm_output_path'] = normalize_strm_output_path(
+                profile.get('strm_output_path'),
+                fallback=DEFAULT_STRM_OUTPUT_PATH,
+            )
+            profile['strm_include_nfo'] = _as_bool_output(
+                profile.get('strm_include_nfo'),
+                default=True,
+            )
+            profile['scan_last_run_at'] = str(profile.get('scan_last_run_at') or '').strip()
+            profile['scan_last_status'] = str(profile.get('scan_last_status') or '').strip()
+            profile['scan_last_message'] = str(profile.get('scan_last_message') or '').strip()
+            if not isinstance(profile.get('scan_last_summary'), dict):
+                profile['scan_last_summary'] = None
+            profiles.append(profile)
+        if profiles:
+            return profiles
+
+    if _legacy_output_configured(raw):
+        return [_build_legacy_output_profile(raw)]
+    return []
+
+
+def _output_profile_legacy_fields(profile: dict | None) -> dict:
+    if not profile:
+        return {
+            'integration_name': '',
+            'target_provider': '',
+            'export_mode': '',
+            'export_enabled': False,
+            'target_base_url': '',
+            'target_api_token': '',
+            'target_verify_ssl': True,
+            'strm_output_path': DEFAULT_STRM_OUTPUT_PATH,
+            'strm_include_nfo': True,
+            'strm_last_built_at': '',
+            'strm_last_build_summary': None,
+            'scan_last_run_at': '',
+            'scan_last_status': '',
+            'scan_last_message': '',
+            'scan_last_summary': None,
+            'updated_at': '',
+        }
+
+    return {
+        'integration_name': str(profile.get('integration_name') or '').strip()
+        or 'Dispatcharr Output',
+        'target_provider': str(profile.get('target_provider') or '').strip().lower(),
+        'export_mode': 'strm_nfo',
+        'export_enabled': _as_bool_output(profile.get('export_enabled'), default=True),
+        'target_base_url': '',
+        'target_api_token': '',
+        'target_verify_ssl': True,
+        'strm_output_path': normalize_strm_output_path(
+            profile.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        ),
+        'strm_include_nfo': _as_bool_output(profile.get('strm_include_nfo'), default=True),
+        'strm_last_built_at': str(profile.get('strm_last_built_at') or '').strip(),
+        'strm_last_build_summary': (
+            profile.get('strm_last_build_summary')
+            if isinstance(profile.get('strm_last_build_summary'), dict)
+            else None
+        ),
+        'scan_last_run_at': str(profile.get('scan_last_run_at') or '').strip(),
+        'scan_last_status': str(profile.get('scan_last_status') or '').strip(),
+        'scan_last_message': str(profile.get('scan_last_message') or '').strip(),
+        'scan_last_summary': (
+            profile.get('scan_last_summary')
+            if isinstance(profile.get('scan_last_summary'), dict)
+            else None
+        ),
+        'updated_at': str(profile.get('updated_at') or '').strip(),
+    }
+
+
+def _persist_output_profiles(settings_obj: CoreSettings, settings_value: dict, profiles: list[dict]) -> dict:
+    next_value = dict(settings_value or {})
+    normalized_profiles: list[dict] = []
+    used_ids: set[str] = set()
+
+    for raw_profile in profiles:
+        if not isinstance(raw_profile, dict):
+            continue
+        profile = dict(raw_profile)
+        profile_id = str(profile.get('id') or profile.get('integration_id') or '').strip()
+        if not profile_id:
+            profile_id = f'output-{uuid_lib.uuid4()}'
+        if profile_id in used_ids:
+            continue
+        used_ids.add(profile_id)
+        profile['id'] = profile_id
+        normalized_profiles.append(profile)
+
+    if normalized_profiles:
+        primary_profile = normalized_profiles[0]
+        next_value.update(_output_profile_legacy_fields(primary_profile))
+        next_value['output_integrations'] = normalized_profiles
+    else:
+        next_value.update(_output_profile_legacy_fields(None))
+        next_value['output_integrations'] = []
+
+    next_value.pop('scan_target_server_url', None)
+    next_value.pop('scan_target_server_token', None)
+    next_value.pop('scan_target_server_verify_ssl', None)
+    next_value.pop('strm_client_output_path', None)
+
+    original_key = settings_obj.key
+    if original_key != OUTPUT_SETTINGS_KEY:
+        existing_output_settings = CoreSettings.objects.filter(
+            key=OUTPUT_SETTINGS_KEY
+        ).exclude(pk=settings_obj.pk).first()
+        if existing_output_settings is not None:
+            existing_output_settings.name = 'Output Settings'
+            existing_output_settings.value = next_value
+            existing_output_settings.save(update_fields=['name', 'value'])
+            CoreSettings.objects.filter(key=LEGACY_OUTPUT_SETTINGS_KEY).exclude(
+                pk=existing_output_settings.pk
+            ).delete()
+            return next_value
+        settings_obj.key = OUTPUT_SETTINGS_KEY
+
+    settings_obj.name = 'Output Settings'
+    settings_obj.value = next_value
+    update_fields = ['name', 'value']
+    if settings_obj.key != original_key:
+        update_fields.insert(0, 'key')
+    settings_obj.save(update_fields=update_fields)
+    CoreSettings.objects.filter(key=LEGACY_OUTPUT_SETTINGS_KEY).exclude(
+        pk=settings_obj.pk
+    ).delete()
+    return next_value
+
+
+def _resolve_output_backend_base_url(settings_value: dict) -> str:
+    configured = str((settings_value or {}).get('backend_base_url') or '').strip()
+    if configured.startswith(('http://', 'https://')):
+        return configured.rstrip('/')
+    return 'http://127.0.0.1:9191'
+
+def _queue_output_export_sync(*, reason: str = '') -> bool:
+    safe_reason = str(reason or '').strip()[:255]
+    redis_client = None
+    should_enqueue = True
+
+    try:
+        redis_client = RedisClient.get_client()
+        should_enqueue = bool(
+            redis_client.set(
+                OUTPUT_EXPORT_SYNC_DEBOUNCE_KEY,
+                '1',
+                ex=OUTPUT_EXPORT_SYNC_DEBOUNCE_SECONDS,
+                nx=True,
+            )
+        )
+    except Exception:
+        logger.debug(
+            'Unable to set output export debounce key; enqueueing task without debounce.',
+            exc_info=True,
+        )
+        should_enqueue = True
+
+    if not should_enqueue:
+        logger.debug('Skipping output export sync enqueue; debounce key is active.')
+        return False
+
+    try:
+        sync_output_exports.apply_async(
+            kwargs={'reason': safe_reason},
+            countdown=OUTPUT_EXPORT_SYNC_QUEUE_DELAY_SECONDS,
+        )
+        return True
+    except Exception:
+        logger.exception('Failed to enqueue output export sync task')
+        if redis_client is not None:
+            try:
+                redis_client.delete(OUTPUT_EXPORT_SYNC_DEBOUNCE_KEY)
+            except Exception:
+                logger.debug(
+                    'Failed clearing output export debounce key after enqueue error.',
+                    exc_info=True,
+                )
+        return False
+
+
+@shared_task(bind=True)
+def sync_output_exports(self, reason: str = ''):
+    try:
+        lock_acquired = acquire_task_lock(
+            OUTPUT_EXPORT_SYNC_TASK_LOCK_NAME,
+            OUTPUT_EXPORT_SYNC_TASK_LOCK_ID,
+        )
+    except Exception:
+        logger.debug(
+            'Output export sync lock unavailable; continuing without distributed lock.',
+            exc_info=True,
+        )
+        lock_acquired = True
+    if not lock_acquired:
+        logger.info('Output export sync skipped because another run is in progress.')
+        return {
+            'success': False,
+            'skipped': True,
+            'reason': 'already_running',
+        }
+
+    redis_client = None
+    safe_reason = str(reason or '').strip()[:255]
+
+    try:
+        try:
+            redis_client = RedisClient.get_client()
+        except Exception:
+            redis_client = None
+
+        settings_obj = CoreSettings.objects.filter(key=OUTPUT_SETTINGS_KEY).first()
+        if settings_obj is None:
+            settings_obj = CoreSettings.objects.filter(
+                key=LEGACY_OUTPUT_SETTINGS_KEY
+            ).first()
+        if not settings_obj:
+            logger.info('Output export sync skipped: no output settings configured.')
+            return {'success': True, 'profiles_considered': 0, 'profiles_built': 0}
+
+        settings_value = _normalize_settings_payload(settings_obj.value)
+        settings_value, settings_changed = sanitize_output_settings_paths(settings_value)
+        if settings_changed:
+            settings_obj.value = settings_value
+            settings_obj.save(update_fields=['value'])
+        profiles = _extract_output_profiles_from_settings(settings_value)
+        if not profiles:
+            logger.info('Output export sync skipped: no output integration profiles found.')
+            return {'success': True, 'profiles_considered': 0, 'profiles_built': 0}
+
+        base_url = _resolve_output_backend_base_url(settings_value)
+        now_iso = timezone.now().isoformat()
+        profiles_considered = 0
+        profiles_built = 0
+        profiles_failed = 0
+
+        for profile in profiles:
+            export_mode = _derive_output_export_mode(
+                profile.get('target_provider'),
+                profile.get('export_mode'),
+            )
+            if export_mode != 'strm_nfo':
+                continue
+            if not _as_bool_output(profile.get('export_enabled'), default=True):
+                continue
+
+            profiles_considered += 1
+            include_nfo = _as_bool_output(profile.get('strm_include_nfo'), default=True)
+            configured_output_path = normalize_strm_output_path(
+                profile.get('strm_output_path'),
+                fallback=DEFAULT_STRM_OUTPUT_PATH,
+            )
+            output_path = configured_output_path
+            profile['strm_output_path'] = output_path
+            profile['strm_include_nfo'] = include_nfo
+
+            try:
+                os.makedirs(output_path, exist_ok=True)
+                summary = build_strm_nfo_snapshot(
+                    output_path,
+                    base_url=base_url,
+                    include_nfo=include_nfo,
+                )
+                profiles_built += 1
+                profile['strm_last_built_at'] = now_iso
+                profile['updated_at'] = now_iso
+                profile['strm_last_build_summary'] = {
+                    **summary,
+                    'success': True,
+                    'build_mode': 'auto',
+                    'build_reason': safe_reason,
+                }
+            except Exception as exc:
+                profiles_failed += 1
+                logger.exception(
+                    'Automatic STRM/NFO export failed for profile=%s path=%s',
+                    profile.get('id'),
+                    output_path,
+                )
+                profile['updated_at'] = now_iso
+                profile['strm_last_build_summary'] = {
+                    'success': False,
+                    'message': 'Automatic STRM/NFO export failed.',
+                    'error': str(exc),
+                    'output_root': output_path,
+                    'build_mode': 'auto',
+                    'build_reason': safe_reason,
+                }
+
+        _persist_output_profiles(settings_obj, settings_value, profiles)
+        logger.info(
+            'Output export sync completed (considered=%s built=%s failed=%s reason=%s)',
+            profiles_considered,
+            profiles_built,
+            profiles_failed,
+            safe_reason or 'unspecified',
+        )
+        return {
+            'success': True,
+            'profiles_considered': profiles_considered,
+            'profiles_built': profiles_built,
+            'profiles_failed': profiles_failed,
+            'reason': safe_reason,
+        }
+    finally:
+        try:
+            release_task_lock(
+                OUTPUT_EXPORT_SYNC_TASK_LOCK_NAME,
+                OUTPUT_EXPORT_SYNC_TASK_LOCK_ID,
+            )
+        except Exception:
+            logger.debug(
+                'Output export sync lock release failed.',
+                exc_info=True,
+            )
+        if redis_client is not None:
+            try:
+                redis_client.delete(OUTPUT_EXPORT_SYNC_DEBOUNCE_KEY)
+            except Exception:
+                logger.debug(
+                    'Failed clearing output export debounce key after task completion.',
+                    exc_info=True,
+                )
 
 def _account_name(integration: MediaServerIntegration) -> str:
     return f'{MEDIA_SERVER_ACCOUNT_PREFIX} {integration.id}: {integration.name}'
@@ -705,6 +1159,7 @@ def cleanup_integration_vod(integration: MediaServerIntegration) -> None:
         ).delete()
 
     _delete_orphan_series(series_ids)
+    _queue_output_export_sync(reason=f'integration_cleanup:{integration.id}')
 
 
 @shared_task(bind=True)
@@ -1254,6 +1709,7 @@ def sync_media_server_integration(self, integration_id: int, sync_run_id: Option
             message=summary,
             update_synced_at=True,
         )
+        _queue_output_export_sync(reason=f'integration_sync:{integration.id}')
         return summary
     except SyncCancelled as exc:
         logger.info(

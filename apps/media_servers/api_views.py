@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+import shutil
 from urllib.parse import urlencode
 import uuid
 
@@ -608,3 +610,684 @@ class MediaServerSyncRunViewSet(viewsets.ModelViewSet):
         )
         deleted, _ = queryset.delete()
         return Response({'deleted': deleted})
+
+
+# ---- Output Integration Views ----
+
+from rest_framework.views import APIView
+
+from core.models import CoreSettings, LEGACY_OUTPUT_SETTINGS_KEY, OUTPUT_SETTINGS_KEY
+from .output_paths import (
+    DEFAULT_STRM_OUTPUT_PATH,
+    normalize_local_path,
+    normalize_strm_output_path,
+    paths_overlap,
+    sanitize_output_settings_paths,
+)
+from .strm_export import build_strm_nfo_snapshot
+
+LEGACY_OUTPUT_PROFILE_ID = '__legacy-output__'
+
+
+def _as_bool_output(value, default=False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off', ''}:
+            return False
+    return default
+
+
+def _normalize_settings_value(raw_value):
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _get_output_settings_value() -> tuple[CoreSettings | None, dict]:
+    obj = CoreSettings.objects.filter(key=OUTPUT_SETTINGS_KEY).first()
+    if obj is None:
+        obj = CoreSettings.objects.filter(key=LEGACY_OUTPUT_SETTINGS_KEY).first()
+    if obj is None:
+        return None, {}
+
+    settings_value = _normalize_settings_value(obj.value)
+    sanitized_value, changed = sanitize_output_settings_paths(settings_value)
+    if changed:
+        obj.value = sanitized_value
+        obj.save(update_fields=['value'])
+    if obj.key == LEGACY_OUTPUT_SETTINGS_KEY:
+        obj = _save_output_settings_value(sanitized_value, obj=obj)
+    return obj, sanitized_value
+
+
+def _save_output_settings_value(raw_value: dict, obj: CoreSettings | None = None) -> CoreSettings:
+    safe_value = raw_value if isinstance(raw_value, dict) else {}
+    output_settings, _ = CoreSettings.objects.update_or_create(
+        key=OUTPUT_SETTINGS_KEY,
+        defaults={'name': 'Output Settings', 'value': safe_value},
+    )
+    CoreSettings.objects.filter(key=LEGACY_OUTPUT_SETTINGS_KEY).exclude(
+        pk=output_settings.pk
+    ).delete()
+    return output_settings
+
+
+def _resolve_backend_base_url(request, settings_value: dict) -> str:
+    configured = str((settings_value or {}).get('backend_base_url') or '').strip()
+    if configured.startswith(('http://', 'https://')):
+        return configured.rstrip('/')
+    return request.build_absolute_uri('/').rstrip('/')
+
+
+def _resolve_strm_output_path(request, settings_value: dict, payload_path: str = '') -> str:
+    raw_path = str(payload_path or '').strip()
+    if not raw_path:
+        raw_path = str((settings_value or {}).get('strm_output_path') or '').strip()
+    return normalize_strm_output_path(raw_path, fallback=DEFAULT_STRM_OUTPUT_PATH)
+
+
+def _normalize_output_target_provider(raw_value) -> str:
+    provider = str(raw_value or '').strip().lower()
+    if provider in {'emby', 'jellyfin', 'jellyfin_emby'}:
+        return 'jellyfin_emby'
+    return 'jellyfin_emby'
+
+
+def _normalize_output_profile(raw_profile: dict) -> dict:
+    profile = raw_profile if isinstance(raw_profile, dict) else {}
+    profile_id = str(profile.get('id') or profile.get('integration_id') or '').strip()
+    if not profile_id:
+        profile_id = f'output-{uuid.uuid4()}'
+
+    return {
+        'id': profile_id,
+        'integration_name': str(profile.get('integration_name') or '').strip()
+        or 'Dispatcharr Output',
+        'target_provider': _normalize_output_target_provider(profile.get('target_provider')),
+        'export_mode': 'strm_nfo',
+        'export_enabled': _as_bool_output(profile.get('export_enabled'), default=True),
+        'target_base_url': '',
+        'target_api_token': '',
+        'target_verify_ssl': True,
+        'strm_output_path': normalize_strm_output_path(
+            profile.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        ),
+        'strm_include_nfo': _as_bool_output(profile.get('strm_include_nfo'), default=True),
+        'strm_last_built_at': str(profile.get('strm_last_built_at') or '').strip(),
+        'strm_last_build_summary': profile.get('strm_last_build_summary')
+        if isinstance(profile.get('strm_last_build_summary'), dict)
+        else None,
+        'updated_at': str(profile.get('updated_at') or '').strip(),
+    }
+
+
+def _legacy_output_configured(settings_value: dict) -> bool:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    return bool(
+        _as_bool_output(raw.get('export_enabled'), default=False)
+        or str(raw.get('updated_at') or '').strip()
+        or str(raw.get('strm_last_built_at') or '').strip()
+        or str(raw.get('strm_output_path') or '').strip()
+        or str(raw.get('integration_name') or '').strip()
+    )
+
+
+def _build_legacy_output_profile(settings_value: dict) -> dict:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    return _normalize_output_profile(
+        {
+            'id': LEGACY_OUTPUT_PROFILE_ID,
+            'integration_name': str(raw.get('integration_name') or '').strip()
+            or 'Dispatcharr Output',
+            'target_provider': raw.get('target_provider'),
+            'export_mode': raw.get('export_mode'),
+            'export_enabled': _as_bool_output(raw.get('export_enabled'), default=True),
+            'strm_output_path': normalize_strm_output_path(
+                raw.get('strm_output_path'),
+                fallback=DEFAULT_STRM_OUTPUT_PATH,
+            ),
+            'strm_include_nfo': _as_bool_output(raw.get('strm_include_nfo'), default=True),
+            'strm_last_built_at': str(raw.get('strm_last_built_at') or '').strip(),
+            'strm_last_build_summary': raw.get('strm_last_build_summary'),
+            'updated_at': str(raw.get('updated_at') or '').strip(),
+        }
+    )
+
+
+def _extract_output_profiles(settings_value: dict) -> list[dict]:
+    raw = settings_value if isinstance(settings_value, dict) else {}
+    raw_profiles = raw.get('output_integrations')
+    if isinstance(raw_profiles, list):
+        profiles = []
+        used_ids = set()
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            normalized = _normalize_output_profile(raw_profile)
+            profile_id = str(normalized.get('id') or '').strip()
+            if not profile_id or profile_id in used_ids:
+                continue
+            used_ids.add(profile_id)
+            profiles.append(normalized)
+        if profiles:
+            return profiles
+
+    if _legacy_output_configured(raw):
+        return [_build_legacy_output_profile(raw)]
+    return []
+
+
+def _legacy_fields_from_output_profile(profile: dict | None) -> dict:
+    if not profile:
+        return _clear_output_integration_settings({})
+
+    return {
+        'integration_name': str(profile.get('integration_name') or '').strip()
+        or 'Dispatcharr Output',
+        'target_provider': _normalize_output_target_provider(profile.get('target_provider')),
+        'export_mode': 'strm_nfo',
+        'export_enabled': _as_bool_output(profile.get('export_enabled'), default=True),
+        'target_base_url': '',
+        'target_api_token': '',
+        'target_verify_ssl': True,
+        'strm_output_path': normalize_strm_output_path(
+            profile.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        ),
+        'strm_include_nfo': _as_bool_output(profile.get('strm_include_nfo'), default=True),
+        'strm_last_built_at': str(profile.get('strm_last_built_at') or '').strip(),
+        'strm_last_build_summary': (
+            profile.get('strm_last_build_summary')
+            if isinstance(profile.get('strm_last_build_summary'), dict)
+            else None
+        ),
+        'updated_at': str(profile.get('updated_at') or '').strip(),
+    }
+
+
+def _persist_output_profiles(settings_value: dict, profiles: list[dict]) -> dict:
+    base = dict(settings_value or {})
+    if profiles:
+        normalized_profiles = [
+            _normalize_output_profile(profile)
+            for profile in profiles
+            if isinstance(profile, dict)
+        ]
+        if not normalized_profiles:
+            cleared = _clear_output_integration_settings(base)
+            cleared['output_integrations'] = []
+            return cleared
+
+        primary = normalized_profiles[0]
+        legacy_fields = _legacy_fields_from_output_profile(primary)
+        base.update(legacy_fields)
+        base['output_integrations'] = normalized_profiles
+        base.pop('scan_target_server_url', None)
+        base.pop('scan_target_server_token', None)
+        base.pop('scan_target_server_verify_ssl', None)
+        base.pop('scan_control_enabled', None)
+        base.pop('scan_control_integration_id', None)
+        base.pop('scan_control_schedule_time', None)
+        base.pop('scan_control_library_ids', None)
+        base.pop('scan_control_timeout_seconds', None)
+        base.pop('scan_control_wait_for_idle_seconds', None)
+        base.pop('scan_last_run_at', None)
+        base.pop('scan_last_status', None)
+        base.pop('scan_last_message', None)
+        base.pop('scan_last_summary', None)
+        base.pop('strm_client_output_path', None)
+        return base
+
+    cleared = _clear_output_integration_settings(base)
+    cleared['output_integrations'] = []
+    return cleared
+
+
+def _find_output_profile(profiles: list[dict], integration_id: str) -> tuple[int, dict | None]:
+    target_id = str(integration_id or '').strip()
+    if not target_id:
+        return -1, None
+    for idx, profile in enumerate(profiles):
+        if str(profile.get('id') or '').strip() == target_id:
+            return idx, profile
+    return -1, None
+
+
+def _find_integrations_referencing_strm_output(output_root: str) -> list[dict]:
+    target = normalize_local_path(output_root)
+    if not target:
+        return []
+
+    matches = []
+    queryset = MediaServerIntegration.objects.filter(
+        enabled=True,
+        provider_type=MediaServerIntegration.ProviderTypes.LOCAL,
+    ).only('id', 'name', 'provider_config')
+
+    for integration in queryset:
+        provider_config = (
+            integration.provider_config
+            if isinstance(integration.provider_config, dict)
+            else {}
+        )
+        locations = provider_config.get('locations', [])
+        if not isinstance(locations, list):
+            continue
+
+        for entry in locations:
+            if not isinstance(entry, dict):
+                continue
+            location_path = str(entry.get('path') or '').strip()
+            if not location_path:
+                continue
+            if not paths_overlap(location_path, target):
+                continue
+            matches.append(
+                {
+                    'integration_id': integration.id,
+                    'integration_name': integration.name,
+                    'path': location_path,
+                }
+            )
+    return matches
+
+
+def _find_output_profiles_referencing_strm_output(
+    settings_value: dict,
+    output_root: str,
+    *,
+    exclude_profile_id: str = '',
+) -> list[dict]:
+    target = normalize_local_path(output_root)
+    if not target:
+        return []
+
+    excluded = str(exclude_profile_id or '').strip()
+    matches = []
+    profiles = _extract_output_profiles(settings_value)
+
+    for profile in profiles:
+        profile_id = str(profile.get('id') or '').strip()
+        if excluded and profile_id == excluded:
+            continue
+
+        profile_output_path = str(profile.get('strm_output_path') or '').strip()
+        if not profile_output_path:
+            profile_output_path = DEFAULT_STRM_OUTPUT_PATH
+        if not paths_overlap(profile_output_path, target):
+            continue
+
+        matches.append(
+            {
+                'integration_id': profile_id,
+                'integration_name': str(
+                    profile.get('integration_name') or 'Dispatcharr Output'
+                ).strip()
+                or 'Dispatcharr Output',
+                'path': profile_output_path,
+            }
+        )
+
+    return matches
+
+
+def _delete_strm_output_files(output_root: str) -> dict:
+    root = normalize_local_path(output_root)
+    if not root:
+        return {'deleted_paths': [], 'removed_root': False}
+
+    deleted_paths: list[str] = []
+    for child in ('Movies', 'TV Shows'):
+        target = os.path.join(root, child)
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+            deleted_paths.append(target)
+
+    removed_root = False
+    if os.path.isdir(root):
+        try:
+            if not os.listdir(root):
+                os.rmdir(root)
+                removed_root = True
+        except OSError:
+            removed_root = False
+
+    return {
+        'deleted_paths': deleted_paths,
+        'removed_root': removed_root,
+    }
+
+
+def _clear_output_integration_settings(raw_settings: dict) -> dict:
+    cleaned = dict(raw_settings or {})
+    cleaned.update(
+        {
+            'integration_name': '',
+            'target_provider': '',
+            'export_mode': '',
+            'export_enabled': False,
+            'target_base_url': '',
+            'target_api_token': '',
+            'target_verify_ssl': True,
+            'strm_output_path': DEFAULT_STRM_OUTPUT_PATH,
+            'strm_include_nfo': True,
+            'strm_last_built_at': '',
+            'strm_last_build_summary': None,
+            'updated_at': '',
+        }
+    )
+    cleaned.pop('scan_control_enabled', None)
+    cleaned.pop('scan_control_integration_id', None)
+    cleaned.pop('scan_control_schedule_time', None)
+    cleaned.pop('scan_control_library_ids', None)
+    cleaned.pop('scan_control_timeout_seconds', None)
+    cleaned.pop('scan_control_wait_for_idle_seconds', None)
+    cleaned.pop('scan_last_run_at', None)
+    cleaned.pop('scan_last_status', None)
+    cleaned.pop('scan_last_message', None)
+    cleaned.pop('scan_last_summary', None)
+    cleaned.pop('scan_target_server_url', None)
+    cleaned.pop('scan_target_server_token', None)
+    cleaned.pop('scan_target_server_verify_ssl', None)
+    cleaned.pop('strm_client_output_path', None)
+    cleaned['output_integrations'] = []
+    return cleaned
+
+
+class OutputSTRMExportBuildView(APIView):
+    """
+    Build STRM/NFO files to a server-side folder for Docker bind-mount usage.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        settings_obj, raw_settings = _get_output_settings_value()
+        settings_value = dict(raw_settings or {})
+        integration_id = str(request.data.get('integration_id') or '').strip()
+        profiles = _extract_output_profiles(settings_value)
+        has_output_path_override = bool(str(request.data.get('output_path') or '').strip())
+        has_include_nfo_override = 'include_nfo' in request.data
+        has_explicit_overrides = has_output_path_override or has_include_nfo_override
+
+        selected_profile = None
+        selected_profile_index = -1
+        if profiles:
+            if integration_id:
+                selected_profile_index, selected_profile = _find_output_profile(
+                    profiles,
+                    integration_id,
+                )
+                if selected_profile is None:
+                    return Response(
+                        {'detail': 'Output integration not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+            elif not has_explicit_overrides:
+                selected_profile_index = 0
+                selected_profile = profiles[0]
+        elif integration_id:
+            return Response(
+                {'detail': 'Output integration not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile_value = selected_profile if isinstance(selected_profile, dict) else {}
+        include_nfo = _as_bool_output(
+            request.data.get('include_nfo'),
+            default=_as_bool_output(
+                profile_value.get('strm_include_nfo'),
+                default=_as_bool_output(settings_value.get('strm_include_nfo'), default=True),
+            ),
+        )
+        profile_output_path = normalize_strm_output_path(
+            profile_value.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        )
+        output_path = _resolve_strm_output_path(
+            request,
+            settings_value,
+            payload_path=(
+                str(request.data.get('output_path', '')).strip() or profile_output_path
+            ),
+        )
+        base_url = _resolve_backend_base_url(request, settings_value)
+
+        try:
+            os.makedirs(output_path, exist_ok=True)
+        except PermissionError:
+            return Response(
+                {
+                    'detail': (
+                        f'Output path is not writable: {output_path}. '
+                        'Use a writable path inside the container (recommended: /data/media/strm), '
+                        'or mount and grant write permission to your custom path.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except OSError as exc:
+            return Response(
+                {'detail': f'Unable to prepare output path {output_path}: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            summary = build_strm_nfo_snapshot(
+                output_path,
+                base_url=base_url,
+                include_nfo=include_nfo,
+            )
+        except PermissionError:
+            return Response(
+                {
+                    'detail': (
+                        f'Output path is not writable: {output_path}. '
+                        'Use a writable path inside the container (recommended: /data/media/strm), '
+                        'or mount and grant write permission to your custom path.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            logger.exception('STRM/NFO export build failed')
+            return Response(
+                {'detail': f'Failed to build STRM/NFO export: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        now_iso = timezone.now().isoformat()
+        if selected_profile:
+            updated_profile = dict(selected_profile)
+            updated_profile.update(
+                {
+                    'strm_output_path': output_path,
+                    'strm_include_nfo': include_nfo,
+                    'strm_last_built_at': now_iso,
+                    'strm_last_build_summary': summary,
+                    'updated_at': now_iso,
+                }
+            )
+            profiles[selected_profile_index] = updated_profile
+            merged_settings = _persist_output_profiles(settings_value, profiles)
+        elif not profiles:
+            merged_settings = dict(settings_value)
+            merged_settings.update(
+                {
+                    'strm_output_path': output_path,
+                    'strm_include_nfo': include_nfo,
+                    'strm_last_built_at': now_iso,
+                    'strm_last_build_summary': summary,
+                }
+            )
+        else:
+            merged_settings = dict(settings_value)
+
+        if merged_settings != settings_value or settings_obj is None:
+            _save_output_settings_value(merged_settings, obj=settings_obj)
+
+        response_payload = {
+            'success': True,
+            'message': 'STRM/NFO export snapshot generated.',
+            **summary,
+        }
+        if selected_profile:
+            response_payload['integration_id'] = str(selected_profile.get('id') or '')
+        return Response(response_payload)
+
+
+class OutputIntegrationView(APIView):
+    """
+    Delete the saved output integration profile and clean STRM export files.
+    """
+
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        settings_obj, settings_value = _get_output_settings_value()
+        profiles = _extract_output_profiles(settings_value)
+        setting_payload = None
+        if settings_obj is not None:
+            setting_payload = {
+                'id': settings_obj.id,
+                'key': settings_obj.key,
+                'name': settings_obj.name,
+            }
+        return Response(
+            {
+                'setting': setting_payload,
+                'value': settings_value,
+                'profiles': profiles,
+            }
+        )
+
+    def delete(self, request):
+        settings_obj, raw_settings = _get_output_settings_value()
+        settings_value = dict(raw_settings or {})
+        payload = request.data if hasattr(request, 'data') else {}
+        delete_strm_files = _as_bool_output(
+            payload.get('delete_strm_files'),
+            default=True,
+        )
+        integration_id = str(payload.get('integration_id') or '').strip()
+
+        profiles = _extract_output_profiles(settings_value)
+        selected_profile = None
+        selected_profile_index = -1
+        if profiles:
+            if integration_id:
+                selected_profile_index, selected_profile = _find_output_profile(
+                    profiles,
+                    integration_id,
+                )
+                if selected_profile is None:
+                    return Response(
+                        {'detail': 'Output integration not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+            else:
+                selected_profile_index = 0
+                selected_profile = profiles[0]
+        elif integration_id:
+            return Response(
+                {'detail': 'Output integration not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        selected_profile_id = (
+            str(selected_profile.get('id') or '').strip()
+            if selected_profile
+            else ''
+        )
+
+        cleanup = {
+            'attempted': False,
+            'deleted': False,
+            'deleted_paths': [],
+            'removed_root': False,
+            'skipped': False,
+            'skip_reason': '',
+            'in_use_by': [],
+            'output_path': '',
+        }
+
+        if delete_strm_files and selected_profile:
+            output_path = _resolve_strm_output_path(
+                request,
+                settings_value,
+                payload_path=(
+                    str(selected_profile.get('strm_output_path') or '').strip()
+                    if selected_profile
+                    else ''
+                ),
+            )
+            cleanup['attempted'] = True
+            cleanup['output_path'] = output_path
+
+            in_use_by_local = _find_integrations_referencing_strm_output(output_path)
+            in_use_by_outputs = _find_output_profiles_referencing_strm_output(
+                settings_value,
+                output_path,
+                exclude_profile_id=selected_profile_id,
+            )
+
+            if in_use_by_local or in_use_by_outputs:
+                cleanup['skipped'] = True
+                if in_use_by_outputs:
+                    cleanup['skip_reason'] = (
+                        'STRM cleanup skipped because another output integration '
+                        'references this path.'
+                    )
+                else:
+                    cleanup['skip_reason'] = (
+                        'STRM cleanup skipped because another enabled local integration '
+                        'references this path.'
+                    )
+                cleanup['in_use_by'] = [*in_use_by_local, *in_use_by_outputs]
+            else:
+                try:
+                    deleted_result = _delete_strm_output_files(output_path)
+                except Exception as exc:
+                    logger.exception('Failed to delete STRM output files', exc_info=exc)
+                    return Response(
+                        {'detail': f'Failed to delete STRM output files: {exc}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+                cleanup['deleted_paths'] = deleted_result.get('deleted_paths', [])
+                cleanup['removed_root'] = bool(deleted_result.get('removed_root'))
+                cleanup['deleted'] = bool(cleanup['deleted_paths'])
+
+        if profiles and selected_profile:
+            remaining_profiles = [
+                profile
+                for idx, profile in enumerate(profiles)
+                if idx != selected_profile_index
+            ]
+            next_settings = _persist_output_profiles(settings_value, remaining_profiles)
+        else:
+            next_settings = _clear_output_integration_settings(settings_value)
+
+        _save_output_settings_value(next_settings, obj=settings_obj)
+
+        response_payload = {
+            'success': True,
+            'message': 'Output integration deleted.',
+            'strm_cleanup': cleanup,
+        }
+        if selected_profile_id:
+            response_payload['deleted_integration_id'] = selected_profile_id
+        return Response(response_payload)

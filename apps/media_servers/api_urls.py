@@ -4,6 +4,8 @@ from rest_framework.routers import DefaultRouter
 from apps.media_servers.api_views import (
     MediaServerIntegrationViewSet,
     MediaServerSyncRunViewSet,
+    OutputIntegrationView,
+    OutputSTRMExportBuildView,
 )
 
 app_name = 'media_servers'
@@ -35,6 +37,16 @@ urlpatterns = [
         'integrations/plex-auth/servers/',
         MediaServerIntegrationViewSet.as_view({'get': 'plex_auth_servers'}),
         name='media-server-integration-plex-auth-servers',
+    ),
+    path(
+        'output/integration/',
+        OutputIntegrationView.as_view(),
+        name='media-server-output-integration',
+    ),
+    path(
+        'output/strm-export/build/',
+        OutputSTRMExportBuildView.as_view(),
+        name='media-server-output-strm-export-build',
     ),
 ]
 urlpatterns += router.urls

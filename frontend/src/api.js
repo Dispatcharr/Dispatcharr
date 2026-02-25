@@ -2059,6 +2059,64 @@ export default class API {
     }
   }
 
+  static async buildStrmExportSnapshot({
+    integrationId = '',
+    outputPath = '',
+    includeNfo = true,
+  } = {}) {
+    try {
+      const body = {
+        include_nfo: !!includeNfo,
+      };
+      if (integrationId && String(integrationId).trim()) {
+        body.integration_id = String(integrationId).trim();
+      }
+      if (outputPath && String(outputPath).trim()) {
+        body.output_path = String(outputPath).trim();
+      }
+
+      return await request(`${host}/api/media-servers/output/strm-export/build/`, {
+        method: 'POST',
+        body,
+      });
+    } catch (e) {
+      errorNotification('Failed to build STRM/NFO export snapshot', e);
+      throw e;
+    }
+  }
+
+  static async getOutputIntegrationState() {
+    try {
+      return await request(`${host}/api/media-servers/output/integration/`, {
+        method: 'GET',
+      });
+    } catch (e) {
+      errorNotification('Failed to retrieve output integration', e);
+      throw e;
+    }
+  }
+
+  static async deleteOutputIntegration({
+    integrationId = '',
+    deleteStrmFiles = true,
+  } = {}) {
+    try {
+      const body = {
+        delete_strm_files: !!deleteStrmFiles,
+      };
+      if (integrationId && String(integrationId).trim()) {
+        body.integration_id = String(integrationId).trim();
+      }
+      return await request(`${host}/api/media-servers/output/integration/`, {
+        method: 'DELETE',
+        body,
+      });
+    } catch (e) {
+      errorNotification('Failed to delete output integration', e);
+      throw e;
+    }
+  }
+
   static async stopVODClient(clientId) {
     try {
       const response = await request(`${host}/proxy/vod/stop_client/`, {
