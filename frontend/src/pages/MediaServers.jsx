@@ -148,6 +148,12 @@ function parseBoolean(value, fallback = false) {
   return fallback;
 }
 
+function parseCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return Math.trunc(numeric);
+}
+
 function normalizeSettingsValue(rawValue) {
   if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
     return rawValue;
@@ -409,7 +415,9 @@ export default function MediaServersPage() {
     const outputRoot =
       String(exportProfile.strm_output_path || '').trim() ||
       DEFAULT_EXPORT_PROFILE.strm_output_path;
-    return `- ${outputRoot}/Movies:/media/Movies:ro\n- ${outputRoot}/TV Shows:/media/TV Shows:ro`;
+    const moviesPath = `${outputRoot}/Movies`;
+    const showsPath = `${outputRoot}/TV Shows`;
+    return `- "${moviesPath}:${moviesPath}:ro"\n- "${showsPath}:${showsPath}:ro"`;
   }, [exportProfile.strm_output_path]);
 
   const openCreate = () => {
@@ -646,6 +654,7 @@ export default function MediaServersPage() {
           (draftProfileId === LEGACY_OUTPUT_ID &&
             String(profile.id || '').trim() === LEGACY_OUTPUT_ID)
       );
+      const isNewOutputIntegration = existingProfileIndex < 0;
 
       if (existingProfileIndex >= 0) {
         nextProfiles[existingProfileIndex] = normalizedDraftProfile;
@@ -676,16 +685,52 @@ export default function MediaServersPage() {
         });
       }
 
-      notifications.show({
-        title: 'Output integration saved',
-        message: `${integrationName} is now configured.`,
-        color: 'green',
-      });
+      let initialBuildSucceeded = true;
+      if (isNewOutputIntegration) {
+        setStrmBuildLoading(true);
+        setStrmBuildError('');
+        try {
+          const buildResponse = await API.buildStrmExportSnapshot({
+            integrationId: normalizedDraftProfile.id,
+            outputPath: normalizedDraftProfile.strm_output_path,
+            includeNfo: normalizedDraftProfile.strm_include_nfo,
+          });
+          setStrmBuildResult(buildResponse);
+          notifications.show({
+            title: 'Output integration saved',
+            message: `Initial STRM/NFO snapshot generated (${buildResponse?.total_files_written || 0} files).`,
+            color: 'green',
+          });
+        } catch (buildError) {
+          initialBuildSucceeded = false;
+          setStrmBuildResult(null);
+          const message =
+            buildError?.body?.detail ||
+            buildError?.message ||
+            'Failed to build initial STRM/NFO snapshot.';
+          setStrmBuildError(message);
+          notifications.show({
+            title: 'Output integration saved',
+            message: `Initial STRM/NFO snapshot failed: ${message}`,
+            color: 'red',
+          });
+        } finally {
+          setStrmBuildLoading(false);
+        }
+      } else {
+        notifications.show({
+          title: 'Output integration saved',
+          message: `${integrationName} is now configured.`,
+          color: 'green',
+        });
+      }
 
       setActiveExportId(normalizedDraftProfile.id);
       setExportProfile(normalizedDraftProfile);
       await fetchExportIntegrationState();
-      setExportSetupOpen(false);
+      if (!isNewOutputIntegration || initialBuildSucceeded) {
+        setExportSetupOpen(false);
+      }
     } catch (error) {
       console.error('Error saving output profile:', error);
     } finally {
@@ -899,6 +944,15 @@ export default function MediaServersPage() {
       String(profile.id || '').trim();
     const syncingThisProfile =
       String(syncingExportId || '').trim() === String(profile.id || '').trim();
+    const lastBuildSummary =
+      profile.strm_last_build_summary &&
+      typeof profile.strm_last_build_summary === 'object'
+        ? profile.strm_last_build_summary
+        : null;
+    const strmItemsWritten = parseCount(lastBuildSummary?.strm_files_written);
+    const moviesWritten = parseCount(lastBuildSummary?.movies_written);
+    const seriesWritten = parseCount(lastBuildSummary?.series_written);
+    const episodesWritten = parseCount(lastBuildSummary?.episodes_written);
 
     return (
       <Card
@@ -941,6 +995,13 @@ export default function MediaServersPage() {
             Output path:{' '}
             {profile.strm_output_path || DEFAULT_EXPORT_PROFILE.strm_output_path}
           </Text>
+
+          {lastBuildSummary ? (
+            <Text size="xs" c="dimmed">
+              Items: {strmItemsWritten} (Movies: {moviesWritten}, Series:{' '}
+              {seriesWritten}, Episodes: {episodesWritten})
+            </Text>
+          ) : null}
 
           {profile.strm_last_build_summary?.message ? (
             <Text size="xs" c="dimmed" lineClamp={2}>
@@ -1036,8 +1097,20 @@ export default function MediaServersPage() {
     <Box p="md">
       <Group justify="space-between" mb="md">
         <Title order={3}>Media Servers</Title>
-        <Button leftSection={<SquarePlus size={16} />} variant="light" onClick={openCreate}>
-          New Integration
+        <Button
+          leftSection={<SquarePlus size={14} />}
+          variant="light"
+          size="xs"
+          onClick={openCreate}
+          p={5}
+          color="green"
+          style={{
+            borderWidth: '1px',
+            borderColor: 'green',
+            color: 'white',
+          }}
+        >
+          Add Media Server
         </Button>
       </Group>
 
@@ -1193,7 +1266,7 @@ export default function MediaServersPage() {
               leftSection={<RefreshCw size={14} />}
               onClick={buildStrmSnapshot}
             >
-              Build STRM/NFO Snapshot
+              Initialize STRM source
             </Button>
           </Group>
 
@@ -1217,9 +1290,8 @@ export default function MediaServersPage() {
           ) : null}
 
           <Text size="xs" c="dimmed">
-            Docker bind mount snippet:
+            These are example mounts for Movies and TV. Adjust paths to match your setup.
           </Text>
-
           <Text
             component="pre"
             p="sm"
@@ -1242,7 +1314,7 @@ export default function MediaServersPage() {
               Cancel
             </Button>
             <Button loading={savingExportProfile} onClick={saveExportProfile}>
-              Save Output Integration
+              Save
             </Button>
           </Flex>
         </Stack>
