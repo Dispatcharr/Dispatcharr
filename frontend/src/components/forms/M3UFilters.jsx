@@ -267,7 +267,6 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
       >
         <Alert
           icon={<Info size={16} />}
-          color="blue"
           variant="light"
           style={{ marginBottom: 5 }}
         >

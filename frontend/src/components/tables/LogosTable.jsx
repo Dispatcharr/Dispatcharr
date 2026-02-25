@@ -480,7 +480,7 @@ const LogosTable = () => {
               multiline
               width={220}
             >
-              <Badge size="sm" variant="light" color="blue">
+              <Badge size="sm" variant="light">
                 {label}
               </Badge>
             </Tooltip>

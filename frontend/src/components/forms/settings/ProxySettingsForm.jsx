@@ -138,18 +138,10 @@ const ProxySettingsForm = React.memo(({ active }) => {
         <ProxySettingsOptions proxySettingsForm={proxySettingsForm} />
 
         <Flex mih={50} gap="xs" justify="space-between" align="flex-end">
-          <Button
-            variant="subtle"
-            color="gray"
-            onClick={resetProxySettingsToDefaults}
-          >
+          <Button variant="subtle" onClick={resetProxySettingsToDefaults}>
             Reset to Defaults
           </Button>
-          <Button
-            type="submit"
-            disabled={proxySettingsForm.submitting}
-            variant="default"
-          >
+          <Button type="submit" disabled={proxySettingsForm.submitting}>
             Save
           </Button>
         </Flex>

@@ -293,46 +293,46 @@ const VODModal = ({ vod, opened, onClose }) => {
       <Modal
         opened={opened}
         onClose={onClose}
-        title={displayVOD.name}
+        withCloseButton={false}
         size="xl"
         centered
       >
+        {/* Backdrop image as background */}
+        {displayVOD.backdrop_path && displayVOD.backdrop_path.length > 0 && (
+          <>
+            <Image
+              src={displayVOD.backdrop_path[0]}
+              alt={`${displayVOD.name} backdrop`}
+              fit="cover"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                zIndex: 0,
+                borderRadius: 8,
+                filter: 'blur(2px) brightness(0.5)',
+              }}
+            />
+            {/* Overlay for readability */}
+            <Box
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                background:
+                  'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
+                zIndex: 1,
+                borderRadius: 8,
+              }}
+            />
+          </>
+        )}
         <Box style={{ position: 'relative', minHeight: 400 }}>
-          {/* Backdrop image as background */}
-          {displayVOD.backdrop_path && displayVOD.backdrop_path.length > 0 && (
-            <>
-              <Image
-                src={displayVOD.backdrop_path[0]}
-                alt={`${displayVOD.name} backdrop`}
-                fit="cover"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  zIndex: 0,
-                  borderRadius: 8,
-                  filter: 'blur(2px) brightness(0.5)',
-                }}
-              />
-              {/* Overlay for readability */}
-              <Box
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  background:
-                    'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
-                  zIndex: 1,
-                  borderRadius: 8,
-                }}
-              />
-            </>
-          )}
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack spacing="md">
@@ -392,9 +392,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                     )}
 
                   <Group spacing="md">
-                    {displayVOD.year && (
-                      <Badge color="blue">{displayVOD.year}</Badge>
-                    )}
+                    {displayVOD.year && <Badge>{displayVOD.year}</Badge>}
                     {displayVOD.duration_secs && (
                       <Badge color="gray">
                         {formatDuration(displayVOD.duration_secs)}
@@ -480,7 +478,6 @@ const VODModal = ({ vod, opened, onClose }) => {
                     <Button
                       leftSection={<Play size={16} />}
                       variant="filled"
-                      color="blue"
                       size="sm"
                       onClick={handlePlayVOD}
                       disabled={providers.length > 0 && !selectedProvider}
@@ -491,7 +488,6 @@ const VODModal = ({ vod, opened, onClose }) => {
                     {displayVOD.youtube_trailer && (
                       <Button
                         variant="outline"
-                        color="red"
                         size="sm"
                         onClick={() => {
                           setTrailerUrl(
@@ -531,7 +527,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                     </Text>
                     {providers.length === 1 ? (
                       <Group spacing="md">
-                        <Badge color="blue" variant="light">
+                        <Badge variant="light">
                           {providers[0].m3u_account.name}
                         </Badge>
                       </Group>

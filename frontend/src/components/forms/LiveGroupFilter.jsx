@@ -201,7 +201,7 @@ const LiveGroupFilter = ({
 
   return (
     <Stack style={{ paddingTop: 10 }}>
-      <Alert icon={<Info size={16} />} color="blue" variant="light">
+      <Alert icon={<Info size={16} />} variant="light">
         <Text size="sm">
           <strong>Auto Channel Sync:</strong> When enabled, channels will be
           automatically created for all streams in the group during M3U updates,

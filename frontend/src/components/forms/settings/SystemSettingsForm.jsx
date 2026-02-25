@@ -69,11 +69,7 @@ const SystemSettingsForm = React.memo(({ active }) => {
         step={10}
       />
       <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-        <Button
-          onClick={form.onSubmit(onSubmit)}
-          disabled={form.submitting}
-          variant="default"
-        >
+        <Button onClick={form.onSubmit(onSubmit)} disabled={form.submitting}>
           Save
         </Button>
       </Flex>

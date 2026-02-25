@@ -225,9 +225,7 @@ const DvrSettingsForm = React.memo(({ active }) => {
           name="movie_fallback_template"
         />
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
-          <Button type="submit" variant="default">
-            Save
-          </Button>
+          <Button type="submit">Save</Button>
         </Flex>
       </Stack>
     </form>

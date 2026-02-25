@@ -138,11 +138,7 @@ const NetworkAccessForm = React.memo(({ active }) => {
             >
               Reset to Defaults
             </Button>
-            <Button
-              type="submit"
-              disabled={networkAccessForm.submitting}
-              variant="default"
-            >
+            <Button type="submit" disabled={networkAccessForm.submitting}>
               Save
             </Button>
           </Flex>

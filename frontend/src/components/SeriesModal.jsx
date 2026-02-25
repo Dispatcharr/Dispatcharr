@@ -316,48 +316,47 @@ const SeriesModal = ({ series, opened, onClose }) => {
       <Modal
         opened={opened}
         onClose={onClose}
-        title={displaySeries.name}
+        withCloseButton={false}
         size="xl"
         centered
       >
+        {/* Backdrop image as background */}
+        {displaySeries.backdrop_path &&
+          displaySeries.backdrop_path.length > 0 && (
+            <>
+              <Image
+                src={displaySeries.backdrop_path[0]}
+                alt={`${displaySeries.name} backdrop`}
+                fit="cover"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  zIndex: 0,
+                  borderRadius: 8,
+                  filter: 'blur(2px) brightness(0.5)',
+                }}
+              />
+              {/* Overlay for readability */}
+              <Box
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  background:
+                    'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
+                  zIndex: 1,
+                  borderRadius: 8,
+                }}
+              />
+            </>
+          )}
         <Box style={{ position: 'relative', minHeight: 400 }}>
-          {/* Backdrop image as background */}
-          {displaySeries.backdrop_path &&
-            displaySeries.backdrop_path.length > 0 && (
-              <>
-                <Image
-                  src={displaySeries.backdrop_path[0]}
-                  alt={`${displaySeries.name} backdrop`}
-                  fit="cover"
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    zIndex: 0,
-                    borderRadius: 8,
-                    filter: 'blur(2px) brightness(0.5)',
-                  }}
-                />
-                {/* Overlay for readability */}
-                <Box
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
-                    background:
-                      'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
-                    zIndex: 1,
-                    borderRadius: 8,
-                  }}
-                />
-              </>
-            )}
-
           {/* Modal content above backdrop */}
           <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack spacing="md">
@@ -416,9 +415,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                     )}
 
                   <Group spacing="md">
-                    {displaySeries.year && (
-                      <Badge color="blue">{displaySeries.year}</Badge>
-                    )}
+                    {displaySeries.year && <Badge>{displaySeries.year}</Badge>}
                     {displaySeries.rating && (
                       <Badge color="yellow">{displaySeries.rating}</Badge>
                     )}
@@ -504,7 +501,6 @@ const SeriesModal = ({ series, opened, onClose }) => {
                   {displaySeries.youtube_trailer && (
                     <Button
                       variant="outline"
-                      color="red"
                       style={{ marginTop: 'auto', alignSelf: 'flex-start' }}
                       onClick={() => {
                         setTrailerUrl(
@@ -645,7 +641,6 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                   <Group spacing="xs">
                                     <ActionIcon
                                       variant="filled"
-                                      color="blue"
                                       size="sm"
                                       disabled={
                                         providers.length > 0 &&

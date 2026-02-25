@@ -297,7 +297,7 @@ const RecordingDetailsModal = ({
       <Button
         size="xs"
         variant="light"
-        color="blue"
+        color="yellow"
         onClick={(e) => {
           e.stopPropagation?.();
           onEdit(recording);

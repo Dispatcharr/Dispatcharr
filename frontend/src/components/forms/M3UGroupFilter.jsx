@@ -239,7 +239,6 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
           <Button
             type="submit"
             variant="filled"
-            color="blue"
             disabled={isLoading}
             onClick={submit}
           >

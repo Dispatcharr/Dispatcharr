@@ -247,15 +247,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   return (
     <AppShell.Navbar
-      width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
+        width: collapsed ? miniDrawerWidth : drawerWidth,
         backgroundColor: '#1A1A1E',
-        // transition: 'width 0.3s ease',
         borderRight: '1px solid #2A2A2E',
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
+        borderRight: 'none',
       }}
     >
       {/* Brand - Click to Toggle */}
@@ -276,9 +276,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         }}
       >
         {/* <ListOrdered size={24} /> */}
-        <img width={30} src={logo} />
+        <img width={40} src={logo} />
         {!collapsed && (
           <Text
+            size="xl"
+            fw={500}
             sx={{
               opacity: collapsed ? 0 : 1,
               transition: 'opacity 0.2s ease-in-out',

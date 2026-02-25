@@ -896,7 +896,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         <Button
                           size="xs"
                           variant="transparent"
-                          color="blue"
                           onClick={(e) => {
                             e.stopPropagation();
                             handleAutoMatchEpg();
@@ -1026,7 +1025,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             <Button
               type="submit"
-              variant="default"
               disabled={isSubmitting}
               loading={isSubmitting}
               loaderProps={{ type: 'dots' }}

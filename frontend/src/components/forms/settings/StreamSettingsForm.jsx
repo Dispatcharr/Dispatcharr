@@ -250,11 +250,10 @@ const StreamSettingsForm = React.memo(({ active }) => {
             onClick={onRehashStreams}
             loading={rehashingStreams}
             variant="outline"
-            color="blue"
           >
             Rehash Streams
           </Button>
-          <Button type="submit" disabled={form.submitting} variant="default">
+          <Button type="submit" disabled={form.submitting}>
             Save
           </Button>
         </Flex>

@@ -413,7 +413,7 @@ export default function CronBuilder({
             <Text size="sm" fw={500}>
               Expression:
             </Text>
-            <Badge size="lg" variant="filled" color="blue">
+            <Badge size="lg" variant="filled">
               {mode === 'advanced' ? manualCron : generatedCron}
             </Badge>
           </Group>

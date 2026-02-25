@@ -57,12 +57,7 @@ const GroupItem = React.memo(
 
       if (usage?.hasChannels) {
         badges.push(
-          <Badge
-            key="channels"
-            size="xs"
-            color="blue"
-            leftSection={<Tv size={10} />}
-          >
+          <Badge key="channels" size="xs" leftSection={<Tv size={10} />}>
             Channels
           </Badge>
         );
@@ -497,7 +492,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         zIndex={2000}
       >
         <Stack>
-          <Alert icon={<AlertCircle size={16} />} color="blue" variant="light">
+          <Alert icon={<AlertCircle size={16} />} variant="light">
             Manage channel groups. Groups associated with M3U accounts or
             containing channels cannot be deleted.
           </Alert>
@@ -591,7 +586,6 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                 checked={showChannelGroups}
                 onChange={setShowChannelGroups}
                 size="sm"
-                color="blue"
               >
                 <Group gap={4}>
                   <Tv size={10} />

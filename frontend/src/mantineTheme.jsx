@@ -1,4 +1,14 @@
-import { createTheme, MantineProvider, rem } from '@mantine/core';
+import { createTheme, rem } from '@mantine/core';
+
+const CONTAINER_SIZES = {
+  xxs: rem('200px'),
+  xs: rem('300px'),
+  sm: rem('400px'),
+  md: rem('500px'),
+  lg: rem('600px'),
+  xl: rem('1400px'),
+  xxl: rem('1600px'),
+};
 
 const theme = createTheme({
   globalStyles: (theme) => ({
@@ -14,6 +24,8 @@ const theme = createTheme({
       '--mantine-color-text': '#fff',
     },
   }),
+
+  primaryColor: 'teal',
 
   tailwind: {
     red: [
