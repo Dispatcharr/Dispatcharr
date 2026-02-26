@@ -92,7 +92,7 @@ html {
     opacity: 0;
   }
 
-  *:hover > .resizer {
+  *:hover>.resizer {
     opacity: 1;
   }
 }

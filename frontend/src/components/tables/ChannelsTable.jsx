@@ -321,6 +321,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
+  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -424,6 +425,9 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStreamlessChannels === true) {
       params.append('only_streamless', true);
     }
+    if (showOnlyStaleChannels === true) {
+      params.append('only_stale', true);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -511,6 +515,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -1128,11 +1133,18 @@ const ChannelsTable = ({ onReady }) => {
     getRowStyles: (row) => {
       const hasStreams =
         row.original.streams && row.original.streams.length > 0;
-      return hasStreams
-        ? {} // Default style for channels with streams
-        : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+      const hasStaleStreams =
+        row.original.streams && row.original.streams.some((s) => s.is_stale);
+
+      if (!hasStreams) {
+        return { className: 'no-streams-row' };
+      }
+
+      if (hasStaleStreams) {
+        return { className: 'stale-streams-row' };
+      }
+
+      return {};
     },
   });
 
@@ -1435,6 +1447,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            showOnlyStaleChannels={showOnlyStaleChannels}
+            setShowOnlyStaleChannels={setShowOnlyStaleChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
