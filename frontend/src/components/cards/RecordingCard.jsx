@@ -22,7 +22,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { AlertTriangle, SquareX } from 'lucide-react';
+import { AlertTriangle, Square, SquareX } from 'lucide-react';
 import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
@@ -34,6 +34,7 @@ import {
   getShowVideoUrl,
   removeRecording,
   runComSkip,
+  stopRecordingById,
 } from './../../utils/cards/RecordingCardUtils.js';
 
 const RecordingCard = ({
@@ -73,7 +74,7 @@ const RecordingCard = ({
   const status = customProps.status;
   const isTimeActive = now.isAfter(start) && now.isBefore(end);
   const isInterrupted = status === 'interrupted';
-  const isInProgress = isTimeActive; // Show as recording by time, regardless of status glitches
+  const isInProgress = isTimeActive && !isInterrupted && status !== 'completed' && status !== 'stopped';
   const isUpcoming = now.isBefore(start);
   const isSeriesGroup = Boolean(
     recording._group_count && recording._group_count > 1
@@ -117,10 +118,18 @@ const RecordingCard = ({
     }
   };
 
-  // Cancel handling for series groups
+  // Stop / Cancel / Delete state and handlers
   const [cancelOpen, setCancelOpen] = React.useState(false);
+  const [stopConfirmOpen, setStopConfirmOpen] = React.useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const handleCancelClick = (e) => {
+
+  const handleStopClick = (e) => {
+    e.stopPropagation();
+    setStopConfirmOpen(true);
+  };
+
+  const handleDeleteClick = (e) => {
     e.stopPropagation();
     if (isRecurringRule) {
       onOpenRecurring?.(recording, true);
@@ -129,7 +138,30 @@ const RecordingCard = ({
     if (isSeriesGroup) {
       setCancelOpen(true);
     } else {
+      setDeleteConfirmOpen(true);
+    }
+  };
+
+  const confirmStop = async () => {
+    try {
+      setBusy(true);
+      await stopRecordingById(recording.id);
+    } catch (error) {
+      console.error('Failed to stop recording', error);
+    } finally {
+      setBusy(false);
+      setStopConfirmOpen(false);
+      try { await fetchRecordings(); } catch {}
+    }
+  };
+
+  const confirmDelete = async () => {
+    try {
+      setBusy(true);
       removeRecording(recording.id);
+    } finally {
+      setBusy(false);
+      setDeleteConfirmOpen(false);
     }
   };
 
@@ -279,18 +311,30 @@ const RecordingCard = ({
           </Stack>
         </Group>
 
-        <Center>
-          <Tooltip label={isUpcoming || isInProgress ? 'Cancel' : 'Delete'}>
+        <Group gap={4}>
+          {isInProgress && (
+            <Tooltip label="Stop recording (keep partial content)">
+              <ActionIcon
+                variant="transparent"
+                color="yellow.6"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={handleStopClick}
+              >
+                <Square size="20" fill="currentColor" />
+              </ActionIcon>
+            </Tooltip>
+          )}
+          <Tooltip label={isInProgress ? 'Cancel & delete' : isUpcoming ? 'Cancel' : 'Delete'}>
             <ActionIcon
               variant="transparent"
               color="red.9"
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={handleCancelClick}
+              onClick={handleDeleteClick}
             >
               <SquareX size="20" />
             </ActionIcon>
           </Tooltip>
-        </Center>
+        </Group>
       </Flex>
 
       <Flex gap="sm" align="center">
@@ -378,11 +422,74 @@ const RecordingCard = ({
       )}
     </Card>
   );
-  if (!isSeriesGroup) return MainCard;
+
+  // Confirmation modals for stop and cancel/delete
+  const ConfirmModals = (
+    <>
+      <Modal
+        opened={stopConfirmOpen}
+        onClose={() => setStopConfirmOpen(false)}
+        title="Stop Recording"
+        centered
+        size="md"
+        zIndex={9999}
+      >
+        <Stack gap="sm">
+          <Text>
+            The recording will be stopped early. The portion already recorded
+            will be saved and available for playback.
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setStopConfirmOpen(false)} disabled={busy}>
+              Go Back
+            </Button>
+            <Button color="yellow" loading={busy} onClick={confirmStop}>
+              Stop Recording
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+        title={isInProgress ? 'Cancel Recording' : isUpcoming ? 'Cancel Recording' : 'Delete Recording'}
+        centered
+        size="md"
+        zIndex={9999}
+      >
+        <Stack gap="sm">
+          <Text>
+            {isInProgress
+              ? 'The recording will be cancelled and all recorded content will be permanently deleted.'
+              : isUpcoming
+                ? 'This scheduled recording will be cancelled.'
+                : 'This recording and all associated files will be permanently deleted.'}
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setDeleteConfirmOpen(false)} disabled={busy}>
+              Go Back
+            </Button>
+            <Button color="red" loading={busy} onClick={confirmDelete}>
+              {isInProgress ? 'Cancel & Delete' : isUpcoming ? 'Cancel' : 'Delete'}
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+
+  if (!isSeriesGroup) return (
+    <>
+      {ConfirmModals}
+      {MainCard}
+    </>
+  );
 
   // Stacked look for series groups: render two shadow layers behind the main card
   return (
     <Box style={{ position: 'relative' }}>
+      {ConfirmModals}
       <Modal
         opened={cancelOpen}
         onClose={() => setCancelOpen(false)}

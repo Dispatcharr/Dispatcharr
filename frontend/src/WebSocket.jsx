@@ -547,6 +547,34 @@ export const WebsocketProvider = ({ children }) => {
               }
               break;
 
+            case 'recording_stopped':
+              notifications.show({
+                title: 'Recording stopped',
+                message: `Recording stopped early for ${parsedEvent.data.channel || 'channel'}. Partial content has been saved.`,
+                color: 'yellow',
+              });
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on stop:', e);
+              }
+              break;
+
+            case 'recording_cancelled':
+              notifications.show({
+                title: parsedEvent.data.was_in_progress ? 'Recording cancelled' : 'Recording deleted',
+                message: parsedEvent.data.was_in_progress
+                  ? 'Recording cancelled and content removed.'
+                  : 'Recording deleted.',
+                color: 'red',
+              });
+              try {
+                await useChannelsStore.getState().fetchRecordings();
+              } catch (e) {
+                console.warn('Failed to refresh recordings on cancel:', e);
+              }
+              break;
+
             case 'epg_fetch_error':
               notifications.show({
                 title: 'EPG Source Error',

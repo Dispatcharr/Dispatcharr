@@ -2248,6 +2248,54 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
             logger.warning(f"Failed to purge recordings for rule {rule_id}: {err}")
 
 
+def _stop_dvr_clients(channel_uuid, recording_id=None):
+    """Stop DVR recording clients for a channel.
+
+    If recording_id is provided, only the client whose User-Agent contains that
+    recording ID is stopped (safe for simultaneous recordings on the same channel).
+    If recording_id is None, all Dispatcharr-DVR clients for the channel are stopped
+    (used by destroy() when deleting a recording whose task_id is unknown).
+
+    Returns the number of DVR clients stopped.
+    """
+    from core.utils import RedisClient
+    from apps.proxy.ts_proxy.redis_keys import RedisKeys
+    from apps.proxy.ts_proxy.services.channel_service import ChannelService
+
+    r = RedisClient.get_client()
+    if not r:
+        return 0
+    client_set_key = RedisKeys.clients(channel_uuid)
+    client_ids = r.smembers(client_set_key) or []
+    stopped = 0
+    for raw_id in client_ids:
+        try:
+            cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
+            meta_key = RedisKeys.client_metadata(channel_uuid, cid)
+            ua = r.hget(meta_key, "user_agent")
+            ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
+            if not (ua_s and "Dispatcharr-DVR" in ua_s):
+                continue
+            # When a recording_id is specified, only stop the client for that recording.
+            # Each run_recording task connects with User-Agent "Dispatcharr-DVR/recording-{id}",
+            # so we can safely target just this recording without affecting others on the channel.
+            if recording_id is not None and f"recording-{recording_id}" not in ua_s:
+                continue
+            try:
+                ChannelService.stop_client(channel_uuid, cid)
+                stopped += 1
+            except Exception as inner_e:
+                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
+        except Exception as inner:
+            logger.debug(f"Error while checking client metadata: {inner}")
+    # Do not call ChannelService.stop_channel() here.
+    # Stopping the channel proxy would terminate the source connection which may
+    # be shared with other recordings on the same channel.  The TS proxy server
+    # already detects when client count reaches zero and tears down the channel
+    # cleanly on its own (with the configured shutdown delay).
+    return stopped
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -2342,69 +2390,105 @@ class RecordingViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
         return response
 
+    @action(detail=True, methods=["post"], url_path="stop")
+    def stop(self, request, pk=None):
+        """Stop a recording early while retaining the partial content for playback."""
+        instance = self.get_object()
+
+        # Mark as stopped in the DB first so run_recording detects it.
+        # This is the only operation that MUST be synchronous — run_recording reads
+        # the status field to decide whether the stream disconnection was deliberate.
+        cp = instance.custom_properties or {}
+        cp["status"] = "stopped"
+        cp["stopped_at"] = str(timezone.now())
+        instance.custom_properties = cp
+        instance.save(update_fields=["custom_properties"])
+
+        # Everything else (DVR client teardown, task revocation, WebSocket notification)
+        # is moved to a daemon thread so the API returns immediately.  Callers were
+        # seeing 5-15 s delays because _stop_dvr_clients / revoke_task / async_to_sync
+        # have occasional slow paths (Redis timeouts, Celery control broadcasts, etc.).
+        channel_uuid = str(instance.channel.uuid)
+        recording_id = instance.id
+        task_id = instance.task_id
+        channel_name = instance.channel.name
+
+        def _background_stop():
+            try:
+                stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
+                if stopped:
+                    logger.info(
+                        f"Stopped {stopped} DVR client(s) for channel {channel_uuid} (recording stopped early)"
+                    )
+            except Exception as e:
+                logger.debug(f"Unable to stop DVR clients for stopped recording: {e}")
+
+            try:
+                from apps.channels.signals import revoke_task
+                revoke_task(task_id)
+            except Exception as e:
+                logger.debug(f"Unable to revoke task for stopped recording: {e}")
+
+            try:
+                from core.utils import send_websocket_update
+                send_websocket_update('updates', 'update', {
+                    "success": True,
+                    "type": "recording_stopped",
+                    "channel": channel_name,
+                })
+            except Exception:
+                pass
+
+            # Close the DB connection opened by this thread so it isn't leaked
+            try:
+                from django.db import connection as _conn
+                _conn.close()
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(target=_background_stop, daemon=True).start()
+
+        return Response({"success": True, "status": "stopped"})
+
     def destroy(self, request, *args, **kwargs):
         """Delete the Recording and ensure any active DVR client connection is closed.
 
         Also removes the associated file(s) from disk if present.
         """
         instance = self.get_object()
-
-        # Attempt to close the DVR client connection for this channel if active
-        try:
-            channel_uuid = str(instance.channel.uuid)
-            # Lazy imports to avoid module overhead if proxy isn't used
-            from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.services.channel_service import ChannelService
-
-            r = RedisClient.get_client()
-            if r:
-                client_set_key = RedisKeys.clients(channel_uuid)
-                client_ids = r.smembers(client_set_key) or []
-                stopped = 0
-                for raw_id in client_ids:
-                    try:
-                        cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
-                        meta_key = RedisKeys.client_metadata(channel_uuid, cid)
-                        ua = r.hget(meta_key, "user_agent")
-                        ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
-                        # Identify DVR recording client by its user agent
-                        if ua_s and "Dispatcharr-DVR" in ua_s:
-                            try:
-                                ChannelService.stop_client(channel_uuid, cid)
-                                stopped += 1
-                            except Exception as inner_e:
-                                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
-                    except Exception as inner:
-                        logger.debug(f"Error while checking client metadata: {inner}")
-                if stopped:
-                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
-                # If no clients remain after stopping DVR clients, proactively stop the channel
-                try:
-                    remaining = r.scard(client_set_key) or 0
-                except Exception:
-                    remaining = 0
-                if remaining == 0:
-                    try:
-                        ChannelService.stop_channel(channel_uuid)
-                        logger.info(f"Stopped channel {channel_uuid} (no clients remain)")
-                    except Exception as sc_e:
-                        logger.debug(f"Unable to stop channel {channel_uuid}: {sc_e}")
-        except Exception as e:
-            logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
+        channel_name = instance.channel.name
 
         # Capture paths before deletion
         cp = instance.custom_properties or {}
+        rec_status = cp.get("status", "")
+
+        # Only stop the DVR client if this recording is actively streaming.
+        # Stopping for completed/upcoming recordings would kill an unrelated
+        # in-progress recording on the same channel.
+        if rec_status == "recording":
+            try:
+                channel_uuid = str(instance.channel.uuid)
+                stopped = _stop_dvr_clients(channel_uuid)
+                if stopped:
+                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
+            except Exception as e:
+                logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
         file_path = cp.get("file_path")
         temp_ts_path = cp.get("_temp_file_path")
 
         # Perform DB delete first, then try to remove files
         response = super().destroy(request, *args, **kwargs)
 
-        # Notify frontends to refresh recordings
+        # Notify frontends
         try:
             from core.utils import send_websocket_update
-            send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed"})
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_cancelled",
+                "channel": channel_name,
+                "was_in_progress": rec_status == "recording",
+            })
         except Exception:
             pass
 

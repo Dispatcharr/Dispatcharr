@@ -32,7 +32,7 @@ const dedupeById = (list, toUserTime, completed, now, inProgress, upcoming) => {
     const e = toUserTime(rec.end_time);
     const status = rec.custom_properties?.status;
 
-    if (status === 'interrupted' || status === 'completed') {
+    if (status === 'interrupted' || status === 'completed' || status === 'stopped') {
       completed.push(rec);
     } else {
       if (now.isAfter(s) && now.isBefore(e)) inProgress.push(rec);

@@ -2662,6 +2662,17 @@ export default class API {
     }
   }
 
+  static async stopRecording(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/stop/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to stop recording ${id}`, e);
+      throw e;
+    }
+  }
+
   static async runComskip(recordingId) {
     try {
       const resp = await request(

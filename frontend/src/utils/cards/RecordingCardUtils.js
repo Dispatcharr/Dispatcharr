@@ -51,6 +51,10 @@ export const deleteRecordingById = async (recordingId) => {
   await API.deleteRecording(recordingId);
 };
 
+export const stopRecordingById = async (recordingId) => {
+  await API.stopRecording(recordingId);
+};
+
 export const deleteSeriesAndRule = async (seriesInfo) => {
   const { tvg_id, title } = seriesInfo;
   if (tvg_id) {
