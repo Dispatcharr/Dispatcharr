@@ -1134,7 +1134,7 @@ const ChannelsTable = ({ onReady }) => {
       const hasStreams =
         row.original.streams && row.original.streams.length > 0;
       const hasStaleStreams =
-        row.original.streams && row.original.streams.some((s) => s.is_stale);
+        hasStreams && row.original.streams.some((s) => s.is_stale);
 
       if (!hasStreams) {
         return { className: 'no-streams-row' };
