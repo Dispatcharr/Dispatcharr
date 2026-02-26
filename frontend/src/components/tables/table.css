@@ -92,7 +92,7 @@ html {
     opacity: 0;
   }
 
-  *:hover>.resizer {
+  *:hover > .resizer {
     opacity: 1;
   }
 }
@@ -104,7 +104,7 @@ html {
 
 /* .table-striped .tbody .tr:nth-child(even), */
 .table-striped .tbody .tr-even {
-  background-color: #27272A;
+  background-color: #27272a;
 }
 
 /* Style for rows with no streams */
@@ -138,7 +138,7 @@ html {
 /* Always allow text selection in editable elements */
 .shift-key-active input,
 .shift-key-active textarea,
-.shift-key-active [contenteditable="true"],
+.shift-key-active [contenteditable='true'],
 .shift-key-active .table-input-header input {
   user-select: text !important;
   -webkit-user-select: text !important;
@@ -169,7 +169,7 @@ html {
 /* Always allow text selection in inputs even when shift is pressed */
 .shift-key-active input,
 .shift-key-active textarea,
-.shift-key-active [contenteditable="true"],
+.shift-key-active [contenteditable='true'],
 .shift-key-active select,
 .shift-key-active .mantine-Select-input,
 .shift-key-active .mantine-MultiSelect-input,

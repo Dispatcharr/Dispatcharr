@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { useFormik } from 'formik';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import {
   Modal,
@@ -18,143 +19,148 @@ import { Upload, FileImage, X } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
 
+const schema = Yup.object({
+  name: Yup.string().required('Name is required'),
+  url: Yup.string()
+    .required('URL is required')
+    .test(
+      'valid-url-or-path',
+      'Must be a valid URL or local file path',
+      (value) => {
+        if (!value) return false;
+        // Allow local file paths starting with /data/logos/
+        if (value.startsWith('/data/logos/')) return true;
+        // Allow valid URLs
+        try {
+          new URL(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    ),
+});
+
 const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
   const [logoPreview, setLogoPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null); // Store selected file
 
-  const formik = useFormik({
-    initialValues: {
-      name: '',
-      url: '',
-    },
-    validationSchema: Yup.object({
-      name: Yup.string().required('Name is required'),
-      url: Yup.string()
-        .required('URL is required')
-        .test(
-          'valid-url-or-path',
-          'Must be a valid URL or local file path',
-          (value) => {
-            if (!value) return false;
-            // Allow local file paths starting with /data/logos/
-            if (value.startsWith('/data/logos/')) return true;
-            // Allow valid URLs
-            try {
-              new URL(value);
-              return true;
-            } catch {
-              return false;
-            }
-          }
-        ),
+  const defaultValues = useMemo(
+    () => ({
+      name: logo?.name || '',
+      url: logo?.url || '',
     }),
-    onSubmit: async (values, { setSubmitting }) => {
-      try {
-        setUploading(true);
-        let uploadResponse = null; // Store upload response for later use
+    [logo]
+  );
 
-        // If we have a selected file, upload it first
-        if (selectedFile) {
-          try {
-            uploadResponse = await API.uploadLogo(selectedFile, values.name);
-            // Use the uploaded file data instead of form values
-            values.name = uploadResponse.name;
-            values.url = uploadResponse.url;
-          } catch (uploadError) {
-            let errorMessage = 'Failed to upload logo file';
-
-            if (
-              uploadError.code === 'NETWORK_ERROR' ||
-              uploadError.message?.includes('timeout')
-            ) {
-              errorMessage = 'Upload timed out. Please try again.';
-            } else if (uploadError.status === 413) {
-              errorMessage = 'File too large. Please choose a smaller file.';
-            } else if (uploadError.body?.error) {
-              errorMessage = uploadError.body.error;
-            }
-
-            notifications.show({
-              title: 'Upload Error',
-              message: errorMessage,
-              color: 'red',
-            });
-            return; // Don't proceed with creation if upload fails
-          }
-        }
-
-        // Now create or update the logo with the final values
-        // Only proceed if we don't already have a logo from file upload
-        if (logo) {
-          const updatedLogo = await API.updateLogo(logo.id, values);
-          notifications.show({
-            title: 'Success',
-            message: 'Logo updated successfully',
-            color: 'green',
-          });
-          onSuccess?.({ type: 'update', logo: updatedLogo }); // Call onSuccess for updates
-        } else if (!selectedFile) {
-          // Only create a new logo entry if we're not uploading a file
-          // (file upload already created the logo entry)
-          const newLogo = await API.createLogo(values);
-          notifications.show({
-            title: 'Success',
-            message: 'Logo created successfully',
-            color: 'green',
-          });
-          onSuccess?.({ type: 'create', logo: newLogo }); // Call onSuccess for creates
-        } else {
-          // File was uploaded and logo was already created
-          notifications.show({
-            title: 'Success',
-            message: 'Logo uploaded successfully',
-            color: 'green',
-          });
-          onSuccess?.({ type: 'create', logo: uploadResponse });
-        }
-        onClose();
-      } catch (error) {
-        let errorMessage = logo
-          ? 'Failed to update logo'
-          : 'Failed to create logo';
-
-        // Handle specific timeout errors
-        if (
-          error.code === 'NETWORK_ERROR' ||
-          error.message?.includes('timeout')
-        ) {
-          errorMessage = 'Request timed out. Please try again.';
-        } else if (error.response?.data?.error) {
-          errorMessage = error.response.data.error;
-        }
-
-        notifications.show({
-          title: 'Error',
-          message: errorMessage,
-          color: 'red',
-        });
-      } finally {
-        setSubmitting(false);
-        setUploading(false);
-      }
-    },
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+    reset,
+    setValue,
+    watch,
+  } = useForm({
+    defaultValues,
+    resolver: yupResolver(schema),
   });
 
-  useEffect(() => {
-    if (logo) {
-      formik.setValues({
-        name: logo.name || '',
-        url: logo.url || '',
+  const onSubmit = async (values) => {
+    try {
+      setUploading(true);
+      let uploadResponse = null; // Store upload response for later use
+
+      // If we have a selected file, upload it first
+      if (selectedFile) {
+        try {
+          uploadResponse = await API.uploadLogo(selectedFile, values.name);
+          // Use the uploaded file data instead of form values
+          values.name = uploadResponse.name;
+          values.url = uploadResponse.url;
+        } catch (uploadError) {
+          let errorMessage = 'Failed to upload logo file';
+
+          if (
+            uploadError.code === 'NETWORK_ERROR' ||
+            uploadError.message?.includes('timeout')
+          ) {
+            errorMessage = 'Upload timed out. Please try again.';
+          } else if (uploadError.status === 413) {
+            errorMessage = 'File too large. Please choose a smaller file.';
+          } else if (uploadError.body?.error) {
+            errorMessage = uploadError.body.error;
+          }
+
+          notifications.show({
+            title: 'Upload Error',
+            message: errorMessage,
+            color: 'red',
+          });
+          return; // Don't proceed with creation if upload fails
+        }
+      }
+
+      // Now create or update the logo with the final values
+      // Only proceed if we don't already have a logo from file upload
+      if (logo) {
+        const updatedLogo = await API.updateLogo(logo.id, values);
+        notifications.show({
+          title: 'Success',
+          message: 'Logo updated successfully',
+          color: 'green',
+        });
+        onSuccess?.({ type: 'update', logo: updatedLogo }); // Call onSuccess for updates
+      } else if (!selectedFile) {
+        // Only create a new logo entry if we're not uploading a file
+        // (file upload already created the logo entry)
+        const newLogo = await API.createLogo(values);
+        notifications.show({
+          title: 'Success',
+          message: 'Logo created successfully',
+          color: 'green',
+        });
+        onSuccess?.({ type: 'create', logo: newLogo }); // Call onSuccess for creates
+      } else {
+        // File was uploaded and logo was already created
+        notifications.show({
+          title: 'Success',
+          message: 'Logo uploaded successfully',
+          color: 'green',
+        });
+        onSuccess?.({ type: 'create', logo: uploadResponse });
+      }
+      onClose();
+    } catch (error) {
+      let errorMessage = logo
+        ? 'Failed to update logo'
+        : 'Failed to create logo';
+
+      // Handle specific timeout errors
+      if (
+        error.code === 'NETWORK_ERROR' ||
+        error.message?.includes('timeout')
+      ) {
+        errorMessage = 'Request timed out. Please try again.';
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      }
+
+      notifications.show({
+        title: 'Error',
+        message: errorMessage,
+        color: 'red',
       });
-      setLogoPreview(logo.cache_url);
-    } else {
-      formik.resetForm();
-      setLogoPreview(null);
+    } finally {
+      setUploading(false);
     }
-    // Clear any selected file when logo changes
+  };
+
+  useEffect(() => {
+    reset(defaultValues);
+    setLogoPreview(logo?.cache_url || null);
     setSelectedFile(null);
-  }, [logo, isOpen]);
+  }, [defaultValues, logo, reset]);
 
   const handleFileSelect = (files) => {
     if (files.length === 0) return;
@@ -180,18 +186,19 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
     setLogoPreview(previewUrl);
 
     // Auto-fill the name field if empty
-    if (!formik.values.name) {
+    const currentName = watch('name');
+    if (!currentName) {
       const nameWithoutExtension = file.name.replace(/\.[^/.]+$/, '');
-      formik.setFieldValue('name', nameWithoutExtension);
+      setValue('name', nameWithoutExtension);
     }
 
     // Set a placeholder URL (will be replaced after upload)
-    formik.setFieldValue('url', 'file://pending-upload');
+    setValue('url', 'file://pending-upload');
   };
 
   const handleUrlChange = (event) => {
     const url = event.target.value;
-    formik.setFieldValue('url', url);
+    setValue('url', url);
 
     // Clear any selected file when manually entering URL
     if (selectedFile) {
@@ -219,7 +226,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
         const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
         const nameWithoutExtension = filename.replace(/\.[^/.]+$/, '');
         if (nameWithoutExtension) {
-          formik.setFieldValue('name', nameWithoutExtension);
+          setValue('name', nameWithoutExtension);
         }
       } catch (error) {
         // If the URL is invalid, do nothing.
@@ -244,7 +251,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
       title={logo ? 'Edit Logo' : 'Add Logo'}
       size="md"
     >
-      <form onSubmit={formik.handleSubmit}>
+      <form onSubmit={handleSubmit(onSubmit)}>
         <Stack spacing="md">
           {/* Logo Preview */}
           {logoPreview && (
@@ -338,18 +345,18 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
           <TextInput
             label="Logo URL"
             placeholder="https://example.com/logo.png"
-            {...formik.getFieldProps('url')}
+            {...register('url')}
             onChange={handleUrlChange}
             onBlur={handleUrlBlur}
-            error={formik.touched.url && formik.errors.url}
+            error={errors.url?.message}
             disabled={!!selectedFile} // Disable when file is selected
           />
 
           <TextInput
             label="Name"
             placeholder="Enter logo name"
-            {...formik.getFieldProps('name')}
-            error={formik.touched.name && formik.errors.name}
+            {...register('name')}
+            error={errors.name?.message}
           />
 
           {selectedFile && (
@@ -363,7 +370,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
             <Button variant="light" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" loading={formik.isSubmitting || uploading}>
+            <Button type="submit" loading={isSubmitting || uploading}>
               {logo ? 'Update' : 'Create'}
             </Button>
           </Group>

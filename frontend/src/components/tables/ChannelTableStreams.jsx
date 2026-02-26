@@ -105,6 +105,7 @@ const DraggableRow = ({ row, index }) => {
       }}
     >
       {row.getVisibleCells().map((cell) => {
+        const isStale = row.original.is_stale;
         return (
           <Box
             className="td"
@@ -115,6 +116,9 @@ const DraggableRow = ({ row, index }) => {
                 ? cell.column.getSize()
                 : undefined,
               minWidth: 0,
+              ...(isStale && {
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              }),
             }}
           >
             <Flex align="center" style={{ height: '100%' }}>
@@ -163,6 +167,7 @@ const ChannelStreams = ({ channel, isExpanded }) => {
       streams: newStreamList.map((s) => s.id),
     });
     await API.requeryChannels();
+    await API.requeryStreams();
   };
 
   // Create M3U account map for quick lookup
@@ -374,13 +379,9 @@ const ChannelStreams = ({ channel, isExpanded }) => {
                           style={{ cursor: 'pointer' }}
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const success = await copyToClipboard(stream.url);
-                            notifications.show({
-                              title: success ? 'URL Copied' : 'Copy Failed',
-                              message: success
-                                ? 'Stream URL copied to clipboard'
-                                : 'Failed to copy URL to clipboard',
-                              color: success ? 'green' : 'red',
+                            await copyToClipboard(stream.url, {
+                              successTitle: 'URL Copied',
+                              successMessage: 'Stream URL copied to clipboard',
                             });
                           }}
                         >

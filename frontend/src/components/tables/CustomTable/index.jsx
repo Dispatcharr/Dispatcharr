@@ -1,6 +1,7 @@
 import { Center, Checkbox } from '@mantine/core';
 import CustomTable from './CustomTable';
 import CustomTableHeader from './CustomTableHeader';
+import useTablePreferences from '../../../hooks/useTablePreferences';
 
 import {
   useReactTable,
@@ -20,12 +21,17 @@ const useTable = ({
   state = [],
   columnSizing,
   setColumnSizing,
+  onColumnVisibilityChange,
   ...options
 }) => {
   const [selectedTableIds, setSelectedTableIds] = useState([]);
   const [expandedRowIds, setExpandedRowIds] = useState([]);
   const [lastClickedId, setLastClickedId] = useState(null);
   const [isShiftKeyDown, setIsShiftKeyDown] = useState(false);
+
+  // Use shared table preferences hook
+  const { headerPinned, setHeaderPinned, tableSize, setTableSize } =
+    useTablePreferences();
 
   // Event handlers for shift key detection with improved handling
   const handleKeyDown = useCallback((e) => {
@@ -93,12 +99,13 @@ const useTable = ({
     },
     ...options,
     state: {
-      ...options.state,
+      ...state,
       selectedTableIds,
       ...(columnSizing && { columnSizing }),
     },
     onStateChange: options.onStateChange,
     ...(setColumnSizing && { onColumnSizingChange: setColumnSizing }),
+    ...(onColumnVisibilityChange && { onColumnVisibilityChange }),
     getCoreRowModel: options.getCoreRowModel ?? getCoreRowModel(),
     enableColumnResizing: true,
     columnResizeMode: 'onChange',
@@ -244,8 +251,22 @@ const useTable = ({
       expandedRowRenderer,
       setSelectedTableIds,
       isShiftKeyDown, // Include shift key state in the table instance
+      headerPinned,
+      setHeaderPinned,
+      tableSize,
+      setTableSize,
     }),
-    [selectedTableIdsSet, expandedRowIds, allRowIds, isShiftKeyDown]
+    [
+      selectedTableIdsSet,
+      expandedRowIds,
+      allRowIds,
+      isShiftKeyDown,
+      options,
+      headerPinned,
+      setHeaderPinned,
+      tableSize,
+      setTableSize,
+    ]
   );
 
   return {

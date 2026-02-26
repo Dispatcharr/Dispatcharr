@@ -142,7 +142,97 @@ class RedisClient:
     @classmethod
     def get_client(cls, max_retries=5, retry_interval=1):
         if cls._client is None:
-            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval)
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    # Get connection parameters from settings or environment
+                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                    redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+                    redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+
+                    # Use standardized settings
+                    socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
+                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
+                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+
+                    # Create Redis client with better defaults
+                    client = redis.Redis(
+                        host=redis_host,
+                        port=redis_port,
+                        db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
+                        socket_timeout=socket_timeout,
+                        socket_connect_timeout=socket_connect_timeout,
+                        socket_keepalive=socket_keepalive,
+                        health_check_interval=health_check_interval,
+                        retry_on_timeout=retry_on_timeout
+                    )
+
+                    # Validate connection with ping
+                    client.ping()
+                    client.flushdb()
+
+                    # Disable persistence on first connection - improves performance
+                    # Only try to disable if not in a read-only environment
+                    try:
+                        client.config_set('save', '')  # Disable RDB snapshots
+                        client.config_set('appendonly', 'no')  # Disable AOF logging
+
+                        # Set optimal memory settings with environment variable support
+                        # Get max memory from environment or use a larger default (512MB instead of 256MB)
+                        #max_memory = os.environ.get('REDIS_MAX_MEMORY', '512mb')
+                        #eviction_policy = os.environ.get('REDIS_EVICTION_POLICY', 'allkeys-lru')
+
+                        # Apply memory settings
+                        #client.config_set('maxmemory-policy', eviction_policy)
+                        #client.config_set('maxmemory', max_memory)
+
+                        #logger.info(f"Redis configured with maxmemory={max_memory}, policy={eviction_policy}")
+
+                        # Disable protected mode when in debug mode
+                        if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
+                            client.config_set('protected-mode', 'no')  # Disable protected mode in debug
+                            logger.warning("Redis protected mode disabled for debug environment")
+
+                        logger.trace("Redis persistence disabled for better performance")
+                    except redis.exceptions.ResponseError as e:
+                        # Improve error handling for Redis configuration errors
+                        if "OOM" in str(e):
+                            logger.error(f"Redis OOM during configuration: {e}")
+                            # Try to increase maxmemory as an emergency measure
+                            try:
+                                client.config_set('maxmemory', '768mb')
+                                logger.warning("Applied emergency Redis memory increase to 768MB")
+                            except:
+                                pass
+                        else:
+                            logger.error(f"Redis configuration error: {e}")
+
+                    logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
+
+                    cls._client = client
+                    break
+
+                except (ConnectionError, TimeoutError) as e:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}")
+                        return None
+                    else:
+                        # Use exponential backoff for retries
+                        wait_time = retry_interval * (2 ** (retry_count - 1))
+                        logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
+                        time.sleep(wait_time)
+
+                except Exception as e:
+                    logger.error(f"Unexpected error connecting to Redis: {e}")
+                    return None
+
         return cls._client
 
     @classmethod
@@ -163,6 +253,8 @@ class RedisClient:
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                     # Use standardized settings but without socket timeouts for PubSub
                     # Important: socket_timeout is None for PubSub operations
@@ -176,6 +268,8 @@ class RedisClient:
                         host=redis_host,
                         port=redis_port,
                         db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
                         socket_timeout=None,  # Critical: No timeout for PubSub operations
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
@@ -229,6 +323,75 @@ def release_task_lock(task_name, id):
 
     # Remove the lock
     redis_client.delete(lock_id)
+
+
+class TaskLockRenewer:
+    """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
+
+    Use as a context manager after acquiring a lock:
+
+        if acquire_task_lock("my_task", task_id):
+            with TaskLockRenewer("my_task", task_id):
+                # ... long-running work ...
+            release_task_lock("my_task", task_id)
+
+    A daemon thread extends the lock TTL at regular intervals so that
+    slow downloads or large parsing jobs don't lose their lock mid-operation.
+    """
+
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+        self.task_name = task_name
+        self.id = id
+        self.ttl = ttl
+        self.renewal_interval = renewal_interval
+        self.lock_id = f"task_lock_{task_name}_{id}"
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _renew_loop(self):
+        """Background loop that extends the lock TTL until stopped."""
+        while not self._stop_event.wait(self.renewal_interval):
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client.exists(self.lock_id):
+                    redis_client.expire(self.lock_id, self.ttl)
+                    logger.debug(
+                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                    )
+                else:
+                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                    logger.warning(
+                        f"Lock {self.lock_id} no longer exists, stopping renewal"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error renewing lock {self.lock_id}: {e}")
+
+    def start(self):
+        """Start the background renewal thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._renew_loop, daemon=True,
+            name=f"lock-renew-{self.task_name}-{self.id}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop the renewal thread."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
 
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
@@ -405,6 +568,83 @@ def validate_flexible_url(value):
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")
 
+def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    try:
+        from apps.connect.utils import trigger_event
+        from apps.channels.models import Channel, Stream
+        from core.models import StreamProfile
+        from core.utils import RedisClient
+
+        payload = dict(details)
+
+        channel_obj = None
+        if channel_id:
+            try:
+                channel_obj = Channel.objects.get(uuid=channel_id)
+                payload["channel_name"] = channel_obj.name
+            except Exception:
+                payload["channel_name"] = channel_name or None
+        else:
+            payload["channel_name"] = channel_name or None
+
+        # Resolve current stream info
+        stream_id = details.get("stream_id")
+        stream_obj = None
+        if not stream_id and channel_obj:
+            try:
+                redis = RedisClient.get_client()
+                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                if sid:
+                    stream_id = int(sid)
+            except Exception:
+                stream_id = None
+
+        if stream_id:
+            try:
+                stream_obj = Stream.objects.get(id=stream_id)
+            except Exception:
+                stream_obj = None
+
+        # Populate stream details
+        payload["stream_name"] = getattr(stream_obj, "name", None)
+        payload["stream_url"] = getattr(stream_obj, "url", None)
+
+        # Channel URL: use stream URL as best-effort
+        payload["channel_url"] = payload.get("stream_url")
+
+        # Provider name from M3U account
+        provider_name = None
+        try:
+            if stream_obj and stream_obj.m3u_account:
+                provider_name = stream_obj.m3u_account.name
+        except Exception:
+            provider_name = None
+        payload["provider_name"] = provider_name
+
+        # Profile used
+        profile_used = None
+        try:
+            if stream_id:
+                redis = RedisClient.get_client()
+                pid = redis.get(f"stream_profile:{stream_id}")
+                if pid:
+                    profile = StreamProfile.objects.filter(id=int(pid)).first()
+                    profile_used = profile.name if profile else None
+        except Exception:
+            profile_used = None
+
+        payload["profile_used"] = profile_used
+
+        # remove empty keys
+        for k in list(payload.keys()):
+            if not payload[k]:
+                del payload[k]
+
+        trigger_event(event_type, payload)
+
+    except Exception as e:
+        # Don't fail main path if connect dispatch fails
+        pass
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -431,10 +671,17 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             details=details
         )
 
+        # Trigger connect integrations for specific events
+        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
+
         # Get max events from settings (default 100)
         try:
-            max_events_setting = CoreSettings.objects.filter(key='max-system-events').first()
-            max_events = int(max_events_setting.value) if max_events_setting else 100
+            from .models import CoreSettings
+            system_settings = CoreSettings.objects.filter(key='system_settings').first()
+            if system_settings and isinstance(system_settings.value, dict):
+                max_events = int(system_settings.value.get('max_system_events', 100))
+            else:
+                max_events = 100
         except Exception:
             max_events = 100
 
@@ -449,3 +696,75 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     except Exception as e:
         # Don't let event logging break the main application
         logger.error(f"Failed to log system event {event_type}: {e}")
+
+
+def send_websocket_notification(notification):
+    """
+    Send a system notification to all connected WebSocket clients.
+
+    Args:
+        notification: A SystemNotification model instance or dict with notification data
+
+    Example:
+        from core.models import SystemNotification
+        notification = SystemNotification.create_version_notification('0.19.0', 'https://...')
+        send_websocket_notification(notification)
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        # Convert model instance to dict if needed
+        if hasattr(notification, 'id'):
+            notification_data = {
+                'id': notification.id,
+                'notification_key': notification.notification_key,
+                'notification_type': notification.notification_type,
+                'priority': notification.priority,
+                'title': notification.title,
+                'message': notification.message,
+                'action_data': notification.action_data,
+                'is_active': notification.is_active,
+                'admin_only': notification.admin_only,
+                'created_at': notification.created_at.isoformat() if notification.created_at else None,
+            }
+        else:
+            notification_data = notification
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'system_notification',
+                    'notification': notification_data,
+                }
+            }
+        )
+        logger.debug(f"Sent WebSocket notification: {notification_data.get('title', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Failed to send WebSocket notification: {e}")
+
+
+def send_notification_dismissed(notification_key):
+    """
+    Notify all connected clients that a notification was dismissed.
+    Useful for syncing dismissal state across multiple browser tabs/sessions.
+
+    Args:
+        notification_key: The unique key of the dismissed notification
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'notification_dismissed',
+                    'notification_key': notification_key,
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to send notification dismissed event: {e}")

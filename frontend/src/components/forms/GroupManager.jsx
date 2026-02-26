@@ -183,6 +183,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [groupToDelete, setGroupToDelete] = useState(null);
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
+  const [deletingGroup, setDeletingGroup] = useState(false);
 
   // Memoize the channel groups array to prevent unnecessary re-renders
   const channelGroupsArray = useMemo(
@@ -382,6 +383,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
   const executeDeleteGroup = useCallback(
     async (group) => {
+      setDeletingGroup(true);
       try {
         await API.deleteChannelGroup(group.id);
 
@@ -392,13 +394,14 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         });
 
         await fetchGroupUsage(); // Refresh usage data
-        setConfirmDeleteOpen(false);
       } catch (error) {
         notifications.show({
           title: 'Error',
           message: 'Failed to delete group',
           color: 'red',
         });
+      } finally {
+        setDeletingGroup(false);
         setConfirmDeleteOpen(false);
       }
     },
@@ -680,6 +683,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => groupToDelete && executeDeleteGroup(groupToDelete)}
+        loading={deletingGroup}
         title="Confirm Group Deletion"
         message={
           groupToDelete ? (
@@ -706,6 +710,7 @@ This action cannot be undone.`}
         opened={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
         onConfirm={executeCleanup}
+        loading={isCleaningUp}
         title="Confirm Group Cleanup"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>

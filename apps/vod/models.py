@@ -245,10 +245,13 @@ class M3UMovieRelation(models.Model):
         """Get the full stream URL for this movie from this provider"""
         # Build URL dynamically for XtreamCodes accounts
         if self.m3u_account.account_type == 'XC':
-            server_url = self.m3u_account.server_url.rstrip('/')
+            from core.xtream_codes import Client as XCClient
+            # Use XC client's URL normalization to handle malformed URLs
+            # (e.g., URLs with /player_api.php or query parameters)
+            normalized_url = XCClient(self.m3u_account.server_url, '', '')._normalize_url(self.m3u_account.server_url)
             username = self.m3u_account.username
             password = self.m3u_account.password
-            return f"{server_url}/movie/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
+            return f"{normalized_url}/movie/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
         else:
             # For other account types, we would need another way to build URLs
             return None
@@ -258,6 +261,14 @@ class M3UEpisodeRelation(models.Model):
     """Links M3U accounts to Episodes with provider-specific information"""
     m3u_account = models.ForeignKey(M3UAccount, on_delete=models.CASCADE, related_name='episode_relations')
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='m3u_relations')
+    series_relation = models.ForeignKey(
+        'M3USeriesRelation',
+        on_delete=models.CASCADE,
+        related_name='episode_relations',
+        null=True,
+        blank=True,
+        help_text="The series relation this episode relation belongs to. CASCADE ensures cleanup when the series relation is removed."
+    )
 
     # Streaming information (provider-specific)
     stream_id = models.CharField(max_length=255, help_text="External stream ID from M3U provider")
@@ -285,10 +296,12 @@ class M3UEpisodeRelation(models.Model):
 
         if self.m3u_account.account_type == 'XC':
             # For XtreamCodes accounts, build the URL dynamically
-            server_url = self.m3u_account.server_url.rstrip('/')
+            # Use XC client's URL normalization to handle malformed URLs
+            # (e.g., URLs with /player_api.php or query parameters)
+            normalized_url = XtreamCodesClient(self.m3u_account.server_url, '', '')._normalize_url(self.m3u_account.server_url)
             username = self.m3u_account.username
             password = self.m3u_account.password
-            return f"{server_url}/series/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
+            return f"{normalized_url}/series/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
         else:
             # We might support non XC accounts in the future
             # For now, return None

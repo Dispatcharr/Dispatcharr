@@ -480,15 +480,18 @@ def rehash_streams(keys):
 
     try:
         batch_size = 1000
-        queryset = Stream.objects.all()
 
         # Track statistics
         total_processed = 0
         duplicates_merged = 0
+        # hash_keys maps new_hash -> stream_id for streams we've already processed
         hash_keys = {}
+        # Track IDs of streams that have been deleted to avoid stale references
+        deleted_stream_ids = set()
 
-        total_records = queryset.count()
-        logger.info(f"Starting rehash of {total_records} streams with keys: {keys}")
+        # Get initial count for progress reporting
+        initial_total_records = Stream.objects.count()
+        logger.info(f"Starting rehash of {initial_total_records} streams with keys: {keys}")
 
         # Send initial WebSocket update
         send_websocket_update(
@@ -499,102 +502,115 @@ def rehash_streams(keys):
                 "type": "stream_rehash",
                 "action": "starting",
                 "progress": 0,
-                "total_records": total_records,
-                "message": f"Starting rehash of {total_records} streams"
+                "total_records": initial_total_records,
+                "message": f"Starting rehash of {initial_total_records} streams"
             }
         )
 
-        for start in range(0, total_records, batch_size):
+        # Use ID-based pagination to handle deletions correctly
+        # This ensures we don't skip records when items are deleted
+        last_processed_id = 0
+        batch_number = 0
+
+        while True:
+            batch_number += 1
             batch_processed = 0
             batch_duplicates = 0
 
             with transaction.atomic():
-                batch = queryset[start:start + batch_size]
+                # Fetch batch by ID ordering, using select_for_update to lock records
+                # This prevents race conditions and ensures we process each record exactly once
+                batch = list(
+                    Stream.objects.filter(id__gt=last_processed_id)
+                    .select_for_update(skip_locked=True, of=('self',))
+                    .select_related('channel_group', 'm3u_account')
+                    .order_by('id')[:batch_size]
+                )
+
+                if not batch:
+                    # No more records to process
+                    break
 
                 for obj in batch:
-                    # Generate new hash
-                    new_hash = Stream.generate_hash_key(obj.name, obj.url, obj.tvg_id, keys, m3u_id=obj.m3u_account_id)
+                    # Update the last processed ID for next batch
+                    last_processed_id = obj.id
 
-                    # Check if this hash already exists in our tracking dict or in database
+                    # Generate new hash - handle XC accounts differently
+                    group_name = obj.channel_group.name if obj.channel_group else None
+                    account_type = obj.m3u_account.account_type if obj.m3u_account else None
+                    stream_id_val = obj.stream_id if hasattr(obj, 'stream_id') else None
+
+                    new_hash = Stream.generate_hash_key(
+                        obj.name, obj.url, obj.tvg_id, keys,
+                        m3u_id=obj.m3u_account_id, group=group_name,
+                        account_type=account_type, stream_id=stream_id_val
+                    )
+
+                    # Check if this hash already exists in our tracking dict
                     if new_hash in hash_keys:
-                        # Found duplicate in current batch - merge the streams
                         existing_stream_id = hash_keys[new_hash]
-                        existing_stream = Stream.objects.get(id=existing_stream_id)
 
-                        # Move any channel relationships from duplicate to existing stream
-                        # Handle potential unique constraint violations
-                        for channel_stream in ChannelStream.objects.filter(stream_id=obj.id):
-                            # Check if this channel already has a relationship with the target stream
-                            existing_relationship = ChannelStream.objects.filter(
-                                channel_id=channel_stream.channel_id,
-                                stream_id=existing_stream_id
-                            ).first()
+                        # Verify the target stream still exists and hasn't been deleted
+                        if existing_stream_id in deleted_stream_ids:
+                            # The target was deleted, so this stream becomes the new canonical one
+                            obj.stream_hash = new_hash
+                            obj.save(update_fields=['stream_hash'])
+                            hash_keys[new_hash] = obj.id
+                            batch_processed += 1
+                            continue
 
-                            if existing_relationship:
-                                # Relationship already exists, just delete the duplicate
-                                channel_stream.delete()
-                            else:
-                                # Safe to update the relationship
-                                channel_stream.stream_id = existing_stream_id
-                                channel_stream.save()
+                        try:
+                            existing_stream = Stream.objects.get(id=existing_stream_id)
+                        except Stream.DoesNotExist:
+                            # Target stream was deleted externally, make this the canonical one
+                            deleted_stream_ids.add(existing_stream_id)
+                            obj.stream_hash = new_hash
+                            obj.save(update_fields=['stream_hash'])
+                            hash_keys[new_hash] = obj.id
+                            batch_processed += 1
+                            continue
 
-                        # Update the existing stream with the most recent data
-                        if obj.updated_at > existing_stream.updated_at:
-                            existing_stream.name = obj.name
-                            existing_stream.url = obj.url
-                            existing_stream.logo_url = obj.logo_url
-                            existing_stream.tvg_id = obj.tvg_id
-                            existing_stream.m3u_account = obj.m3u_account
-                            existing_stream.channel_group = obj.channel_group
-                            existing_stream.custom_properties = obj.custom_properties
-                            existing_stream.last_seen = obj.last_seen
-                            existing_stream.updated_at = obj.updated_at
-                            existing_stream.save()
+                        # Determine which stream to keep based on channel ordering
+                        stream_to_keep, stream_to_delete = _determine_stream_to_keep(existing_stream, obj)
 
-                        # Delete the duplicate
-                        obj.delete()
+                        # Move channel relationships from the stream being deleted to the one being kept
+                        _merge_stream_relationships(stream_to_delete, stream_to_keep)
+
+                        # Delete the duplicate FIRST to free up the unique hash constraint
+                        deleted_stream_ids.add(stream_to_delete.id)
+                        stream_to_delete.delete()
                         batch_duplicates += 1
+
+                        # Now safely set the hash on the kept stream (after deletion freed it up)
+                        if stream_to_keep.stream_hash != new_hash:
+                            stream_to_keep.stream_hash = new_hash
+                            stream_to_keep.save(update_fields=['stream_hash'])
+
+                        # Update hash_keys to point to the kept stream
+                        hash_keys[new_hash] = stream_to_keep.id
                     else:
-                        # Check if hash already exists in database (from previous batches or existing data)
+                        # Check if hash already exists in database (from streams not yet processed)
                         existing_stream = Stream.objects.filter(stream_hash=new_hash).exclude(id=obj.id).first()
                         if existing_stream:
-                            # Found duplicate in database - merge the streams
-                            # Move any channel relationships from duplicate to existing stream
-                            # Handle potential unique constraint violations
-                            for channel_stream in ChannelStream.objects.filter(stream_id=obj.id):
-                                # Check if this channel already has a relationship with the target stream
-                                existing_relationship = ChannelStream.objects.filter(
-                                    channel_id=channel_stream.channel_id,
-                                    stream_id=existing_stream.id
-                                ).first()
+                            # Found duplicate in database - determine which to keep based on channel ordering
+                            stream_to_keep, stream_to_delete = _determine_stream_to_keep(existing_stream, obj)
 
-                                if existing_relationship:
-                                    # Relationship already exists, just delete the duplicate
-                                    channel_stream.delete()
-                                else:
-                                    # Safe to update the relationship
-                                    channel_stream.stream_id = existing_stream.id
-                                    channel_stream.save()
+                            # Move channel relationships from the stream being deleted to the one being kept
+                            _merge_stream_relationships(stream_to_delete, stream_to_keep)
 
-                            # Update the existing stream with the most recent data
-                            if obj.updated_at > existing_stream.updated_at:
-                                existing_stream.name = obj.name
-                                existing_stream.url = obj.url
-                                existing_stream.logo_url = obj.logo_url
-                                existing_stream.tvg_id = obj.tvg_id
-                                existing_stream.m3u_account = obj.m3u_account
-                                existing_stream.channel_group = obj.channel_group
-                                existing_stream.custom_properties = obj.custom_properties
-                                existing_stream.last_seen = obj.last_seen
-                                existing_stream.updated_at = obj.updated_at
-                                existing_stream.save()
-
-                            # Delete the duplicate
-                            obj.delete()
+                            # Delete the duplicate FIRST to free up the unique hash constraint
+                            deleted_stream_ids.add(stream_to_delete.id)
+                            stream_to_delete.delete()
                             batch_duplicates += 1
-                            hash_keys[new_hash] = existing_stream.id
+
+                            # Now safely set the hash on the kept stream (after deletion freed it up)
+                            if stream_to_keep.stream_hash != new_hash:
+                                stream_to_keep.stream_hash = new_hash
+                                stream_to_keep.save(update_fields=['stream_hash'])
+
+                            hash_keys[new_hash] = stream_to_keep.id
                         else:
-                            # Update hash for this stream
+                            # No duplicate - update hash for this stream
                             obj.stream_hash = new_hash
                             obj.save(update_fields=['stream_hash'])
                             hash_keys[new_hash] = obj.id
@@ -604,10 +620,9 @@ def rehash_streams(keys):
             total_processed += batch_processed
             duplicates_merged += batch_duplicates
 
-            # Calculate progress percentage
-            progress_percent = int((total_processed / total_records) * 100)
-            current_batch = start // batch_size + 1
-            total_batches = (total_records // batch_size) + 1
+            # Calculate progress percentage based on initial count
+            # Cap at 99% until we're actually done to avoid showing 100% prematurely
+            progress_percent = min(99, int((total_processed / max(initial_total_records, 1)) * 100))
 
             # Send progress update via WebSocket
             send_websocket_update(
@@ -618,15 +633,14 @@ def rehash_streams(keys):
                     "type": "stream_rehash",
                     "action": "processing",
                     "progress": progress_percent,
-                    "batch": current_batch,
-                    "total_batches": total_batches,
+                    "batch": batch_number,
                     "processed": total_processed,
                     "duplicates_merged": duplicates_merged,
-                    "message": f"Processed batch {current_batch}/{total_batches}: {batch_processed} streams, {batch_duplicates} duplicates merged"
+                    "message": f"Processed batch {batch_number}: {batch_processed} streams, {batch_duplicates} duplicates merged"
                 }
             )
 
-            logger.info(f"Rehashed batch {current_batch}/{total_batches}: "
+            logger.info(f"Rehashed batch {batch_number}: "
                        f"{batch_processed} processed, {batch_duplicates} duplicates merged")
 
         logger.info(f"Rehashing complete: {total_processed} streams processed, "
@@ -653,13 +667,90 @@ def rehash_streams(keys):
         return f"Successfully rehashed {total_processed} streams"
 
     except Exception as e:
-        logger.error(f"Error during stream rehash: {e}")
+        logger.error(f"Error during stream rehash: {e}", exc_info=True)
         raise
     finally:
         # Always release all acquired M3U locks
         for account_id in acquired_locks:
             release_task_lock('refresh_single_m3u_account', account_id)
         logger.info(f"Released M3U task locks for {len(acquired_locks)} accounts")
+
+
+def _merge_stream_relationships(source_stream, target_stream):
+    """
+    Move channel relationships from source_stream to target_stream.
+    Handles unique constraint violations by preserving existing relationships.
+    Preserves the best ordering when merging relationships.
+    """
+    for channel_stream in ChannelStream.objects.filter(stream_id=source_stream.id):
+        # Check if this channel already has a relationship with the target stream
+        existing_relationship = ChannelStream.objects.filter(
+            channel_id=channel_stream.channel_id,
+            stream_id=target_stream.id
+        ).first()
+
+        if existing_relationship:
+            # Relationship already exists - keep the one with better ordering (lower order value)
+            if channel_stream.order < existing_relationship.order:
+                existing_relationship.order = channel_stream.order
+                existing_relationship.save(update_fields=['order'])
+            # Delete the duplicate relationship
+            channel_stream.delete()
+        else:
+            # Safe to update the relationship
+            channel_stream.stream_id = target_stream.id
+            channel_stream.save()
+
+
+def _get_best_channel_order(stream):
+    """
+    Get the best (lowest) channel order for a stream.
+    Returns None if stream has no channel relationships.
+    Lower order value = better/higher position in the channel list.
+    """
+    best_order = ChannelStream.objects.filter(stream_id=stream.id).order_by('order').values_list('order', flat=True).first()
+    return best_order
+
+
+def _determine_stream_to_keep(stream_a, stream_b):
+    """
+    Determine which stream should be kept when merging duplicates.
+
+    Priority:
+    1. Stream with better (lower) channel order wins
+    2. If both have same order or neither has channel relationships,
+       keep the one with more recent updated_at
+    3. If still tied, keep the one with the lower ID (more stable)
+
+    Returns: (stream_to_keep, stream_to_delete)
+    """
+    order_a = _get_best_channel_order(stream_a)
+    order_b = _get_best_channel_order(stream_b)
+
+    # If one has channel relationships and the other doesn't, keep the one with relationships
+    if order_a is not None and order_b is None:
+        return (stream_a, stream_b)
+    if order_b is not None and order_a is None:
+        return (stream_b, stream_a)
+
+    # If both have channel relationships, keep the one with better (lower) order
+    if order_a is not None and order_b is not None:
+        if order_a < order_b:
+            return (stream_a, stream_b)
+        elif order_b < order_a:
+            return (stream_b, stream_a)
+        # Same order, fall through to other criteria
+
+    # Neither has relationships, or same order - use updated_at
+    if stream_a.updated_at > stream_b.updated_at:
+        return (stream_a, stream_b)
+    elif stream_b.updated_at > stream_a.updated_at:
+        return (stream_b, stream_a)
+
+    # Same updated_at - keep lower ID for stability
+    if stream_a.id < stream_b.id:
+        return (stream_a, stream_b)
+    return (stream_b, stream_a)
 
 
 @shared_task
@@ -674,3 +765,227 @@ def cleanup_vod_persistent_connections():
 
     except Exception as e:
         logger.error(f"Error during VOD persistent connection cleanup: {e}")
+
+
+@shared_task
+def check_for_version_update():
+    """
+    Check for new Dispatcharr versions on GitHub and create a notification if available.
+    This task should be run periodically (e.g., daily) via Celery Beat.
+
+    For dev builds (identified by __timestamp__), checks for stable releases only.
+    For production builds, checks for stable releases.
+
+    Note: Dev builds are container images from the dev branch and don't have GitHub releases.
+    This checks if a stable release is available so dev users know when to upgrade.
+    """
+    import requests
+    from datetime import datetime, timezone
+    from packaging import version as pkg_version
+    from version import __version__, __timestamp__
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification
+
+    try:
+        is_dev_build = __timestamp__ is not None
+        DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+        if is_dev_build:
+            # Check Docker Hub for newer dev builds
+            docker_hub_url = "https://hub.docker.com/v2/repositories/dispatcharr/dispatcharr/tags/dev"
+
+            response = requests.get(docker_hub_url, headers=DISPATCHARR_HEADERS, timeout=10)
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to check Docker Hub for dev updates: HTTP {response.status_code}")
+                return
+
+            dev_tag_data = response.json()
+            docker_last_updated = dev_tag_data.get("last_updated")
+
+            if not docker_last_updated:
+                logger.warning("No last_updated timestamp found in Docker Hub response")
+                return
+
+            # Parse timestamps for comparison
+            local_dt = datetime.strptime(__timestamp__, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            docker_dt = datetime.fromisoformat(docker_last_updated.replace('Z', '+00:00'))
+
+            # Calculate difference in minutes
+            diff_minutes = (docker_dt - local_dt).total_seconds() / 60
+
+            # Threshold to account for build/push time differences
+            THRESHOLD_MINUTES = 10
+
+            if diff_minutes > THRESHOLD_MINUTES:
+                logger.info(f"New dev build available on Docker Hub (updated {int(diff_minutes)} minutes after current build)")
+
+                # Delete any old version update notifications (both dev and stable, in case user switched)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+                if deleted_count > 0:
+                    logger.debug(f"Deleted {deleted_count} old dev build notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+                # Create notification for new dev build
+                notification, created = SystemNotification.objects.get_or_create(
+                    notification_key=f'version-dev-{docker_last_updated}',
+                    defaults={
+                        'notification_type': 'version_update',
+                        'title': 'New Dev Build Available',
+                        'message': f'A newer development build is available on Docker Hub (v{__version__}-dev)',
+                        'priority': 'medium',
+                        'action_data': {
+                            'current_version': __version__,
+                            'current_timestamp': __timestamp__,
+                            'docker_updated': docker_last_updated,
+                            'update_url': 'https://hub.docker.com/r/dispatcharr/dispatcharr/tags'
+                        },
+                        'is_active': True,
+                        'admin_only': True,
+                    }
+                )
+
+                if created:
+                    # Only send WebSocket for newly created notifications
+                    send_websocket_notification(notification)
+                    logger.info(f"New dev build notification created and sent via WebSocket")
+            else:
+                logger.debug(f"Dev build is up to date (Docker Hub image is {abs(int(diff_minutes))} minutes {'newer' if diff_minutes > 0 else 'older'})")
+
+                # Delete all version update notifications when up to date (both dev and stable)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+
+                if deleted_count > 0:
+                    logger.info(f"Deleted {deleted_count} outdated dev build notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+        else:
+            # Production build - check GitHub for stable releases
+            github_api_url = "https://api.github.com/repos/Dispatcharr/Dispatcharr/releases/latest"
+            headers = {"Accept": "application/vnd.github.v3+json", **DISPATCHARR_HEADERS}
+            response = requests.get(
+                github_api_url,
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to check for updates: HTTP {response.status_code}")
+                return
+
+            release_data = response.json()
+            latest_version = release_data.get("tag_name", "").lstrip("v")
+            release_url = release_data.get("html_url", "")
+
+            if not latest_version:
+                logger.warning("No version tag found in GitHub release")
+                return
+
+            # Compare versions
+            current = pkg_version.parse(__version__)
+            latest = pkg_version.parse(latest_version)
+            if latest > current:
+                logger.info(f"New stable version available: {latest_version} (current: {__version__})")
+
+                # Delete any old version update notifications (superseded by this one)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).exclude(
+                    notification_key=f"version-{latest_version}"
+                ).delete()[0]
+                if deleted_count > 0:
+                    logger.debug(f"Deleted {deleted_count} old version notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+                # Create or update the notification for the new version
+                notification, created = SystemNotification.create_version_notification(
+                    version=latest_version,
+                    release_url=release_url,
+                )
+
+                if created:
+                    # Only send WebSocket for newly created notifications
+                    send_websocket_notification(notification)
+                    logger.info(f"New version notification created and sent via WebSocket")
+            else:
+                logger.debug(f"Dispatcharr is up to date (v{__version__})")
+
+                # Delete ALL version update notifications when up to date (no longer needed)
+                deleted_count = SystemNotification.objects.filter(
+                    notification_type='version_update'
+                ).delete()[0]
+
+                if deleted_count > 0:
+                    logger.info(f"Deleted {deleted_count} outdated version notification(s)")
+                    send_websocket_update(
+                        'updates',
+                        'update',
+                        {
+                            'success': True,
+                            'type': 'notifications_cleared',
+                            'count': deleted_count
+                        }
+                    )
+
+    except requests.RequestException as e:
+        logger.warning(f"Network error checking for updates: {e}")
+    except Exception as e:
+        logger.error(f"Error checking for version updates: {e}")
+
+
+def create_setting_recommendation(setting_key, recommended_value, reason, current_value=None):
+    """
+    Create a setting recommendation notification.
+    This is a helper function that can be called from anywhere in the codebase.
+
+    Args:
+        setting_key: The setting key (e.g., 'proxy_settings.buffering_timeout')
+        recommended_value: The recommended value for the setting
+        reason: Why this setting is recommended
+        current_value: The current value (optional)
+
+    Returns:
+        The created SystemNotification instance
+    """
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification
+
+    notification, created = SystemNotification.create_setting_recommendation(
+        setting_key=setting_key,
+        recommended_value=recommended_value,
+        reason=reason,
+        current_value=current_value
+    )
+
+    # Only send via WebSocket for newly created notifications
+    if created:
+        send_websocket_notification(notification)
+
+    return notification
+

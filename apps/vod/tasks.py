@@ -73,7 +73,9 @@ def refresh_vod_content(account_id):
         return f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds"
 
     except Exception as e:
+        import traceback
         logger.error(f"Error refreshing VOD for account {account_id}: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
         # Send error notification
         send_m3u_update(account_id, "vod_refresh", 100, status="error",
@@ -410,10 +412,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
             imdb_id = movie_data.get('imdb_id') or movie_data.get('imdb')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
@@ -555,12 +557,19 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
 
             # Handle logo assignment for existing movies
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if movie.logo != new_logo:
-                    movie._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if movie.logo_id != new_logo.id:
+                        movie._logo_to_update = new_logo
+                        logo_updated = True
+                elif movie.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                    movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo:
+            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 movie._logo_to_update = None
                 logo_updated = True
@@ -614,26 +623,41 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             # First, create new movies and get their IDs
             created_movies = {}
             if movies_to_create:
-                Movie.objects.bulk_create(movies_to_create, ignore_conflicts=True)
+                # Bulk query to check which movies already exist
+                tmdb_ids = [m.tmdb_id for m in movies_to_create if m.tmdb_id]
+                imdb_ids = [m.imdb_id for m in movies_to_create if m.imdb_id]
+                name_year_pairs = [(m.name, m.year) for m in movies_to_create if not m.tmdb_id and not m.imdb_id]
 
-                # Get the newly created movies with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {m.tmdb_id: m for m in Movie.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {m.imdb_id: m for m in Movie.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for movie in Movie.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (movie.name, movie.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = movie
+
+                # Check each movie against the bulk query results
+                movies_actually_created = []
                 for movie in movies_to_create:
-                    # Find the movie by its unique identifiers
-                    if movie.tmdb_id:
-                        db_movie = Movie.objects.filter(tmdb_id=movie.tmdb_id).first()
-                    elif movie.imdb_id:
-                        db_movie = Movie.objects.filter(imdb_id=movie.imdb_id).first()
-                    else:
-                        db_movie = Movie.objects.filter(
-                            name=movie.name,
-                            year=movie.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if movie.tmdb_id and movie.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[movie.tmdb_id]
+                    elif movie.imdb_id and movie.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[movie.imdb_id]
+                    elif not movie.tmdb_id and not movie.imdb_id:
+                        existing = existing_by_name_year.get((movie.name, movie.year))
 
-                    if db_movie:
-                        created_movies[id(movie)] = db_movie
+                    if existing:
+                        created_movies[id(movie)] = existing
+                    else:
+                        movies_actually_created.append(movie)
+                        created_movies[id(movie)] = movie
+
+                # Bulk create only movies that don't exist
+                if movies_actually_created:
+                    Movie.objects.bulk_create(movies_actually_created)
 
             # Update existing movies
             if movies_to_update:
@@ -649,12 +673,16 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         movie.logo = movie._logo_to_update
                         movie.save(update_fields=['logo'])
 
-            # Update relations to reference the correct movie objects
+            # Update relations to reference the correct movie objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.movie) in created_movies:
                     relation.movie = created_movies[id(relation.movie)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.movie) in created_movies:
+                    relation.movie = created_movies[id(relation.movie)]
+
+            # All movies now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3UMovieRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -724,10 +752,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             tmdb_id = series_data.get('tmdb') or series_data.get('tmdb_id')
             imdb_id = series_data.get('imdb') or series_data.get('imdb_id')
 
-            # Clean empty string IDs
-            if tmdb_id == '':
+            # Clean empty string IDs and zero values (some providers use 0 to indicate no ID)
+            if tmdb_id == '' or tmdb_id == 0 or tmdb_id == '0':
                 tmdb_id = None
-            if imdb_id == '':
+            if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
             # Create a unique key for this series (priority: TMDB > IMDB > name+year)
@@ -886,12 +914,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
 
             # Handle logo assignment for existing series
             logo_updated = False
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                new_logo = existing_logos[logo_url]
-                if series.logo != new_logo:
-                    series._logo_to_update = new_logo
+            if logo_url and len(logo_url) <= 500:
+                if logo_url in existing_logos:
+                    new_logo = existing_logos[logo_url]
+                    if series.logo_id != new_logo.id:
+                        series._logo_to_update = new_logo
+                        logo_updated = True
+                elif series.logo_id:
+                    # Logo URL exists but logo creation failed or logo not found
+                    # Clear the orphaned logo reference
+                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                    series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo:
+            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
                 # Clear logo if no logo URL provided or URL is too long
                 series._logo_to_update = None
                 logo_updated = True
@@ -945,26 +980,41 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # First, create new series and get their IDs
             created_series = {}
             if series_to_create:
-                Series.objects.bulk_create(series_to_create, ignore_conflicts=True)
+                # Bulk query to check which series already exist
+                tmdb_ids = [s.tmdb_id for s in series_to_create if s.tmdb_id]
+                imdb_ids = [s.imdb_id for s in series_to_create if s.imdb_id]
+                name_year_pairs = [(s.name, s.year) for s in series_to_create if not s.tmdb_id and not s.imdb_id]
 
-                # Get the newly created series with their IDs
-                # We need to re-fetch them to get the primary keys
+                existing_by_tmdb = {s.tmdb_id: s for s in Series.objects.filter(tmdb_id__in=tmdb_ids)} if tmdb_ids else {}
+                existing_by_imdb = {s.imdb_id: s for s in Series.objects.filter(imdb_id__in=imdb_ids)} if imdb_ids else {}
+
+                existing_by_name_year = {}
+                if name_year_pairs:
+                    for series in Series.objects.filter(tmdb_id__isnull=True, imdb_id__isnull=True):
+                        key = (series.name, series.year)
+                        if key in name_year_pairs:
+                            existing_by_name_year[key] = series
+
+                # Check each series against the bulk query results
+                series_actually_created = []
                 for series in series_to_create:
-                    # Find the series by its unique identifiers
-                    if series.tmdb_id:
-                        db_series = Series.objects.filter(tmdb_id=series.tmdb_id).first()
-                    elif series.imdb_id:
-                        db_series = Series.objects.filter(imdb_id=series.imdb_id).first()
-                    else:
-                        db_series = Series.objects.filter(
-                            name=series.name,
-                            year=series.year,
-                            tmdb_id__isnull=True,
-                            imdb_id__isnull=True
-                        ).first()
+                    existing = None
+                    if series.tmdb_id and series.tmdb_id in existing_by_tmdb:
+                        existing = existing_by_tmdb[series.tmdb_id]
+                    elif series.imdb_id and series.imdb_id in existing_by_imdb:
+                        existing = existing_by_imdb[series.imdb_id]
+                    elif not series.tmdb_id and not series.imdb_id:
+                        existing = existing_by_name_year.get((series.name, series.year))
 
-                    if db_series:
-                        created_series[id(series)] = db_series
+                    if existing:
+                        created_series[id(series)] = existing
+                    else:
+                        series_actually_created.append(series)
+                        created_series[id(series)] = series
+
+                # Bulk create only series that don't exist
+                if series_actually_created:
+                    Series.objects.bulk_create(series_actually_created)
 
             # Update existing series
             if series_to_update:
@@ -980,12 +1030,16 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                         series.logo = series._logo_to_update
                         series.save(update_fields=['logo'])
 
-            # Update relations to reference the correct series objects
+            # Update relations to reference the correct series objects (with PKs)
             for relation in relations_to_create:
                 if id(relation.series) in created_series:
                     relation.series = created_series[id(relation.series)]
 
-            # Handle relations
+            for relation in relations_to_update:
+                if id(relation.series) in created_series:
+                    relation.series = created_series[id(relation.series)]
+
+            # All series now have PKs, safe to bulk create/update relations
             if relations_to_create:
                 M3USeriesRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
@@ -1204,20 +1258,15 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Clear existing episodes for this account to handle deletions
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account=account
-        ).delete()
+        # Fetch the series relation once — used both to pass into batch_process_episodes
+        # (so episode relations get the FK set) and to update metadata afterwards.
+        series_relation = M3USeriesRelation.objects.filter(
+            m3u_account=account,
+            external_series_id=external_series_id
+        ).first()
 
         # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data)
-
-        # Update the series relation to mark episodes as fetched
-        series_relation = M3USeriesRelation.objects.filter(
-            series=series,
-            m3u_account=account
-        ).first()
+        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
@@ -1231,8 +1280,19 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
 
 
-def batch_process_episodes(account, series, episodes_data, scan_start_time=None):
-    """Process episodes in batches for better performance"""
+def batch_process_episodes(account, series, episodes_data, scan_start_time=None, series_relation=None):
+    """Process episodes in batches for better performance.
+
+    Note: Multiple streams can represent the same episode (e.g., different languages
+    or qualities). Each stream has a unique stream_id, but they share the same
+    season/episode number. We create one Episode record per (series, season, episode)
+    and multiple M3UEpisodeRelation records pointing to it.
+
+    series_relation, when provided, is stored as a FK on each M3UEpisodeRelation so
+    that CASCADE correctly removes episode relations when their parent series relation
+    is deleted, and so that stale-stream cleanup is scoped precisely to relations that
+    came from this specific provider query.
+    """
     if not episodes_data:
         return
 
@@ -1249,12 +1309,13 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
     logger.info(f"Batch processing {len(all_episodes_data)} episodes for series {series.name}")
 
     # Extract episode identifiers
-    episode_keys = []
+    # Note: episode_keys may have duplicates when multiple streams represent same episode
+    episode_keys = set()  # Use set to track unique episode keys
     episode_ids = []
     for episode_data in all_episodes_data:
         season_num = episode_data['_season_number']
         episode_num = episode_data.get('episode_num', 0)
-        episode_keys.append((series.id, season_num, episode_num))
+        episode_keys.add((series.id, season_num, episode_num))
         episode_ids.append(str(episode_data.get('id')))
 
     # Pre-fetch existing episodes
@@ -1277,12 +1338,25 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
     relations_to_create = []
     relations_to_update = []
 
+    # Track episodes we're creating in this batch to avoid duplicates
+    # Key: (series_id, season_number, episode_number) -> Episode object
+    episodes_pending_creation = {}
+
     for episode_data in all_episodes_data:
         try:
             episode_id = str(episode_data.get('id'))
             episode_name = episode_data.get('title', 'Unknown Episode')
-            season_number = episode_data['_season_number']
-            episode_number = episode_data.get('episode_num', 0)
+            # Ensure season and episode numbers are integers (API may return strings)
+            try:
+                season_number = int(episode_data['_season_number'])
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid season_number '{episode_data.get('_season_number')}' for episode '{episode_name}': {e}")
+                season_number = 0
+            try:
+                episode_number = int(episode_data.get('episode_num', 0))
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid episode_num '{episode_data.get('episode_num')}' for episode '{episode_name}': {e}")
+                episode_number = 0
             info = episode_data.get('info', {})
 
             # Extract episode metadata
@@ -1306,9 +1380,14 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 if backdrop:
                     custom_props['backdrop_path'] = [backdrop]
 
-            # Find existing episode
+            # Find existing episode - check DB first, then pending creations
             episode_key = (series.id, season_number, episode_number)
             episode = existing_episodes.get(episode_key)
+
+            # Check if we already have this episode pending creation (multiple streams for same episode)
+            if not episode and episode_key in episodes_pending_creation:
+                episode = episodes_pending_creation[episode_key]
+                logger.debug(f"Reusing pending episode for S{season_number}E{episode_number} (stream_id: {episode_id})")
 
             if episode:
                 # Update existing episode
@@ -1338,7 +1417,9 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                     episode.custom_properties = custom_props if custom_props else None
                     updated = True
 
-                if updated:
+                # Only add to update list if episode has a PK (exists in DB) and isn't already in list
+                # Episodes pending creation don't have PKs yet and will be created via bulk_create
+                if updated and episode.pk and episode not in episodes_to_update:
                     episodes_to_update.append(episode)
             else:
                 # Create new episode
@@ -1356,16 +1437,19 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                     custom_properties=custom_props if custom_props else None
                 )
                 episodes_to_create.append(episode)
+                # Track this episode so subsequent streams with same season/episode can reuse it
+                episodes_pending_creation[episode_key] = episode
 
             # Handle episode relation
             if episode_id in existing_relations:
                 # Update existing relation
                 relation = existing_relations[episode_id]
                 relation.episode = episode
+                relation.series_relation = series_relation
                 relation.container_extension = episode_data.get('container_extension', 'mp4')
                 relation.custom_properties = {
                     'info': episode_data,
-                    'season_number': season_number
+                    'season_number': season_number,
                 }
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
@@ -1374,11 +1458,12 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 relation = M3UEpisodeRelation(
                     m3u_account=account,
                     episode=episode,
+                    series_relation=series_relation,
                     stream_id=episode_id,
                     container_extension=episode_data.get('container_extension', 'mp4'),
                     custom_properties={
                         'info': episode_data,
-                        'season_number': season_number
+                        'season_number': season_number,
                     },
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
@@ -1389,9 +1474,43 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
 
     # Execute batch operations
     with transaction.atomic():
-        # Create new episodes
+        # Create new episodes - use ignore_conflicts in case of race conditions
         if episodes_to_create:
-            Episode.objects.bulk_create(episodes_to_create)
+            Episode.objects.bulk_create(episodes_to_create, ignore_conflicts=True)
+
+            # Re-fetch the created episodes to get their PKs
+            # We need to do this because bulk_create with ignore_conflicts doesn't set PKs
+            created_episode_keys = [
+                (ep.series_id, ep.season_number, ep.episode_number)
+                for ep in episodes_to_create
+            ]
+            db_episodes = Episode.objects.filter(series=series)
+            episode_pk_map = {
+                (ep.series_id, ep.season_number, ep.episode_number): ep
+                for ep in db_episodes
+            }
+
+            # Update relations to point to the actual DB episodes with PKs
+            for relation in relations_to_create:
+                ep = relation.episode
+                key = (ep.series_id, ep.season_number, ep.episode_number)
+                if key in episode_pk_map:
+                    relation.episode = episode_pk_map[key]
+
+        # Filter out relations with unsaved episodes (no PK)
+        # This can happen if bulk_create had a conflict and ignore_conflicts=True didn't save the episode
+        valid_relations_to_create = []
+        for relation in relations_to_create:
+            if relation.episode.pk is not None:
+                valid_relations_to_create.append(relation)
+            else:
+                season_num = relation.episode.season_number
+                episode_num = relation.episode.episode_number
+                logger.warning(
+                    f"Skipping relation for episode S{season_num}E{episode_num} "
+                    f"- episode not saved to database"
+                )
+        relations_to_create = valid_relations_to_create
 
         # Update existing episodes
         if episodes_to_update:
@@ -1400,15 +1519,34 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 'tmdb_id', 'imdb_id', 'custom_properties'
             ])
 
-        # Create new episode relations
+        # Create new episode relations - use ignore_conflicts for stream_id duplicates
         if relations_to_create:
-            M3UEpisodeRelation.objects.bulk_create(relations_to_create)
+            M3UEpisodeRelation.objects.bulk_create(relations_to_create, ignore_conflicts=True)
 
         # Update existing episode relations
         if relations_to_update:
             M3UEpisodeRelation.objects.bulk_update(relations_to_update, [
-                'episode', 'container_extension', 'custom_properties', 'last_seen'
+                'episode', 'series_relation', 'container_extension', 'custom_properties', 'last_seen'
             ])
+
+        # Delete relations for streams no longer returned by the provider.
+        # Scope to this series_relation FK (post-migration rows) plus any legacy NULL rows
+        # for the same account+series (pre-migration rows whose stream is now gone — the
+        # update path only backfills the FK for streams still present in the response).
+        # Falls back to account+series scope when series_relation is None (shouldn't occur).
+        if series_relation is not None:
+            stale_qs = M3UEpisodeRelation.objects.filter(
+                Q(series_relation=series_relation) |
+                Q(series_relation__isnull=True, m3u_account=account, episode__series=series)
+            )
+        else:
+            stale_qs = M3UEpisodeRelation.objects.filter(
+                m3u_account=account,
+                episode__series=series
+            )
+        removed_count = stale_qs.exclude(stream_id__in=episode_ids).delete()[0]
+        if removed_count:
+            logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
@@ -1494,15 +1632,11 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     stale_movie_count = stale_movie_relations.count()
     stale_movie_relations.delete()
 
-    # Clean up stale series relations
+    # Clean up stale series relations.
+    # Episode relations are removed via CASCADE on the series_relation FK.
     stale_series_relations = M3USeriesRelation.objects.filter(**base_filters)
     stale_series_count = stale_series_relations.count()
     stale_series_relations.delete()
-
-    # Clean up stale episode relations
-    stale_episode_relations = M3UEpisodeRelation.objects.filter(**base_filters)
-    stale_episode_count = stale_episode_relations.count()
-    stale_episode_relations.delete()
 
     # Clean up movies with no relations (orphaned)
     # Safe to delete even during account-specific cleanup because if ANY account
@@ -1520,11 +1654,8 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
         logger.info(f"Deleting {orphaned_series_count} orphaned series with no M3U relations")
         orphaned_series.delete()
 
-    # Episodes will be cleaned up via CASCADE when series are deleted
-
     result = (f"Cleaned up {stale_movie_count} stale movie relations, "
               f"{stale_series_count} stale series relations, "
-              f"{stale_episode_count} stale episode relations, "
               f"{orphaned_movie_count} orphaned movies, and "
               f"{orphaned_series_count} orphaned series")
 
@@ -2075,33 +2206,3 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
     except Exception as e:
         logger.error(f"Error refreshing advanced movie data for relation {m3u_movie_relation_id}: {str(e)}")
         return f"Error: {str(e)}"
-
-
-def validate_logo_reference(obj, obj_type="object"):
-    """
-    Validate that a VOD logo reference exists in the database.
-    If not, set it to None to prevent foreign key constraint violations.
-
-    Args:
-        obj: Object with a logo attribute
-        obj_type: String description of the object type for logging
-
-    Returns:
-        bool: True if logo was valid or None, False if logo was invalid and cleared
-    """
-    if not hasattr(obj, 'logo') or not obj.logo:
-        return True
-
-    if not obj.logo.pk:
-        # Logo doesn't have a primary key, so it's not saved
-        obj.logo = None
-        return False
-
-    try:
-        # Verify the logo exists in the database
-        VODLogo.objects.get(pk=obj.logo.pk)
-        return True
-    except VODLogo.DoesNotExist:
-        logger.warning(f"VOD Logo with ID {obj.logo.pk} does not exist in database for {obj_type} '{getattr(obj, 'name', 'Unknown')}', setting to None")
-        obj.logo = None
-        return False

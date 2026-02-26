@@ -1,244 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import {
   Box,
-  Button,
-  Card,
   Flex,
-  Group,
-  Image,
-  Text,
-  Title,
-  Select,
-  TextInput,
-  Pagination,
-  Badge,
   Grid,
+  GridCol,
+  Group,
   Loader,
-  Stack,
+  LoadingOverlay,
+  Pagination,
   SegmentedControl,
-  ActionIcon,
+  Select,
+  Stack,
+  TextInput,
+  Title,
 } from '@mantine/core';
-import { Search, Play, Calendar, Clock, Star } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { useDisclosure } from '@mantine/hooks';
 import useVODStore from '../store/useVODStore';
-import SeriesModal from '../components/SeriesModal';
-import VODModal from '../components/VODModal';
-
-const formatDuration = (seconds) => {
-  if (!seconds) return '';
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m ${secs}s`;
-};
-
-const VODCard = ({ vod, onClick }) => {
-  const isEpisode = vod.type === 'episode';
-
-  const getDisplayTitle = () => {
-    if (isEpisode && vod.series) {
-      const seasonEp =
-        vod.season_number && vod.episode_number
-          ? `S${vod.season_number.toString().padStart(2, '0')}E${vod.episode_number.toString().padStart(2, '0')}`
-          : '';
-      return (
-        <Stack spacing={4}>
-          <Text size="sm" color="dimmed">
-            {vod.series.name}
-          </Text>
-          <Text weight={500}>
-            {seasonEp} - {vod.name}
-          </Text>
-        </Stack>
-      );
-    }
-    return <Text weight={500}>{vod.name}</Text>;
-  };
-
-  const handleCardClick = async () => {
-    // Just pass the basic vod info to the parent handler
-    onClick(vod);
-  };
-
-  return (
-    <Card
-      shadow="sm"
-      padding="md"
-      radius="md"
-      withBorder
-      style={{ cursor: 'pointer', backgroundColor: '#27272A' }}
-      onClick={handleCardClick}
-    >
-      <Card.Section>
-        <Box style={{ position: 'relative', height: 300 }}>
-          {vod.logo?.url ? (
-            <Image
-              src={vod.logo.url}
-              height={300}
-              alt={vod.name}
-              fit="contain"
-            />
-          ) : (
-            <Box
-              style={{
-                height: 300,
-                backgroundColor: '#404040',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Play size={48} color="#666" />
-            </Box>
-          )}
-
-          <ActionIcon
-            style={{
-              position: 'absolute',
-              top: 8,
-              right: 8,
-              backgroundColor: 'rgba(0,0,0,0.7)',
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClick(vod);
-            }}
-          >
-            <Play size={16} color="white" />
-          </ActionIcon>
-
-          <Badge
-            style={{
-              position: 'absolute',
-              bottom: 8,
-              left: 8,
-            }}
-            color={isEpisode ? 'blue' : 'green'}
-          >
-            {isEpisode ? 'Episode' : 'Movie'}
-          </Badge>
-        </Box>
-      </Card.Section>
-
-      <Stack spacing={8} mt="md">
-        {getDisplayTitle()}
-
-        <Group spacing={16}>
-          {vod.year && (
-            <Group spacing={4}>
-              <Calendar size={14} color="#666" />
-              <Text size="xs" color="dimmed">
-                {vod.year}
-              </Text>
-            </Group>
-          )}
-
-          {vod.duration && (
-            <Group spacing={4}>
-              <Clock size={14} color="#666" />
-              <Text size="xs" color="dimmed">
-                {formatDuration(vod.duration_secs)}
-              </Text>
-            </Group>
-          )}
-
-          {vod.rating && (
-            <Group spacing={4}>
-              <Star size={14} color="#666" />
-              <Text size="xs" color="dimmed">
-                {vod.rating}
-              </Text>
-            </Group>
-          )}
-        </Group>
-
-        {vod.genre && (
-          <Text size="xs" color="dimmed" lineClamp={1}>
-            {vod.genre}
-          </Text>
-        )}
-      </Stack>
-    </Card>
-  );
-};
-
-const SeriesCard = ({ series, onClick }) => {
-  return (
-    <Card
-      shadow="sm"
-      padding="md"
-      radius="md"
-      withBorder
-      style={{ cursor: 'pointer', backgroundColor: '#27272A' }}
-      onClick={() => onClick(series)}
-    >
-      <Card.Section>
-        <Box style={{ position: 'relative', height: 300 }}>
-          {series.logo?.url ? (
-            <Image
-              src={series.logo.url}
-              height={300}
-              alt={series.name}
-              fit="contain"
-            />
-          ) : (
-            <Box
-              style={{
-                height: 300,
-                backgroundColor: '#404040',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Play size={48} color="#666" />
-            </Box>
-          )}
-          {/* Add Series badge in the same position as Movie badge */}
-          <Badge
-            style={{
-              position: 'absolute',
-              bottom: 8,
-              left: 8,
-            }}
-            color="purple"
-          >
-            Series
-          </Badge>
-        </Box>
-      </Card.Section>
-
-      <Stack spacing={8} mt="md">
-        <Text weight={500}>{series.name}</Text>
-
-        <Group spacing={16}>
-          {series.year && (
-            <Group spacing={4}>
-              <Calendar size={14} color="#666" />
-              <Text size="xs" color="dimmed">
-                {series.year}
-              </Text>
-            </Group>
-          )}
-          {series.rating && (
-            <Group spacing={4}>
-              <Star size={14} color="#666" />
-              <Text size="xs" color="dimmed">
-                {series.rating}
-              </Text>
-            </Group>
-          )}
-        </Group>
-
-        {series.genre && (
-          <Text size="xs" color="dimmed" lineClamp={1}>
-            {series.genre}
-          </Text>
-        )}
-      </Stack>
-    </Card>
-  );
-};
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
+import {
+  filterCategoriesToEnabled,
+  getCategoryOptions,
+} from '../utils/pages/VODsUtils.js';
+const SeriesModal = React.lazy(() => import('../components/SeriesModal'));
+const VODModal = React.lazy(() => import('../components/VODModal'));
+const VODCard = React.lazy(() => import('../components/cards/VODCard'));
+const SeriesCard = React.lazy(() => import('../components/cards/SeriesCard'));
 
 const MIN_CARD_WIDTH = 260;
 const MAX_CARD_WIDTH = 320;
@@ -312,19 +99,7 @@ const VODsPage = () => {
   };
 
   useEffect(() => {
-    // setCategories(allCategories)
-    setCategories(
-      Object.keys(allCategories).reduce((acc, key) => {
-        const enabled = allCategories[key].m3u_accounts.find(
-          (account) => account.enabled === true
-        );
-        if (enabled) {
-          acc[key] = allCategories[key];
-        }
-
-        return acc;
-      }, {})
-    );
+    setCategories(filterCategoriesToEnabled(allCategories));
   }, [allCategories]);
 
   useEffect(() => {
@@ -356,19 +131,7 @@ const VODsPage = () => {
     setPage(1);
   };
 
-  const categoryOptions = [
-    { value: '', label: 'All Categories' },
-    ...Object.values(categories)
-      .filter((cat) => {
-        if (filters.type === 'movies') return cat.category_type === 'movie';
-        if (filters.type === 'series') return cat.category_type === 'series';
-        return true; // 'all' shows all
-      })
-      .map((cat) => ({
-        value: `${cat.name}|${cat.category_type}`,
-        label: `${cat.name} (${cat.category_type})`,
-      })),
-  ];
+  const categoryOptions = getCategoryOptions(categories, filters);
 
   const totalPages = Math.ceil(totalCount / pageSize);
 
@@ -396,7 +159,7 @@ const VODsPage = () => {
             icon={<Search size={16} />}
             value={filters.search}
             onChange={(e) => setFilters({ search: e.target.value })}
-            style={{ minWidth: 200 }}
+            miw={200}
           />
 
           <Select
@@ -405,7 +168,7 @@ const VODsPage = () => {
             value={filters.category}
             onChange={onCategoryChange}
             clearable
-            style={{ minWidth: 150 }}
+            miw={150}
           />
 
           <Select
@@ -416,7 +179,7 @@ const VODsPage = () => {
               value: v,
               label: v,
             }))}
-            style={{ width: 110 }}
+            w={110}
           />
         </Group>
 
@@ -428,23 +191,25 @@ const VODsPage = () => {
         ) : (
           <>
             <Grid gutter="md">
-              {getDisplayData().map((item) => (
-                <Grid.Col
-                  span={12 / columns}
-                  key={`${item.contentType}_${item.id}`}
-                  style={{
-                    minWidth: MIN_CARD_WIDTH,
-                    maxWidth: MAX_CARD_WIDTH,
-                    margin: '0 auto',
-                  }}
-                >
-                  {item.contentType === 'series' ? (
-                    <SeriesCard series={item} onClick={handleSeriesClick} />
-                  ) : (
-                    <VODCard vod={item} onClick={handleVODCardClick} />
-                  )}
-                </Grid.Col>
-              ))}
+              <ErrorBoundary>
+                <Suspense fallback={<Loader />}>
+                  {getDisplayData().map((item) => (
+                    <GridCol
+                      span={12 / columns}
+                      key={`${item.contentType}_${item.id}`}
+                      miw={MIN_CARD_WIDTH}
+                      maw={MAX_CARD_WIDTH}
+                      m={'0 auto'}
+                    >
+                      {item.contentType === 'series' ? (
+                        <SeriesCard series={item} onClick={handleSeriesClick} />
+                      ) : (
+                        <VODCard vod={item} onClick={handleVODCardClick} />
+                      )}
+                    </GridCol>
+                  ))}
+                </Suspense>
+              </ErrorBoundary>
             </Grid>
 
             {/* Pagination */}
@@ -462,18 +227,26 @@ const VODsPage = () => {
       </Stack>
 
       {/* Series Episodes Modal */}
-      <SeriesModal
-        series={selectedSeries}
-        opened={seriesModalOpened}
-        onClose={closeSeriesModal}
-      />
+      <ErrorBoundary>
+        <Suspense fallback={<LoadingOverlay />}>
+          <SeriesModal
+            series={selectedSeries}
+            opened={seriesModalOpened}
+            onClose={closeSeriesModal}
+          />
+        </Suspense>
+      </ErrorBoundary>
 
       {/* VOD Details Modal */}
-      <VODModal
-        vod={selectedVOD}
-        opened={vodModalOpened}
-        onClose={closeVODModal}
-      />
+      <ErrorBoundary>
+        <Suspense fallback={<LoadingOverlay />}>
+          <VODModal
+            vod={selectedVOD}
+            opened={vodModalOpened}
+            onClose={closeVODModal}
+          />
+        </Suspense>
+      </ErrorBoundary>
     </Box>
   );
 };

@@ -1,5 +1,4 @@
-// frontend/src/App.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   BrowserRouter as Router,
   Route,
@@ -15,11 +14,12 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import ConnectPage from './pages/Connect';
+import ConnectLogsPage from './pages/ConnectLogs';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
-import useLogosStore from './store/logos';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
@@ -40,14 +40,16 @@ const defaultRoute = '/channels';
 
 const App = () => {
   const [open, setOpen] = useState(true);
-  const [backgroundLoadingStarted, setBackgroundLoadingStarted] =
-    useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isInitialized = useAuthStore((s) => s.isInitialized);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
+
+  const authCheckStarted = useRef(false);
+  const superuserCheckStarted = useRef(false);
 
   const toggleDrawer = () => {
     setOpen(!open);
@@ -55,10 +57,13 @@ const App = () => {
 
   // Check if a superuser exists on first load.
   useEffect(() => {
+    if (superuserCheckStarted.current) return;
+    superuserCheckStarted.current = true;
+
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
-        if (!response.superuser_exists) {
+        if (response && response.superuser_exists === false) {
           setSuperuserExists(false);
         }
       } catch (error) {
@@ -72,20 +77,19 @@ const App = () => {
       }
     }
     checkSuperuser();
-  }, []);
+  }, [setSuperuserExists]);
 
   // Authentication check
   useEffect(() => {
+    if (authCheckStarted.current) return;
+    authCheckStarted.current = true;
+
     const checkAuth = async () => {
       try {
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
-          // Start background logo loading after app is fully initialized (only once)
-          if (!backgroundLoadingStarted) {
-            setBackgroundLoadingStarted(true);
-            useLogosStore.getState().startBackgroundLoading();
-          }
+          // Logos are now loaded at the end of initData, no need for background loading
         } else {
           await logout();
         }
@@ -96,7 +100,7 @@ const App = () => {
     };
 
     checkAuth();
-  }, [initializeAuth, initData, logout, backgroundLoadingStarted]);
+  }, [initializeAuth, initData, logout]);
 
   return (
     <MantineProvider
@@ -112,14 +116,15 @@ const App = () => {
               height: 0,
             }}
             navbar={{
-              width: isAuthenticated
-                ? open
-                  ? drawerWidth
-                  : miniDrawerWidth
-                : 0,
+              width:
+                isAuthenticated && isInitialized
+                  ? open
+                    ? drawerWidth
+                    : miniDrawerWidth
+                  : 0,
             }}
           >
-            {isAuthenticated && (
+            {isAuthenticated && isInitialized && (
               <Sidebar
                 drawerWidth={drawerWidth}
                 miniDrawerWidth={miniDrawerWidth}
@@ -141,7 +146,7 @@ const App = () => {
               >
                 <Box sx={{ p: 2, flex: 1, overflow: 'auto' }}>
                   <Routes>
-                    {isAuthenticated ? (
+                    {isAuthenticated && isInitialized ? (
                       <>
                         <Route path="/channels" element={<Channels />} />
                         <Route path="/sources" element={<ContentSources />} />
@@ -149,6 +154,11 @@ const App = () => {
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
                         <Route path="/plugins" element={<PluginsPage />} />
+                        <Route path="/connect" element={<ConnectPage />} />
+                        <Route
+                          path="/connect/logs"
+                          element={<ConnectLogsPage />}
+                        />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
@@ -161,7 +171,11 @@ const App = () => {
                       path="*"
                       element={
                         <Navigate
-                          to={isAuthenticated ? defaultRoute : '/login'}
+                          to={
+                            isAuthenticated && isInitialized
+                              ? defaultRoute
+                              : '/login'
+                          }
                           replace
                         />
                       }

@@ -36,7 +36,7 @@
     "model": "core.streamprofile",
     "pk": 1,
     "fields": {
-      "profile_name": "ffmpeg",
+      "profile_name": "FFmpeg",
       "command": "ffmpeg",
       "parameters": "-i {streamUrl} -c:a copy -c:v copy -f mpegts pipe:1",
       "is_active": true,
@@ -46,9 +46,19 @@
   {
     "model": "core.streamprofile",
     "fields": {
-      "profile_name": "streamlink",
+      "profile_name": "Streamlink",
       "command": "streamlink",
       "parameters": "{streamUrl} best --stdout",
+      "is_active": true,
+      "user_agent": "1"
+    }
+  },
+  {
+    "model": "core.streamprofile",
+    "fields": {
+      "profile_name": "VLC",
+      "command": "cvlc",
+      "parameters": "-vv -I dummy --no-video-title-show --http-user-agent {userAgent} {streamUrl} --sout #standard{access=file,mux=ts,dst=-}",
       "is_active": true,
       "user_agent": "1"
     }

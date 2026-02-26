@@ -28,6 +28,7 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import M3UFilters from './M3UFilters';
+import ScheduleInput from './ScheduleInput';
 
 const M3U = ({
   m3uAccount = null,
@@ -49,6 +50,7 @@ const M3U = ({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [showCredentialFields, setShowCredentialFields] = useState(false);
+  const [scheduleType, setScheduleType] = useState('interval');
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -59,6 +61,7 @@ const M3U = ({
       is_active: true,
       max_streams: 0,
       refresh_interval: 24,
+      cron_expression: '',
       account_type: 'XC',
       create_epg: false,
       username: '',
@@ -71,12 +74,10 @@ const M3U = ({
     validate: {
       name: isNotEmpty('Please select a name'),
       user_agent: isNotEmpty('Please select a user-agent'),
-      refresh_interval: isNotEmpty('Please specify a refresh interval'),
     },
   });
 
   useEffect(() => {
-    console.log(m3uAccount);
     if (m3uAccount) {
       setPlaylist(m3uAccount);
       form.setValues({
@@ -86,6 +87,7 @@ const M3U = ({
         user_agent: m3uAccount.user_agent ? `${m3uAccount.user_agent}` : '0',
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
+        cron_expression: m3uAccount.cron_expression || '',
         account_type: m3uAccount.account_type,
         username: m3uAccount.username ?? '',
         password: '',
@@ -101,6 +103,13 @@ const M3U = ({
         enable_vod: m3uAccount.enable_vod || false,
       });
 
+      // Determine schedule type from existing data
+      setScheduleType(
+        m3uAccount.cron_expression && m3uAccount.cron_expression.trim() !== ''
+          ? 'cron'
+          : 'interval'
+      );
+
       if (m3uAccount.account_type == 'XC') {
         setShowCredentialFields(true);
       } else {
@@ -109,6 +118,7 @@ const M3U = ({
     } else {
       setPlaylist(null);
       form.reset();
+      setScheduleType('interval');
     }
   }, [m3uAccount]);
 
@@ -120,6 +130,17 @@ const M3U = ({
 
   const onSubmit = async () => {
     const { create_epg, ...values } = form.getValues();
+
+    // Determine which schedule type is active based on field values
+    const hasCronExpression =
+      values.cron_expression && values.cron_expression.trim() !== '';
+
+    // Clear the field that isn't active based on actual field values
+    if (hasCronExpression) {
+      values.refresh_interval = 0;
+    } else {
+      values.cron_expression = '';
+    }
 
     if (values.account_type == 'XC' && values.password == '') {
       // If account XC and no password input, assuming no password change
@@ -148,7 +169,7 @@ const M3U = ({
         API.addEPG({
           name: values.name,
           source_type: 'xmltv',
-          url: `${values.server_url}/xmltv.php?username=${values.username}&password=${values.password}`,
+          url: `${new URL(values.server_url).origin}/xmltv.php?username=${values.username}&password=${values.password}`,
           api_key: '',
           is_active: true,
           refresh_interval: 24,
@@ -377,17 +398,25 @@ const M3U = ({
                 )}
               />
 
-              <NumberInput
-                label="Refresh Interval (hours)"
-                description={
+              <ScheduleInput
+                scheduleType={scheduleType}
+                onScheduleTypeChange={setScheduleType}
+                intervalValue={form.getValues().refresh_interval}
+                onIntervalChange={(v) =>
+                  form.setFieldValue('refresh_interval', v)
+                }
+                cronValue={form.getValues().cron_expression}
+                onCronChange={(expr) =>
+                  form.setFieldValue('cron_expression', expr)
+                }
+                intervalLabel="Refresh Interval (hours)"
+                intervalDescription={
                   <>
                     How often to automatically refresh M3U data
                     <br />
                     (0 to disable automatic refreshes)
                   </>
                 }
-                {...form.getInputProps('refresh_interval')}
-                key={form.key('refresh_interval')}
               />
 
               <NumberInput

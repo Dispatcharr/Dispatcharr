@@ -1,7 +1,4 @@
 import { create } from 'zustand';
-import api from '../api';
-import { notifications } from '@mantine/notifications';
-import API from '../api';
 
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
@@ -15,6 +12,7 @@ const useChannelsTableStore = create((set, get) => ({
   },
   selectedChannelIds: [],
   allQueryIds: [],
+  isUnlocked: false,
 
   queryChannels: ({ results, count }, params) => {
     set((state) => {
@@ -52,6 +50,18 @@ const useChannelsTableStore = create((set, get) => ({
   setSorting: (sorting) => {
     set((state) => ({
       sorting,
+    }));
+  },
+
+  setIsUnlocked: (isUnlocked) => {
+    set({ isUnlocked });
+  },
+
+  updateChannel: (updatedChannel) => {
+    set((state) => ({
+      channels: state.channels.map((channel) =>
+        channel.id === updatedChannel.id ? updatedChannel : channel
+      ),
     }));
   },
 }));

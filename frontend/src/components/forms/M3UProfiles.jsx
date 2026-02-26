@@ -38,6 +38,7 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [profileToDelete, setProfileToDelete] = useState(null);
+  const [deletingProfile, setDeletingProfile] = useState(false);
   const [accountInfoOpen, setAccountInfoOpen] = useState(false);
   const [selectedProfileForInfo, setSelectedProfileForInfo] = useState(null);
 
@@ -88,11 +89,13 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
 
   const executeDeleteProfile = async (id) => {
     if (!playlist || !playlist.id) return;
+    setDeletingProfile(true);
     try {
       await API.deleteM3UProfile(playlist.id, id);
-      setConfirmDeleteOpen(false);
     } catch (error) {
       console.error('Error deleting profile:', error);
+    } finally {
+      setDeletingProfile(false);
       setConfirmDeleteOpen(false);
     }
   };
@@ -359,6 +362,7 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteProfile(deleteTarget)}
+        loading={deletingProfile}
         title="Confirm Profile Deletion"
         message={
           profileToDelete ? (

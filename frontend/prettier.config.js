@@ -7,4 +7,5 @@ export default {
   printWidth: 80, // Wrap lines at 80 characters
   bracketSpacing: true, // Add spaces inside object braces
   arrowParens: 'always', // Always include parentheses around arrow function parameters
+  endOfLine: 'lf', // Enforce LF for all files
 };

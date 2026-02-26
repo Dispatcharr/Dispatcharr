@@ -1,11 +1,110 @@
 import { create } from 'zustand';
 import api from '../api';
-import { notifications } from '@mantine/notifications';
+import { showNotification } from '../utils/notificationUtils.js';
 
 const defaultProfiles = { 0: { id: '0', name: 'All', channels: new Set() } };
 
+const reduceChannels = (channels) => {
+  const channelsByUUID = {};
+  const channelsByID = channels.reduce((acc, channel) => {
+    acc[channel.id] = channel;
+    channelsByUUID[channel.uuid] = channel.id;
+    return acc;
+  }, {});
+  return { channelsByUUID, channelsByID };
+};
+
+const showNotificationIfNewChannel = (
+  currentStats,
+  oldChannels,
+  ch,
+  channelsByUUID,
+  channels
+) => {
+  if (currentStats.channels) {
+    if (oldChannels[ch.channel_id] === undefined) {
+      // Add null checks to prevent accessing properties on undefined
+      const channelId = channelsByUUID[ch.channel_id];
+      const channel = channelId ? channels[channelId] : null;
+
+      if (channel) {
+        showNotification({
+          title: 'New channel streaming',
+          message: channel.name,
+          color: 'blue.5',
+        });
+      }
+    }
+  }
+};
+
+const showNotificationIfNewClient = (currentStats, oldClients, client) => {
+  // This check prevents the notifications if streams are active on page load
+  if (currentStats.channels) {
+    if (oldClients[client.client_id] === undefined) {
+      showNotification({
+        title: 'New client started streaming',
+        message: `Client streaming from ${client.ip_address}`,
+        color: 'blue.5',
+      });
+    }
+  }
+};
+
+const showNotificationIfChannelStopped = (
+  currentStats,
+  oldChannels,
+  newChannels,
+  channelsByUUID,
+  channels
+) => {
+  // This check prevents the notifications if streams are active on page load
+  if (currentStats.channels) {
+    for (const uuid in oldChannels) {
+      if (newChannels[uuid] === undefined) {
+        // Add null check for channel name
+        const channelId = channelsByUUID[uuid];
+        const channel = channelId && channels[channelId];
+
+        if (channel) {
+          showNotification({
+            title: 'Channel streaming stopped',
+            message: channel.name,
+            color: 'blue.5',
+          });
+        } else {
+          showNotification({
+            title: 'Channel streaming stopped',
+            message: `Channel (${uuid})`,
+            color: 'blue.5',
+          });
+        }
+      }
+    }
+  }
+};
+
+const showNotificationIfClientStopped = (
+  currentStats,
+  oldClients,
+  newClients
+) => {
+  if (currentStats.channels) {
+    for (const clientId in oldClients) {
+      if (newClients[clientId] === undefined) {
+        showNotification({
+          title: 'Client stopped streaming',
+          message: `Client stopped streaming from ${oldClients[clientId].ip_address}`,
+          color: 'blue.5',
+        });
+      }
+    }
+  }
+};
+
 const useChannelsStore = create((set, get) => ({
   channels: [],
+  channelIds: [],
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
@@ -24,16 +123,24 @@ const useChannelsStore = create((set, get) => ({
     set({ forceUpdate: new Date() });
   },
 
+  fetchChannelIds: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const channelIds = await api.getAllChannelIds();
+      set({
+        channelIds,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ error: error.message, isLoading: false });
+    }
+  },
+
   fetchChannels: async () => {
     set({ isLoading: true, error: null });
     try {
       const channels = await api.getChannels();
-      const channelsByUUID = {};
-      const channelsByID = channels.reduce((acc, channel) => {
-        acc[channel.id] = channel;
-        channelsByUUID[channel.uuid] = channel.id;
-        return acc;
-      }, {});
+      const { channelsByUUID, channelsByID } = reduceChannels(channels);
       set({
         channels: channelsByID,
         channelsByUUID,
@@ -113,16 +220,7 @@ const useChannelsStore = create((set, get) => ({
 
   addChannels: (newChannels) =>
     set((state) => {
-      const channelsByUUID = {};
-      const profileChannels = new Set();
-
-      const channelsByID = newChannels.reduce((acc, channel) => {
-        acc[channel.id] = channel;
-        channelsByUUID[channel.uuid] = channel.id;
-        profileChannels.add(channel.id);
-
-        return acc;
-      }, {});
+      const { channelsByUUID, channelsByID } = reduceChannels(newChannels);
 
       // Don't automatically add to all profiles anymore - let the backend handle profile assignments
       // Just maintain the existing profile structure
@@ -160,12 +258,8 @@ const useChannelsStore = create((set, get) => ({
       );
       return;
     }
-    const channelsByUUID = {};
-    const updatedChannels = channels.reduce((acc, chan) => {
-      channelsByUUID[chan.uuid] = chan.id;
-      acc[chan.id] = chan;
-      return acc;
-    }, {});
+
+    const { channelsByUUID, updatedChannels } = reduceChannels(channels);
 
     set((state) => ({
       channels: {
@@ -183,8 +277,10 @@ const useChannelsStore = create((set, get) => ({
     set((state) => {
       const updatedChannels = { ...state.channels };
       const channelsByUUID = { ...state.channelsByUUID };
+      const channelIdsSet = new Set(state.channelIds); // Convert to Set for O(1) lookups
       for (const id of channelIds) {
         delete updatedChannels[id];
+        channelIdsSet.delete(id);
 
         for (const uuid in channelsByUUID) {
           if (channelsByUUID[uuid] == id) {
@@ -194,7 +290,12 @@ const useChannelsStore = create((set, get) => ({
         }
       }
 
-      return { channels: updatedChannels, channelsByUUID };
+      console.log(channelIdsSet);
+      return {
+        channels: updatedChannels,
+        channelsByUUID,
+        channelIds: Array.from(channelIdsSet),
+      };
     });
   },
 
@@ -249,12 +350,9 @@ const useChannelsStore = create((set, get) => ({
         delete updatedProfiles[id];
       }
 
-      let additionalUpdates = {};
-      if (profileIds.includes(state.selectedProfileId)) {
-        additionalUpdates = {
-          selectedProfileId: '0',
-        };
-      }
+      const additionalUpdates = profileIds.includes(state.selectedProfileId)
+        ? { selectedProfileId: '0' }
+        : {};
 
       return {
         profiles: updatedProfiles,
@@ -296,14 +394,12 @@ const useChannelsStore = create((set, get) => ({
         channels: currentChannelsSet,
       };
 
-      const updates = {
+      return {
         profiles: {
           ...state.profiles,
           [profileId]: updatedProfile,
         },
       };
-
-      return updates;
     }),
 
   setChannelsPageSelection: (channelsPageSelection) =>
@@ -324,71 +420,36 @@ const useChannelsStore = create((set, get) => ({
         channelsByUUID,
       } = state;
       const newClients = {};
+
       const newChannels = stats.channels.reduce((acc, ch) => {
         acc[ch.channel_id] = ch;
-        if (currentStats.channels) {
-          if (oldChannels[ch.channel_id] === undefined) {
-            // Add null checks to prevent accessing properties on undefined
-            const channelId = channelsByUUID[ch.channel_id];
-            const channel = channelId ? channels[channelId] : null;
-
-            if (channel) {
-              notifications.show({
-                title: 'New channel streaming',
-                message: channel.name,
-                color: 'blue.5',
-              });
-            }
-          }
-        }
-        ch.clients.map((client) => {
-          newClients[client.client_id] = client;
-          // This check prevents the notifications if streams are active on page load
-          if (currentStats.channels) {
-            if (oldClients[client.client_id] === undefined) {
-              notifications.show({
-                title: 'New client started streaming',
-                message: `Client streaming from ${client.ip_address}`,
-                color: 'blue.5',
-              });
-            }
-          }
-        });
         return acc;
       }, {});
-      // This check prevents the notifications if streams are active on page load
-      if (currentStats.channels) {
-        for (const uuid in oldChannels) {
-          if (newChannels[uuid] === undefined) {
-            // Add null check for channel name
-            const channelId = channelsByUUID[uuid];
-            const channel = channelId && channels[channelId];
 
-            if (channel) {
-              notifications.show({
-                title: 'Channel streaming stopped',
-                message: channel.name,
-                color: 'blue.5',
-              });
-            } else {
-              notifications.show({
-                title: 'Channel streaming stopped',
-                message: `Channel (${uuid})`,
-                color: 'blue.5',
-              });
-            }
-          }
-        }
-        for (const clientId in oldClients) {
-          if (newClients[clientId] === undefined) {
-            notifications.show({
-              title: 'Client stopped streaming',
-              message: `Client stopped streaming from ${oldClients[clientId].ip_address}`,
-              color: 'blue.5',
-            });
-          }
-        }
-      }
+      stats.channels.forEach((ch) => {
+        showNotificationIfNewChannel(
+          currentStats,
+          oldChannels,
+          ch,
+          channelsByUUID,
+          channels
+        );
+
+        ch.clients.forEach((client) => {
+          newClients[client.client_id] = client;
+          showNotificationIfNewClient(currentStats, oldClients, client);
+        });
+      });
+
+      showNotificationIfChannelStopped(
+        currentStats,
+        oldChannels,
+        newChannels,
+        channelsByUUID,
+        channels
+      );
+      showNotificationIfClientStopped(currentStats, oldClients, newClients);
+
       return {
         stats,
         activeChannels: newChannels,
@@ -402,6 +463,7 @@ const useChannelsStore = create((set, get) => ({
     try {
       set({
         recordings: await api.getRecordings(),
+        isLoading: false,
       });
     } catch (error) {
       console.error('Failed to fetch recordings:', error);

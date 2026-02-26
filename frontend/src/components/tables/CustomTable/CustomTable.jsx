@@ -1,13 +1,10 @@
 import { Box, Flex } from '@mantine/core';
 import CustomTableHeader from './CustomTableHeader';
 import { useCallback, useState, useRef, useMemo } from 'react';
-import { flexRender } from '@tanstack/react-table';
-import table from '../../../helpers/table';
 import CustomTableBody from './CustomTableBody';
-import useLocalStorage from '../../../hooks/useLocalStorage';
 
 const CustomTable = ({ table }) => {
-  const [tableSize, _] = useLocalStorage('table-size', 'default');
+  const tableSize = table?.tableSize ?? 'default';
 
   // Get column sizing state for dependency tracking
   const columnSizing = table.getState().columnSizing;
@@ -34,7 +31,6 @@ const CustomTable = ({ table }) => {
         minWidth: `${minTableWidth}px`,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
       }}
     >
       <CustomTableHeader
@@ -47,6 +43,8 @@ const CustomTable = ({ table }) => {
         }
         selectedTableIds={table.selectedTableIds}
         tableCellProps={table.tableCellProps}
+        headerPinned={table.headerPinned}
+        enableDragDrop={table.enableDragDrop}
       />
       <CustomTableBody
         getRowModel={table.getRowModel}
@@ -55,9 +53,10 @@ const CustomTable = ({ table }) => {
         expandedRowRenderer={table.expandedRowRenderer}
         renderBodyCell={table.renderBodyCell}
         getExpandedRowHeight={table.getExpandedRowHeight}
-        getRowStyles={table.getRowStyles} // Pass the getRowStyles function
+        getRowStyles={table.getRowStyles}
         tableBodyProps={table.tableBodyProps}
         tableCellProps={table.tableCellProps}
+        enableDragDrop={table.enableDragDrop}
       />
     </Box>
   );

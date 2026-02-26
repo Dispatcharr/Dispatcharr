@@ -12,13 +12,20 @@ import {
   Stack,
   MultiSelect,
   ActionIcon,
-  NumberInput,
+  Switch,
+  Box,
+  Tooltip,
+  Grid,
+  SimpleGrid,
+  useMantineTheme,
 } from '@mantine/core';
-import { RotateCcwKey } from 'lucide-react';
+import { RotateCcwKey, RotateCw, X } from 'lucide-react';
+import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
+import { copyToClipboard } from '../../utils';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -27,6 +34,11 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
+  const [generating, setGenerating] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState(null);
+  const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
+
+  const theme = useMantineTheme();
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -39,6 +51,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       password: '',
       xc_password: '',
       channel_profiles: [],
+      hide_adult_content: false,
     },
 
     validate: (values) => ({
@@ -81,6 +94,10 @@ const User = ({ user = null, isOpen, onClose }) => {
     customProps.xc_password = values.xc_password || '';
     delete values.xc_password;
 
+    // Save hide_adult_content in custom_properties
+    customProps.hide_adult_content = values.hide_adult_content || false;
+    delete values.hide_adult_content;
+
     values.custom_properties = customProps;
 
     // If 'All' is included, clear this and we assume access to all channels
@@ -108,6 +125,7 @@ const User = ({ user = null, isOpen, onClose }) => {
     }
 
     form.reset();
+    setUserAPIKey(null);
     onClose();
   };
 
@@ -126,11 +144,14 @@ const User = ({ user = null, isOpen, onClose }) => {
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
+        hide_adult_content: customProps.hide_adult_content || false,
       });
 
       if (customProps.xc_password) {
         setEnableXC(true);
       }
+
+      setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
     }
@@ -146,8 +167,65 @@ const User = ({ user = null, isOpen, onClose }) => {
     return <></>;
   }
 
-  const showPermissions =
-    authUser.user_level == USER_LEVELS.ADMIN && authUser.id !== user?.id;
+  const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
+  const isEditingSelf = authUser.id === user?.id;
+  const showPermissions = isAdmin && !isEditingSelf;
+
+  const canGenerateKey =
+    authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
+
+  const onGenerateKey = async () => {
+    if (!canGenerateKey) {
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const payload = {};
+      if (authUser.user_level == USER_LEVELS.ADMIN && user?.id) {
+        payload.user_id = user.id;
+      }
+
+      const resp = await API.generateApiKey(payload);
+      const newKey = resp && (resp.key || resp.raw_key);
+      if (newKey) {
+        setGeneratedKey(newKey);
+        setUserAPIKey(newKey);
+      }
+    } catch (e) {
+      // API shows notifications
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const onRevokeKey = async () => {
+    if (!canGenerateKey) return;
+
+    setGenerating(true);
+    try {
+      const payload = {};
+      if (authUser.user_level == USER_LEVELS.ADMIN && user?.id) {
+        payload.user_id = user.id;
+      }
+
+      const resp = await API.revokeApiKey(payload);
+      // backend returns { success: true } - clear local state
+      if (resp && resp.success) {
+        setGeneratedKey(null);
+        setUserAPIKey(null);
+
+        // If we're revoking the current authenticated user's key, update auth store
+        if (user?.id && authUser?.id === user.id) {
+          setUser({ ...authUser, api_key: null });
+        }
+      }
+    } catch (e) {
+      // API shows notifications
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
@@ -191,6 +269,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 key={form.key('user_level')}
               />
             )}
+
           </Stack>
 
           <Stack gap="xs" style={{ flex: 1 }}>
@@ -239,6 +318,79 @@ const User = ({ user = null, isOpen, onClose }) => {
                   value: `${profile.id}`,
                 }))}
               />
+            )}
+
+            {showPermissions && (
+              <Box>
+                <Tooltip
+                  label="Hide channels marked as mature content (admin users not affected)"
+                  position="top"
+                  withArrow
+                >
+                  <Switch
+                    label="Hide Mature Content"
+                    {...form.getInputProps('hide_adult_content', {
+                      type: 'checkbox',
+                    })}
+                    key={form.key('hide_adult_content')}
+                  />
+                </Tooltip>
+              </Box>
+            )}
+
+            {canGenerateKey && (
+              <Stack>
+                {userAPIKey && (
+                  <TextInput
+                    label="API Key"
+                    disabled={true}
+                    value={userAPIKey}
+                    rightSection={
+                      <ActionIcon
+                        variant="transparent"
+                        size="sm"
+                        color="white"
+                        onClick={() =>
+                          copyToClipboard(userAPIKey, {
+                            successTitle: 'API Key Copied!',
+                            successMessage:
+                              'The API Key has been copied to your clipboard.',
+                          })
+                        }
+                      >
+                        <Copy />
+                      </ActionIcon>
+                    }
+                  />
+                )}
+
+                <Group gap="xs" grow>
+                  <Button
+                    leftSection={<Key size={14} />}
+                    size="xs"
+                    onClick={onGenerateKey}
+                    loading={generating}
+                    variant="light"
+                    fullWidth
+                  >
+                    {userAPIKey ? 'Regenerate API Key' : 'Generate API Key'}
+                  </Button>
+
+                  {userAPIKey && (
+                    <Button
+                      leftSection={<X size={14} />}
+                      size="xs"
+                      onClick={onRevokeKey}
+                      loading={generating}
+                      color={theme.colors.red[5]}
+                      variant="light"
+                      fullWidth
+                    >
+                      Revoke API Key
+                    </Button>
+                  )}
+                </Group>
+              </Stack>
             )}
           </Stack>
         </Group>

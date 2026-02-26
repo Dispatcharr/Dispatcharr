@@ -5,14 +5,7 @@ import useUsersStore from '../../store/users';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
-import {
-  SquarePlus,
-  SquareMinus,
-  SquarePen,
-  EllipsisVertical,
-  Eye,
-  EyeOff,
-} from 'lucide-react';
+import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff } from 'lucide-react';
 import {
   ActionIcon,
   Box,
@@ -22,14 +15,13 @@ import {
   Flex,
   Group,
   useMantineTheme,
-  Menu,
-  UnstyledButton,
   LoadingOverlay,
   Stack,
 } from '@mantine/core';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
 
 const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
@@ -78,6 +70,7 @@ const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
 
 const UsersTable = () => {
   const theme = useMantineTheme();
+  const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
   /**
    * STORES
@@ -96,6 +89,7 @@ const UsersTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [userToDelete, setUserToDelete] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState({});
 
   /**
@@ -110,9 +104,14 @@ const UsersTable = () => {
 
   const executeDeleteUser = useCallback(async (id) => {
     setIsLoading(true);
-    await API.deleteUser(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteUser(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
   }, []);
 
   const editUser = useCallback(async (user = null) => {
@@ -204,9 +203,7 @@ const UsersTable = () => {
         cell: ({ getValue }) => {
           const date = getValue();
           return (
-            <Text size="sm">
-              {date ? new Date(date).toLocaleDateString() : '-'}
-            </Text>
+            <Text size="sm">{date ? format(date, fullDateFormat) : '-'}</Text>
           );
         },
       },
@@ -218,7 +215,7 @@ const UsersTable = () => {
           const date = getValue();
           return (
             <Text size="sm">
-              {date ? new Date(date).toLocaleString() : 'Never'}
+              {date ? format(date, fullDateTimeFormat) : 'Never'}
             </Text>
           );
         },
@@ -274,7 +271,15 @@ const UsersTable = () => {
         ),
       },
     ],
-    [theme, editUser, deleteUser, visiblePasswords, togglePasswordVisibility]
+    [
+      theme,
+      editUser,
+      deleteUser,
+      visiblePasswords,
+      togglePasswordVisibility,
+      fullDateFormat,
+      fullDateTimeFormat,
+    ]
   );
 
   const closeUserForm = () => {
@@ -406,6 +411,7 @@ const UsersTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteUser(deleteTarget)}
+        loading={deleting}
         title="Confirm User Deletion"
         message={
           userToDelete ? (

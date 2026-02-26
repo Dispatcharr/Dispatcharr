@@ -11,6 +11,7 @@ import {
   MultiSelect,
   Group,
   TextInput,
+  Loader,
 } from '@mantine/core';
 import { DateTimePicker, TimeInput, DatePickerInput } from '@mantine/dates';
 import { CircleAlert } from 'lucide-react';
@@ -44,7 +45,11 @@ const toIsoIfDate = (value) => {
 const toTimeString = (value) => {
   if (!value) return '00:00';
   if (typeof value === 'string') {
-    const parsed = dayjs(value, ['HH:mm', 'hh:mm A', 'h:mm A', 'HH:mm:ss'], true);
+    const parsed = dayjs(
+      value,
+      ['HH:mm', 'hh:mm A', 'h:mm A', 'HH:mm:ss'],
+      true
+    );
     if (parsed.isValid()) return parsed.format('HH:mm');
     return value;
   }
@@ -77,10 +82,18 @@ const timeChange = (setter) => (valOrEvent) => {
   else if (valOrEvent?.currentTarget) setter(valOrEvent.currentTarget.value);
 };
 
-const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) => {
-  const channels = useChannelsStore((s) => s.channels);
+const RecordingModal = ({
+  recording = null,
+  channel = null,
+  isOpen,
+  onClose,
+}) => {
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
+
+  // All channels loaded via lightweight summary API
+  const [allChannels, setAllChannels] = useState([]);
+  const [isChannelsLoading, setIsChannelsLoading] = useState(false);
 
   const [mode, setMode] = useState('single');
   const [submitting, setSubmitting] = useState(false);
@@ -93,9 +106,17 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
   const singleForm = useForm({
     mode: 'controlled',
     initialValues: {
-      channel_id: recording ? `${recording.channel}` : channel ? `${channel.id}` : '',
-      start_time: recording ? asDate(recording.start_time) || defaultStart : defaultStart,
-      end_time: recording ? asDate(recording.end_time) || defaultEnd : defaultEnd,
+      channel_id: recording
+        ? `${recording.channel}`
+        : channel
+          ? `${channel.id}`
+          : '',
+      start_time: recording
+        ? asDate(recording.start_time) || defaultStart
+        : defaultStart,
+      end_time: recording
+        ? asDate(recording.end_time) || defaultEnd
+        : defaultEnd,
     },
     validate: {
       channel_id: isNotEmpty('Select a channel'),
@@ -126,13 +147,22 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
     },
     validate: {
       channel_id: isNotEmpty('Select a channel'),
-      days_of_week: (value) => (value && value.length ? null : 'Pick at least one day'),
+      days_of_week: (value) =>
+        value && value.length ? null : 'Pick at least one day',
       start_time: (value) => (value ? null : 'Select a start time'),
       end_time: (value, values) => {
         if (!value) return 'Select an end time';
-        const start = dayjs(values.start_time, ['HH:mm', 'hh:mm A', 'h:mm A'], true);
+        const start = dayjs(
+          values.start_time,
+          ['HH:mm', 'hh:mm A', 'h:mm A'],
+          true
+        );
         const end = dayjs(value, ['HH:mm', 'hh:mm A', 'h:mm A'], true);
-        if (start.isValid() && end.isValid() && end.diff(start, 'minute') === 0) {
+        if (
+          start.isValid() &&
+          end.isValid() &&
+          end.diff(start, 'minute') === 0
+        ) {
           return 'End time must differ from start time';
         }
         return null;
@@ -184,16 +214,44 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, recording, channel]);
 
+  // Load all channels via lightweight summary API when modal opens
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isOpen) return;
+      try {
+        setIsChannelsLoading(true);
+        const chans = await API.getChannelsSummary();
+        if (cancelled) return;
+        setAllChannels(Array.isArray(chans) ? chans : []);
+      } catch (e) {
+        console.warn('Failed to load channels for recording form', e);
+        if (!cancelled) setAllChannels([]);
+      } finally {
+        if (!cancelled) setIsChannelsLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
   const channelOptions = useMemo(() => {
-    const list = Object.values(channels || {});
+    const list = Array.isArray(allChannels) ? [...allChannels] : [];
     list.sort((a, b) => {
       const aNum = Number(a.channel_number) || 0;
       const bNum = Number(b.channel_number) || 0;
       if (aNum === bNum) return (a.name || '').localeCompare(b.name || '');
       return aNum - bNum;
     });
-    return list.map((item) => ({ value: `${item.id}`, label: item.name || `Channel ${item.id}` }));
-  }, [channels]);
+    return list.map((item) => ({
+      value: `${item.id}`,
+      label: item.channel_number
+        ? `${item.channel_number} - ${item.name || `Channel ${item.id}`}`
+        : item.name || `Channel ${item.id}`,
+    }));
+  }, [allChannels]);
 
   const resetForms = () => {
     singleForm.reset();
@@ -287,7 +345,8 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
         icon={<CircleAlert />}
         style={{ paddingBottom: 5, marginBottom: 12 }}
       >
-        Recordings may fail if active streams or overlapping recordings use up all available tuners.
+        Recordings may fail if active streams or overlapping recordings use up
+        all available tuners.
       </Alert>
 
       <Stack gap="md">
@@ -311,6 +370,10 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                disabled={isChannelsLoading}
+                rightSection={
+                  isChannelsLoading ? <Loader size="xs" color="blue" /> : null
+                }
               />
             ) : (
               <Select
@@ -320,6 +383,7 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
                 placeholder="Select channel"
                 searchable
                 data={channelOptions}
+                rightSection={isChannelsLoading ? 'Loading…' : null}
               />
             )}
 
@@ -330,14 +394,24 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
                   key={singleForm.key('start_time')}
                   label="Start"
                   valueFormat="MMM D, YYYY h:mm A"
-                  timeInputProps={{ format: '12', withSeconds: false, amLabel: 'AM', pmLabel: 'PM' }}
+                  timeInputProps={{
+                    format: '12',
+                    withSeconds: false,
+                    amLabel: 'AM',
+                    pmLabel: 'PM',
+                  }}
                 />
                 <DateTimePicker
                   {...singleForm.getInputProps('end_time')}
                   key={singleForm.key('end_time')}
                   label="End"
                   valueFormat="MMM D, YYYY h:mm A"
-                  timeInputProps={{ format: '12', withSeconds: false, amLabel: 'AM', pmLabel: 'PM' }}
+                  timeInputProps={{
+                    format: '12',
+                    withSeconds: false,
+                    amLabel: 'AM',
+                    pmLabel: 'PM',
+                  }}
                 />
               </>
             ) : (
@@ -364,14 +438,19 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
                     label="Start date"
                     value={recurringForm.values.start_date}
                     onChange={(value) =>
-                      recurringForm.setFieldValue('start_date', value || new Date())
+                      recurringForm.setFieldValue(
+                        'start_date',
+                        value || new Date()
+                      )
                     }
                     valueFormat="MMM D, YYYY"
                   />
                   <DatePickerInput
                     label="End date"
                     value={recurringForm.values.end_date}
-                    onChange={(value) => recurringForm.setFieldValue('end_date', value)}
+                    onChange={(value) =>
+                      recurringForm.setFieldValue('end_date', value)
+                    }
                     valueFormat="MMM D, YYYY"
                     minDate={recurringForm.values.start_date || undefined}
                   />
@@ -382,11 +461,14 @@ const RecordingModal = ({ recording = null, channel = null, isOpen, onClose }) =
                     label="Start time"
                     value={recurringForm.values.start_time}
                     onChange={timeChange((val) =>
-                      recurringForm.setFieldValue('start_time', toTimeString(val))
+                      recurringForm.setFieldValue(
+                        'start_time',
+                        toTimeString(val)
+                      )
                     )}
                     onBlur={() => recurringForm.validateField('start_time')}
                     withSeconds={false}
-                    format="12"                     // shows 12-hour (so "00:00" renders "12:00 AM")
+                    format="12" // shows 12-hour (so "00:00" renders "12:00 AM")
                     inputMode="numeric"
                     amLabel="AM"
                     pmLabel="PM"

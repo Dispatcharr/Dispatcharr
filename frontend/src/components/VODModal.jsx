@@ -268,13 +268,9 @@ const VODModal = ({ vod, opened, onClose }) => {
   const handleCopyLink = async () => {
     const streamUrl = getStreamUrl();
     if (!streamUrl) return;
-    const success = await copyToClipboard(streamUrl);
-    notifications.show({
-      title: success ? 'Link Copied!' : 'Copy Failed',
-      message: success
-        ? 'Stream link copied to clipboard'
-        : 'Failed to copy link to clipboard',
-      color: success ? 'green' : 'red',
+    await copyToClipboard(streamUrl, {
+      successTitle: 'Link Copied!',
+      successMessage: 'Stream link copied to clipboard',
     });
   };
 

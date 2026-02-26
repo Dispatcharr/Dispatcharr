@@ -6,17 +6,17 @@ export PGID=${PGID:-1000}
 
 # Check if group with PGID exists
 if getent group "$PGID" >/dev/null 2>&1; then
-    # Group exists, check if it's named 'dispatch'
+    # Group exists, check if it's named correctly (should match POSTGRES_USER)
     existing_group=$(getent group "$PGID" | cut -d: -f1)
-    if [ "$existing_group" != "dispatch" ]; then
-        # Rename the existing group to 'dispatch'
-        groupmod -n "dispatch" "$existing_group"
-        echo "Group $existing_group with GID $PGID renamed to dispatch"
+    if [ "$existing_group" != "$POSTGRES_USER" ]; then
+        # Rename the existing group to match POSTGRES_USER
+        groupmod -n "$POSTGRES_USER" "$existing_group"
+        echo "Group $existing_group with GID $PGID renamed to $POSTGRES_USER"
     fi
 else
-    # Group doesn't exist, create it
-    groupadd -g "$PGID" dispatch
-    echo "Group dispatch with GID $PGID created"
+    # Group doesn't exist, create it with same name as POSTGRES_USER
+    groupadd -g "$PGID" "$POSTGRES_USER"
+    echo "Group $POSTGRES_USER with GID $PGID created"
 fi
 
 # Create user if it doesn't exist
@@ -86,5 +86,5 @@ if getent group video >/dev/null 2>&1; then
     fi
 fi
 
-# Run nginx as specified user
-sed -i "s/user www-data;/user $POSTGRES_USER;/g" /etc/nginx/nginx.conf
+# Run nginx as specified user (replace any existing user directive on line 1)
+sed -i "1s/^user .*/user $POSTGRES_USER;/" /etc/nginx/nginx.conf

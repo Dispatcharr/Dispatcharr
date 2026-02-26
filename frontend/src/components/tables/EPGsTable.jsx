@@ -3,7 +3,6 @@ import API from '../../api';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
 import DummyEPGForm from '../forms/DummyEPG';
-import { TableHelper } from '../../helpers';
 import {
   ActionIcon,
   Text,
@@ -14,7 +13,6 @@ import {
   Flex,
   useMantineTheme,
   Switch,
-  Badge,
   Progress,
   Stack,
   Group,
@@ -31,9 +29,9 @@ import {
   SquarePlus,
   ChevronDown,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import useSettingsStore from '../../store/settings';
+import { format } from '../../utils/dateTimeUtils.js';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -110,22 +108,14 @@ const EPGsTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [epgToDelete, setEpgToDelete] = useState(null);
   const [data, setData] = useState([]);
+  const [deleting, setDeleting] = useState(false);
 
   const epgs = useEPGsStore((s) => s.epgs);
   const refreshProgress = useEPGsStore((s) => s.refreshProgress);
 
   const theme = useMantineTheme();
-  // Get tableSize directly from localStorage instead of the store
+  const { fullDateTimeFormat } = useDateTimeFormat();
   const [tableSize] = useLocalStorage('table-size', 'default');
-
-  // Get proper size for action icons to match ChannelsTable
-  const iconSize =
-    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'md' : 'sm';
-
-  // Calculate density for Mantine Table
-  const tableDensity =
-    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'xl' : 'md';
-
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -355,11 +345,11 @@ const EPGsTable = () => {
         enableSorting: false,
         cell: ({ cell }) => {
           const value = cell.getValue();
-          return value ? (
-            <Text size="xs">{new Date(value).toLocaleString()}</Text>
-          ) : (
-            <Text size="xs">Never</Text>
-          );
+          if (!value) {
+            return <Text size="xs">Never</Text>;
+          }
+          const formatted = format(value, fullDateTimeFormat);
+          return <Text size="xs">{formatted}</Text>;
         },
       },
       {
@@ -390,7 +380,7 @@ const EPGsTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshProgress]
+    [refreshProgress, fullDateTimeFormat]
   );
 
   const [isLoading, setIsLoading] = useState(true);
@@ -431,10 +421,13 @@ const EPGsTable = () => {
   };
 
   const executeDeleteEPG = async (id) => {
-    setIsLoading(true);
-    await API.deleteEPG(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteEPG(id);
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const refreshEPG = async (id) => {
@@ -688,6 +681,7 @@ const EPGsTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteEPG(deleteTarget)}
+        loading={deleting}
         title="Confirm EPG Source Deletion"
         message={
           epgToDelete ? (

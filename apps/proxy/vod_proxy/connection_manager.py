@@ -97,7 +97,20 @@ class PersistentVODConnection:
                 # First check if we have a pre-stored content length from HEAD request
                 try:
                     import redis
-                    r = redis.StrictRedis(host='localhost', port=6379, db=0, decode_responses=True)
+                    from django.conf import settings
+                    redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
+                    redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
+                    redis_db = int(getattr(settings, 'REDIS_DB', 0))
+                    redis_password = getattr(settings, 'REDIS_PASSWORD', '')
+                    redis_user = getattr(settings, 'REDIS_USER', '')
+                    r = redis.StrictRedis(
+                        host=redis_host,
+                        port=redis_port,
+                        db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
+                        decode_responses=True
+                    )
                     content_length_key = f"vod_content_length:{self.session_id}"
                     stored_length = r.get(content_length_key)
                     if stored_length:
@@ -446,13 +459,12 @@ class VODConnectionManager:
             return False
 
         try:
-            # Check profile connection limits using standardized key
-            if not self._check_profile_limits(m3u_profile):
+            # Atomically check and reserve a profile connection slot (INCR-first)
+            if not self._check_and_reserve_profile_slot(m3u_profile):
                 logger.warning(f"Profile {m3u_profile.name} connection limit exceeded")
                 return False
 
             connection_key = self._get_connection_key(content_type, content_uuid, client_id)
-            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
             content_connections_key = self._get_content_connections_key(content_type, content_uuid)
 
             # Check if connection already exists to prevent duplicate counting
@@ -460,6 +472,9 @@ class VODConnectionManager:
                 logger.info(f"Connection already exists for {client_id} - {content_type} {content_name}")
                 # Update activity but don't increment profile counter
                 self.redis_client.hset(connection_key, "last_activity", str(time.time()))
+                # Roll back the reservation — connection already counted
+                if m3u_profile.max_streams > 0:
+                    self.redis_client.decr(self._get_profile_connections_key(m3u_profile.id))
                 return True
 
             # Connection data
@@ -486,8 +501,7 @@ class VODConnectionManager:
             pipe.hset(connection_key, mapping=connection_data)
             pipe.expire(connection_key, self.connection_ttl)
 
-            # Increment profile connections using standardized method
-            pipe.incr(profile_connections_key)
+            # Profile counter already incremented atomically above — no pipe.incr needed
 
             # Add to content connections set
             pipe.sadd(content_connections_key, client_id)
@@ -500,6 +514,9 @@ class VODConnectionManager:
             return True
 
         except Exception as e:
+            # Roll back the profile reservation on failure
+            if m3u_profile.max_streams > 0:
+                self.redis_client.decr(self._get_profile_connections_key(m3u_profile.id))
             logger.error(f"Error creating VOD connection: {e}")
             return False
 
@@ -516,6 +533,41 @@ class VODConnectionManager:
 
         except Exception as e:
             logger.error(f"Error checking profile limits: {e}")
+            return False
+
+    def _check_and_reserve_profile_slot(self, m3u_profile: M3UAccountProfile) -> bool:
+        """
+        Atomically check and reserve a connection slot for the given profile.
+
+        Uses an INCR-first-then-check pattern to eliminate the TOCTOU race
+        condition where separate GET > check > INCR operations could allow
+        concurrent requests to both pass the capacity check.
+
+        For profiles with max_streams=0 (unlimited), no reservation is needed.
+
+        Returns:
+            bool: True if slot was reserved (or unlimited), False if at capacity
+        """
+        if m3u_profile.max_streams == 0:  # Unlimited
+            return True
+
+        try:
+            profile_connections_key = self._get_profile_connections_key(m3u_profile.id)
+
+            # Atomically increment first — single Redis command eliminates race window
+            new_count = self.redis_client.incr(profile_connections_key)
+
+            if new_count <= m3u_profile.max_streams:
+                logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} slot reserved: {new_count}/{m3u_profile.max_streams}")
+                return True
+
+            # Over capacity — roll back the increment
+            self.redis_client.decr(profile_connections_key)
+            logger.info(f"[PROFILE-RESERVE] Profile {m3u_profile.id} at capacity: {new_count - 1}/{m3u_profile.max_streams}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error reserving profile slot: {e}")
             return False
 
     def update_connection_activity(self, content_type: str, content_uuid: str,

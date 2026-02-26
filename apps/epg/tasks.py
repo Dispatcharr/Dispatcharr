@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
+from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +146,14 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task
+@shared_task(time_limit=1800, soft_time_limit=1700)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
         return
+
+    lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
+    lock_renewer.start()
 
     source = None
     try:
@@ -168,6 +171,7 @@ def refresh_epg_data(source_id):
                 logger.info(f"No orphaned task found for EPG source {source_id}")
 
             # Release the lock and exit
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -176,6 +180,7 @@ def refresh_epg_data(source_id):
         # The source exists but is not active, just skip processing
         if not source.is_active:
             logger.info(f"EPG source {source_id} is not active. Skipping.")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -184,6 +189,7 @@ def refresh_epg_data(source_id):
         # Skip refresh for dummy EPG sources - they don't need refreshing
         if source.source_type == 'dummy':
             logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
@@ -194,6 +200,7 @@ def refresh_epg_data(source_id):
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -202,6 +209,7 @@ def refresh_epg_data(source_id):
             parse_channels_success = parse_channels_only(source)
             if not parse_channels_success:
                 logger.error(f"Failed to parse channels for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -234,6 +242,7 @@ def refresh_epg_data(source_id):
         source = None
         # Force garbage collection before releasing the lock
         gc.collect()
+        lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
 
 
@@ -286,11 +295,12 @@ def fetch_xmltv(source):
     logger.info(f"Fetching XMLTV data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
-        if default_user_agent_setting and default_user_agent_setting.value:
+        default_user_agent_id = stream_settings.get('default_user_agent')
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")
@@ -1125,11 +1135,14 @@ def parse_channels_only(source):
 
 
 
-@shared_task
+@shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
 
     source_file = None
     program_parser = None
@@ -1160,11 +1173,13 @@ def parse_programs_for_tvg_id(epg_id):
         # Skip program parsing for dummy EPG sources - they don't have program data files
         if epg_source.source_type == 'dummy':
             logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
@@ -1206,6 +1221,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1216,6 +1232,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, file missing after download"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1231,6 +1248,7 @@ def parse_programs_for_tvg_id(epg_id):
                 epg_source.last_message = f"No URL provided, cannot fetch EPG data"
                 epg_source.save(update_fields=['status', 'last_message'])
                 send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                lock_renewer.stop()
                 release_task_lock('parse_epg_programs', epg_id)
                 return
 
@@ -1378,7 +1396,7 @@ def parse_programs_for_tvg_id(epg_id):
         epg_source = None
         # Add comprehensive cleanup before releasing lock
         cleanup_memory(log_usage=should_log_memory, force_collection=True)
-         # Memory tracking after processing
+        # Memory tracking after processing
         if process:
             try:
                 mem_after = process.memory_info().rss / 1024 / 1024
@@ -1388,6 +1406,7 @@ def parse_programs_for_tvg_id(epg_id):
             process = None
         epg = None
         programs_processed = None
+        lock_renewer.stop()
         release_task_lock('parse_epg_programs', epg_id)
 
 
@@ -1650,7 +1669,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         epg_source.status = EPGSource.STATUS_SUCCESS
         epg_source.last_message = (
             f"Parsed {total_programs:,} programs for {channels_with_programs} channels "
-            f"(skipped {skipped_programs:,} programmes for {total_epg_count - mapped_count} unmapped channels)"
+            f"(skipped {skipped_programs:,} programs for {total_epg_count - mapped_count} unmapped channels)"
         )
         epg_source.updated_at = timezone.now()
         epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
@@ -1672,8 +1691,8 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                       updated_at=epg_source.updated_at.isoformat())
 
         logger.info(f"Completed parsing programs for source: {epg_source.name} - "
-                   f"{total_programs:,} programs for {channels_with_programs} channels, "
-                   f"skipped {skipped_programs:,} programmes for unmapped channels")
+               f"{total_programs:,} programs for {channels_with_programs} channels, "
+               f"skipped {skipped_programs:,} programs for unmapped channels")
         return True
 
     except Exception as e:
@@ -1714,12 +1733,13 @@ def fetch_schedules_direct(source):
     logger.info(f"Fetching Schedules Direct data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
+        default_user_agent_id = stream_settings.get('default_user_agent')
 
-        if default_user_agent_setting and default_user_agent_setting.value:
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")

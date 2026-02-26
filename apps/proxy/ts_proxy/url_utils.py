@@ -462,16 +462,21 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         session.headers.update(headers)
 
         # Make HEAD request first as it's faster and doesn't download content
-        head_response = session.head(
-            url,
-            timeout=timeout,
-            allow_redirects=True
-        )
+        head_request_success = True
+        try:
+            head_response = session.head(
+                url,
+                timeout=timeout,
+                allow_redirects=True
+            )
+        except requests.exceptions.RequestException as e:
+            head_request_success = False
+            logger.warning(f"Request error (HEAD), assuming HEAD not supported: {str(e)}")
 
         # If HEAD not supported, server will return 405 or other error
-        if 200 <= head_response.status_code < 300:
+        if head_request_success and (200 <= head_response.status_code < 300):
             # HEAD request successful
-            return True, head_response.url, head_response.status_code, "Valid (HEAD request)"
+            return True, url, head_response.status_code, "Valid (HEAD request)"
 
         # Try a GET request with stream=True to avoid downloading all content
         get_response = session.get(
@@ -484,7 +489,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         # IMPORTANT: Check status code first before checking content
         if not (200 <= get_response.status_code < 300):
             logger.warning(f"Stream validation failed with HTTP status {get_response.status_code}")
-            return False, get_response.url, get_response.status_code, f"Invalid HTTP status: {get_response.status_code}"
+            return False, url, get_response.status_code, f"Invalid HTTP status: {get_response.status_code}"
 
         # Only check content if status code is valid
         try:
@@ -538,7 +543,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         get_response.close()
 
         # If we have content, consider it valid even with unrecognized content type
-        return is_valid, get_response.url, get_response.status_code, message
+        return is_valid, url, get_response.status_code, message
 
     except requests.exceptions.Timeout:
         return False, url, 0, "Timeout connecting to stream"
