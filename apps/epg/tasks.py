@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
+from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +146,14 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task
+@shared_task(time_limit=1800, soft_time_limit=1700)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
         return
+
+    lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
+    lock_renewer.start()
 
     source = None
     try:
@@ -168,6 +171,7 @@ def refresh_epg_data(source_id):
                 logger.info(f"No orphaned task found for EPG source {source_id}")
 
             # Release the lock and exit
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -176,6 +180,7 @@ def refresh_epg_data(source_id):
         # The source exists but is not active, just skip processing
         if not source.is_active:
             logger.info(f"EPG source {source_id} is not active. Skipping.")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -184,6 +189,7 @@ def refresh_epg_data(source_id):
         # Skip refresh for dummy EPG sources - they don't need refreshing
         if source.source_type == 'dummy':
             logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
@@ -194,6 +200,7 @@ def refresh_epg_data(source_id):
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -202,6 +209,7 @@ def refresh_epg_data(source_id):
             parse_channels_success = parse_channels_only(source)
             if not parse_channels_success:
                 logger.error(f"Failed to parse channels for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -234,6 +242,7 @@ def refresh_epg_data(source_id):
         source = None
         # Force garbage collection before releasing the lock
         gc.collect()
+        lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
 
 
@@ -1126,11 +1135,14 @@ def parse_channels_only(source):
 
 
 
-@shared_task
+@shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
 
     source_file = None
     program_parser = None
@@ -1161,11 +1173,13 @@ def parse_programs_for_tvg_id(epg_id):
         # Skip program parsing for dummy EPG sources - they don't have program data files
         if epg_source.source_type == 'dummy':
             logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
@@ -1207,6 +1221,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1217,6 +1232,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, file missing after download"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1232,6 +1248,7 @@ def parse_programs_for_tvg_id(epg_id):
                 epg_source.last_message = f"No URL provided, cannot fetch EPG data"
                 epg_source.save(update_fields=['status', 'last_message'])
                 send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                lock_renewer.stop()
                 release_task_lock('parse_epg_programs', epg_id)
                 return
 
@@ -1379,7 +1396,7 @@ def parse_programs_for_tvg_id(epg_id):
         epg_source = None
         # Add comprehensive cleanup before releasing lock
         cleanup_memory(log_usage=should_log_memory, force_collection=True)
-         # Memory tracking after processing
+        # Memory tracking after processing
         if process:
             try:
                 mem_after = process.memory_info().rss / 1024 / 1024
@@ -1389,6 +1406,7 @@ def parse_programs_for_tvg_id(epg_id):
             process = None
         epg = None
         programs_processed = None
+        lock_renewer.stop()
         release_task_lock('parse_epg_programs', epg_id)
 
 

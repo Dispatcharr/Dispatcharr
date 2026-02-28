@@ -12,6 +12,8 @@ import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
+import useConnectStore from './store/connect';
+import Limiter from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -104,6 +106,41 @@ export default class API {
     return await useAuthStore.getState().getToken();
   }
 
+  /**
+   * Fetch all pages for a paginated endpoint when you already know totalCount.
+   * Builds page calls from totalCount and pageSize and aggregates all results.
+   * - endpoint: path like "/api/channels/channels/"
+   * - params: URLSearchParams for filters (will not be mutated)
+   * - totalCount: total number of matching items
+   * - pageSize: items per page
+   * Returns a flat array of results. Supports both array and {results, next} responses.
+   */
+  static async fetchAllByCount(endpoint, params, totalCount, pageSize = 200) {
+    const total = Number(totalCount) || 0;
+    const size = Number(pageSize) || 200;
+    const totalPages = Math.max(1, Math.ceil(total / size));
+
+    const requests = [];
+    for (let page = 1; page <= totalPages; page++) {
+      const q = new URLSearchParams(params || new URLSearchParams());
+      q.set('page', String(page));
+      q.set('page_size', String(size));
+      const url = `${host}${endpoint}?${q.toString()}`;
+      requests.push(request(url));
+    }
+
+    const responses = await Promise.all(requests);
+    const all = [];
+    for (const data of responses) {
+      if (Array.isArray(data)) {
+        all.push(...data);
+      } else if (Array.isArray(data?.results)) {
+        all.push(...data.results);
+      }
+    }
+    return all;
+  }
+
   static async fetchSuperUser() {
     try {
       return await request(`${host}/api/accounts/initialize-superuser/`, {
@@ -178,11 +215,59 @@ export default class API {
 
   static async getChannels() {
     try {
-      const response = await request(`${host}/api/channels/channels/`);
+      // Paginate through channels to avoid heavy single response
+      const pageSize = 200;
+      const allChannels = [];
 
-      return response;
+      // Get first page to get total results count
+      const data = await request(
+        `${host}/api/channels/channels/?page=1&page_size=${pageSize}`
+      );
+
+      // Backward compatibility: if endpoint returns an array (legacy), just return it
+      if (Array.isArray(data)) {
+        return data;
+      }
+
+      allChannels.concat(Array.isArray(data?.results) ? data.results : []);
+
+      const totalPages = Math.max(1, Math.ceil(data.count / pageSize)) - 1;
+      const apiCalls = [];
+      for (let page = 2; page <= totalPages; page++) {
+        apiCalls.push(
+          new Promise(async (resolve) => {
+            const response = await request(
+              `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+            );
+
+            return resolve(
+              Array.isArray(response?.results) ? response.results : []
+            );
+          })
+        );
+      }
+
+      const allResults = await Limiter.all(5, apiCalls);
+
+      return allResults;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
+    }
+  }
+
+  /**
+   * Retrieve a lightweight summary of channels (id, name, logo_id,
+   * channel_number, uuid, epg_data_id, channel_group_id).
+   * Designed for the TV Guide where full channel data is not needed.
+   */
+  static async getChannelsSummary(params = new URLSearchParams()) {
+    try {
+      const url = `${host}/api/channels/channels/summary/?${params.toString()}`;
+      const data = await request(url);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      errorNotification('Failed to retrieve channel summary', e);
+      return [];
     }
   }
 
@@ -224,6 +309,44 @@ export default class API {
       }
 
       errorNotification('Failed to fetch channels', e);
+    }
+  }
+
+  /**
+   * Retrieve channels matching the provided query params, paging until complete.
+   * Does NOT touch any table/store state; returns a plain array.
+   */
+  static async getChannelsForParams(params) {
+    try {
+      const pageSize = 200;
+      const query = new URLSearchParams(params);
+      let page = 1;
+      let all = [];
+
+      while (true) {
+        query.set('page', String(page));
+        query.set('page_size', String(pageSize));
+        const url = `${host}/api/channels/channels/?${query.toString()}`;
+        const data = await request(url);
+
+        if (Array.isArray(data)) {
+          // Legacy array response
+          all = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        all = all.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) break;
+        page += 1;
+      }
+
+      return all;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels for query', e);
+      throw e;
     }
   }
 
@@ -276,7 +399,7 @@ export default class API {
     }
   }
 
-  static async getAllChannelIds(params) {
+  static async getAllChannelIds(params = new URLSearchParams()) {
     try {
       const response = await request(
         `${host}/api/channels/channels/ids/?${params.toString()}`
@@ -562,6 +685,43 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  // Server-side regex rename of channel names for selected IDs
+  static async bulkRegexRenameChannels(
+    channelIds,
+    find,
+    replace = '',
+    flags = 'g'
+  ) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/edit/bulk-regex/`,
+        {
+          method: 'POST',
+          body: {
+            channel_ids: channelIds,
+            find,
+            replace,
+            flags,
+          },
+        }
+      );
+
+      // Optional success notification
+      if (response?.success) {
+        notifications.show({
+          title: 'Channel Names Updated',
+          message: `Renamed ${response.updated_count} channel(s) via regex`,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply regex renames', e);
     }
   }
 
@@ -1095,9 +1255,6 @@ export default class API {
       });
 
       usePlaylistsStore.getState().removePlaylists([id]);
-      // @TODO: MIGHT need to optimize this later if someone has thousands of channels
-      // but I'm feeling laze right now
-      // useChannelsStore.getState().fetchChannels();
     } catch (e) {
       errorNotification(`Failed to delete playlist ${id}`, e);
     }
@@ -1174,11 +1331,11 @@ export default class API {
     }
   }
 
-  static async getCurrentPrograms(channelIds = null) {
+  static async getCurrentPrograms(channelUUIDs = null) {
     try {
       const response = await request(`${host}/api/epg/current-programs/`, {
         method: 'POST',
-        body: { channel_ids: channelIds },
+        body: { channel_uuids: channelUUIDs },
       });
 
       return response;
@@ -2668,8 +2825,6 @@ export default class API {
           color: 'blue',
         });
 
-        // First fetch the complete channel data
-        await useChannelsStore.getState().fetchChannels();
         // Then refresh the current table view
         this.requeryChannels();
       }
@@ -2717,6 +2872,62 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to fetch users', e);
+    }
+  }
+
+  static async generateApiKey({ user_id = null, name = '' } = {}) {
+    try {
+      const body = {};
+      if (user_id) body.user_id = user_id;
+      if (name) body.name = name;
+
+      const response = await request(
+        `${host}/api/accounts/api-keys/generate/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to generate API key', e);
+    }
+  }
+
+  static async revokeApiKey({ user_id = null } = {}) {
+    try {
+      const body = {};
+      if (user_id) {
+        body.user_id = user_id;
+      }
+
+      const response = await request(`${host}/api/accounts/api-keys/revoke/`, {
+        method: 'POST',
+        body,
+      });
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to revoke API key', e);
     }
   }
 
@@ -2780,6 +2991,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve streams by IDs', e);
       throw e; // Re-throw to allow proper error handling in calling code
+    }
+  }
+
+  static async getChannelsByUUIDs(uuids) {
+    try {
+      // Use POST for large lists
+      const response = await request(
+        `${host}/api/channels/channels/by-uuids/`,
+        {
+          method: 'POST',
+          body: { uuids },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels by UUIDs', e);
+      throw e;
     }
   }
 
@@ -3044,6 +3272,126 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to dismiss all notifications', e);
+    }
+  }
+
+  static async getConnectIntegrations() {
+    try {
+      return await request(`${host}/api/connect/integrations/`);
+    } catch (e) {
+      errorNotification('Failed to fetch connect integrations', e);
+    }
+  }
+
+  static async createConnectIntegration(values) {
+    try {
+      const response = await request(`${host}/api/connect/integrations/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useConnectStore.getState().addIntegration(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create integration', e);
+    }
+  }
+
+  static async updateConnectIntegration(id, values) {
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${id}/`,
+        {
+          method: 'PUT',
+          body: values,
+        }
+      );
+
+      if (response.id) {
+        useConnectStore.getState().updateIntegration(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update integration', e);
+    }
+  }
+
+  static async deleteConnectIntegration(id) {
+    try {
+      await request(`${host}/api/connect/integrations/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useConnectStore.getState().removeIntegration(id);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete integration', e);
+      throw e;
+    }
+  }
+
+  static async createConnectSubscription(values) {
+    try {
+      await request(`${host}/api/connect/subscriptions/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to create subscription', e);
+    }
+  }
+
+  static async listConnectSubscriptions(integrationId) {
+    try {
+      return await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch subscriptions', e);
+    }
+  }
+
+  static async setConnectSubscriptions(integrationId, subscriptions) {
+    // subscriptions: [{ event, enabled, payload_template }]
+    console.log(subscriptions);
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/set/`,
+        {
+          method: 'PUT',
+          body: subscriptions,
+        }
+      );
+
+      useConnectStore
+        .getState()
+        .updateIntegrationSubscriptions(integrationId, response);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to set subscriptions', e);
+      throw e;
+    }
+  }
+
+  static async getConnectLogs(params = {}) {
+    try {
+      const search = new URLSearchParams();
+      if (params.page) search.set('page', params.page);
+      if (params.page_size) search.set('page_size', params.page_size);
+      if (params.type) search.set('type', params.type);
+      if (params.integration) search.set('integration', params.integration);
+
+      return await request(
+        `${host}/api/connect/logs/${search.toString() ? `?${search.toString()}` : ''}`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch connect logs', e);
     }
   }
 }

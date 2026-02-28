@@ -9,6 +9,7 @@
   background-color: transparent; /* Default background when not active */
   border: 1px solid transparent;
   transition: all 0.3s ease;
+  margin-left: 2px;
 }
 
 /* Active state styles */
@@ -19,9 +20,9 @@
 }
 
 /* Hover effect */
-.navlink:hover {
-  background-color: #2a2f34; /* Gray hover effect when not active */
-  border: 1px solid #3d3d42;
+.navlink:hover, .navlink-parent-active {
+  background-color: #2A2F34; /* Gray hover effect when not active */
+  border: 1px solid #3D3D42;
 }
 
 /* Hover effect for active state */
@@ -37,4 +38,21 @@
 
 .navlink:not(.navlink-collapsed) {
   justify-content: flex-start;
+}
+
+/* Left indicator for open nav groups rendered outside buttons */
+.navgroup-open {
+  position: relative;
+  overflow: visible;
+}
+.navgroup-open::before {
+  content: '';
+  position: absolute;
+  left: 0; /* avoid horizontal overflow; sits at container edge */
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #3BA882;
+  pointer-events: none;
+  z-index: 2;
 }

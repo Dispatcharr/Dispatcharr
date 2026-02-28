@@ -28,19 +28,20 @@ class UserSerializer(serializers.ModelSerializer):
     channel_profiles = serializers.PrimaryKeyRelatedField(
         queryset=ChannelProfile.objects.all(), many=True, required=False
     )
+    api_key = serializers.CharField(read_only=True, allow_null=True)
 
     class Meta:
         model = User
         fields = [
             "id",
             "username",
+            "api_key",
             "email",
             "user_level",
             "password",
             "channel_profiles",
             "custom_properties",
             "avatar_config",
-            "is_active",
             "is_staff",
             "is_superuser",
             "last_login",
@@ -54,7 +55,6 @@ class UserSerializer(serializers.ModelSerializer):
 
         user = User(**validated_data)
         user.set_password(validated_data["password"])
-        user.is_active = True
         user.save()
 
         user.channel_profiles.set(channel_profiles)

@@ -257,10 +257,6 @@ const ChannelsTable = ({ onReady }) => {
 
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
-  const canDeleteChannelGroup = useChannelsStore(
-    (s) => s.canDeleteChannelGroup
-  );
   const hasSignaledReady = useRef(false);
 
   /**
@@ -286,6 +282,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // store/channels
   const channels = useChannelsStore((s) => s.channels);
+  const channelIds = useChannelsStore((s) => s.channelIds);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const [tablePrefs, setTablePrefs] = useLocalStorage('channel-table-prefs', {
@@ -379,28 +376,15 @@ const ChannelsTable = ({ onReady }) => {
   /**
    * Derived variables
    */
-  const activeGroupIds = new Set(
-    Object.values(channels).map((channel) => channel.channel_group_id)
-  );
   const groupOptions = Object.values(channelGroups)
-    .filter((group) => activeGroupIds.has(group.id))
-    .map((group) => group.name);
+    .filter((group) => group.hasChannels)
+    .map((group) => group.name)
+    .sort((a, b) => a.localeCompare(b));
 
-  // Get unique EPG sources from active channels
-  const activeEPGSources = new Set();
   let hasUnlinkedChannels = false;
-  Object.values(channels).forEach((channel) => {
-    if (channel.epg_data_id) {
-      const epgObj = tvgsById[channel.epg_data_id];
-      if (epgObj && epgObj.epg_source) {
-        const epgName = epgs[epgObj.epg_source]?.name || epgObj.epg_source;
-        activeEPGSources.add(epgName);
-      }
-    } else {
-      hasUnlinkedChannels = true;
-    }
-  });
-  const epgOptions = Array.from(activeEPGSources).sort();
+  const epgOptions = Object.values(epgs)
+    .map((epg) => epg.name)
+    .sort();
   if (hasUnlinkedChannels) {
     epgOptions.unshift('No EPG');
   }
@@ -594,6 +578,10 @@ const ChannelsTable = ({ onReady }) => {
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
+
+    const rows = table.getRowModel().rows;
+    const knownChannel = rows.find((row) => row.original.id === id)?.original;
+
     table.setSelectedTableIds([]);
 
     if (selectedChannelIds.length > 0) {
@@ -613,7 +601,7 @@ const ChannelsTable = ({ onReady }) => {
     // Single channel delete
     setIsBulkDelete(false);
     setDeleteTarget(id);
-    setChannelToDelete(channels[id]); // Store the channel object for displaying details
+    setChannelToDelete(knownChannel); // Store the channel object for displaying details
 
     if (isWarningSuppressed('delete-channel')) {
       // Skip warning if suppressed
@@ -1451,13 +1439,12 @@ const ChannelsTable = ({ onReady }) => {
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 &&
-              Object.keys(channels).length === 0 && (
-                <ChannelsTableOnboarding editChannel={editChannel} />
-              )}
+            {channelsTableLength === 0 && channelIds.length === 0 && (
+              <ChannelsTableOnboarding editChannel={editChannel} />
+            )}
           </Box>
 
-          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
+          {(channelsTableLength > 0 || channelIds.length > 0) && (
             <Box
               style={{
                 display: 'flex',

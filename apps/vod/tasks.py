@@ -1258,20 +1258,15 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
                 else:
                     episodes_data = {}
 
-        # Clear existing episodes for this account to handle deletions
-        Episode.objects.filter(
-            series=series,
-            m3u_relations__m3u_account=account
-        ).delete()
+        # Fetch the series relation once — used both to pass into batch_process_episodes
+        # (so episode relations get the FK set) and to update metadata afterwards.
+        series_relation = M3USeriesRelation.objects.filter(
+            m3u_account=account,
+            external_series_id=external_series_id
+        ).first()
 
         # Process all episodes in batch
-        batch_process_episodes(account, series, episodes_data)
-
-        # Update the series relation to mark episodes as fetched
-        series_relation = M3USeriesRelation.objects.filter(
-            series=series,
-            m3u_account=account
-        ).first()
+        batch_process_episodes(account, series, episodes_data, series_relation=series_relation)
 
         if series_relation:
             custom_props = series_relation.custom_properties or {}
@@ -1285,13 +1280,18 @@ def refresh_series_episodes(account, series, external_series_id, episodes_data=N
         logger.error(f"Error refreshing episodes for series {series.name}: {str(e)}")
 
 
-def batch_process_episodes(account, series, episodes_data, scan_start_time=None):
+def batch_process_episodes(account, series, episodes_data, scan_start_time=None, series_relation=None):
     """Process episodes in batches for better performance.
 
     Note: Multiple streams can represent the same episode (e.g., different languages
     or qualities). Each stream has a unique stream_id, but they share the same
     season/episode number. We create one Episode record per (series, season, episode)
     and multiple M3UEpisodeRelation records pointing to it.
+
+    series_relation, when provided, is stored as a FK on each M3UEpisodeRelation so
+    that CASCADE correctly removes episode relations when their parent series relation
+    is deleted, and so that stale-stream cleanup is scoped precisely to relations that
+    came from this specific provider query.
     """
     if not episodes_data:
         return
@@ -1445,10 +1445,11 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 # Update existing relation
                 relation = existing_relations[episode_id]
                 relation.episode = episode
+                relation.series_relation = series_relation
                 relation.container_extension = episode_data.get('container_extension', 'mp4')
                 relation.custom_properties = {
                     'info': episode_data,
-                    'season_number': season_number
+                    'season_number': season_number,
                 }
                 relation.last_seen = scan_start_time or timezone.now()  # Mark as seen during this scan
                 relations_to_update.append(relation)
@@ -1457,11 +1458,12 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
                 relation = M3UEpisodeRelation(
                     m3u_account=account,
                     episode=episode,
+                    series_relation=series_relation,
                     stream_id=episode_id,
                     container_extension=episode_data.get('container_extension', 'mp4'),
                     custom_properties={
                         'info': episode_data,
-                        'season_number': season_number
+                        'season_number': season_number,
                     },
                     last_seen=scan_start_time or timezone.now()  # Mark as seen during this scan
                 )
@@ -1524,8 +1526,27 @@ def batch_process_episodes(account, series, episodes_data, scan_start_time=None)
         # Update existing episode relations
         if relations_to_update:
             M3UEpisodeRelation.objects.bulk_update(relations_to_update, [
-                'episode', 'container_extension', 'custom_properties', 'last_seen'
+                'episode', 'series_relation', 'container_extension', 'custom_properties', 'last_seen'
             ])
+
+        # Delete relations for streams no longer returned by the provider.
+        # Scope to this series_relation FK (post-migration rows) plus any legacy NULL rows
+        # for the same account+series (pre-migration rows whose stream is now gone — the
+        # update path only backfills the FK for streams still present in the response).
+        # Falls back to account+series scope when series_relation is None (shouldn't occur).
+        if series_relation is not None:
+            stale_qs = M3UEpisodeRelation.objects.filter(
+                Q(series_relation=series_relation) |
+                Q(series_relation__isnull=True, m3u_account=account, episode__series=series)
+            )
+        else:
+            stale_qs = M3UEpisodeRelation.objects.filter(
+                m3u_account=account,
+                episode__series=series
+            )
+        removed_count = stale_qs.exclude(stream_id__in=episode_ids).delete()[0]
+        if removed_count:
+            logger.info(f"Removed {removed_count} episode relations no longer present in provider for series {series.name}")
 
     logger.info(f"Batch processed episodes: {len(episodes_to_create)} new, {len(episodes_to_update)} updated, "
                 f"{len(relations_to_create)} new relations, {len(relations_to_update)} updated relations")
@@ -1611,15 +1632,11 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     stale_movie_count = stale_movie_relations.count()
     stale_movie_relations.delete()
 
-    # Clean up stale series relations
+    # Clean up stale series relations.
+    # Episode relations are removed via CASCADE on the series_relation FK.
     stale_series_relations = M3USeriesRelation.objects.filter(**base_filters)
     stale_series_count = stale_series_relations.count()
     stale_series_relations.delete()
-
-    # Clean up stale episode relations
-    stale_episode_relations = M3UEpisodeRelation.objects.filter(**base_filters)
-    stale_episode_count = stale_episode_relations.count()
-    stale_episode_relations.delete()
 
     # Clean up movies with no relations (orphaned)
     # Safe to delete even during account-specific cleanup because if ANY account
@@ -1637,11 +1654,8 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
         logger.info(f"Deleting {orphaned_series_count} orphaned series with no M3U relations")
         orphaned_series.delete()
 
-    # Episodes will be cleaned up via CASCADE when series are deleted
-
     result = (f"Cleaned up {stale_movie_count} stale movie relations, "
               f"{stale_series_count} stale series relations, "
-              f"{stale_episode_count} stale episode relations, "
               f"{orphaned_movie_count} orphaned movies, and "
               f"{orphaned_series_count} orphaned series")
 

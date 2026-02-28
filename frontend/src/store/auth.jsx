@@ -56,8 +56,6 @@ const useAuthStore = create((set, get) => ({
       await useSettingsStore.getState().fetchSettings();
 
       // Fetch essential data needed for initial render
-      // Note: fetchChannels() is intentionally NOT awaited here - it's slow (~3s)
-      // and only needed for delete modal details. It loads in background after UI renders.
       await Promise.all([
         useChannelsStore.getState().fetchChannelGroups(),
         useChannelsStore.getState().fetchChannelProfiles(),
@@ -66,6 +64,7 @@ const useAuthStore = create((set, get) => ({
         useEPGsStore.getState().fetchEPGData(),
         useStreamProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
+        useChannelsStore.getState().fetchChannelIds(),
       ]);
 
       if (user.user_level >= USER_LEVELS.ADMIN) {
@@ -79,9 +78,6 @@ const useAuthStore = create((set, get) => ({
         isInitialized: true,
         isInitializing: false,
       });
-
-      // Load channels data in background (not blocking) - needed for delete modal details
-      useChannelsStore.getState().fetchChannels();
 
       // Note: Logos are loaded after the Channels page tables finish loading
       // This is handled by the tables themselves signaling completion

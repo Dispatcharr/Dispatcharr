@@ -222,6 +222,75 @@ def release_task_lock(task_name, id):
     # Remove the lock
     redis_client.delete(lock_id)
 
+
+class TaskLockRenewer:
+    """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
+
+    Use as a context manager after acquiring a lock:
+
+        if acquire_task_lock("my_task", task_id):
+            with TaskLockRenewer("my_task", task_id):
+                # ... long-running work ...
+            release_task_lock("my_task", task_id)
+
+    A daemon thread extends the lock TTL at regular intervals so that
+    slow downloads or large parsing jobs don't lose their lock mid-operation.
+    """
+
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+        self.task_name = task_name
+        self.id = id
+        self.ttl = ttl
+        self.renewal_interval = renewal_interval
+        self.lock_id = f"task_lock_{task_name}_{id}"
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _renew_loop(self):
+        """Background loop that extends the lock TTL until stopped."""
+        while not self._stop_event.wait(self.renewal_interval):
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client.exists(self.lock_id):
+                    redis_client.expire(self.lock_id, self.ttl)
+                    logger.debug(
+                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                    )
+                else:
+                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                    logger.warning(
+                        f"Lock {self.lock_id} no longer exists, stopping renewal"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error renewing lock {self.lock_id}: {e}")
+
+    def start(self):
+        """Start the background renewal thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._renew_loop, daemon=True,
+            name=f"lock-renew-{self.task_name}-{self.id}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop the renewal thread."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Standardized function to send WebSocket updates with proper memory management.
@@ -397,6 +466,83 @@ def validate_flexible_url(value):
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")
 
+def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    try:
+        from apps.connect.utils import trigger_event
+        from apps.channels.models import Channel, Stream
+        from core.models import StreamProfile
+        from core.utils import RedisClient
+
+        payload = dict(details)
+
+        channel_obj = None
+        if channel_id:
+            try:
+                channel_obj = Channel.objects.get(uuid=channel_id)
+                payload["channel_name"] = channel_obj.name
+            except Exception:
+                payload["channel_name"] = channel_name or None
+        else:
+            payload["channel_name"] = channel_name or None
+
+        # Resolve current stream info
+        stream_id = details.get("stream_id")
+        stream_obj = None
+        if not stream_id and channel_obj:
+            try:
+                redis = RedisClient.get_client()
+                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                if sid:
+                    stream_id = int(sid)
+            except Exception:
+                stream_id = None
+
+        if stream_id:
+            try:
+                stream_obj = Stream.objects.get(id=stream_id)
+            except Exception:
+                stream_obj = None
+
+        # Populate stream details
+        payload["stream_name"] = getattr(stream_obj, "name", None)
+        payload["stream_url"] = getattr(stream_obj, "url", None)
+
+        # Channel URL: use stream URL as best-effort
+        payload["channel_url"] = payload.get("stream_url")
+
+        # Provider name from M3U account
+        provider_name = None
+        try:
+            if stream_obj and stream_obj.m3u_account:
+                provider_name = stream_obj.m3u_account.name
+        except Exception:
+            provider_name = None
+        payload["provider_name"] = provider_name
+
+        # Profile used
+        profile_used = None
+        try:
+            if stream_id:
+                redis = RedisClient.get_client()
+                pid = redis.get(f"stream_profile:{stream_id}")
+                if pid:
+                    profile = StreamProfile.objects.filter(id=int(pid)).first()
+                    profile_used = profile.name if profile else None
+        except Exception:
+            profile_used = None
+
+        payload["profile_used"] = profile_used
+
+        # remove empty keys
+        for k in list(payload.keys()):
+            if not payload[k]:
+                del payload[k]
+
+        trigger_event(event_type, payload)
+
+    except Exception as e:
+        # Don't fail main path if connect dispatch fails
+        pass
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -422,6 +568,9 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             channel_name=channel_name,
             details=details
         )
+
+        # Trigger connect integrations for specific events
+        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
 
         # Get max events from settings (default 100)
         try:
@@ -517,4 +666,3 @@ def send_notification_dismissed(notification_key):
         )
     except Exception as e:
         logger.error(f"Failed to send notification dismissed event: {e}")
-

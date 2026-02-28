@@ -36,7 +36,12 @@ import {
   runComSkip,
 } from './../../utils/cards/RecordingCardUtils.js';
 
-const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
+const RecordingCard = ({
+  recording,
+  onOpenDetails,
+  onOpenRecurring,
+  channel: channelProp = null,
+}) => {
   const channels = useChannelsStore((s) => s.channels);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
@@ -45,7 +50,7 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
   const { timeFormat: timeformat, dateFormat: dateformat } =
     useDateTimeFormat();
 
-  const channel = channels?.[recording.channel];
+  const channel = channelProp;
 
   const customProps = recording.custom_properties || {};
   const program = customProps.program || {};

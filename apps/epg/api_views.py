@@ -31,7 +31,9 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     API endpoint that allows EPG sources to be viewed or edited.
     """
 
-    queryset = EPGSource.objects.all()
+    queryset = EPGSource.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).all()
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
@@ -439,43 +441,32 @@ class CurrentProgramsAPIView(APIView):
         request=inline_serializer(
             name="CurrentProgramsRequest",
             fields={
-                "channel_ids": serializers.ListField(
-                    child=serializers.IntegerField(),
+                "channel_uuids": serializers.ListField(
+                    child=serializers.CharField(),
                     required=False,
                     allow_null=True,
-                    help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
+                    help_text="Array of channel UUIDs. If null or omitted, returns all channels with current programs.",
                 ),
             },
         ),
         responses={200: ProgramDataSerializer(many=True)},
     )
     def post(self, request, format=None):
-        # Get channel IDs from request body
-        channel_ids = request.data.get('channel_ids', None)
-
         # Import Channel model
         from apps.channels.models import Channel
 
         # Build query for channels with EPG data
         query = Channel.objects.filter(epg_data__isnull=False)
 
-        # Filter by specific channel IDs if provided
-        if channel_ids is not None:
-            if not isinstance(channel_ids, list):
+        channel_uuids = request.data.get('channel_uuids', None)
+
+        if channel_uuids is not None:
+            if not isinstance(channel_uuids, list):
                 return Response(
-                    {"error": "channel_ids must be an array of integers or null"},
+                    {"error": "channel_uuids must be an array of strings or null"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-
-            try:
-                channel_ids = [int(id) for id in channel_ids]
-            except (ValueError, TypeError):
-                return Response(
-                    {"error": "channel_ids must contain valid integers"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            query = query.filter(id__in=channel_ids)
+            query = query.filter(uuid__in=channel_uuids)
 
         # Get channels with EPG data
         channels = query.select_related('epg_data')
@@ -495,9 +486,8 @@ class CurrentProgramsAPIView(APIView):
             ).first()
 
             if program:
-                # Serialize program and add channel_id for easy mapping
                 program_data = ProgramDataSerializer(program).data
-                program_data['channel_id'] = channel.id
+                program_data['channel_uuid'] = str(channel.uuid)
                 current_programs.append(program_data)
 
         return Response(current_programs, status=status.HTTP_200_OK)

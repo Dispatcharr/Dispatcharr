@@ -195,7 +195,6 @@ const ChannelTableHeader = ({
       });
 
       // Refresh the channel list
-      // await fetchChannels();
       API.requeryChannels();
     } catch (err) {
       console.error(err);
