@@ -1141,7 +1141,7 @@ const ChannelsTable = ({ onReady }) => {
       }
 
       if (hasStaleStreams) {
-        return { className: 'stale-streams-row' };
+        return { className: 'partially-stale-streams-row' };
       }
 
       return {};

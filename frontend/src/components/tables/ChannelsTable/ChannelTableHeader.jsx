@@ -330,7 +330,7 @@ const ChannelTableHeader = ({
                   showOnlyStaleChannels ? <SquareCheck size={18} /> : <Square size={18} />
                 }
               >
-                <Text size="xs">Only Containing Stale Streams</Text>
+                <Text size="xs">Has Stale Streams</Text>
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
