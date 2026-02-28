@@ -59,6 +59,12 @@ class EPGSource(models.Model):
         blank=True,
         help_text="Last status message, including success results or error information"
     )
+    programme_index = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Byte-offset index mapping tvg_id to file positions, built after each EPG refresh"
+    )
     created_at = models.DateTimeField(
         auto_now_add=True,
         help_text="Time when this source was created"
