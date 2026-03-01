@@ -5,6 +5,7 @@ from apps.channels.models import Channel
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
+    has_channels = serializers.BooleanField(read_only=True, default=False)
     read_only_fields = ['created_at', 'updated_at']
     url = serializers.CharField(
         required=False,
@@ -32,7 +33,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'custom_properties',
-            'epg_data_count'
+            'epg_data_count',
+            'has_channels',
         ]
 
     def get_epg_data_count(self, obj):

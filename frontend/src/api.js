@@ -364,6 +364,9 @@ export default class API {
         .queryChannels(response, API.lastQueryParams);
       useChannelsTableStore.getState().setAllQueryIds(ids);
 
+      // Refresh the EPG stats since channel EPG assignments may have changed
+      useEPGsStore.getState().refreshEPGStats();
+
       return response;
     } catch (e) {
       // Handle invalid page error by resetting to page 1 and retrying
@@ -1314,10 +1317,22 @@ export default class API {
   static async getEPGs() {
     try {
       const response = await request(`${host}/api/epg/sources/`);
-
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPGs', e);
+    }
+  }
+
+  static async getEPGStats() {
+    try {
+      // Query channels with no EPG assigned using the existing filter — page_size=1
+      // so we only need the `count` field, not any actual channel data.
+      const response = await request(
+        `${host}/api/channels/channels/?epg=null&page=1&page_size=1`
+      );
+      return { has_unassigned_epg_channels: (response?.count ?? 0) > 0 };
+    } catch (e) {
+      errorNotification('Failed to retrieve EPG stats', e);
     }
   }
 

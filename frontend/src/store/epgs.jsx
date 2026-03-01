@@ -15,6 +15,7 @@ const useEPGsStore = create((set) => ({
   tvgs: [],
   tvgsById: {},
   tvgsLoaded: false,
+  hasUnassignedEPGChannels: false,
   isLoading: false,
   error: null,
   refreshProgress: {},
@@ -22,17 +23,34 @@ const useEPGsStore = create((set) => ({
   fetchEPGs: async () => {
     set({ isLoading: true, error: null });
     try {
-      const epgs = await api.getEPGs();
+      const [sources, stats] = await Promise.all([
+        api.getEPGs(),
+        api.getEPGStats(),
+      ]);
+      const hasUnassignedEPGChannels =
+        stats?.has_unassigned_epg_channels ?? false;
       set({
-        epgs: epgs.reduce((acc, epg) => {
+        epgs: (sources ?? []).reduce((acc, epg) => {
           acc[epg.id] = epg;
           return acc;
         }, {}),
+        hasUnassignedEPGChannels,
         isLoading: false,
       });
     } catch (error) {
       console.error('Failed to fetch epgs:', error);
       set({ error: 'Failed to load epgs.', isLoading: false });
+    }
+  },
+
+  refreshEPGStats: async () => {
+    try {
+      const stats = await api.getEPGStats();
+      set({
+        hasUnassignedEPGChannels: stats?.has_unassigned_epg_channels ?? false,
+      });
+    } catch (error) {
+      console.error('Failed to refresh EPG stats:', error);
     }
   },
 

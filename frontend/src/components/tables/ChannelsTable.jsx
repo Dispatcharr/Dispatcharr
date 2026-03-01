@@ -251,6 +251,9 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
+  const hasUnassignedEPGChannels = useEPGsStore(
+    (s) => s.hasUnassignedEPGChannels
+  );
 
   // Get channel logos for logo selection
   const { ensureLogosLoaded } = useChannelLogoSelection();
@@ -381,19 +384,15 @@ const ChannelsTable = ({ onReady }) => {
     .map((group) => group.name)
     .sort((a, b) => a.localeCompare(b));
 
-  let hasUnlinkedChannels = false;
   const epgOptions = Object.values(epgs)
+    .filter((epg) => epg.is_active && epg.has_channels)
     .map((epg) => epg.name)
-    .sort();
-  if (hasUnlinkedChannels) {
-    epgOptions.unshift('No EPG');
-  }
-  // Map for MultiSelect: value 'null' for 'No EPG', label for display
-  const epgSelectOptions = epgOptions.map((opt) =>
-    opt === 'No EPG'
-      ? { value: 'null', label: 'No EPG' }
-      : { value: opt, label: opt }
-  );
+    .sort((a, b) => a.localeCompare(b));
+  // Only show 'No EPG' if there are channels without an EPG assigned
+  const epgSelectOptions = [
+    ...(hasUnassignedEPGChannels ? [{ value: 'null', label: 'No EPG' }] : []),
+    ...epgOptions.map((opt) => ({ value: opt, label: opt })),
+  ];
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
