@@ -2673,6 +2673,20 @@ export default class API {
     }
   }
 
+  static async extendRecording(id, extraMinutes) {
+    try {
+      const resp = await request(`${host}/api/channels/recordings/${id}/extend/`, {
+        method: 'POST',
+        body: JSON.stringify({ extra_minutes: extraMinutes }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      return resp;
+    } catch (e) {
+      errorNotification(`Failed to extend recording ${id}`, e);
+      throw e;
+    }
+  }
+
   static async runComskip(recordingId) {
     try {
       const resp = await request(

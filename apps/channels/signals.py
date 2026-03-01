@@ -97,7 +97,7 @@ def schedule_recording_task(instance, eta=None):
     The task is stored in the database and dispatched by Celery Beat at the
     scheduled time with no countdown.  This avoids the Redis visibility_timeout
     redelivery bug that caused duplicate recordings when using apply_async
-    with long countdowns.  See https://github.com/Dispatcharr/Dispatcharr/issues/940
+    with long countdowns.
     """
     if eta is None:
         eta = instance.start_time
@@ -136,8 +136,8 @@ def revoke_task(task_id):
     """Cancel a pending recording task.
 
     task_id is normally a PeriodicTask name (e.g. "dvr-recording-42").
-    For backwards compatibility with task_ids stored before this fix
-    (Celery async-result UUIDs), falls back to AsyncResult.revoke().
+    For backwards compatibility with legacy Celery async-result UUIDs,
+    falls back to AsyncResult.revoke().
     """
     if not task_id:
         return
@@ -168,6 +168,12 @@ def revoke_old_task_on_update(sender, instance, **kwargs):
             old.end_time != instance.end_time or
             old.channel_id != instance.channel_id
         ):
+            # Do NOT revoke while the recording is actively streaming.
+            # run_recording re-reads end_time from the DB every ~2 s and extends
+            # its internal deadline dynamically — revoking here would kill the task.
+            old_status = (old.custom_properties or {}).get("status", "")
+            if old_status == "recording":
+                return
             revoke_task(old.task_id)
             instance.task_id = None
     except Recording.DoesNotExist:
@@ -176,6 +182,13 @@ def revoke_old_task_on_update(sender, instance, **kwargs):
 @receiver(post_save, sender=Recording)
 def schedule_task_on_save(sender, instance, created, **kwargs):
     try:
+        # Skip processing for internal field-only saves (metadata updates,
+        # task_id assignment, end_time extensions) to prevent re-entrant
+        # artwork dispatch and redundant recording_updated WS events.
+        update_fields = kwargs.get('update_fields')
+        if not created and update_fields is not None and set(update_fields) <= {'custom_properties', 'task_id', 'end_time'}:
+            return
+
         if not instance.task_id:
             start_time = instance.start_time
 

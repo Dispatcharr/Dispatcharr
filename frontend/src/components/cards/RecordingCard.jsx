@@ -13,20 +13,21 @@ import {
   Box,
   Button,
   Card,
-  Center,
   Flex,
   Group,
   Image,
+  Menu,
   Modal,
   Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
-import { AlertTriangle, Square, SquareX } from 'lucide-react';
+import { AlertTriangle, Plus, Square, SquareX } from 'lucide-react';
 import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
   deleteSeriesAndRule,
+  extendRecordingById,
   getPosterUrl,
   getRecordingUrl,
   getSeasonLabel,
@@ -43,7 +44,6 @@ const RecordingCard = ({
   onOpenRecurring,
   channel: channelProp = null,
 }) => {
-  const channels = useChannelsStore((s) => s.channels);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
   const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
@@ -115,6 +115,27 @@ const RecordingCard = ({
       });
     } catch (error) {
       console.error('Failed to queue comskip for recording', error);
+    }
+  };
+
+  const handleExtend = async (minutes, e) => {
+    e?.stopPropagation?.();
+    try {
+      await extendRecordingById(recording.id, minutes);
+      notifications.show({
+        title: 'Recording extended',
+        message: `Added ${minutes} minutes to this recording`,
+        color: 'teal',
+        autoClose: 2000,
+      });
+    } catch (error) {
+      console.error('Failed to extend recording', error);
+      notifications.show({
+        title: 'Extension failed',
+        message: 'Could not extend the recording',
+        color: 'red',
+        autoClose: 3000,
+      });
     }
   };
 
@@ -313,6 +334,30 @@ const RecordingCard = ({
 
         <Group gap={4}>
           {isInProgress && (
+            <Tooltip label="Extend recording">
+              <Box display="inline-flex">
+                <Menu withinPortal position="bottom-end" shadow="md">
+                  <Menu.Target>
+                    <ActionIcon
+                      variant="transparent"
+                      color="teal.5"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Plus size={20} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                    <Menu.Label>Extend recording by</Menu.Label>
+                    <Menu.Item onClick={(e) => handleExtend(15, e)}>+15 minutes</Menu.Item>
+                    <Menu.Item onClick={(e) => handleExtend(30, e)}>+30 minutes</Menu.Item>
+                    <Menu.Item onClick={(e) => handleExtend(60, e)}>+1 hour</Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              </Box>
+            </Tooltip>
+          )}
+          {isInProgress && (
             <Tooltip label="Stop recording (keep partial content)">
               <ActionIcon
                 variant="transparent"
@@ -395,7 +440,7 @@ const RecordingCard = ({
 
             {!isUpcoming && <WatchRecording />}
             {!isUpcoming &&
-              customProps?.status === 'completed' &&
+              (customProps?.status === 'completed' || customProps?.status === 'stopped' || customProps?.status === 'interrupted') &&
               (!customProps?.comskip ||
                 customProps?.comskip?.status !== 'completed') && (
                 <Button
@@ -453,7 +498,7 @@ const RecordingCard = ({
       <Modal
         opened={deleteConfirmOpen}
         onClose={() => setDeleteConfirmOpen(false)}
-        title={isInProgress ? 'Cancel Recording' : isUpcoming ? 'Cancel Recording' : 'Delete Recording'}
+        title={isInProgress || isUpcoming ? 'Cancel Recording' : 'Delete Recording'}
         centered
         size="md"
         zIndex={9999}

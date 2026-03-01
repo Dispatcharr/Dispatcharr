@@ -70,6 +70,7 @@ const RecordingDetailsModal = ({
   const fileUrl = customProps.file_url || customProps.output_file_url;
   const canWatchRecording =
     (customProps.status === 'completed' ||
+      customProps.status === 'stopped' ||
       customProps.status === 'interrupted') &&
     Boolean(fileUrl);
 
@@ -200,11 +201,7 @@ const RecordingDetailsModal = ({
       } catch (error) {
         console.error('Failed to delete upcoming recording', error);
       }
-      try {
-        await useChannelsStore.getState().fetchRecordings();
-      } catch (error) {
-        console.error('Failed to refresh recordings after delete', error);
-      }
+      // recording_cancelled WS event triggers the debounced fetchRecordings()
     };
 
     const handleOnMainCardClick = () => {
@@ -360,7 +357,9 @@ const RecordingDetailsModal = ({
               {onWatchLive && <WatchLive />}
               {onWatchRecording && <WatchRecording />}
               {onEdit && start.isAfter(userNow()) && <Edit />}
-              {customProps.status === 'completed' &&
+              {(customProps.status === 'completed' ||
+                customProps.status === 'stopped' ||
+                customProps.status === 'interrupted') &&
                 (!customProps?.comskip ||
                   customProps?.comskip?.status !== 'completed') && (
                   <Button

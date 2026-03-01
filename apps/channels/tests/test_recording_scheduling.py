@@ -1,7 +1,8 @@
 """Tests for DVR recording scheduling with ClockedSchedule.
 
-   Prefers Celery ClockedScheduled over Redis time due to 3600s limitation on scheduled tasks;
-   scheduled tasks beyond 3600s cause Redis time to hand process between workers and duplicate jobs
+Uses ClockedSchedule instead of apply_async with countdown because Redis
+visibility_timeout (default 3600s) causes task redelivery for long countdowns,
+leading to duplicate recordings.
 """
 from datetime import timedelta
 from unittest.mock import patch, MagicMock
@@ -501,7 +502,7 @@ class DestroyDvrClientIsolationTests(TestCase):
             custom_properties={"status": "recording"},
         )
         self._delete_recording(rec)
-        mock_stop.assert_called_once_with(str(self.channel.uuid))
+        mock_stop.assert_called_once_with(str(self.channel.uuid), recording_id=rec.id)
 
 
 class PeriodicTaskCleanupOnExecutionTests(TestCase):

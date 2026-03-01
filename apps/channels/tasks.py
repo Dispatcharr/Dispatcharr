@@ -1503,11 +1503,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     try:
         rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
         if not rec_check:
-            # Recording was deleted before this task got a chance to run (e.g. user
-            # cancelled from the Upcoming list, or destroy() ran concurrently).
             logger.info(
-                f"run_recording called for recording {recording_id} but it no longer exists — "
-                f"skipping (recording was cancelled before task started)."
+                f"run_recording called for recording {recording_id} but it no longer exists — skipping."
             )
             return
         status = (rec_check.custom_properties or {}).get("status", "")
@@ -1520,18 +1517,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     except Exception as e:
         logger.debug(f"Idempotency guard check failed (proceeding anyway): {e}")
 
-    # --- Clean up the one-off PeriodicTask that dispatched task ---
+    # --- Clean up the one-off PeriodicTask that dispatched this task ---
     try:
-        from django_celery_beat.models import ClockedSchedule as _CS, PeriodicTask as _PT
-        task_name = f"dvr-recording-{recording_id}"
-        try:
-            pt = _PT.objects.get(name=task_name)
-            old_clocked = pt.clocked
-            pt.delete()
-            if old_clocked and not _PT.objects.filter(clocked=old_clocked).exists():
-                old_clocked.delete()
-        except _PT.DoesNotExist:
-            pass
+        from apps.channels.signals import revoke_task, _dvr_task_name
+        revoke_task(_dvr_task_name(recording_id))
     except Exception as e:
         logger.debug(f"PeriodicTask cleanup failed (non-fatal): {e}")
 
@@ -1541,8 +1530,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     end_time = datetime.fromisoformat(end_time_str)
 
     duration_seconds = int((end_time - start_time).total_seconds())
-    # Build output paths from templates
-    # We need program info; will refine after we load Recording cp below
+    # Build output paths from templates (refined after loading Recording cp below)
     filename = None
     final_path = None
     temp_ts_path = None
@@ -1575,6 +1563,16 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     recording_obj = None
     try:
         recording_obj = Recording.objects.get(id=recording_id)
+        # If the stop endpoint already wrote "stopped" before the task started,
+        # honor it instead of overwriting with "recording".
+        _pre_cp = recording_obj.custom_properties or {}
+        if _pre_cp.get("status") == "stopped":
+            logger.info(
+                f"run_recording {recording_id}: 'stopped' found in DB before stream started "
+                f"— task exits without connecting."
+            )
+            return
+
         # Prime custom_properties with file info/status
         cp = recording_obj.custom_properties or {}
         cp.update({
@@ -1817,8 +1815,38 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         except Exception:
             pass
 
-        recording_obj.custom_properties = cp
+        # Re-read from DB to preserve concurrent changes (e.g., artwork
+        # prefetch may have saved poster/rating info while resolving).
+        recording_obj.refresh_from_db()
+        fresh_cp = recording_obj.custom_properties or {}
+
+        # If the stop endpoint set "stopped" while resolving, honor it.
+        if fresh_cp.get("status") == "stopped":
+            logger.info(
+                f"run_recording {recording_id}: 'stopped' found after metadata "
+                f"prep — task exits without streaming."
+            )
+            return
+
+        # Merge only the keys explicitly set into the fresh copy
+        for key in ("status", "started_at", "file_url", "output_file_url",
+                     "file_name", "file_path", "_temp_file_path",
+                     "poster_logo_id", "poster_url"):
+            if key in cp:
+                fresh_cp[key] = cp[key]
+        recording_obj.custom_properties = fresh_cp
         recording_obj.save(update_fields=["custom_properties"])
+
+        # Notify frontends so the tile picks up poster/metadata immediately
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_updated",
+                "recording_id": recording_id,
+            })
+        except Exception:
+            pass
     except Exception as e:
         logger.debug(f"Unable to prime Recording metadata: {e}")
     interrupted = False
@@ -1888,7 +1916,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         elapsed = time.time() - started_at
                         if elapsed > duration_seconds:
                             break
-                        # Continue draining the stream
+                        # Continue draining the stream.
+                        # Periodically poll the DB for a user-initiated stop so
+                        # the task exits promptly if stop_client() was missed
+                        # (e.g., fired before the DVR client was registered in Redis).
+                        _stop_poll_interval = 2.0  # seconds between DB checks
+                        _last_stop_poll = time.time()
                         for chunk2 in response.iter_content(chunk_size=8192):
                             if not chunk2:
                                 continue
@@ -1897,6 +1930,50 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                             elapsed = time.time() - started_at
                             if elapsed > duration_seconds:
                                 break
+                            # Periodic stopped-status + end_time extension check
+                            _now = time.time()
+                            if _now - _last_stop_poll >= _stop_poll_interval:
+                                _last_stop_poll = _now
+                                try:
+                                    _sc = Recording.objects.filter(
+                                        id=recording_id
+                                    ).only("custom_properties", "end_time").first()
+                                    if _sc is None:
+                                        # Recording was deleted — exit gracefully.
+                                        logger.info(
+                                            f"DVR recording {recording_id}: "
+                                            f"deleted — exiting stream loop"
+                                        )
+                                        interrupted = False
+                                        break
+                                    if (_sc.custom_properties or {}).get("status") == "stopped":
+                                        logger.info(
+                                            f"DVR recording {recording_id}: stop requested "
+                                            f"— exiting stream loop early"
+                                        )
+                                        break
+                                    # Check for extended end_time
+                                    try:
+                                        new_end = _sc.end_time
+                                        if new_end is not None:
+                                            from django.utils import timezone as _tz
+                                            if _tz.is_naive(new_end):
+                                                new_end = _tz.make_aware(new_end)
+                                            _ref = start_time
+                                            if _tz.is_naive(_ref):
+                                                _ref = _tz.make_aware(_ref)
+                                            new_duration = int((new_end - _ref).total_seconds())
+                                            if new_duration > duration_seconds:
+                                                logger.info(
+                                                    f"run_recording {recording_id}: "
+                                                    f"end_time extended to {new_end}, "
+                                                    f"new duration {new_duration}s"
+                                                )
+                                                duration_seconds = new_duration
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
                         break  # exit outer for-loop once we switched to full drain
 
                 # If we wrote any bytes, treat as success and stop trying candidates
@@ -1933,16 +2010,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     interrupted = True
                     interrupted_reason = f"stream_interrupted: {e}"
                 break
-            # Also bail if the Recording was deleted (user cancelled before data arrived)
-            rec_exists = Recording.objects.filter(id=recording_id).exists()
-            if not rec_exists:
-                interrupted = True
-                interrupted_reason = "recording_deleted_during_connect"
-                break
-            # Check for "stopped" status even before data arrived
+            # Check if recording was deleted or stopped before data arrived
             try:
                 rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
-                if rec_check and (rec_check.custom_properties or {}).get("status") == "stopped":
+                if rec_check is None:
+                    interrupted = True
+                    interrupted_reason = "recording_deleted_during_connect"
+                    break
+                if (rec_check.custom_properties or {}).get("status") == "stopped":
                     interrupted = False
                     break
             except Exception:
@@ -1951,15 +2026,6 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     if chosen_base is None and bytes_written == 0:
         interrupted = True
         interrupted_reason = f"no_stream_data: {last_error or 'all_bases_failed'}"
-    else:
-        # If we ended before reaching planned duration, record reason
-        actual_elapsed = 0
-        try:
-            actual_elapsed = os.path.getsize(temp_ts_path) and (duration_seconds)  # Best effort; we streamed until duration or disconnect above
-        except Exception:
-            pass
-        # We cannot compute accurate elapsed here; fine to leave as is
-        pass
 
     # If no bytes were written at all, check whether this was a deliberate stop or a
     # genuine failure.  The exception handler above already sets interrupted=False when
@@ -2024,10 +2090,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         logger.info(f"Recording {recording_id} was cancelled — skipping remux and metadata.")
         # Clean up any remaining temp or stub output files
         for _cleanup_path in [temp_ts_path, final_path]:
+            if not _cleanup_path:
+                continue
             try:
-                if _cleanup_path and os.path.exists(_cleanup_path):
-                    os.remove(_cleanup_path)
-                    logger.info(f"Cleaned up cancelled recording artifact: {_cleanup_path}")
+                os.remove(_cleanup_path)
+                logger.info(f"Cleaned up cancelled recording artifact: {_cleanup_path}")
+            except FileNotFoundError:
+                pass
             except Exception:
                 pass
         return
@@ -2138,12 +2207,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         cp = recording_obj.custom_properties or {}
         cp["ended_at"] = str(datetime.now())
 
-        # Determine final status.
-        # A deliberate user stop ("stopped" in DB) always wins over any interrupted flag —
-        # this handles races where the stream connection broke milliseconds before or
-        # after the stop endpoint committed its DB save.
+        # Final status priority: stopped > completed > interrupted.
+        # "stopped" is set by the stop endpoint before stream teardown, so
+        # refresh_from_db() above guarantees it is visible here.
         db_status_now = cp.get("status", "")
-        if db_status_now == "stopped" or not interrupted:
+        if db_status_now == "stopped":
+            # Deliberate user stop — preserve; do not overwrite with "completed".
+            cp.pop("interrupted_reason", None)
+        elif not interrupted:
             cp["status"] = "completed"
             cp.pop("interrupted_reason", None)
         else:
@@ -2307,7 +2378,8 @@ def recover_recordings_on_startup():
         for rec in upcoming:
             try:
                 from django_celery_beat.models import PeriodicTask as _PT
-                task_name = f"dvr-recording-{rec.id}"
+                from apps.channels.signals import _dvr_task_name
+                task_name = _dvr_task_name(rec.id)
                 if _PT.objects.filter(name=task_name).exists():
                     if rec.task_id != task_name:
                         rec.task_id = task_name

@@ -11,7 +11,8 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 from django.db.models import Count, F
 from django.db.models import Q
-import os, json, requests, logging, mimetypes
+import os, json, requests, logging, mimetypes, threading
+from datetime import timedelta
 from django.utils.http import http_date
 from urllib.parse import unquote
 from apps.accounts.permissions import (
@@ -2404,15 +2405,27 @@ class RecordingViewSet(viewsets.ModelViewSet):
         instance.custom_properties = cp
         instance.save(update_fields=["custom_properties"])
 
-        # Everything else (DVR client teardown, task revocation, WebSocket notification)
-        # is moved to a daemon thread so the API returns immediately.  Callers were
-        # seeing 5-15 s delays because _stop_dvr_clients / revoke_task / async_to_sync
-        # have occasional slow paths (Redis timeouts, Celery control broadcasts, etc.).
+        # Send the WebSocket notification before returning the response.
+        # send_websocket_update is gevent-safe (offloads async_to_sync to a
+        # real OS thread when monkey-patching is active).
         channel_uuid = str(instance.channel.uuid)
         recording_id = instance.id
         task_id = instance.task_id
         channel_name = instance.channel.name
 
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_stopped",
+                "channel": channel_name,
+            })
+        except Exception:
+            pass
+
+        # DVR client teardown and task revocation are deferred to a daemon thread
+        # because they have occasional slow paths (Redis timeouts, Celery control
+        # broadcasts) that would otherwise add 5-15 s to the HTTP response time.
         def _background_stop():
             try:
                 stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
@@ -2429,16 +2442,6 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.debug(f"Unable to revoke task for stopped recording: {e}")
 
-            try:
-                from core.utils import send_websocket_update
-                send_websocket_update('updates', 'update', {
-                    "success": True,
-                    "type": "recording_stopped",
-                    "channel": channel_name,
-                })
-            except Exception:
-                pass
-
             # Close the DB connection opened by this thread so it isn't leaked
             try:
                 from django.db import connection as _conn
@@ -2446,52 +2449,106 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
 
-        import threading
         threading.Thread(target=_background_stop, daemon=True).start()
 
         return Response({"success": True, "status": "stopped"})
+
+    @action(detail=True, methods=["post"], url_path="extend")
+    def extend(self, request, pk=None):
+        """Extend an in-progress recording's end_time without interrupting the stream.
+
+        The running task re-reads end_time every ~2 s and adjusts its deadline
+        dynamically.  The pre_save signal skips task revocation while the
+        recording status is 'recording'.
+        """
+        instance = self.get_object()
+        cp = instance.custom_properties or {}
+
+        if cp.get("status") in ("completed", "stopped", "interrupted"):
+            return Response(
+                {"success": False, "error": "Recording has already finished"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            extra_minutes = int(request.data.get("extra_minutes", 0))
+        except (TypeError, ValueError):
+            extra_minutes = 0
+
+        if extra_minutes <= 0:
+            return Response(
+                {"success": False, "error": "extra_minutes must be a positive integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_end_time = instance.end_time + timedelta(minutes=extra_minutes)
+        # Use queryset .update() to bypass pre_save/post_save signals.
+        # This avoids the pre_save signal revoking the scheduled/running
+        # Celery task.  The running task's 2-second polling loop re-reads
+        # end_time from the DB and extends its deadline dynamically.
+        # If the task hasn't started yet (still in Beat's queue), it will
+        # read the updated end_time from the DB on its first poll cycle.
+        Recording.objects.filter(pk=instance.pk).update(end_time=new_end_time)
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_extended",
+                "recording_id": instance.id,
+                "new_end_time": new_end_time.isoformat(),
+                "extra_minutes": extra_minutes,
+                "channel": instance.channel.name,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True, "new_end_time": new_end_time.isoformat()})
 
     def destroy(self, request, *args, **kwargs):
         """Delete the Recording and ensure any active DVR client connection is closed.
 
         Also removes the associated file(s) from disk if present.
+
+        Operation order matters for correctness:
+          1. Delete the DB record first — run_recording's cancellation guard
+             (Recording.objects.filter(id=...).exists()) will now return False,
+             preventing it from saving 'interrupted' status or sending
+             recording_ended after the stream is torn down.
+          2. Send recording_cancelled WebSocket immediately so the frontend
+             removes the card without waiting for the slow DVR client teardown.
+          3. Spawn a background thread to stop the DVR client and delete files.
+             This mirrors the stop() endpoint's approach and avoids the 5-15 s
+             delay that _stop_dvr_clients() can introduce.
         """
         instance = self.get_object()
+        recording_id = instance.pk
         channel_name = instance.channel.name
 
-        # Capture paths before deletion
+        # Capture state before the DB row is deleted
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
-
-        # Only stop the DVR client if this recording is actively streaming.
-        # Stopping for completed/upcoming recordings would kill an unrelated
-        # in-progress recording on the same channel.
-        if rec_status == "recording":
-            try:
-                channel_uuid = str(instance.channel.uuid)
-                stopped = _stop_dvr_clients(channel_uuid)
-                if stopped:
-                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
-            except Exception as e:
-                logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
         file_path = cp.get("file_path")
         temp_ts_path = cp.get("_temp_file_path")
+        channel_uuid = str(instance.channel.uuid)
 
-        # Perform DB delete first, then try to remove files
+        # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
         response = super().destroy(request, *args, **kwargs)
 
-        # Notify frontends
+        # 2. Notify frontends immediately
         try:
             from core.utils import send_websocket_update
             send_websocket_update('updates', 'update', {
                 "success": True,
                 "type": "recording_cancelled",
+                "recording_id": recording_id,
                 "channel": channel_name,
                 "was_in_progress": rec_status == "recording",
             })
         except Exception:
             pass
 
+        # 3. Defer slow teardown to a background thread
         library_dir = '/data'
         allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
 
@@ -2505,8 +2562,33 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception as ex:
                 logger.warning(f"Failed to delete recording artifact {path}: {ex}")
 
-        _safe_remove(file_path)
-        _safe_remove(temp_ts_path)
+        def _background_cancel():
+            # Only stop the DVR client if the recording was actively streaming.
+            # Stopping for completed/upcoming recordings would kill an unrelated
+            # in-progress recording on the same channel.
+            if rec_status == "recording":
+                try:
+                    stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
+                    if stopped:
+                        logger.info(
+                            f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation"
+                        )
+                except Exception as e:
+                    logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
+
+            # Best-effort file cleanup in case run_recording already exited
+            # before the DB delete.
+            _safe_remove(file_path)
+            _safe_remove(temp_ts_path)
+
+            # Close the DB connection opened by this thread so it isn't leaked
+            try:
+                from django.db import connection as _conn
+                _conn.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_background_cancel, daemon=True).start()
 
         return response
 

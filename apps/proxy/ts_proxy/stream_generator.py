@@ -381,10 +381,29 @@ class StreamGenerator:
         """Determine if a keepalive packet should be sent."""
         # Check if we're caught up to buffer head
         at_buffer_head = local_index >= self.buffer.index
+        if not at_buffer_head or self.consecutive_empty < 5:
+            return False
 
-        # If we're at buffer head and no data is coming, send keepalive
-        stream_healthy = self.stream_manager.healthy if self.stream_manager else True
-        return at_buffer_head and not stream_healthy and self.consecutive_empty >= 5
+        if self.stream_manager is not None:
+            # Owner worker: use the in-memory health flag directly.
+            return not self.stream_manager.healthy
+        else:
+            # Non-owner worker: stream_manager only exists in the owner process.
+            # Approximate health from the Redis last_data timestamp; if stale
+            # beyond CONNECTION_TIMEOUT, send keepalives to prevent DVR timeout.
+            try:
+                proxy_server = ProxyServer.get_instance()
+                if proxy_server.redis_client:
+                    raw = proxy_server.redis_client.get(RedisKeys.last_data(self.channel_id))
+                    if raw:
+                        age = time.time() - float(raw)
+                        timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
+                        return age >= timeout_threshold
+                    # No timestamp in Redis → key missing or expired → unhealthy
+                    return True
+            except Exception:
+                pass
+            return False
 
     def _is_ghost_client(self, local_index):
         """Check if this appears to be a ghost client (stuck but buffer advancing)."""
