@@ -28,6 +28,7 @@ import {
   deleteRecordingById,
   deleteSeriesAndRule,
   extendRecordingById,
+  getChannelLogoUrl,
   getPosterUrl,
   getRecordingUrl,
   getSeasonLabel,
@@ -64,7 +65,7 @@ const RecordingCard = ({
   const posterUrl = getPosterUrl(
     customProps.poster_logo_id,
     customProps,
-    channel?.logo?.cache_url,
+    getChannelLogoUrl(channel),
     env_mode
   );
 

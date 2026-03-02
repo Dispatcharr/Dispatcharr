@@ -20,6 +20,7 @@ import useVideoStore from '../../store/useVideoStore.jsx';
 import { notifications } from '@mantine/notifications';
 import {
   deleteRecordingById,
+  getChannelLogoUrl,
   getPosterUrl,
   getRecordingUrl,
   getSeasonLabel,
@@ -158,7 +159,7 @@ const RecordingDetailsModal = ({
         url: getPosterUrl(
           childRec.custom_properties?.poster_logo_id,
           undefined,
-          ch?.logo?.cache_url
+          getChannelLogoUrl(ch)
         ),
       },
     });
@@ -325,7 +326,7 @@ const RecordingDetailsModal = ({
             posterUrl={getPosterUrl(
               childRec.custom_properties?.poster_logo_id,
               childRec.custom_properties,
-              channelsById[childRec.channel]?.logo?.cache_url
+              getChannelLogoUrl(channelsById[childRec.channel])
             )}
             env_mode={env_mode}
             onWatchLive={handleOnWatchLive}

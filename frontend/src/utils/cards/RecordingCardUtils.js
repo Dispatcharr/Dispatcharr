@@ -19,6 +19,16 @@ export const removeRecording = (id) => {
   });
 };
 
+/**
+ * Resolve the channel logo cache URL from either a full channel object
+ * (has logo.cache_url) or a summary object (has logo_id integer).
+ */
+export const getChannelLogoUrl = (channel) => {
+  if (!channel) return null;
+  if (channel.logo_id) return `/api/channels/logos/${channel.logo_id}/cache/`;
+  return channel.logo?.cache_url || null;
+};
+
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
     ? `/api/channels/logos/${posterLogoId}/cache/`

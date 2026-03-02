@@ -30,6 +30,29 @@ from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
+
+def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
+    """Execute fn() with exponential backoff retry on transient DB errors.
+
+    Follows the same backoff pattern as RedisClient.get_client().
+    Resets stale connections between attempts so the ORM reconnects.
+    """
+    from django.db import OperationalError, close_old_connections
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except OperationalError:
+            if attempt + 1 >= max_retries:
+                raise
+            wait = base_interval * (2 ** attempt)
+            logger.warning(
+                f"{label}: failed, retrying in {wait}s "
+                f"({attempt + 1}/{max_retries})..."
+            )
+            close_old_connections()
+            time.sleep(wait)
+
+
 # PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size)
 # We use 2000 as a safe maximum to account for multibyte characters
 def validate_logo_url(logo_url, max_length=2000):
@@ -1743,10 +1766,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             except Exception as e:
                 logger.debug(f"External poster lookup failed: {e}")
 
-        # Keyless fallback providers (no API keys required)
-        if not poster_url and not poster_logo_id:
+        # Keyless fallback providers (no API keys required) — only search when
+        # real program title is present; channel names return unrelated results.
+        _program_title = (program.get('title') or '').strip()
+        if not poster_url and not poster_logo_id and _program_title:
             try:
-                title = (program.get('title') or channel.name or '').strip()
+                title = _program_title
                 if title:
                     # 1) TVMaze (TV shows) - singlesearch by title
                     try:
@@ -1801,6 +1826,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 poster_logo_id = logo.id
             except Exception as e:
                 logger.debug(f"Unable to persist poster to Logo: {e}")
+
+        # Fall back to the channel's own logo so the card always has an image
+        if not poster_logo_id and not poster_url and channel.logo_id:
+            poster_logo_id = channel.logo_id
 
         if poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id
@@ -1894,14 +1923,16 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             pass
         return False, False, None
 
-    # --- Stream with reconnection ---
-    # Iterate candidate base URLs until one delivers data.  Once streaming,
-    # transient connectivity losses (upstream provider drops, proxy
-    # reconnects) trigger automatic re-connection to the same base rather
-    # than aborting the recording.  TS container format tolerates the brief
-    # discontinuity; the MKV remux normalises timestamps afterwards.
+    # --- Retry / reconnection constants ---
+    # Stream reconnection: retry the same TS proxy base on transient
+    # connectivity loss.  Counter resets when data resumes.
     _dvr_max_reconnects = 5
     _dvr_reconnect_delay = 2.0  # seconds
+    # DB save retry: exponential backoff (1s, 2s, 4s) for transient errors.
+    _dvr_db_max_retries = 3
+    _dvr_db_retry_interval = 1  # seconds (base for exponential backoff)
+    # FFmpeg remux retry: covers transient I/O errors.
+    _dvr_remux_max_retries = 2
 
     for base in candidates:
         test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
@@ -2060,14 +2091,28 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     _done = True
                     break
 
-                # No data received yet — try next candidate base
-                last_error = str(e)
-                logger.warning(f"DVR recording {recording_id}: base {base} failed: {e}")
+                # No data received yet — retry same base before moving on
                 should_exit, is_int, reason = _check_recording_cancelled(recording_id)
                 if should_exit:
                     interrupted = is_int
                     interrupted_reason = reason
                     _done = True
+                    break
+                _reconnects += 1
+                if _reconnects <= _dvr_max_reconnects:
+                    logger.warning(
+                        f"DVR recording {recording_id}: initial connection "
+                        f"to {base} failed ({type(e).__name__}), retrying "
+                        f"({_reconnects}/{_dvr_max_reconnects}) "
+                        f"in {_dvr_reconnect_delay}s..."
+                    )
+                    time.sleep(_dvr_reconnect_delay)
+                    continue
+                last_error = str(e)
+                logger.warning(
+                    f"DVR recording {recording_id}: base {base} exhausted "
+                    f"retries ({_dvr_max_reconnects}): {e}"
+                )
                 break
 
             except Exception as e:
@@ -2174,101 +2219,115 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 pass
         return
 
-    # Remux TS to MKV container
+    # Remux TS to MKV container with retry for transient I/O errors
     remux_success = False
-    try:
-        if temp_ts_path and os.path.exists(temp_ts_path):
-            # First attempt: Direct TS to MKV remux
-            result = subprocess.run([
-                "ffmpeg", "-y",
-                "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
-                "-err_detect", "ignore_err",   # Ignore minor stream errors
-                "-i", temp_ts_path,
-                "-map", "0", # Map all streams
-                "-c", "copy",
-                final_path
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-            # Check if FFmpeg succeeded (return code 0) and output file is valid
-            if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                remux_success = True
-                logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
-            else:
-                # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
-                logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
-
-                # Clean up partial/failed MKV
-                try:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                except Exception:
-                    pass
-
-                # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
-                temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
-                result_mp4 = subprocess.run([
+    for _remux_attempt in range(_dvr_remux_max_retries):
+        try:
+            if temp_ts_path and os.path.exists(temp_ts_path):
+                # First attempt: Direct TS to MKV remux
+                result = subprocess.run([
                     "ffmpeg", "-y",
-                    "-fflags", "+genpts+igndts+discardcorrupt",
-                    "-err_detect", "ignore_err",
+                    "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
+                    "-err_detect", "ignore_err",   # Ignore minor stream errors
                     "-i", temp_ts_path,
-                    "-map", "0",
+                    "-map", "0",  # Map all streams
                     "-c", "copy",
-                    temp_mp4_path
+                    final_path
                 ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-                if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
-                    logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
+                # Check if FFmpeg succeeded (return code 0) and output file is valid
+                if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                    remux_success = True
+                    logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
+                else:
+                    # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
+                    logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
 
-                    # Step 2: MP4 → MKV (clean timestamps from MP4)
-                    result_mkv = subprocess.run([
-                        "ffmpeg", "-y",
-                        "-i", temp_mp4_path,
-                        "-map", "0",
-                        "-c", "copy",
-                        final_path
-                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                    if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                        remux_success = True
-                        logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
-                    else:
-                        logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
-
-                    # Clean up temp MP4
+                    # Clean up partial/failed MKV
                     try:
-                        if os.path.exists(temp_mp4_path):
-                            os.remove(temp_mp4_path)
+                        if os.path.exists(final_path):
+                            os.remove(final_path)
                     except Exception:
                         pass
+
+                    # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
+                    temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
+                    result_mp4 = subprocess.run([
+                        "ffmpeg", "-y",
+                        "-fflags", "+genpts+igndts+discardcorrupt",
+                        "-err_detect", "ignore_err",
+                        "-i", temp_ts_path,
+                        "-map", "0",
+                        "-c", "copy",
+                        temp_mp4_path
+                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                    if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
+                        logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
+
+                        # Step 2: MP4 → MKV (clean timestamps from MP4)
+                        result_mkv = subprocess.run([
+                            "ffmpeg", "-y",
+                            "-i", temp_mp4_path,
+                            "-map", "0",
+                            "-c", "copy",
+                            final_path
+                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                        if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                            remux_success = True
+                            logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
+                        else:
+                            logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
+
+                        # Clean up temp MP4
+                        try:
+                            if os.path.exists(temp_mp4_path):
+                                os.remove(temp_mp4_path)
+                        except Exception:
+                            pass
+                    else:
+                        logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
+
+                # Clean up temp TS file only on successful remux
+                if remux_success:
+                    try:
+                        os.remove(temp_ts_path)
+                        logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove temp TS file: {e}")
                 else:
-                    logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
+                    # Keep TS file for debugging/manual recovery if remux failed
+                    logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
+                    # Clean up any partial MKV
+                    try:
+                        if os.path.exists(final_path):
+                            os.remove(final_path)
+                            logger.debug(f"Cleaned up partial MKV file: {final_path}")
+                    except Exception:
+                        pass
+            break  # Completed (success or deterministic failure)
 
-            # Clean up temp TS file only on successful remux
-            if remux_success:
-                try:
-                    os.remove(temp_ts_path)
-                    logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to remove temp TS file: {e}")
+        except Exception as e:
+            # Clean up partial output before potential retry
+            try:
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+            except Exception:
+                pass
+            if _remux_attempt + 1 < _dvr_remux_max_retries:
+                _wait = _dvr_db_retry_interval * (2 ** _remux_attempt)
+                logger.warning(
+                    f"DVR recording {recording_id}: remux failed "
+                    f"({type(e).__name__}), retrying in {_wait}s "
+                    f"({_remux_attempt + 1}/{_dvr_remux_max_retries})..."
+                )
+                time.sleep(_wait)
             else:
-                # Keep TS file for debugging/manual recovery if remux failed
-                logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
-                # Clean up any partial MKV
-                try:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                        logger.debug(f"Cleaned up partial MKV file: {final_path}")
-                except Exception:
-                    pass
-
-    except Exception as e:
-        logger.warning(f"MKV remux failed with exception: {e}")
-        # Clean up any partial files on exception
-        try:
-            if os.path.exists(final_path):
-                os.remove(final_path)
-        except Exception:
-            pass
+                logger.warning(
+                    f"DVR recording {recording_id}: remux failed "
+                    f"after {_dvr_remux_max_retries} attempts: {e}"
+                )
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:
@@ -2364,7 +2423,17 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             return
 
         recording_obj.custom_properties = cp
-        recording_obj.save(update_fields=["custom_properties"])
+
+        def _save_final_metadata():
+            recording_obj.custom_properties = cp
+            recording_obj.save(update_fields=["custom_properties"])
+
+        _db_retry(
+            _save_final_metadata,
+            max_retries=_dvr_db_max_retries,
+            base_interval=_dvr_db_retry_interval,
+            label=f"DVR recording {recording_id}: metadata save",
+        )
 
         # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
         try:
@@ -2412,8 +2481,14 @@ def recover_recordings_on_startup():
 
         now = timezone.now()
 
-        # Resume in-window recordings
-        active = Recording.objects.filter(start_time__lte=now, end_time__gt=now)
+        # Resume in-window recordings.  DB queries and saves use _db_retry
+        # to tolerate transient connection errors common during startup.
+        active = _db_retry(
+            lambda: list(Recording.objects.filter(
+                start_time__lte=now, end_time__gt=now
+            )),
+            label="DVR recovery: fetching active recordings",
+        )
         for rec in active:
             try:
                 cp = rec.custom_properties or {}
@@ -2435,7 +2510,10 @@ def recover_recordings_on_startup():
                 cp["status"] = "interrupted"
                 cp["interrupted_reason"] = "server_restarted"
                 rec.custom_properties = cp
-                rec.save(update_fields=["custom_properties"])
+                _db_retry(
+                    lambda r=rec: r.save(update_fields=["custom_properties"]),
+                    label=f"DVR recovery: recording {rec.id} status update",
+                )
 
                 # Start recording for remaining window
                 run_recording.apply_async(
@@ -2447,7 +2525,12 @@ def recover_recordings_on_startup():
         # Ensure future recordings are scheduled.
         # With ClockedSchedule, PeriodicTasks survive restarts in the DB.
         # Only recreate if the PeriodicTask is missing (safety net).
-        upcoming = Recording.objects.filter(start_time__gt=now, end_time__gt=now)
+        upcoming = _db_retry(
+            lambda: list(Recording.objects.filter(
+                start_time__gt=now, end_time__gt=now
+            )),
+            label="DVR recovery: fetching upcoming recordings",
+        )
         for rec in upcoming:
             try:
                 from django_celery_beat.models import PeriodicTask as _PT
@@ -2456,13 +2539,19 @@ def recover_recordings_on_startup():
                 if _PT.objects.filter(name=task_name).exists():
                     if rec.task_id != task_name:
                         rec.task_id = task_name
-                        rec.save(update_fields=["task_id"])
+                        _db_retry(
+                            lambda r=rec: r.save(update_fields=["task_id"]),
+                            label=f"DVR recovery: recording {rec.id} task_id update",
+                        )
                     continue
                 # PeriodicTask missing - recreate it
                 task_id = schedule_recording_task(rec)
                 if task_id:
                     rec.task_id = task_id
-                    rec.save(update_fields=["task_id"])
+                    _db_retry(
+                        lambda r=rec: r.save(update_fields=["task_id"]),
+                        label=f"DVR recovery: recording {rec.id} task_id update",
+                    )
             except Exception as e:
                 logger.warning(f"Failed to schedule recording {rec.id}: {e}")
 
@@ -2782,10 +2871,13 @@ def _resolve_poster_for_program(channel_name, program):
         except Exception:
             pass
 
-    # Keyless providers (TVMaze & iTunes)
-    if not poster_url and not poster_logo_id:
+    # Keyless providers (TVMaze & iTunes) — only when real program title is 
+    # present. Searching by channel name returns unrelated art work from
+    # fuzzy API matching.
+    program_title = program.get('title') if isinstance(program, dict) else None
+    if not poster_url and not poster_logo_id and program_title:
         try:
-            title = (program.get('title') if isinstance(program, dict) else None) or channel_name
+            title = program_title
             if title:
                 # TVMaze
                 try:
@@ -2858,6 +2950,10 @@ def prefetch_recording_artwork(recording_id):
 
         program = cp.get("program") or {}
         poster_logo_id, poster_url = _resolve_poster_for_program(rec.channel.name, program)
+        # Fall back to the channel's own logo so the card always has an image
+        # rather than relying on the frontend's async channelsById lookup.
+        if not poster_logo_id and not poster_url and rec.channel.logo_id:
+            poster_logo_id = rec.channel.logo_id
         updated = False
         if poster_logo_id and cp.get("poster_logo_id") != poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id

@@ -24,6 +24,7 @@ import RecurringRuleModal from '../components/forms/RecurringRuleModal.jsx';
 import RecordingCard from '../components/cards/RecordingCard.jsx';
 import { categorizeRecordings } from '../utils/pages/DVRUtils.js';
 import {
+  getChannelLogoUrl,
   getPosterUrl,
   getRecordingUrl,
   getShowVideoUrl,
@@ -158,7 +159,7 @@ const DVRPage = () => {
         url: getPosterUrl(
           detailsRecording.custom_properties?.poster_logo_id,
           undefined,
-          channelsById[detailsRecording.channel]?.logo?.cache_url
+          getChannelLogoUrl(channelsById[detailsRecording.channel])
         ),
       },
     });
@@ -302,7 +303,7 @@ const DVRPage = () => {
               posterUrl={getPosterUrl(
                 detailsRecording.custom_properties?.poster_logo_id,
                 detailsRecording.custom_properties,
-                channelsById[detailsRecording.channel]?.logo?.cache_url
+                getChannelLogoUrl(channelsById[detailsRecording.channel])
               )}
               env_mode={useSettingsStore.getState().environment.env_mode}
               onWatchLive={handleOnWatchLive}
