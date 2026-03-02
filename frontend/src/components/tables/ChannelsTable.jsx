@@ -251,7 +251,7 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
-  const hasUnassignedEPGChannels = useEPGsStore(
+  const hasUnassignedEPGChannels = useChannelsTableStore(
     (s) => s.hasUnassignedEPGChannels
   );
 
