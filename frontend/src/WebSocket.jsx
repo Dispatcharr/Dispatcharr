@@ -210,10 +210,14 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 scheduleRecordingFetch();
               } else if (status === 'skipped') {
+                const reasonMap = {
+                  no_commercials_detected: 'No commercials were detected in this recording',
+                  no_commercials: 'No commercials were detected in this recording',
+                };
                 notifications.update({
                   id,
                   title: 'No commercials to remove',
-                  message: parsedEvent.data.reason || '',
+                  message: reasonMap[parsedEvent.data.reason] || parsedEvent.data.reason || '',
                   color: 'teal',
                   loading: false,
                   autoClose: 3000,

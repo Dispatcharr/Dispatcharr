@@ -1878,59 +1878,86 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     interrupted = False
     interrupted_reason = None
 
-    # We'll attempt each base until we receive some data
-    for base in candidates:
+    def _check_recording_cancelled(rid):
+        """Check if a recording was stopped by user or deleted.
+
+        Returns (should_exit, is_interrupted, reason) where should_exit
+        indicates the stream loop must terminate.
+        """
         try:
-            test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
-            logger.info(f"DVR: trying TS base {base} -> {test_url}")
+            rec = Recording.objects.filter(id=rid).only("custom_properties").first()
+            if rec is None:
+                return True, True, "recording_deleted"
+            if (rec.custom_properties or {}).get("status") == "stopped":
+                return True, False, "stopped_by_user"
+        except Exception:
+            pass
+        return False, False, None
 
-            with requests.get(
-                test_url,
-                headers={
-                    'User-Agent': f'Dispatcharr-DVR/recording-{recording_id}',
-                },
-                stream=True,
-                timeout=(10, 15),
-            ) as response:
-                response.raise_for_status()
+    # --- Stream with reconnection ---
+    # Iterate candidate base URLs until one delivers data.  Once streaming,
+    # transient connectivity losses (upstream provider drops, proxy
+    # reconnects) trigger automatic re-connection to the same base rather
+    # than aborting the recording.  TS container format tolerates the brief
+    # discontinuity; the MKV remux normalises timestamps afterwards.
+    _dvr_max_reconnects = 5
+    _dvr_reconnect_delay = 2.0  # seconds
 
-                # Open the file and start copying; if we get any data within a short window, accept this base
-                got_any_data = False
-                test_window = 3.0  # seconds to detect first bytes
-                window_start = time.time()
+    for base in candidates:
+        test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
+        logger.info(f"DVR recording {recording_id}: trying TS base {base}")
 
-                with open(temp_ts_path, 'wb') as file:
-                    started_at = time.time()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if not chunk:
-                            # keep-alives may be empty; continue
-                            if not got_any_data and (time.time() - window_start) > test_window:
-                                break
-                            continue
-                        # We have data
-                        got_any_data = True
-                        chosen_base = base
-                        # Fall through to full recording loop using this same response/connection
-                        file.write(chunk)
-                        bytes_written += len(chunk)
-                        elapsed = time.time() - started_at
-                        if elapsed > duration_seconds:
-                            break
-                        # Continue draining the stream.
-                        # Periodically poll the DB for a user-initiated stop so
-                        # the task exits promptly if stop_client() was missed
-                        # (e.g., fired before the DVR client was registered in Redis).
-                        _stop_poll_interval = 2.0  # seconds between DB checks
-                        _last_stop_poll = time.time()
-                        for chunk2 in response.iter_content(chunk_size=8192):
-                            if not chunk2:
+        _reconnects = 0
+        _file_mode = 'wb'
+        _stream_started_at = None
+        _done = False
+
+        while True:  # Reconnection loop for this base
+            try:
+                with requests.get(
+                    test_url,
+                    headers={
+                        'User-Agent': f'Dispatcharr-DVR/recording-{recording_id}',
+                    },
+                    stream=True,
+                    timeout=(10, 15),
+                ) as response:
+                    response.raise_for_status()
+
+                    _test_window = 3.0
+                    _window_start = time.time()
+                    _stop_poll_interval = 2.0
+                    _last_stop_poll = time.time()
+
+                    with open(temp_ts_path, _file_mode) as file:
+                        if _stream_started_at is None:
+                            _stream_started_at = time.time()
+
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if not chunk:
+                                if not chosen_base and (time.time() - _window_start) > _test_window:
+                                    break
                                 continue
-                            file.write(chunk2)
-                            bytes_written += len(chunk2)
-                            elapsed = time.time() - started_at
+
+                            if not chosen_base:
+                                chosen_base = base
+
+                            # Data received after reconnect — connection restored
+                            if _reconnects > 0:
+                                logger.info(
+                                    f"DVR recording {recording_id}: "
+                                    f"stream resumed after reconnect"
+                                )
+                                _reconnects = 0
+
+                            file.write(chunk)
+                            bytes_written += len(chunk)
+
+                            elapsed = time.time() - _stream_started_at
                             if elapsed > duration_seconds:
                                 break
-                            # Periodic stopped-status + end_time extension check
+
+                            # Periodic DB poll: stop, delete, end_time extension
                             _now = time.time()
                             if _now - _last_stop_poll >= _stop_poll_interval:
                                 _last_stop_poll = _now
@@ -1939,7 +1966,6 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                         id=recording_id
                                     ).only("custom_properties", "end_time").first()
                                     if _sc is None:
-                                        # Recording was deleted — exit gracefully.
                                         logger.info(
                                             f"DVR recording {recording_id}: "
                                             f"deleted — exiting stream loop"
@@ -1948,11 +1974,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                         break
                                     if (_sc.custom_properties or {}).get("status") == "stopped":
                                         logger.info(
-                                            f"DVR recording {recording_id}: stop requested "
-                                            f"— exiting stream loop early"
+                                            f"DVR recording {recording_id}: "
+                                            f"stop requested — exiting stream loop"
                                         )
                                         break
-                                    # Check for extended end_time
                                     try:
                                         new_end = _sc.end_time
                                         if new_end is not None:
@@ -1962,10 +1987,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                             _ref = start_time
                                             if _tz.is_naive(_ref):
                                                 _ref = _tz.make_aware(_ref)
-                                            new_duration = int((new_end - _ref).total_seconds())
+                                            new_duration = int(
+                                                (new_end - _ref).total_seconds()
+                                            )
                                             if new_duration > duration_seconds:
                                                 logger.info(
-                                                    f"run_recording {recording_id}: "
+                                                    f"DVR recording {recording_id}: "
                                                     f"end_time extended to {new_end}, "
                                                     f"new duration {new_duration}s"
                                                 )
@@ -1974,54 +2001,100 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                                         pass
                                 except Exception:
                                     pass
-                        break  # exit outer for-loop once we switched to full drain
 
-                # If we wrote any bytes, treat as success and stop trying candidates
+                    # iter_content exhausted or loop exited normally
+                    if bytes_written > 0:
+                        logger.info(
+                            f"DVR recording {recording_id}: "
+                            f"stream complete, {bytes_written} bytes written"
+                        )
+                        _done = True
+                    else:
+                        last_error = f"no_data_from_{base}"
+                        logger.warning(
+                            f"DVR recording {recording_id}: no data from "
+                            f"{base} within {_test_window}s, trying next base"
+                        )
+                        try:
+                            if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
+                                os.remove(temp_ts_path)
+                        except FileNotFoundError:
+                            pass
+                    break  # Exit reconnection loop
+
+            except (ReadTimeout, ReqConnectionError, ChunkedEncodingError) as e:
                 if bytes_written > 0:
-                    logger.info(f"DVR: selected TS base {base}; wrote initial {bytes_written} bytes")
+                    # Active stream lost — check cancellation before reconnecting
+                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                    if should_exit:
+                        interrupted = is_int
+                        interrupted_reason = reason
+                        if reason == "stopped_by_user":
+                            logger.info(
+                                f"DVR recording {recording_id}: "
+                                f"stopped by user — ending stream"
+                            )
+                        _done = True
+                        break
+
+                    _reconnects += 1
+                    if _reconnects <= _dvr_max_reconnects:
+                        logger.warning(
+                            f"DVR recording {recording_id}: connection lost "
+                            f"({type(e).__name__}), reconnecting "
+                            f"({_reconnects}/{_dvr_max_reconnects}) "
+                            f"in {_dvr_reconnect_delay}s..."
+                        )
+                        time.sleep(_dvr_reconnect_delay)
+                        _file_mode = 'ab'
+                        continue
+
+                    logger.error(
+                        f"DVR recording {recording_id}: max reconnects "
+                        f"({_dvr_max_reconnects}) exceeded — ending recording"
+                    )
+                    interrupted = True
+                    interrupted_reason = (
+                        f"stream_interrupted: max reconnects exceeded ({e})"
+                    )
+                    _done = True
                     break
-                else:
-                    last_error = f"no_data_from_{base}"
-                    logger.warning(f"DVR: no data received from {base} within {test_window}s, trying next base")
-                    # Clean up empty temp file
-                    try:
-                        if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
-                            os.remove(temp_ts_path)
-                    except Exception:
-                        pass
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"DVR: attempt failed for base {base}: {e}")
-            # If there was a working stream that was interrupted (e.g. recording
-            # cancelled via stop_client), do not retry on another base — that would
-            # re-establish the DVR connection and make the recording re-appear.
-            if bytes_written > 0:
-                # Check if this was a deliberate "stop" vs an unexpected interruption
-                try:
-                    rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
-                    if rec_check and (rec_check.custom_properties or {}).get("status") == "stopped":
-                        # Graceful stop — not an error, just an early end
+
+                # No data received yet — try next candidate base
+                last_error = str(e)
+                logger.warning(f"DVR recording {recording_id}: base {base} failed: {e}")
+                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                if should_exit:
+                    interrupted = is_int
+                    interrupted_reason = reason
+                    _done = True
+                break
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"DVR recording {recording_id}: base {base} failed: {e}")
+                if bytes_written > 0:
+                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                    if should_exit and reason == "stopped_by_user":
                         interrupted = False
-                        logger.info(f"Recording {recording_id} was stopped by user — ending stream.")
+                        logger.info(
+                            f"DVR recording {recording_id}: "
+                            f"stopped by user — ending stream"
+                        )
                     else:
                         interrupted = True
                         interrupted_reason = f"stream_interrupted: {e}"
-                except Exception:
-                    interrupted = True
-                    interrupted_reason = f"stream_interrupted: {e}"
+                    _done = True
+                    break
+                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                if should_exit:
+                    interrupted = is_int
+                    interrupted_reason = reason
+                    _done = True
                 break
-            # Check if recording was deleted or stopped before data arrived
-            try:
-                rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
-                if rec_check is None:
-                    interrupted = True
-                    interrupted_reason = "recording_deleted_during_connect"
-                    break
-                if (rec_check.custom_properties or {}).get("status") == "stopped":
-                    interrupted = False
-                    break
-            except Exception:
-                pass
+
+        if _done:
+            break
 
     if chosen_base is None and bytes_written == 0:
         interrupted = True
@@ -2487,34 +2560,43 @@ def comskip_process_recording(recording_id: int):
                 cmd.extend([f"--ini={ini_path}"])
                 break
         cmd.append(file_path)
-        subprocess.run(
+        result = subprocess.run(
             cmd,
-            check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-    except subprocess.CalledProcessError as e:
-        stderr_tail = (e.stderr or "").strip().splitlines()
-        stderr_tail = stderr_tail[-5:] if stderr_tail else []
-        detail = {
-            "status": "error",
-            "reason": "comskip_failed",
-            "returncode": e.returncode,
-        }
-        if e.returncode and e.returncode < 0:
-            try:
-                detail["signal"] = signal.Signals(-e.returncode).name
-            except Exception:
-                detail["signal"] = f"signal_{-e.returncode}"
-        if stderr_tail:
-            detail["stderr"] = "\n".join(stderr_tail)
-        if selected_ini:
-            detail["ini_path"] = selected_ini
-        cp["comskip"] = detail
-        _persist_custom_properties()
-        _ws('error', {"reason": "comskip_failed", "returncode": e.returncode})
-        return "comskip_failed"
+        # comskip exit codes: 0 = commercials found, 1 = no commercials detected.
+        # Negative codes indicate killed by signal; anything else is a real error.
+        if result.returncode == 1:
+            # No commercials detected — not an error.
+            cp["comskip"] = {"status": "completed", "skipped": True}
+            if selected_ini:
+                cp["comskip"]["ini_path"] = selected_ini
+            _persist_custom_properties()
+            _ws('skipped', {"reason": "no_commercials_detected"})
+            return "no_commercials"
+        elif result.returncode != 0:
+            stderr_tail = (result.stderr or "").strip().splitlines()
+            stderr_tail = stderr_tail[-5:] if stderr_tail else []
+            detail = {
+                "status": "error",
+                "reason": "comskip_failed",
+                "returncode": result.returncode,
+            }
+            if result.returncode < 0:
+                try:
+                    detail["signal"] = signal.Signals(-result.returncode).name
+                except Exception:
+                    detail["signal"] = f"signal_{-result.returncode}"
+            if stderr_tail:
+                detail["stderr"] = "\n".join(stderr_tail)
+            if selected_ini:
+                detail["ini_path"] = selected_ini
+            cp["comskip"] = detail
+            _persist_custom_properties()
+            _ws('error', {"reason": "comskip_failed", "returncode": result.returncode})
+            return "comskip_failed"
     except Exception as e:
         cp["comskip"] = {"status": "error", "reason": f"comskip_failed: {e}"}
         _persist_custom_properties()
