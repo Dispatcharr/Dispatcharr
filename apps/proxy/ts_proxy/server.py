@@ -51,12 +51,11 @@ class ProxyServer:
             cls._instance = real_instance
             return real_instance
         # Another greenlet is initializing — wait for completion
-        import time
         while True:
             inst = cls._instance
             if inst is not None and inst is not cls._INITIALIZING:
                 return inst
-            time.sleep(0.05)
+            gevent.sleep(0.05)
 
     def __init__(self):
         """Initialize proxy server with worker identification"""
@@ -462,9 +461,8 @@ class ProxyServer:
             if current is None:
                 # Key expired — re-acquire if we have the stream_manager
                 if channel_id in self.stream_managers:
-                    acquired = self.redis_client.setnx(lock_key, self.worker_id)
+                    acquired = self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
                     if acquired:
-                        self.redis_client.expire(lock_key, ttl)
                         logger.warning(f"Re-acquired expired ownership for channel {channel_id}")
                         return True
                     else:
@@ -1217,6 +1215,19 @@ class ProxyServer:
                                     logger.info(f"Successfully re-acquired ownership for {channel_id}")
                                     continue
                                 else:
+                                    # Defer cleanup if we still have active clients — give the
+                                    # new owner time to spin up its own stream before we tear
+                                    # ours down, so viewers don't get disconnected.
+                                    has_clients = (
+                                        channel_id in self.client_managers
+                                        and self.client_managers[channel_id].get_client_count() > 0
+                                    )
+                                    if has_clients:
+                                        logger.warning(
+                                            f"Ownership lost for {channel_id} but {self.client_managers[channel_id].get_client_count()} "
+                                            f"client(s) still connected — deferring cleanup to next cycle"
+                                        )
+                                        continue
                                     logger.error(f"Failed to re-acquire ownership for {channel_id}, will clean up")
 
                             # For channels we don't own, check if they've been stopped/cleaned up in Redis
