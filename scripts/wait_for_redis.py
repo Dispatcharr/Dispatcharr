@@ -31,7 +31,6 @@ def wait_for_redis(host='localhost', port=6379, db=0, password='', username='', 
                 socket_connect_timeout=2
             )
             redis_client.ping()
-            redis_client.flushdb()  # Flush the database to ensure it's clean
             logger.info(f"✅ Redis at {host}:{port}/{db} is now available!")
             return True
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
