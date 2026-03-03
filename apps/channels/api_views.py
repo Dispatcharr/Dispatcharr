@@ -413,6 +413,13 @@ class ChannelPagination(PageNumberPagination):
 
         return super().paginate_queryset(queryset, request, view)
 
+    def get_paginated_response(self, data):
+        from django.db.models import Exists, OuterRef
+        has_unassigned = Channel.objects.filter(epg_data__isnull=True).exists()
+        response = super().get_paginated_response(data)
+        response.data['has_unassigned_epg_channels'] = has_unassigned
+        return response
+
 
 class EPGFilter(django_filters.Filter):
     """

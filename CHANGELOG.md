@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-03-03
+
+### Security
+
+- Updated frontend npm dependencies to resolve 2 high-severity vulnerabilities:
+  - Updated `minimatch` to ≥10.2.3, resolving **high** ReDoS via matchOne() combinatorial backtracking with multiple non-adjacent GLOBSTAR segments ([GHSA-7r86-cg39-jmmj](https://github.com/advisories/GHSA-7r86-cg39-jmmj))
+  - Updated `rollup` to ≥4.58.1, resolving **high** Arbitrary File Write via Path Traversal ([GHSA-mw96-cpmx-2vgc](https://github.com/advisories/GHSA-mw96-cpmx-2vgc))
+
 ### Fixed
 
+- EPG filter regression in channel table (introduced in 0.20.0 channel store refactor): The EPG filter dropdown was showing all EPG sources regardless of whether they had any channels assigned, and the "No EPG" option was never displayed. Fixed by annotating EPGSource records with a `has_channels` flag (via a lightweight `EXISTS` subquery) so only active EPG sources with at least one channel assigned appear as filter options. "No EPG" now appears only when at least one channel globally has no EPG assigned; this is determined by a second `EXISTS` query embedded directly in the paginated channel response (`has_unassigned_epg_channels`), avoiding any additional network requests.
 - Stale stream rows missing hover effect: Stale streams in the streams table had no hover color change, unlike channels with no streams assigned. Converted the inline `backgroundColor` style to a CSS class (`stale-stream-row`) so the `:hover` rule can apply correctly. Applied the same fix to the channel-streams sub-table, where the teal expanded-row background caused the semi-transparent red tint to visually mismatch; the sub-table now uses a pre-blended solid color via `color-mix()` to match the appearance of stale rows in the main streams table.
 - Channel table onboarding shown when filter returns zero results: The channel store refactor changed to loading only channel IDs instead of full channel objects, leaving `Object.keys(channels).length` always `0` and incorrectly triggering the onboarding state on any empty filter. Fixed by checking `channelIds.length` instead.
 - TV Guide scrolls to position 0 when a filter yields no results: Applying any filter that temporarily empties the channel list (e.g. switching directly between two channel groups, or typing a search query that matches nothing) caused the guide to show a blank/empty view with no programs visible. The `VariableSizeList` unmounts when `filteredChannels` becomes empty, destroying its DOM node and resetting `scrollLeft` to 0. On remount the scroll position was never restored because `initialScrollComplete` was still `true`. Fixed by saving the user's current scroll position when the channel list empties mid-transition, then restoring it once new channels have loaded. On first load the guide still scrolls to the current time as before.
