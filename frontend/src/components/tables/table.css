@@ -120,6 +120,26 @@ html {
   /* Darker red on hover */
 }
 
+/* Style for stale stream rows */
+.stale-stream-row {
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+/* Special hover effect for stale stream rows */
+.table-striped .tbody .tr.stale-stream-row:hover {
+  background-color: rgba(239, 68, 68, 0.3) !important;
+}
+
+/* Override stale color inside channel streams — pre-blend against #27272a since
+   the teal container background would otherwise tint the transparent red */
+.channel-streams-container .table-striped .tbody .tr.stale-stream-row {
+  background-color: color-mix(in srgb, rgb(239, 68, 68) 15%, #27272a) !important;
+}
+
+.channel-streams-container .table-striped .tbody .tr.stale-stream-row:hover {
+  background-color: color-mix(in srgb, rgb(239, 68, 68) 30%, #27272a) !important;
+}
+
 /* Prevent text selection when shift key is pressed */
 .shift-key-active {
   cursor: pointer !important;
