@@ -63,7 +63,7 @@ const App = () => {
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
-        if (!response.superuser_exists) {
+        if (response && response.superuser_exists === false) {
           setSuperuserExists(false);
         }
       } catch (error) {

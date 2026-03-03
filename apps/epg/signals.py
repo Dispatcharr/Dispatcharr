@@ -70,7 +70,7 @@ def create_dummy_epg_data(sender, instance, created, **kwargs):
             logger.debug(f"EPGData already exists for dummy EPG source: {instance.name} (ID: {instance.id})")
 
 @receiver(post_save, sender=EPGSource)
-def create_or_update_refresh_task(sender, instance, **kwargs):
+def create_or_update_refresh_task(sender, instance, created, update_fields=None, **kwargs):
     """
     Create or update a Celery Beat periodic task when an EPGSource is created/updated.
     Skip creating tasks for dummy EPG sources as they don't need refreshing.
@@ -84,11 +84,35 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
             instance.refresh_task.save(update_fields=['enabled'])
         return
 
+    # Skip rescheduling when only non-schedule fields were saved (e.g. status/last_message
+    # updates from the refresh task itself). We only need to reschedule when schedule-relevant
+    # fields change or when _cron_expression was explicitly set by the serializer.
+    SCHEDULE_FIELDS = {'refresh_interval', 'is_active', 'refresh_task'}
+    if (
+        not created
+        and update_fields is not None
+        and not (set(update_fields) & SCHEDULE_FIELDS)
+        and not hasattr(instance, '_cron_expression')
+    ):
+        return
+
     task_name = f"epg_source-refresh-{instance.id}"
     should_be_enabled = instance.is_active
 
-    # Read cron_expression from transient attribute set by the serializer
-    cron_expr = getattr(instance, "_cron_expression", "")
+    # Read cron_expression from transient attribute set by the serializer.
+    # If not set (e.g. save came from a task updating status/last_message),
+    # preserve the existing crontab so we don't accidentally revert to interval.
+    if hasattr(instance, "_cron_expression"):
+        cron_expr = instance._cron_expression
+    else:
+        cron_expr = ""
+        try:
+            existing_task = instance.refresh_task
+            if existing_task and existing_task.crontab:
+                ct = existing_task.crontab
+                cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
+        except Exception:
+            pass
 
     task = create_or_update_periodic_task(
         task_name=task_name,

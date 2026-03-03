@@ -222,6 +222,75 @@ def release_task_lock(task_name, id):
     # Remove the lock
     redis_client.delete(lock_id)
 
+
+class TaskLockRenewer:
+    """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
+
+    Use as a context manager after acquiring a lock:
+
+        if acquire_task_lock("my_task", task_id):
+            with TaskLockRenewer("my_task", task_id):
+                # ... long-running work ...
+            release_task_lock("my_task", task_id)
+
+    A daemon thread extends the lock TTL at regular intervals so that
+    slow downloads or large parsing jobs don't lose their lock mid-operation.
+    """
+
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+        self.task_name = task_name
+        self.id = id
+        self.ttl = ttl
+        self.renewal_interval = renewal_interval
+        self.lock_id = f"task_lock_{task_name}_{id}"
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _renew_loop(self):
+        """Background loop that extends the lock TTL until stopped."""
+        while not self._stop_event.wait(self.renewal_interval):
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client.exists(self.lock_id):
+                    redis_client.expire(self.lock_id, self.ttl)
+                    logger.debug(
+                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                    )
+                else:
+                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                    logger.warning(
+                        f"Lock {self.lock_id} no longer exists, stopping renewal"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error renewing lock {self.lock_id}: {e}")
+
+    def start(self):
+        """Start the background renewal thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._renew_loop, daemon=True,
+            name=f"lock-renew-{self.task_name}-{self.id}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop the renewal thread."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Standardized function to send WebSocket updates with proper memory management.
@@ -404,7 +473,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         from core.models import StreamProfile
         from core.utils import RedisClient
 
-        payload = {}
+        payload = dict(details)
 
         channel_obj = None
         if channel_id:
@@ -463,6 +532,11 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
             profile_used = None
 
         payload["profile_used"] = profile_used
+
+        # remove empty keys
+        for k in list(payload.keys()):
+            if not payload[k]:
+                del payload[k]
 
         trigger_event(event_type, payload)
 

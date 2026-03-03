@@ -204,7 +204,14 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         # Pop cron_expression before it reaches model fields
-        cron_expr = validated_data.pop("cron_expression", "")
+        # If not present (partial update), preserve the existing cron from the PeriodicTask
+        if "cron_expression" in validated_data:
+            cron_expr = validated_data.pop("cron_expression")
+        else:
+            cron_expr = ""
+            if instance.refresh_task_id and instance.refresh_task and instance.refresh_task.crontab:
+                ct = instance.refresh_task.crontab
+                cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         instance._cron_expression = cron_expr
 
         # Handle enable_vod preference and auto_enable_new_groups settings

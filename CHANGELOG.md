@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-03-03
+
+### Security
+
+- Updated frontend npm dependencies to resolve 2 high-severity vulnerabilities:
+  - Updated `minimatch` to ≥10.2.3, resolving **high** ReDoS via matchOne() combinatorial backtracking with multiple non-adjacent GLOBSTAR segments ([GHSA-7r86-cg39-jmmj](https://github.com/advisories/GHSA-7r86-cg39-jmmj))
+  - Updated `rollup` to ≥4.58.1, resolving **high** Arbitrary File Write via Path Traversal ([GHSA-mw96-cpmx-2vgc](https://github.com/advisories/GHSA-mw96-cpmx-2vgc))
+
+### Fixed
+
+- EPG filter regression in channel table (introduced in 0.20.0 channel store refactor): The EPG filter dropdown was showing all EPG sources regardless of whether they had any channels assigned, and the "No EPG" option was never displayed. Fixed by annotating EPGSource records with a `has_channels` flag (via a lightweight `EXISTS` subquery) so only active EPG sources with at least one channel assigned appear as filter options. "No EPG" now appears only when at least one channel globally has no EPG assigned; this is determined by a second `EXISTS` query embedded directly in the paginated channel response (`has_unassigned_epg_channels`), avoiding any additional network requests.
+- Stale stream rows missing hover effect: Stale streams in the streams table had no hover color change, unlike channels with no streams assigned. Converted the inline `backgroundColor` style to a CSS class (`stale-stream-row`) so the `:hover` rule can apply correctly. Applied the same fix to the channel-streams sub-table, where the teal expanded-row background caused the semi-transparent red tint to visually mismatch; the sub-table now uses a pre-blended solid color via `color-mix()` to match the appearance of stale rows in the main streams table.
+- Channel table onboarding shown when filter returns zero results: The channel store refactor changed to loading only channel IDs instead of full channel objects, leaving `Object.keys(channels).length` always `0` and incorrectly triggering the onboarding state on any empty filter. Fixed by checking `channelIds.length` instead.
+- TV Guide scrolls to position 0 when a filter yields no results: Applying any filter that temporarily empties the channel list (e.g. switching directly between two channel groups, or typing a search query that matches nothing) caused the guide to show a blank/empty view with no programs visible. The `VariableSizeList` unmounts when `filteredChannels` becomes empty, destroying its DOM node and resetting `scrollLeft` to 0. On remount the scroll position was never restored because `initialScrollComplete` was still `true`. Fixed by saving the user's current scroll position when the channel list empties mid-transition, then restoring it once new channels have loaded. On first load the guide still scrolls to the current time as before.
+- `debian_install.sh` regressions after `uv` migration on clean/minimal Debian installs: fixed pip-less venv (`ensurepip`), missing `gunicorn` for the systemd unit, and inconsistent `DJANGO_SECRET_KEY` availability (now persisted to `.env` via `EnvironmentFile`). Docker unaffected. - Thanks [@marcinolek](https://github.com/marcinolek)
+
+## [0.20.1] - 2026-02-26
+
+### Fixed
+
+- Login form disabled after token expiry: The login button was permanently rendered as disabled ("Logging you in...") on page load after a session expired, preventing users from logging back in. A regression in v0.20.0 caused `LoginForm` to check `if (user)` to detect an already-authenticated reload, but the Zustand auth store initializes `user` as a truthy empty object `{ username: '', email: '', user_level: '' }`, so the loading state was set immediately on every mount. Reverted to pre-regression behavior. (Fixes #1029)
+
+## [0.20.0] - 2026-02-26
+
 ### Security
 
 - Updated Django 5.2.9 → 5.2.11, resolving the following CVEs:
@@ -22,9 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- API key authentication: Added support for API key-based authentication as an alternative to JWT tokens. Users can generate and revoke their own personal API key from their profile page, enabling programmatic access for scripts, automations, and third-party integrations without exposing account credentials. Keys authenticate via the `Authorization: ApiKey <key>` header or the `X-API-Key: <key>` header. Admin users can additionally generate and revoke keys on behalf of any user.
 - Lightweight channel summary API endpoint: Added a new `/api/channels/summary/` endpoint that returns only the minimal channel data needed for TV Guide and DVR scheduling (id, name, logo), avoiding the overhead of serializing full channel objects for high-frequency UI operations.
 - Custom Dummy EPG subtitle template support: Added optional subtitle template field to custom dummy EPG configuration. Users can now define subtitle patterns using extracted regex groups and time/date placeholders (e.g., `{starttime} - {endtime}`). (Closes #942)
-- Event-driven webhooks and script execution (Connect): Added new Connect feature that enables event-driven execution of custom scripts and webhooks in response to system events. Supports multiple event types including channel lifecycle (start, stop, reconnect, error, failover), stream operations (switch), recording events (start, end), data refreshes (EPG, M3U), and client activity (connect, disconnect). Event data is available as environment variables in scripts (prefixed with `DISPATCHARR_`), POST payloads for webhooks, and plugin execution payloads. Plugins can now subscribe to events by specifying an `events` array in their action definitions. Includes connection testing endpoint with dummy payloads for validation. (Closes #203)
+- Event-driven webhooks and script execution (Integrations): Added new Integrations feature that enables event-driven execution of custom scripts and webhooks in response to system events. (Closes #203)
+  - **Supported event types**: channel lifecycle (start, stop, reconnect, error, failover), stream operations (switch), recording events (start, end), data refreshes (EPG, M3U), and client activity (connect, disconnect)
+  - **Event data delivery**: available as environment variables in scripts (prefixed with `DISPATCHARR_`), POST payloads for webhooks, and plugin execution payloads
+  - **Plugin support**: plugins can subscribe to events by specifying an `events` array in their action definitions
+  - **Connection testing**: test endpoint with dummy payloads for validation before going live
+  - **Custom HTTP headers**: webhook connections support configurable key/value header pairs
+  - **Per-event Jinja2 payload templates**: each enabled event can have its own template rendered with the full event payload as context; rendered output is sent as JSON (with `Content-Type: application/json` set automatically) if valid, or as a raw string body otherwise
+  - **Tabbed connection form**: Settings, Event Triggers, and Payload Templates organized into separate tabs for clarity
 - Cron scheduling support for M3U and EPG refreshes: Added interactive cron expression builder with preset buttons and custom field editors, plus info popover with common cron examples. Refactored backup scheduling to use shared ScheduleInput component for consistency across all scheduling interfaces. (Closes #165)
 - Channel numbering modes for auto channel sync: Added three channel numbering modes when auto-syncing channels from M3U groups:
   - **Fixed Start Number** (default): Start at a specified number and increment sequentially
@@ -32,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Next Available**: Auto-assign starting from 1, skipping all used channel numbers
     Each mode includes its own configuration options accessible via the "Channel Numbering Mode" dropdown in auto sync settings. (Closes #956, #433)
 - Legacy NumPy for modular Docker: Added entrypoint detection and automatic installation for the Celery container (use `USE_LEGACY_NUMPY`) to support older CPUs. - Thanks [@patrickjmcd](https://github.com/patrickjmcd)
+- `series_relation` foreign key on `M3UEpisodeRelation`: episode relations now carry a direct FK to their parent `M3USeriesRelation`. This enables correct CASCADE deletion (removing a series relation automatically removes its episode relations), precise per-provider scoping during stale-stream cleanup.
+- Streamer accounts attempting to log into the web UI now receive a clear notification explaining they cannot access the UI but their stream URLs still work. Previously the login button would silently stop with no feedback.
 
 ### Changed
 
@@ -63,9 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stream Profile form rework: Replaced the plain command text field with a dropdown listing built-in tools (FFmpeg, Streamlink, VLC, yt-dlp) plus a Custom option that reveals a free-text input. Each built-in now shows its default parameter string as a live example in the Parameters field description, updating as the command selection changes. Added descriptive help text to all fields to improve clarity.
 - Custom Dummy EPG form UI improvements: Reorganized the form into collapsible accordion sections (Pattern Configuration, Output Templates, Upcoming/Ended Templates, Fallback Templates, EPG Settings) for better organization. Field descriptions now appear in info icon popovers instead of taking up vertical space, making the form more compact and easier to navigate while keeping help text accessible.
 - XC API M3U stream URLs: M3U generation for Xtream Codes API endpoints now use proper XC-style stream URLs (`/live/username/password/channel_id`) instead of UUID-based stream endpoints, ensuring full compatibility with XC clients. (Fixes #839)
+- XC API `get_series` now includes `tmdb_id` and `imdb_id` fields, matching `get_vod_streams`. Clients that use TMDB enrichment (e.g. Chillio) can now resolve clean series titles and poster images. - Thanks [@firestaerter3](https://github.com/firestaerter3)
+- Stats page "Now Playing" EPG lookup updated to use `channel_uuids` directly (the proxy stats already key active channels by UUID), removing the need for a UUID→integer ID conversion step introduced alongside the lazy channel-fetch refactor. Stream preview sessions (which use a content hash rather than a UUID as their channel ID) are now filtered out before any API call is made, preventing a backend `ValidationError` on both the `current-programs` and `by-uuids` endpoints when a stream preview is active on the Stats page.
 
 ### Fixed
 
+- Fixed admin permission checks inconsistently using `is_superuser`/`is_staff` instead of `user_level>=10`, causing API-created admin accounts to intermittently see the setup page, lose access to backup endpoints, and miss admin-only notifications. `manage.py createsuperuser` now also correctly sets `user_level=10`. (Fixes #954) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Channel table group filter sort order: The group dropdown in the channel table is now sorted alphabetically.
 - DVR one-time recording scheduling: Fixed a bug where scheduling a one-time recording for a future program caused the recording to start immediately instead of at the scheduled time.
 - XC API `added` field type inconsistencies: `get_live_streams` and `get_vod_info` now return the `added` field as a string (e.g., `"1708300800"`) instead of an integer, fixing compatibility with XC clients that have strict JSON serializers (such as Jellyfin's Xtream Library plugin). (Closes #978)
@@ -75,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - XC EPG URL construction for accounts with sub-paths or trailing slashes: Fixed EPG URL construction in M3U forms to normalize server URL to origin before appending `xmltv.php` endpoint, preventing double slashes and incorrect path placement when server URLs include sub-paths or trailing slashes. (Fixes #800) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Auto channel sync duplicate channel numbers across groups: Fixed issue where multiple auto-sync groups starting at the same number would create duplicate channel numbers. The used channel number tracking now persists across all groups in a single sync operation, ensuring each assigned channel number is globally unique.
 - Modular mode PostgreSQL/Redis connection checks: Replaced raw Python socket checks with native tools (`pg_isready` for PostgreSQL and `socket.create_connection` for Redis) in modular deployment mode to prevent indefinite hangs in Docker environments with non-standard networking or DNS configurations. Now properly supports IPv4 and IPv6 configurations. (Fixes #952) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+- VOD episode UUID regeneration on every refresh: a pre-emptive `Episode.objects.delete()` in `refresh_series_episodes` ran before `batch_process_episodes`, defeating its update-in-place logic and forcing all episodes to be recreated with new UUIDs on every refresh. Clients (Jellyfin, Emby, Plex, etc.) with cached episode paths received 500 errors until a full library rescan. Removing the delete allows episodes to be updated in place with stable UUIDs. (Fixes #785, #985, #820) - Thanks [@znake-oil](https://github.com/znake-oil)
+- VOD stale episode stream cleanup scoped incorrectly per provider: when a provider removed a stream from a series, `batch_process_episodes` could delete episode relations belonging to a different provider version of the same series (e.g. EN vs ES) that had deduped to the same `Series` object via TMDB/IMDB ID. Cleanup is now scoped to the specific `M3USeriesRelation` that was queried.
 
 ## [0.19.0] - 2026-02-10
 
@@ -149,6 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plugin loader now supports `plugin.py` without `__init__.py`, including folders with non-identifier names, by loading modules directly from file paths.
 - Plugin action handling stabilized: avoids registry race conditions and only shows loading on the active action.
 - Plugin enable/disable toggles now update immediately without requiring a full page refresh.
+- M3U/EPG tasks downloading endlessly for large files: Fixed the root cause where the Redis task lock (300s TTL) expired during long downloads, allowing Celery Beat to start competing duplicate tasks that never completed. Added a `TaskLockRenewer` daemon thread that periodically extends the lock TTL while a task is actively working, applied to all long-running task paths (M3U refresh, M3U group refresh, EPG refresh, EPG program parsing). Also adds an HTTP timeout to M3U download requests, streams M3U downloads directly to a temp file on disk instead of accumulating the entire file in memory, and adds Celery task time limits as a safety net against runaway tasks. (Fixes #861) - Thanks [@CodeBormen](https://github.com/CodeBormen)
 
 ## [0.18.1] - 2026-01-27
 

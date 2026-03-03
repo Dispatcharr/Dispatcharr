@@ -74,11 +74,13 @@ class IntegrationViewSet(viewsets.ModelViewSet):
                     {"detail": f"Invalid event: {event}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            # Only accept payload_template when the integration is a webhook
+            payload_template = item.get("payload_template") if integration.type == "webhook" else None
             incoming.append(
                 {
                     "event": event,
                     "enabled": bool(item.get("enabled", True)),
-                    "payload_template": item.get("payload_template"),
+                    "payload_template": payload_template,
                 }
             )
 

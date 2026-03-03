@@ -1945,6 +1945,7 @@ def xc_get_user(request):
         return None
 
     user = get_object_or_404(User, username=username)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
@@ -2559,6 +2560,8 @@ def xc_get_series(request, user, category_id=None):
             "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
             "category_id": str(relation.category.id) if relation.category else "0",
             "category_ids": [int(relation.category.id)] if relation.category else [],
+            "tmdb_id": series.tmdb_id or "",
+            "imdb_id": series.imdb_id or "",
         })
 
     return series_list

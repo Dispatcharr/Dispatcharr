@@ -19,6 +19,7 @@ import {
   ChevronDown,
   ChevronRight,
   MonitorCog,
+  Blocks,
 } from 'lucide-react';
 import {
   Avatar,
@@ -30,7 +31,6 @@ import {
   TextInput,
   ActionIcon,
   AppShellNavbar,
-  Menu,
   ScrollArea,
 } from '@mantine/core';
 import logo from '../images/logo.png';
@@ -183,8 +183,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
           { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
           {
-            label: 'Connect',
-            icon: <Webhook size={20} />,
+            label: 'Integrations',
+            icon: <Blocks size={20} />,
             paths: [
               {
                 label: 'Connections',

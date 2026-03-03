@@ -37,38 +37,45 @@ const PluginActionList = ({
   runningActionId,
   handlePluginRun,
 }) => {
-  return plugin.actions.map((action) => (
-    <Group key={action.id} justify="space-between">
-      <div>
-        <Text>{action.label}</Text>
-        {action.description && (
-          <Text size="sm" c="dimmed">
-            {action.description}
-          </Text>
-        )}
-        <Text size="xs" style={{ paddingTop: 10 }}>
-          Event Triggers
-        </Text>
-        {action.events.map((event) => (
-          <Badge size="sm" variant="light" color="green">
-            {SUBSCRIPTION_EVENTS[event] || event}
-          </Badge>
-        ))}
-      </div>
-      <Button
-        loading={runningActionId === action.id}
-        disabled={!enabled || runningActionId === action.id}
-        onClick={() => handlePluginRun(action)}
-        size="xs"
-        variant={action.button_variant || 'filled'}
-        color={action.button_color}
-      >
-        {runningActionId === action.id
-          ? 'Running…'
-          : action.button_label || 'Run'}
-      </Button>
-    </Group>
-  ));
+  return plugin.actions.map((action) => {
+    const events = Array.isArray(action?.events) ? action.events : [];
+    return (
+      <Group key={action.id} justify="space-between">
+        <div>
+          <Text>{action.label}</Text>
+          {action.description && (
+            <Text size="sm" c="dimmed">
+              {action.description}
+            </Text>
+          )}
+          {events.length > 0 && (
+            <>
+              <Text size="xs" style={{ paddingTop: 10 }}>
+                Event Triggers
+              </Text>
+              {events.map((event) => (
+                <Badge key={`${action.id}:${event}`} size="sm" variant="light" color="green">
+                  {SUBSCRIPTION_EVENTS[event] || event}
+                </Badge>
+              ))}
+            </>
+          )}
+        </div>
+        <Button
+          loading={runningActionId === action.id}
+          disabled={!enabled || runningActionId === action.id}
+          onClick={() => handlePluginRun(action)}
+          size="xs"
+          variant={action.button_variant || 'filled'}
+          color={action.button_color}
+        >
+          {runningActionId === action.id
+            ? 'Running…'
+            : action.button_label || 'Run'}
+        </Button>
+      </Group>
+    );
+  });
 };
 
 const PluginActionStatus = ({ running, lastResult }) => {

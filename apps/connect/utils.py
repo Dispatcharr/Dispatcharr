@@ -38,13 +38,14 @@ def trigger_event(event_name, payload):
             )
             continue
 
-        # apply optional payload template
+        # apply optional payload template (only for webhook integrations)
+        # If the rendered template is valid JSON, use that object as the payload.
+        # Otherwise, pass the rendered string as-is.
         final_payload = payload
-        if sub.payload_template:
+        if integration.type == 'webhook' and sub.payload_template:
             try:
                 template = Template(sub.payload_template)
-                rendered = template.render(Context(payload))
-                final_payload = {"message": rendered}
+                final_payload = template.render(Context(payload)).strip()
             except Exception as e:
                 logger.error(
                     f"Payload template render failed for subscription id={sub.id}: {e}"
