@@ -424,7 +424,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data and logos
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
 
                   // Get updated channel data and extract logo IDs to load
                   const channels = useChannelsStore.getState().channels;
@@ -489,7 +489,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
                 } catch (e) {
                   console.warn(
                     'Failed to refresh channels after name setting:',
@@ -704,7 +704,7 @@ export const WebsocketProvider = ({ children }) => {
                 try {
                   await API.requeryChannels();
                   await API.requeryStreams();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
                 } catch (error) {
                   console.error(
                     'Error refreshing channels/streams after rehash:',
@@ -767,7 +767,7 @@ export const WebsocketProvider = ({ children }) => {
               try {
                 await API.requeryChannels();
                 await API.requeryStreams();
-                await useChannelsStore.getState().fetchChannels();
+                useChannelsStore.getState().fetchChannelIds();
                 await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {

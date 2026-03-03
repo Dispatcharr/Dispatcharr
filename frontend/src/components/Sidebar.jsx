@@ -5,7 +5,6 @@ import {
   ListOrdered,
   Play,
   Database,
-  SlidersHorizontal,
   LayoutGrid,
   Settings as LucideSettings,
   Copy,
@@ -15,6 +14,12 @@ import {
   LogOut,
   User,
   FileImage,
+  Webhook,
+  Logs,
+  ChevronDown,
+  ChevronRight,
+  MonitorCog,
+  Blocks,
 } from 'lucide-react';
 import {
   Avatar,
@@ -26,9 +31,8 @@ import {
   UnstyledButton,
   TextInput,
   ActionIcon,
-  Menu,
+  ScrollArea,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
@@ -70,10 +74,78 @@ const NavLink = ({ item, isActive, collapsed }) => {
   );
 };
 
+function NavGroup({ label, icon, paths, location, collapsed }) {
+  const [open, setOpen] = useState(() =>
+    location.pathname.startsWith('/connect')
+  );
+
+  const parentActive = paths
+    .map((path) => path.path)
+    .includes(location.pathname);
+
+  return (
+    <Box
+      style={{ width: '100%', paddingRight: 2 }}
+      className={open ? 'navgroup-open' : ''}
+    >
+      <UnstyledButton
+        onClick={() => setOpen((o) => !o)}
+        className={`navlink ${parentActive ? 'navlink-parent-active' : ''} ${open ? 'navlink-collapsed' : ''}`}
+        style={{ width: '100%' }}
+      >
+        {icon}
+        {!collapsed && (
+          <Group justify="space-between" style={{ width: '100%' }}>
+            <Text
+              sx={{
+                opacity: open ? 0 : 1,
+                transition: 'opacity 0.2s ease-in-out',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: open ? 0 : 150,
+              }}
+            >
+              {label}
+            </Text>
+
+            <Box alignItems="center" style={{ display: 'flex' }}>
+              {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </Box>
+          </Group>
+        )}
+      </UnstyledButton>
+
+      {open && (
+        <Box style={{ paddingTop: 10 }}>
+          <Stack gap="xs" pl={open ? 0 : 'lg'}>
+            {paths.map((child) => {
+              const active = location.pathname === child.path;
+              return (
+                <Box
+                  style={{ paddingLeft: collapsed ? 0 : 35 }}
+                  key={child.path}
+                >
+                  <NavLink
+                    key={child.path}
+                    item={child}
+                    isActive={active}
+                    collapsed={collapsed}
+                  />
+                </Box>
+              );
+            })}
+          </Stack>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const location = useLocation();
 
-  const channels = useChannelsStore((s) => s.channels);
+  const channelIds = useChannelsStore((s) => s.channelIds);
   const environment = useSettingsStore((s) => s.environment);
   const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -94,7 +166,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
             path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
+            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
           },
           {
             label: 'VODs',
@@ -111,19 +183,41 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
           { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
           {
-            label: 'Users',
-            icon: <User size={20} />,
-            path: '/users',
+            label: 'Integrations',
+            icon: <Blocks size={20} />,
+            paths: [
+              {
+                label: 'Connections',
+                icon: <Webhook size={20} />,
+                path: '/connect',
+              },
+              {
+                label: 'Logs',
+                icon: <Logs size={20} />,
+                path: '/connect/logs',
+              },
+            ],
           },
           {
-            label: 'Logo Manager',
-            icon: <FileImage size={20} />,
-            path: '/logos',
-          },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
+            label: 'System',
+            icon: <MonitorCog size={20} />,
+            paths: [
+              {
+                label: 'Users',
+                icon: <User size={20} />,
+                path: '/users',
+              },
+              {
+                label: 'Logo Manager',
+                icon: <FileImage size={20} />,
+                path: '/logos',
+              },
+              {
+                label: 'Settings',
+                icon: <LucideSettings size={20} />,
+                path: '/settings',
+              },
+            ],
           },
         ]
       : [
@@ -131,7 +225,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
             path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
+            badge: `(${Array.isArray(channelIds) ? channelIds.length : 0})`,
           },
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
           {
@@ -149,11 +243,6 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       successTitle: 'Success',
       successMessage: 'Public IP copied to clipboard',
     });
-  };
-
-  const onLogout = async () => {
-    await logout();
-    window.location.reload();
   };
 
   return (
@@ -205,20 +294,44 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       </Group>
 
       {/* Navigation Links */}
-      <Stack gap="xs" mt="lg">
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+      <ScrollArea h="100%" type="scroll" scrollbars="y">
+        <Stack
+          gap="xs"
+          mt="lg"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
+          {navItems.map((item) => {
+            if (item.paths) {
+              return (
+                <NavGroup
+                  key={item.label}
+                  label={item.label}
+                  paths={item.paths}
+                  location={location}
+                  collapsed={collapsed}
+                  icon={item.icon}
+                />
+              );
+            }
 
-          return (
-            <NavLink
-              key={item.path}
-              item={item}
-              collapsed={collapsed}
-              isActive={isActive}
-            />
-          );
-        })}
-      </Stack>
+            const isActive = location.pathname === item.path;
+
+            return (
+              <NavLink
+                key={item.path}
+                item={item}
+                collapsed={collapsed}
+                isActive={isActive}
+              />
+            );
+          })}
+        </Stack>
+      </ScrollArea>
 
       {/* Profile Section */}
       <Box

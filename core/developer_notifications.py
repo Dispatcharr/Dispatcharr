@@ -200,7 +200,7 @@ def should_show_notification(notification_data: dict, user) -> bool:
 
     # Check user level
     user_level = notification_data.get('user_level', 'all')
-    if user_level == 'admin' and not getattr(user, 'is_superuser', False):
+    if user_level == 'admin' and getattr(user, 'user_level', 0) < 10:
         return False
 
     # Check conditions
@@ -396,7 +396,7 @@ def get_user_developer_notifications(user) -> list:
     )
 
     # Filter by admin_only based on user
-    if not getattr(user, 'is_superuser', False):
+    if getattr(user, 'user_level', 0) < 10:
         notifications = notifications.filter(admin_only=False)
 
     # Filter by conditions

@@ -14,6 +14,8 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import ConnectPage from './pages/Connect';
+import ConnectLogsPage from './pages/ConnectLogs';
 import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
@@ -61,7 +63,7 @@ const App = () => {
     async function checkSuperuser() {
       try {
         const response = await API.fetchSuperUser();
-        if (!response.superuser_exists) {
+        if (response && response.superuser_exists === false) {
           setSuperuserExists(false);
         }
       } catch (error) {
@@ -152,6 +154,11 @@ const App = () => {
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
                         <Route path="/plugins" element={<PluginsPage />} />
+                        <Route path="/connect" element={<ConnectPage />} />
+                        <Route
+                          path="/connect/logs"
+                          element={<ConnectLogsPage />}
+                        />
                         <Route path="/users" element={<Users />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />

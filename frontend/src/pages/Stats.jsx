@@ -16,6 +16,7 @@ import {
   Title,
 } from '@mantine/core';
 import useChannelsStore from '../store/channels';
+import API from '../api';
 import useLogosStore from '../store/logos';
 import useStreamProfilesStore from '../store/streamProfiles';
 import useLocalStorage from '../hooks/useLocalStorage';
@@ -96,8 +97,6 @@ const Connections = ({
 };
 
 const StatsPage = () => {
-  const channels = useChannelsStore((s) => s.channels);
-  const channelsByUUID = useChannelsStore((s) => s.channelsByUUID);
   const channelStats = useChannelsStore((s) => s.stats);
   const setChannelStats = useChannelsStore((s) => s.setChannelStats);
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
@@ -107,19 +106,55 @@ const StatsPage = () => {
   const [channelHistory, setChannelHistory] = useState({});
   const [isPollingActive, setIsPollingActive] = useState(false);
   const [currentPrograms, setCurrentPrograms] = useState({});
+  const [channels, setChannels] = useState({}); // id -> channel
+  const [channelsByUUID, setChannelsByUUID] = useState({}); // uuid -> id
 
-  // Use refs to hold latest values without triggering effects
-  const channelHistoryRef = useRef(channelHistory);
-  const channelsByUUIDRef = useRef(channelsByUUID);
+  // Compute needed channel UUIDs from the current active channels.
+  // Stream previews use a non-UUID hash as channel_id — filter those out.
+  const UUID_REGEX =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const neededUUIDs = useMemo(
+    () => Object.keys(channelHistory || {}).filter((id) => UUID_REGEX.test(id)),
+    [channelHistory]
+  );
 
-  // Update refs when values change
+  // Keep a ref so the programs poller always has the latest valid UUIDs
+  const neededUUIDsRef = useRef(neededUUIDs);
   useEffect(() => {
-    channelHistoryRef.current = channelHistory;
-  }, [channelHistory]);
+    neededUUIDsRef.current = neededUUIDs;
+  }, [neededUUIDs]);
 
+  // Fetch any missing channels by UUID when the needed set changes (for card name/logo)
   useEffect(() => {
-    channelsByUUIDRef.current = channelsByUUID;
-  }, [channelsByUUID]);
+    if (!neededUUIDs || neededUUIDs.length === 0) return;
+    const missing = neededUUIDs.filter((u) => channelsByUUID[u] === undefined);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await API.getChannelsByUUIDs(missing);
+        if (cancelled) return;
+        if (Array.isArray(res)) {
+          setChannels((prev) => {
+            const next = { ...prev };
+            for (const ch of res) next[ch.id] = ch;
+            return next;
+          });
+          setChannelsByUUID((prev) => {
+            const next = { ...prev };
+            for (const ch of res) next[ch.uuid] = ch.id;
+            return next;
+          });
+        }
+      } catch (e) {
+        console.error('Failed to fetch channels by UUIDs', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [neededUUIDs.join(',')]);
 
   // Use localStorage for stats refresh interval (in seconds)
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useLocalStorage(
@@ -260,11 +295,7 @@ const StatsPage = () => {
     let timer = null;
 
     const fetchPrograms = async () => {
-      // Use refs to get latest values without adding dependencies
-      const programs = await getCurrentPrograms(
-        channelHistoryRef.current,
-        channelsByUUIDRef.current
-      );
+      const programs = await getCurrentPrograms(neededUUIDsRef.current);
       setCurrentPrograms(programs);
 
       // Schedule next fetch based on nearest program end time
@@ -300,7 +331,7 @@ const StatsPage = () => {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [activeChannelIds]); // Only depend on activeChannelIds
+  }, [activeChannelIds]); // Only re-run when active channel set changes
 
   // Combine active streams and VOD connections into a single mixed list
   const combinedConnections = useMemo(() => {

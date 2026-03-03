@@ -1,4 +1,5 @@
 import useChannelsStore from '../../store/channels.jsx';
+import API from '../../api';
 import {
   useDateTimeFormat,
   useTimeHelpers,
@@ -43,7 +44,8 @@ const RecordingDetailsModal = ({
   onEdit,
 }) => {
   const allRecordings = useChannelsStore((s) => s.recordings);
-  const channelMap = useChannelsStore((s) => s.channels);
+  // Local channel cache to avoid the global channels map
+  const [channelsById, setChannelsById] = React.useState({});
   const { toUserTime, userNow } = useTimeHelpers();
   const [childOpen, setChildOpen] = React.useState(false);
   const [childRec, setChildRec] = React.useState(null);
@@ -91,6 +93,42 @@ const RecordingDetailsModal = ({
     userNow,
   ]);
 
+  // Ensure channel is available for a given id
+  const loadChannel = React.useCallback(
+    async (id) => {
+      if (!id) {
+        return null;
+      }
+
+      const existing = channelsById[id];
+      if (existing) {
+        return existing;
+      }
+
+      try {
+        const ch = await API.getChannel(id);
+        if (ch && ch.id === id) {
+          setChannelsById((prev) => ({ ...prev, [id]: ch }));
+          return ch;
+        }
+      } catch (e) {
+        console.warn(
+          'Failed to fetch channel for RecordingDetailsModal',
+          id,
+          e
+        );
+      }
+      return null;
+    },
+    [channelsById]
+  );
+
+  // When opening a child episode, fetch that episode's channel
+  React.useEffect(() => {
+    if (!childOpen || !childRec) return;
+    loadChannel(childRec.channel);
+  }, [childOpen, childRec, loadChannel]);
+
   const handleOnWatchLive = () => {
     const rec = childRec;
     const now = userNow();
@@ -98,10 +136,11 @@ const RecordingDetailsModal = ({
     const e = toUserTime(rec.end_time);
 
     if (now.isAfter(s) && now.isBefore(e)) {
-      if (!channelMap[rec.channel]) return;
-      useVideoStore
-        .getState()
-        .showVideo(getShowVideoUrl(channelMap[rec.channel], env_mode), 'live');
+      const ch =
+        channelsById[rec.channel] ||
+        (rec.channel === recording?.channel ? channel : null);
+      if (!ch) return;
+      useVideoStore.getState().showVideo(getShowVideoUrl(ch, env_mode), 'live');
     }
   };
 
@@ -109,13 +148,16 @@ const RecordingDetailsModal = ({
     let fileUrl = getRecordingUrl(childRec.custom_properties, env_mode);
     if (!fileUrl) return;
 
+    const ch =
+      channelsById[childRec.channel] ||
+      (childRec.channel === recording?.channel ? channel : null);
     useVideoStore.getState().showVideo(fileUrl, 'vod', {
       name: childRec.custom_properties?.program?.title || 'Recording',
       logo: {
         url: getPosterUrl(
           childRec.custom_properties?.poster_logo_id,
           undefined,
-          channelMap[childRec.channel]?.logo?.cache_url
+          ch?.logo?.cache_url
         ),
       },
     });
@@ -169,6 +211,7 @@ const RecordingDetailsModal = ({
       setChildRec(rec);
       setChildOpen(true);
     };
+
     return (
       <Card
         withBorder
@@ -281,11 +324,11 @@ const RecordingDetailsModal = ({
             opened={childOpen}
             onClose={() => setChildOpen(false)}
             recording={childRec}
-            channel={channelMap[childRec.channel]}
+            channel={channelsById[childRec.channel]}
             posterUrl={getPosterUrl(
               childRec.custom_properties?.poster_logo_id,
               childRec.custom_properties,
-              channelMap[childRec.channel]?.logo?.cache_url
+              channelsById[childRec.channel]?.logo?.cache_url
             )}
             env_mode={env_mode}
             onWatchLive={handleOnWatchLive}

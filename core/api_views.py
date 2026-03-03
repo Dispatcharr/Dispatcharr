@@ -506,7 +506,7 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         )
 
         # Filter admin-only notifications for non-admins
-        if not getattr(user, 'is_superuser', False) and getattr(user, 'user_level', 0) < 10:
+        if getattr(user, 'user_level', 0) < 10:
             queryset = queryset.filter(admin_only=False)
 
         # For developer notifications, evaluate conditions
