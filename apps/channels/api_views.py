@@ -413,6 +413,13 @@ class ChannelPagination(PageNumberPagination):
 
         return super().paginate_queryset(queryset, request, view)
 
+    def get_paginated_response(self, data):
+        from django.db.models import Exists, OuterRef
+        has_unassigned = Channel.objects.filter(epg_data__isnull=True).exists()
+        response = super().get_paginated_response(data)
+        response.data['has_unassigned_epg_channels'] = has_unassigned
+        return response
+
 
 class EPGFilter(django_filters.Filter):
     """
@@ -571,6 +578,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_profile_id = self.request.query_params.get("channel_profile_id")
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
+        only_stale = self.request.query_params.get("only_stale", None)
 
         if channel_profile_id:
             try:
@@ -590,6 +598,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         if only_streamless:
             q_filters &= Q(streams__isnull=True)
+        if only_stale:
+            # Filter channels that have at least one related stream marked as stale
+            q_filters &= Q(streams__is_stale=True)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level

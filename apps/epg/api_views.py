@@ -42,6 +42,17 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    def get_queryset(self):
+        from django.db.models import Exists, OuterRef
+        from apps.channels.models import Channel
+        return EPGSource.objects.select_related(
+            "refresh_task__crontab", "refresh_task__interval"
+        ).annotate(
+            has_channels=Exists(
+                Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
+            )
+        )
+
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG sources.")
         return super().list(request, *args, **kwargs)

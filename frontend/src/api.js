@@ -1314,7 +1314,6 @@ export default class API {
   static async getEPGs() {
     try {
       const response = await request(`${host}/api/epg/sources/`);
-
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPGs', e);

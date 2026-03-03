@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
-import useVideoStore from '../store/useVideoStore'; // NEW import
+import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import {
   ActionIcon,
@@ -232,7 +232,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
     return () => {
       cancelled = true;
     };
-  }, [channelGroups, searchQuery, selectedGroupId, selectedProfileId]);
+  }, [
+    allowAllGroups,
+    channelGroups,
+    searchQuery,
+    selectedGroupId,
+    selectedProfileId,
+  ]);
 
   // Apply filters when search, group, or profile changes
   const filteredChannels = useMemo(() => {
@@ -609,14 +615,46 @@ export default function TVChannelGuide({ startDate, endDate }) {
     });
   }, []);
 
-  // Scroll to the nearest half-hour mark ONLY on initial load
-  useEffect(() => {
-    if (programs.length > 0 && !initialScrollComplete) {
-      syncScrollLeft(calculateScrollPosition(now, start));
+  // Holds the scroll position to restore after a filter-induced remount.
+  // null means "use the default scroll-to-now on first load".
+  const savedScrollLeftRef = useRef(null);
 
+  // When channels become empty (filter transition unmounts the list), save the
+  // current scroll position so we can restore it once new channels arrive.
+  // Only save if the initial scroll has already happened — otherwise the saved
+  // position would be 0 (the DOM default) and we'd skip the scroll-to-now.
+  useEffect(() => {
+    if (filteredChannels.length === 0) {
+      if (initialScrollComplete) {
+        savedScrollLeftRef.current = guideScrollLeftRef.current;
+      }
+      setInitialScrollComplete(false);
+    }
+  }, [filteredChannels.length, initialScrollComplete]);
+
+  // Scroll on initial load, or restore saved position after a filter transition.
+  // Guard with guideRef.current — the VariableSizeList outer div is null while
+  // unmounted, so we must wait until it remounts before calling syncScrollLeft.
+  useEffect(() => {
+    if (programs.length > 0 && !initialScrollComplete && guideRef.current) {
+      if (savedScrollLeftRef.current !== null) {
+        // Restore where the user was before the filter change
+        syncScrollLeft(savedScrollLeftRef.current);
+        savedScrollLeftRef.current = null;
+      } else {
+        // Genuine first load — scroll to current time
+        syncScrollLeft(calculateScrollPosition(now, start));
+      }
       setInitialScrollComplete(true);
     }
-  }, [programs, start, now, initialScrollComplete, syncScrollLeft]);
+  }, [
+    programs,
+    start,
+    now,
+    initialScrollComplete,
+    syncScrollLeft,
+    filteredChannels.length,
+  ]);
 
   const findChannelByTvgId = useCallback(
     (tvgId) => matchChannelByTvgId(channelIdByTvgId, channelById, tvgId),

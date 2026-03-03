@@ -94,7 +94,7 @@ const DraggableRow = ({ row, index }) => {
     <Box
       ref={setNodeRef}
       key={row.id}
-      className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'}`}
+      className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'}${row.original.is_stale ? ' stale-stream-row' : ''}`}
       style={{
         ...style,
         display: 'flex',
@@ -105,7 +105,6 @@ const DraggableRow = ({ row, index }) => {
       }}
     >
       {row.getVisibleCells().map((cell) => {
-        const isStale = row.original.is_stale;
         return (
           <Box
             className="td"
@@ -116,9 +115,6 @@ const DraggableRow = ({ row, index }) => {
                 ? cell.column.getSize()
                 : undefined,
               minWidth: 0,
-              ...(isStale && {
-                backgroundColor: 'rgba(239, 68, 68, 0.15)',
-              }),
             }}
           >
             <Flex align="center" style={{ height: '100%' }}>
@@ -614,7 +610,10 @@ const ChannelStreams = ({ channel, isExpanded }) => {
   const rows = table.getRowModel().rows;
 
   return (
-    <Box style={{ width: '100%', padding: 10, backgroundColor: '#163632' }}>
+    <Box
+      className="channel-streams-container"
+      style={{ width: '100%', padding: 10, backgroundColor: '#163632' }}
+    >
       <DndContext
         collisionDetection={closestCenter}
         modifiers={[restrictToVerticalAxis]}

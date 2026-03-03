@@ -251,6 +251,9 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
+  const hasUnassignedEPGChannels = useChannelsTableStore(
+    (s) => s.hasUnassignedEPGChannels
+  );
 
   // Get channel logos for logo selection
   const { ensureLogosLoaded } = useChannelLogoSelection();
@@ -266,6 +269,19 @@ const ChannelsTable = ({ onReady }) => {
   // store/channelsTable
   const data = useChannelsTableStore((s) => s.channels);
   const pageCount = useChannelsTableStore((s) => s.pageCount);
+
+  const rowClassMap = useMemo(() => {
+    const map = {};
+    for (const channel of data) {
+      const hasStreams = channel.streams?.length > 0;
+      if (!hasStreams) {
+        map[channel.id] = 'no-streams-row';
+      } else if (channel.streams.some((s) => s.is_stale)) {
+        map[channel.id] = 'has-stale-streams-row';
+      }
+    }
+    return map;
+  }, [data]);
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
@@ -282,6 +298,7 @@ const ChannelsTable = ({ onReady }) => {
 
   // store/channels
   const channels = useChannelsStore((s) => s.channels);
+  const channelIds = useChannelsStore((s) => s.channelIds);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
   const [tablePrefs, setTablePrefs] = useLocalStorage('channel-table-prefs', {
@@ -320,6 +337,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
+  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -380,19 +398,15 @@ const ChannelsTable = ({ onReady }) => {
     .map((group) => group.name)
     .sort((a, b) => a.localeCompare(b));
 
-  let hasUnlinkedChannels = false;
   const epgOptions = Object.values(epgs)
+    .filter((epg) => epg.is_active && epg.has_channels)
     .map((epg) => epg.name)
-    .sort();
-  if (hasUnlinkedChannels) {
-    epgOptions.unshift('No EPG');
-  }
-  // Map for MultiSelect: value 'null' for 'No EPG', label for display
-  const epgSelectOptions = epgOptions.map((opt) =>
-    opt === 'No EPG'
-      ? { value: 'null', label: 'No EPG' }
-      : { value: opt, label: opt }
-  );
+    .sort((a, b) => a.localeCompare(b));
+  // Only show 'No EPG' if there are channels without an EPG assigned
+  const epgSelectOptions = [
+    ...(hasUnassignedEPGChannels ? [{ value: 'null', label: 'No EPG' }] : []),
+    ...epgOptions.map((opt) => ({ value: opt, label: opt })),
+  ];
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
@@ -422,6 +436,9 @@ const ChannelsTable = ({ onReady }) => {
     }
     if (showOnlyStreamlessChannels === true) {
       params.append('only_streamless', true);
+    }
+    if (showOnlyStaleChannels === true) {
+      params.append('only_stale', true);
     }
 
     // Apply sorting
@@ -510,6 +527,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -1125,13 +1143,8 @@ const ChannelsTable = ({ onReady }) => {
       epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
-      const hasStreams =
-        row.original.streams && row.original.streams.length > 0;
-      return hasStreams
-        ? {} // Default style for channels with streams
-        : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+      const cls = rowClassMap[row.original.id];
+      return cls ? { className: cls } : {};
     },
   });
 
@@ -1434,17 +1447,18 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            showOnlyStaleChannels={showOnlyStaleChannels}
+            setShowOnlyStaleChannels={setShowOnlyStaleChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 &&
-              Object.keys(channels).length === 0 && (
-                <ChannelsTableOnboarding editChannel={editChannel} />
-              )}
+            {channelsTableLength === 0 && channelIds.length === 0 && (
+              <ChannelsTableOnboarding editChannel={editChannel} />
+            )}
           </Box>
 
-          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
+          {(channelsTableLength > 0 || channelIds.length > 0) && (
             <Box
               style={{
                 display: 'flex',

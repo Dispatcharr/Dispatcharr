@@ -1252,7 +1252,7 @@ const StreamsTable = ({ onReady }) => {
     getRowStyles: (row) => {
       if (row.original.is_stale) {
         return {
-          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          className: 'stale-stream-row',
         };
       }
       return {};
