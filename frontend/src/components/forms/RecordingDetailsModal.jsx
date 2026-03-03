@@ -58,6 +58,8 @@ const RecordingDetailsModal = ({
   const { timeFormat: timeformat, dateFormat: dateformat } =
     useDateTimeFormat();
 
+  const [editing, setEditing] = React.useState(false);
+
   // Prefer the store version of the recording for live updates
   // (e.g., after artwork refresh or metadata edit via WebSocket).
   // Preserve _group_count from the categorized prop — the store version
@@ -91,7 +93,6 @@ const RecordingDetailsModal = ({
   const recordingName = savedTitle ?? (program.title || 'Custom Recording');
   const description = savedDescription ?? (program.description || customProps.description || '');
 
-  const [editing, setEditing] = React.useState(false);
   const [editTitle, setEditTitle] = React.useState('');
   const [editDescription, setEditDescription] = React.useState('');
 
@@ -546,7 +547,9 @@ const RecordingDetailsModal = ({
             <span>
               {isSeriesGroup
                 ? `Series: ${recordingName}`
-                : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
+                : savedTitle
+                  ? recordingName
+                  : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
             </span>
             {!isSeriesGroup && (
               <ActionIcon size="sm" variant="subtle" color="dimmed" onClick={startEditing}>
@@ -567,7 +570,7 @@ const RecordingDetailsModal = ({
         title: { color: 'white' },
       }}
     >
-      {isSeriesGroup ? <Series /> : <Movie />}
+      {isSeriesGroup ? Series() : Movie()}
     </Modal>
   );
 };

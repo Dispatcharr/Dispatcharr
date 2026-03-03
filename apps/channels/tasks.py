@@ -1611,6 +1611,28 @@ def _build_output_paths(channel, program, start_time, end_time):
         rel_path = rel_path[2:]
     final_path = rel_path if rel_path.startswith('/') else os.path.join(library_root, rel_path)
     final_path = os.path.normpath(final_path)
+
+    # Avoid overwriting an existing file from a different recording.
+    # Check BOTH .mkv and .ts — a pre-restart TS segment may exist at
+    # the same base name even when the MKV is a 0-byte placeholder.
+    base, ext = os.path.splitext(final_path)
+    counter = 1
+    while True:
+        candidate_base = final_path[:-len(ext)]  # strip extension
+        ts_candidate = candidate_base + '.ts'
+        try:
+            mkv_occupied = os.stat(final_path).st_size > 0
+        except OSError:
+            mkv_occupied = False
+        try:
+            ts_occupied = os.stat(ts_candidate).st_size > 0
+        except OSError:
+            ts_occupied = False
+        if not mkv_occupied and not ts_occupied:
+            break
+        counter += 1
+        final_path = f"{base}_{counter}{ext}"
+
     # Ensure directory exists
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
@@ -2121,8 +2143,13 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     recording_cancelled = not Recording.objects.filter(id=recording_id).exists()
     if recording_cancelled:
         logger.info(f"Recording {recording_id} was cancelled — skipping remux and metadata.")
-        # Clean up all artifacts for the cancelled recording
-        for _cleanup_path in [temp_ts_path, final_path]:
+        # Clean up all artifacts for the cancelled recording,
+        # including any pre-restart .ts segments from server recovery.
+        # Use the in-memory recording_obj since the DB row is already deleted.
+        _cancel_cleanup = [temp_ts_path, final_path]
+        _cancel_cp = (recording_obj.custom_properties or {}) if recording_obj else {}
+        _cancel_cleanup.extend(_cancel_cp.get("_pre_restart_ts_paths", []))
+        for _cleanup_path in _cancel_cleanup:
             if not _cleanup_path:
                 continue
             try:
@@ -2134,8 +2161,93 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 pass
         return
 
+    # Concatenate pre-restart .ts segments with the current segment.
+    # Instead of creating an intermediate combined.ts and then remuxing to
+    # MKV (which loses timestamp boundary info and causes playback freezes
+    # at the splice point), go directly from the concat list → MKV.
+    # This lets ffmpeg's MKV muxer see each segment boundary and write
+    # correct cue points / clusters for seamless seeking.
+    _concat_did_remux = False
+    try:
+        _rec_obj_for_concat = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+        _concat_cp = (_rec_obj_for_concat.custom_properties or {}) if _rec_obj_for_concat else {}
+        pre_restart_segments = _concat_cp.get("_pre_restart_ts_paths", [])
+        # Filter to segments that still exist on disk and have data
+        def _has_data(p):
+            try:
+                return os.stat(p).st_size > 0
+            except OSError:
+                return False
+        pre_restart_segments = [p for p in pre_restart_segments if p and _has_data(p)]
+        if pre_restart_segments and temp_ts_path and os.path.exists(temp_ts_path):
+            all_segments = pre_restart_segments + [temp_ts_path]
+            concat_list_path = temp_ts_path + ".concat.txt"
+            try:
+                with open(concat_list_path, "w") as cl:
+                    for seg in all_segments:
+                        cl.write(f"file '{seg}'\n")
+
+                # Direct concat → MKV in a single pass.
+                # -reset_timestamps 1 tells the concat demuxer to reset
+                # timestamps at each segment boundary, eliminating the
+                # discontinuity that causes playback to freeze at the
+                # splice point.
+                concat_result = subprocess.run(
+                    [
+                        "ffmpeg", "-y",
+                        "-fflags", "+genpts+igndts+discardcorrupt",
+                        "-err_detect", "ignore_err",
+                        "-f", "concat", "-safe", "0",
+                        "-segment_time_metadata", "1",
+                        "-i", concat_list_path,
+                        "-reset_timestamps", "1",
+                        "-map", "0",
+                        "-c", "copy",
+                        final_path,
+                    ],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                if concat_result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                    _concat_did_remux = True
+                    # Clean up individual TS segments (including current)
+                    for seg in all_segments:
+                        try:
+                            os.remove(seg)
+                        except OSError:
+                            pass
+                    logger.info(
+                        f"DVR recording {recording_id}: concat→MKV succeeded — "
+                        f"{len(all_segments)} segments → {os.path.basename(final_path)} "
+                        f"({os.path.getsize(final_path):,} bytes)"
+                    )
+                else:
+                    logger.warning(
+                        f"DVR recording {recording_id}: direct concat→MKV failed "
+                        f"(rc={concat_result.returncode}), falling back to "
+                        f"normal remux with current segment only. "
+                        f"stderr: {(concat_result.stderr or '')[:500]}"
+                    )
+            finally:
+                try:
+                    os.remove(concat_list_path)
+                except OSError:
+                    pass
+            # Clear the pre-restart paths from custom_properties
+            if _rec_obj_for_concat:
+                _ccp = _rec_obj_for_concat.custom_properties or {}
+                _ccp.pop("_pre_restart_ts_paths", None)
+                _ccp.pop("interrupted_reason", None)
+                _rec_obj_for_concat.custom_properties = _ccp
+                _rec_obj_for_concat.save(update_fields=["custom_properties"])
+    except Exception as e:
+        logger.warning(
+            f"DVR recording {recording_id}: segment concatenation error "
+            f"({type(e).__name__}: {e}), proceeding with current segment only."
+        )
+
     # Remux TS to MKV container with retry for transient I/O errors
-    remux_success = False
+    # (Skip if concat already produced the final MKV directly.)
+    remux_success = _concat_did_remux
     existing_mkv_size = 0
     try:
         if final_path and os.path.exists(final_path):
@@ -2143,6 +2255,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     except OSError:
         pass
     for _remux_attempt in range(_dvr_remux_max_retries):
+        if remux_success:
+            break
         try:
             if temp_ts_path and os.path.exists(temp_ts_path):
                 # First attempt: Direct TS to MKV remux
@@ -2432,8 +2546,9 @@ def recover_recordings_on_startup():
         redis = RedisClient.get_client()
         if redis:
             lock_key = "dvr:recover_lock"
-            # Set lock with 60s TTL; only first winner proceeds
-            if not redis.set(lock_key, "1", ex=60, nx=True):
+            # Set lock with 10-minute TTL; must be long enough for Phase 2
+            # ffmpeg remux operations on large files.
+            if not redis.set(lock_key, "1", ex=600, nx=True):
                 return "Recovery already in progress"
 
         now = timezone.now()
@@ -2451,12 +2566,15 @@ def recover_recordings_on_startup():
                 cp = rec.custom_properties or {}
                 current_status = cp.get("status", "")
 
-                # Skip recordings that are already in a terminal or active state.
+                # Skip recordings that are already in a terminal state.
                 # "completed" / "stopped" — user stopped or it finished normally; do NOT
                 # overwrite the status and re-schedule (that would cause the
                 # Interrupted → In-Progress → Previously-Recorded ghost cycle).
-                # "recording" — a worker is already streaming; leave it alone.
-                if current_status in ("completed", "stopped", "recording"):
+                # NOTE: "recording" is NOT skipped — this function runs on
+                # worker_ready, meaning all previous workers are dead.  A
+                # recording stuck in "recording" status is from a crashed
+                # worker and must be recovered.
+                if current_status in ("completed", "stopped"):
                     logger.info(
                         f"recover_recordings_on_startup: skipping recording {rec.id} "
                         f"(status={current_status!r}, already in terminal/active state)."
@@ -2466,18 +2584,103 @@ def recover_recordings_on_startup():
                 # Mark interrupted due to restart; will flip to 'recording' when task starts
                 cp["status"] = "interrupted"
                 cp["interrupted_reason"] = "server_restarted"
+
+                # Preserve the pre-restart .ts segment path so run_recording
+                # can concatenate it with the resumed segment later.
+                old_ts = cp.get("_temp_file_path")
+                if old_ts and os.path.exists(old_ts) and os.path.getsize(old_ts) > 0:
+                    prior_segments = cp.get("_pre_restart_ts_paths", [])
+                    prior_segments.append(old_ts)
+                    cp["_pre_restart_ts_paths"] = prior_segments
+                    logger.info(
+                        f"recover_recordings_on_startup: recording {rec.id} — "
+                        f"preserving pre-restart TS segment: {old_ts}"
+                    )
+
                 rec.custom_properties = cp
                 _db_retry(
                     lambda r=rec: r.save(update_fields=["custom_properties"]),
                     label=f"DVR recovery: recording {rec.id} status update",
                 )
 
-                # Start recording for remaining window
+                # Revoke the old PeriodicTask so Celery Beat doesn't also
+                # fire run_recording for this recording (would be a duplicate).
+                old_task_id = rec.task_id
+                if old_task_id:
+                    try:
+                        revoke_task(old_task_id)
+                    except Exception:
+                        pass
+
+                # Start recording for remaining window.  Use a deterministic
+                # task_id so duplicate dispatches (e.g. from a second recovery
+                # attempt) are deduplicated by Celery/Redis.
+                recovery_task_id = f"dvr-recover-{rec.id}"
                 run_recording.apply_async(
-                    args=[rec.id, rec.channel_id, str(now), str(rec.end_time)], eta=now
+                    args=[rec.id, rec.channel_id, str(now), str(rec.end_time)],
+                    eta=now,
+                    task_id=recovery_task_id,
                 )
             except Exception as e:
                 logger.warning(f"Failed to resume recording {rec.id}: {e}")
+
+        # Finalize expired recordings that were active when the server crashed
+        # but whose end_time has now passed.  Remux the partial .ts and mark
+        # as interrupted so the user can watch whatever was captured.
+        expired = _db_retry(
+            lambda: list(Recording.objects.filter(
+                end_time__lte=now,
+                custom_properties__status="recording",
+            )),
+            label="DVR recovery: fetching expired recordings",
+        )
+        for rec in expired:
+            try:
+                cp = rec.custom_properties or {}
+                ts_path = cp.get("_temp_file_path")
+                mkv_path = cp.get("file_path")
+
+                if ts_path and os.path.exists(ts_path) and os.path.getsize(ts_path) > 0 and mkv_path:
+                    logger.info(
+                        f"recover_recordings_on_startup: recording {rec.id} expired "
+                        f"during downtime — remuxing partial TS ({os.path.getsize(ts_path):,} bytes)"
+                    )
+                    os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
+                    result = subprocess.run(
+                        [
+                            "ffmpeg", "-y",
+                            "-fflags", "+genpts+igndts+discardcorrupt",
+                            "-err_detect", "ignore_err",
+                            "-i", ts_path, "-map", "0", "-c", "copy", mkv_path,
+                        ],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    if result.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
+                        cp["status"] = "interrupted"
+                        cp["interrupted_reason"] = "server_restarted_after_end"
+                        cp["remux_success"] = True
+                        try:
+                            os.remove(ts_path)
+                        except OSError:
+                            pass
+                        logger.info(f"recover_recordings_on_startup: recording {rec.id} remuxed successfully")
+                    else:
+                        cp["status"] = "interrupted"
+                        cp["interrupted_reason"] = "server_restarted_after_end"
+                        cp["remux_success"] = False
+                        logger.warning(f"recover_recordings_on_startup: recording {rec.id} remux failed, keeping .ts")
+                else:
+                    cp["status"] = "interrupted"
+                    cp["interrupted_reason"] = "server_restarted_after_end"
+                    cp["remux_success"] = False
+
+                rec.custom_properties = cp
+                _db_retry(
+                    lambda r=rec: r.save(update_fields=["custom_properties"]),
+                    label=f"DVR recovery: recording {rec.id} expired status update",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to finalize expired recording {rec.id}: {e}")
 
         # Ensure future recordings are scheduled.
         # With ClockedSchedule, PeriodicTasks survive restarts in the DB.
@@ -2520,6 +2723,12 @@ def recover_recordings_on_startup():
                     )
             except Exception as e:
                 logger.warning(f"Failed to schedule recording {rec.id}: {e}")
+
+        # Release the lock early so a subsequent restart can recover
+        # immediately.  The 10-minute TTL is only a safety net in case
+        # recovery itself crashes before reaching this point.
+        if redis:
+            redis.delete(lock_key)
 
         return "Recovery complete"
     except Exception as e:
@@ -2791,6 +3000,15 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
 
     _title = ((program.get("title") if isinstance(program, dict) else None) or "").strip() or None
 
+    # Guard: if the "title" is really just the channel name (common when EPG
+    # has no real program data), don't use it for external API searches —
+    # those queries produce false-positive artwork from unrelated shows.
+    _title_is_channel_name = False
+    if _title and channel_name:
+        def _norm_channel(s):
+            return s.lower().replace("*", "").replace("-", " ").strip()
+        _title_is_channel_name = _norm_channel(_title) == _norm_channel(channel_name)
+
     # Stage 1: EPG Program images/icon (with URL validation)
     try:
         from apps.epg.models import ProgramData
@@ -2810,7 +3028,7 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
         pass
 
     # Stage 2: VOD logo fallback by title
-    if not poster_url and not poster_logo_id and _title:
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
             from apps.vod.models import Movie, Series
             vod_logo = None
@@ -2827,7 +3045,7 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
             pass
 
     # Stage 3: TMDB/OMDb (keyed APIs)
-    if not poster_url and not poster_logo_id and _title:
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
             tmdb_key = os.environ.get('TMDB_API_KEY')
             omdb_key = os.environ.get('OMDB_API_KEY')
@@ -2900,7 +3118,7 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
             pass
 
     # Stage 4: Keyless providers (TVMaze & iTunes)
-    if not poster_url and not poster_logo_id and _title:
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
             title = _title
             # TVMaze
@@ -2948,7 +3166,7 @@ def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
                 break
 
     # Stage 6: Search existing Logo entries by program title
-    if not poster_logo_id and not poster_url and _title:
+    if not poster_logo_id and not poster_url and _title and not _title_is_channel_name:
         try:
             from .models import Logo
             existing = Logo.objects.filter(name__iexact=_title).first()

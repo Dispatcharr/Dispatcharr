@@ -7,7 +7,6 @@ Covers:
   - run_recording race guard before status write
   - _stop_dvr_clients() DVR client isolation
 """
-import time
 from datetime import timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -82,13 +81,29 @@ class StopEndpointTests(TestCase):
         self.assertIn("stopped_at", rec.custom_properties)
 
     def test_stop_calls_stop_dvr_clients_in_background(self):
+        """stop() spawns a background thread whose target calls _stop_dvr_clients."""
         rec = self._make_rec()
+
         with patch("apps.channels.api_views._stop_dvr_clients", return_value=1) as mock_stop, \
-             patch("core.utils.send_websocket_update"):
+             patch("core.utils.send_websocket_update"), \
+             patch("threading.Thread") as mock_thread:
+            mock_thread.return_value.start = MagicMock()
             self._stop(rec)
-            time.sleep(0.5)
-        self.assertTrue(mock_stop.called)
-        args, kwargs = mock_stop.call_args
+
+        # Verify a daemon thread was spawned
+        mock_thread.assert_called_once()
+        thread_kwargs = mock_thread.call_args[1]
+        self.assertTrue(thread_kwargs.get("daemon"), "Thread must be daemon")
+
+        # Execute the captured target with DB connection close patched out
+        target = thread_kwargs["target"]
+        with patch("apps.channels.api_views._stop_dvr_clients", return_value=1) as mock_stop2, \
+             patch("apps.channels.signals.revoke_task", side_effect=Exception("skip")), \
+             patch("django.db.connection") as mock_conn:
+            target()
+
+        self.assertTrue(mock_stop2.called)
+        args, kwargs = mock_stop2.call_args
         actual_rec_id = kwargs.get("recording_id") or (args[1] if len(args) > 1 else None)
         self.assertEqual(actual_rec_id, rec.id)
 

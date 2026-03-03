@@ -214,11 +214,15 @@ export const mapChannelsById = (guideChannels) => {
   return map;
 };
 
+const _terminalStatuses = new Set(['stopped', 'completed', 'interrupted', 'failed']);
+
 export const mapRecordingsByProgramId = (recordings) => {
   const map = new Map();
   (recordings || []).forEach((recording) => {
     const programId = recording?.custom_properties?.program?.id;
-    if (programId != null) {
+    const status = recording?.custom_properties?.status;
+    // Only show indicator for pending/active recordings, not terminal ones
+    if (programId != null && !_terminalStatuses.has(status)) {
       map.set(programId, recording);
     }
   });
