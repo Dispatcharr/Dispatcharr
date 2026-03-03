@@ -5,7 +5,9 @@ import {
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
 import React from 'react';
+import { Pencil, RefreshCcw, Check, X } from 'lucide-react';
 import {
+  ActionIcon,
   Badge,
   Button,
   Card,
@@ -15,9 +17,12 @@ import {
   Modal,
   Stack,
   Text,
+  Textarea,
+  TextInput,
 } from '@mantine/core';
 import useVideoStore from '../../store/useVideoStore.jsx';
 import { notifications } from '@mantine/notifications';
+import defaultLogo from '../../images/logo.png';
 import {
   deleteRecordingById,
   getChannelLogoUrl,
@@ -53,11 +58,49 @@ const RecordingDetailsModal = ({
   const { timeFormat: timeformat, dateFormat: dateformat } =
     useDateTimeFormat();
 
-  const safeRecording = recording || {};
+  // Prefer the store version of the recording for live updates
+  // (e.g., after artwork refresh or metadata edit via WebSocket).
+  // Preserve _group_count from the categorized prop — the store version
+  // doesn't carry this client-side field, so without merging it back
+  // isSeriesGroup would always be false and the episode list hidden.
+  const safeRecording = React.useMemo(() => {
+    if (recording?.id && Array.isArray(allRecordings)) {
+      const found = allRecordings.find((r) => r.id === recording.id);
+      if (found) {
+        if (recording._group_count != null) {
+          return { ...found, _group_count: recording._group_count };
+        }
+        return found;
+      }
+    }
+    return recording || {};
+  }, [allRecordings, recording]);
   const customProps = safeRecording.custom_properties || {};
   const program = customProps.program || {};
-  const recordingName = program.title || 'Custom Recording';
-  const description = program.description || customProps.description || '';
+
+  // Derive poster URL from live store data instead of the stale prop snapshot.
+  const livePosterUrl = React.useMemo(
+    () => getPosterUrl(customProps.poster_logo_id, customProps, getChannelLogoUrl(channel)),
+    [customProps.poster_logo_id, customProps, channel]
+  );
+
+  // Optimistic overrides — show saved values immediately without waiting
+  // for the WebSocket round-trip to refresh the store.
+  const [savedTitle, setSavedTitle] = React.useState(null);
+  const [savedDescription, setSavedDescription] = React.useState(null);
+  const recordingName = savedTitle ?? (program.title || 'Custom Recording');
+  const description = savedDescription ?? (program.description || customProps.description || '');
+
+  const [editing, setEditing] = React.useState(false);
+  const [editTitle, setEditTitle] = React.useState('');
+  const [editDescription, setEditDescription] = React.useState('');
+
+  // Reset optimistic state when the recording changes
+  React.useEffect(() => {
+    setSavedTitle(null);
+    setSavedDescription(null);
+    setEditing(false);
+  }, [recording?.id]);
   const start = toUserTime(safeRecording.start_time);
   const end = toUserTime(safeRecording.end_time);
   const stats = customProps.stream_info || {};
@@ -165,6 +208,49 @@ const RecordingDetailsModal = ({
     });
   };
 
+  const startEditing = () => {
+    setEditTitle(recordingName === 'Custom Recording' ? '' : recordingName);
+    setEditDescription(description);
+    setEditing(true);
+  };
+
+  const cancelEditing = () => setEditing(false);
+
+  const saveMetadata = async () => {
+    try {
+      await API.updateRecordingMetadata(recording.id, {
+        title: editTitle || 'Custom Recording',
+        description: editDescription,
+      });
+      setSavedTitle(editTitle || 'Custom Recording');
+      setSavedDescription(editDescription);
+      setEditing(false);
+      notifications.show({
+        title: 'Saved',
+        message: 'Recording metadata updated',
+        color: 'green',
+        autoClose: 2000,
+      });
+    } catch (error) {
+      console.error('Failed to save metadata', error);
+    }
+  };
+
+  const handleRefreshArtwork = async (e) => {
+    e.stopPropagation?.();
+    try {
+      await API.refreshArtwork(recording.id);
+      notifications.show({
+        title: 'Refreshing artwork',
+        message: 'Poster resolution started',
+        color: 'blue.5',
+        autoClose: 2000,
+      });
+    } catch (error) {
+      console.error('Failed to refresh artwork', error);
+    }
+  };
+
   const handleRunComskip = async (e) => {
     e.stopPropagation?.();
     try {
@@ -193,7 +279,8 @@ const RecordingDetailsModal = ({
       cp.onscreen_episode ?? pr?.custom_properties?.onscreen_episode;
     const se = getSeasonLabel(season, episode, onscreen);
     const posterLogoId = cp.poster_logo_id;
-    const purl = getPosterUrl(posterLogoId, cp, posterUrl);
+    const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
+    const epChannel = channelsById[rec.channel] || (rec.channel === recording?.channel ? channel : null);
 
     const onRemove = async (e) => {
       e?.stopPropagation?.();
@@ -226,7 +313,7 @@ const RecordingDetailsModal = ({
             fit="contain"
             radius="sm"
             alt={pr.title || recordingName}
-            fallbackSrc="/logo.png"
+            fallbackSrc={getChannelLogoUrl(epChannel) || defaultLogo}
           />
           <Stack gap={4} flex={1}>
             <Group justify="space-between">
@@ -340,15 +427,27 @@ const RecordingDetailsModal = ({
   const Movie = () => {
     return (
       <Flex gap="lg" align="flex-start">
-        <Image
-          src={posterUrl}
-          w={180}
-          h={240}
-          fit="contain"
-          radius="sm"
-          alt={recordingName}
-          fallbackSrc="/logo.png"
-        />
+        <Stack gap={4} align="center">
+          <Image
+            src={livePosterUrl}
+            w={180}
+            h={240}
+            fit="contain"
+            radius="sm"
+            alt={recordingName}
+            fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
+          />
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="dimmed"
+            leftSection={<RefreshCcw size={12} />}
+            onClick={handleRefreshArtwork}
+            styles={{ root: { fontWeight: 400 } }}
+          >
+            Refresh artwork
+          </Button>
+        </Stack>
         <Stack gap={8} style={{ flex: 1 }}>
           <Group justify="space-between" align="center">
             <Text c="dimmed" size="sm">
@@ -385,11 +484,20 @@ const RecordingDetailsModal = ({
               </Badge>
             </Group>
           )}
-          {description && (
+          {editing ? (
+            <Textarea
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.currentTarget.value)}
+              placeholder="Description (optional)"
+              size="sm"
+              minRows={2}
+              autosize
+            />
+          ) : description ? (
             <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
               {description}
             </Text>
-          )}
+          ) : null}
           {statRows.length > 0 && (
             <Stack gap={4} pt={6}>
               <Text fw={600} size="sm">
@@ -415,9 +523,38 @@ const RecordingDetailsModal = ({
       opened={opened}
       onClose={onClose}
       title={
-        isSeriesGroup
-          ? `Series: ${recordingName}`
-          : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`
+        editing ? (
+          <Group gap={8} align="center" wrap="nowrap" style={{ flex: 1 }}>
+            <TextInput
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.currentTarget.value)}
+              placeholder="Recording title"
+              size="sm"
+              style={{ flex: 1 }}
+              autoFocus
+              onKeyDown={(e) => { if (e.key === 'Enter') saveMetadata(); if (e.key === 'Escape') cancelEditing(); }}
+            />
+            <ActionIcon size="sm" variant="subtle" color="green" onClick={saveMetadata}>
+              <Check size={14} />
+            </ActionIcon>
+            <ActionIcon size="sm" variant="subtle" color="gray" onClick={cancelEditing}>
+              <X size={14} />
+            </ActionIcon>
+          </Group>
+        ) : (
+          <Group gap={8} align="center">
+            <span>
+              {isSeriesGroup
+                ? `Series: ${recordingName}`
+                : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
+            </span>
+            {!isSeriesGroup && (
+              <ActionIcon size="sm" variant="subtle" color="dimmed" onClick={startEditing}>
+                <Pencil size={14} />
+              </ActionIcon>
+            )}
+          </Group>
+        )
       }
       size="lg"
       centered

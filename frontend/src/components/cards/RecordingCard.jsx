@@ -23,6 +23,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { AlertTriangle, Plus, Square, SquareX } from 'lucide-react';
+import defaultLogo from '../../images/logo.png';
 import RecordingSynopsis from '../RecordingSynopsis';
 import {
   deleteRecordingById,
@@ -38,6 +39,30 @@ import {
   runComSkip,
   stopRecordingById,
 } from './../../utils/cards/RecordingCardUtils.js';
+
+const areRecordingPropsEqual = (prev, next) => {
+  const pr = prev.recording;
+  const nr = next.recording;
+  if (!pr || !nr) return pr === nr;
+
+  const pcp = pr.custom_properties || {};
+  const ncp = nr.custom_properties || {};
+
+  return (
+    pr.id === nr.id &&
+    pr.start_time === nr.start_time &&
+    pr.end_time === nr.end_time &&
+    pr._group_count === nr._group_count &&
+    pcp.status === ncp.status &&
+    pcp.poster_logo_id === ncp.poster_logo_id &&
+    pcp.poster_url === ncp.poster_url &&
+    pcp.file_url === ncp.file_url &&
+    pcp.output_file_url === ncp.output_file_url &&
+    pcp.comskip?.status === ncp.comskip?.status &&
+    pcp.program?.title === ncp.program?.title &&
+    prev.channel?.id === next.channel?.id
+  );
+};
 
 const RecordingCard = ({
   recording,
@@ -61,12 +86,11 @@ const RecordingCard = ({
   const description = program.description || customProps.description || '';
   const isRecurringRule = customProps?.rule?.type === 'recurring';
 
-  // Poster or channel logo
+  // Poster or channel logo (getPosterUrl falls back to Dispatcharr default logo)
   const posterUrl = getPosterUrl(
     customProps.poster_logo_id,
     customProps,
-    getChannelLogoUrl(channel),
-    env_mode
+    getChannelLogoUrl(channel)
   );
 
   const start = toUserTime(recording.start_time);
@@ -283,6 +307,8 @@ const RecordingCard = ({
         backgroundColor: isInterrupted ? '#2b1f20' : '#27272A',
         borderColor: isInterrupted ? '#a33' : undefined,
         height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
         cursor: 'pointer',
       }}
       onClick={handleOnMainCardClick}
@@ -383,7 +409,7 @@ const RecordingCard = ({
         </Group>
       </Flex>
 
-      <Flex gap="sm" align="center">
+      <Flex gap="sm" align="flex-start" style={{ flex: 1 }}>
         <Image
           src={posterUrl}
           w={64}
@@ -391,9 +417,9 @@ const RecordingCard = ({
           fit="contain"
           radius="sm"
           alt={recordingName}
-          fallbackSrc="/logo.png"
+          fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
         />
-        <Stack gap={6} flex={1}>
+        <Stack gap={6} flex={1} style={{ alignSelf: 'stretch' }}>
           {!isSeriesGroup && subTitle && (
             <Group justify="space-between">
               <Text size="sm" c="dimmed">
@@ -436,7 +462,7 @@ const RecordingCard = ({
             </Text>
           )}
 
-          <Group justify="flex-end" gap="xs" pt={4}>
+          <Group justify="flex-end" gap="xs" pt={4} style={{ marginTop: 'auto' }}>
             {isInProgress && <WatchLive />}
 
             {!isUpcoming && <WatchRecording />}
@@ -591,4 +617,4 @@ const RecordingCard = ({
   );
 };
 
-export default RecordingCard;
+export default React.memo(RecordingCard, areRecordingPropsEqual);

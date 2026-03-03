@@ -1,5 +1,6 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
+import defaultLogo from '../../images/logo.png';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -32,17 +33,17 @@ export const getChannelLogoUrl = (channel) => {
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
     ? `/api/channels/logos/${posterLogoId}/cache/`
-    : customProperties?.poster_url || posterUrl || '/logo.png';
+    : customProperties?.poster_url || posterUrl || null;
   if (
+    purl &&
     typeof import.meta !== 'undefined' &&
     import.meta.env &&
     import.meta.env.DEV &&
-    purl &&
     purl.startsWith('/')
   ) {
     purl = `${window.location.protocol}//${window.location.hostname}:5656${purl}`;
   }
-  return purl;
+  return purl || defaultLogo;
 };
 
 export const getShowVideoUrl = (channel, env_mode) => {

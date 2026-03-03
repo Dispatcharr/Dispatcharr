@@ -128,11 +128,15 @@ vi.mock('../../utils/dateTimeUtils.js', async (importActual) => {
     useTimeHelpers: vi.fn(),
   };
 });
-vi.mock('../../utils/cards/RecordingCardUtils.js', () => ({
-  getPosterUrl: vi.fn(),
-  getRecordingUrl: vi.fn(),
-  getShowVideoUrl: vi.fn(),
-}));
+vi.mock('../../utils/cards/RecordingCardUtils.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getPosterUrl: vi.fn(),
+    getRecordingUrl: vi.fn(),
+    getShowVideoUrl: vi.fn(),
+  };
+});
 vi.mock('../../utils/pages/DVRUtils.js', async (importActual) => {
   const actual = await importActual();
   return {

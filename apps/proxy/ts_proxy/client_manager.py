@@ -23,7 +23,7 @@ class ClientManager:
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.clients = set()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.last_active_time = time.time()
         self.worker_id = worker_id  # Store worker ID as instance variable
         self._heartbeat_running = True  # Flag to control heartbeat thread

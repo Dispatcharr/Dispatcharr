@@ -20,15 +20,126 @@ from apps.channels.models import Channel
 from apps.epg.models import EPGData
 from core.models import CoreSettings
 
+from django.db import OperationalError, close_old_connections
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 import tempfile
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+_url_validation_cache = {}
+_URL_CACHE_TTL = 300  # seconds
+
+
+def _validate_url(url, timeout=4):
+    """Validate that an HTTP(S) URL is reachable via HEAD request.
+    Returns True for non-HTTP URLs (skip validation) or 2xx/3xx responses.
+    Results are cached per-worker for 5 minutes to avoid redundant requests
+    when multiple recordings reference the same dead URL.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    if not url.startswith(("http://", "https://")):
+        return True
+
+    now = time.monotonic()
+    cached = _url_validation_cache.get(url)
+    if cached is not None and (now - cached[1]) < _URL_CACHE_TTL:
+        return cached[0]
+
+    try:
+        resp = requests.head(url, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 405:
+            # Server doesn't support HEAD; fall back to ranged GET
+            resp = requests.get(
+                url, timeout=timeout, allow_redirects=True,
+                headers={"Range": "bytes=0-0"}, stream=True,
+            )
+            resp.close()
+        result = resp.status_code < 400
+    except Exception:
+        result = False
+
+    _url_validation_cache[url] = (result, now)
+
+    # Evict expired entries when cache grows large
+    if len(_url_validation_cache) > 512:
+        cutoff = now - _URL_CACHE_TTL
+        expired = [k for k, v in _url_validation_cache.items() if v[1] < cutoff]
+        for k in expired:
+            del _url_validation_cache[k]
+
+    return result
+
+
+def _pick_best_image_from_epg_props(epg_props):
+    """Select the highest-quality poster/cover image from EPG custom_properties."""
+    try:
+        images = epg_props.get("images") or []
+        if not isinstance(images, list):
+            return None
+        size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
+        def score(img):
+            t = (img.get("type") or "").lower()
+            size = (img.get("size") or "").lower()
+            return (2 if t in ("poster", "cover") else 1, size_order.get(size, 0))
+        best = None
+        for im in images:
+            if not isinstance(im, dict):
+                continue
+            url = im.get("url")
+            if not url:
+                continue
+            if best is None or score(im) > score(best):
+                best = im
+        return best.get("url") if best else None
+    except Exception:
+        return None
+
+
+def _match_epg_program_by_timeslot(channel_epg_data, rec_start, rec_end):
+    """Find an EPG program that covers at least 80% of the recording window.
+
+    Queries all programs overlapping the recording, calculates overlap for
+    each, and returns the best match only if it covers >= 80% of the
+    recording duration.  Recordings spanning multiple programs with no
+    dominant show return None (displayed as "Custom Recording").
+    Returns a dict with id, title, sub_title, and description, or None.
+    """
+    if not channel_epg_data or not rec_start or not rec_end:
+        return None
+    try:
+        candidates = channel_epg_data.programs.filter(
+            start_time__lt=rec_end,
+            end_time__gt=rec_start,
+        ).only("id", "title", "sub_title", "description", "start_time", "end_time")
+
+        rec_duration = (rec_end - rec_start).total_seconds()
+        if rec_duration <= 0:
+            return None
+
+        best = None
+        best_overlap = 0
+        for prog in candidates:
+            overlap_start = max(rec_start, prog.start_time)
+            overlap_end = min(rec_end, prog.end_time)
+            overlap = (overlap_end - overlap_start).total_seconds()
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best = prog
+
+        if best and (best_overlap / rec_duration) >= 0.8:
+            return {
+                "id": best.id,
+                "title": best.title or "",
+                "sub_title": best.sub_title or "",
+                "description": best.description or "",
+            }
+    except Exception:
+        pass
+    return None
 
 
 def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
@@ -37,7 +148,6 @@ def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
     Follows the same backoff pattern as RedisClient.get_client().
     Resets stale connections between attempts so the ORM reconnects.
     """
-    from django.db import OperationalError, close_old_connections
     for attempt in range(max_retries):
         try:
             return fn()
@@ -1006,7 +1116,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
 
         programs_qs = ProgramData.objects.filter(
                 epg=epg,
-                start_time__gte=now,
+                end_time__gt=now,
                 start_time__lte=horizon,
             )
         if series_title:
@@ -1016,7 +1126,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
         if series_title and not programs:
             all_progs = ProgramData.objects.filter(
                 epg=epg,
-                start_time__gte=now,
+                end_time__gt=now,
                 start_time__lte=horizon,
             ).only("id", "title", "start_time", "end_time", "custom_properties", "tvg_id")
             programs = [p for p in all_progs if normalize_name(p.title) == norm_series]
@@ -1608,229 +1718,26 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         # Determine program info (may include id for deeper details)
         program = cp.get("program") or {}
+
+        # Enrich empty program dicts (manual recordings) from EPG time-slot data.
+        if isinstance(program, dict) and not program.get("user_edited") and not program.get("id") and not program.get("title"):
+            epg_match = _match_epg_program_by_timeslot(
+                channel.epg_data, recording_obj.start_time, recording_obj.end_time,
+            )
+            if epg_match:
+                program.update(epg_match)
+                cp["program"] = program
+
         final_path, temp_ts_path, filename = _build_output_paths(channel, program, start_time, end_time)
         cp["file_name"] = filename
         cp["file_path"] = final_path
         cp["_temp_file_path"] = temp_ts_path
 
-        # Resolve poster the same way VODs do:
-        # 1) Prefer image(s) from EPG Program custom_properties (images/icon)
-        # 2) Otherwise reuse an existing VOD logo matching title (Movie/Series)
-        # 3) Otherwise save any direct poster URL from provided program fields
-        program = (cp.get("program") or {}) if isinstance(cp, dict) else {}
-
-        def pick_best_image_from_epg_props(epg_props):
-            try:
-                images = epg_props.get("images") or []
-                if not isinstance(images, list):
-                    return None
-                # Prefer poster/cover and larger sizes
-                size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
-                def score(img):
-                    t = (img.get("type") or "").lower()
-                    size = (img.get("size") or "").lower()
-                    return (
-                        2 if t in ("poster", "cover") else 1,
-                        size_order.get(size, 0)
-                    )
-                best = None
-                for im in images:
-                    if not isinstance(im, dict):
-                        continue
-                    url = im.get("url")
-                    if not url:
-                        continue
-                    if best is None or score(im) > score(best):
-                        best = im
-                return best.get("url") if best else None
-            except Exception:
-                return None
-
-        poster_logo_id = None
-        poster_url = None
-
-        # Try EPG Program custom_properties by ID
-        try:
-            from apps.epg.models import ProgramData
-            prog_id = program.get("id")
-            if prog_id:
-                epg_program = ProgramData.objects.filter(id=prog_id).only("custom_properties").first()
-                if epg_program and epg_program.custom_properties:
-                    epg_props = epg_program.custom_properties or {}
-                    poster_url = pick_best_image_from_epg_props(epg_props)
-                    if not poster_url:
-                        icon = epg_props.get("icon")
-                        if isinstance(icon, str) and icon:
-                            poster_url = icon
-        except Exception as e:
-            logger.debug(f"EPG image lookup failed: {e}")
-
-        # Fallback: reuse VOD Logo by matching title
-        if not poster_url and not poster_logo_id:
-            try:
-                from apps.vod.models import Movie, Series
-                title = program.get("title") or channel.name
-                vod_logo = None
-                movie = Movie.objects.filter(name__iexact=title).select_related("logo").first()
-                if movie and movie.logo:
-                    vod_logo = movie.logo
-                if not vod_logo:
-                    series = Series.objects.filter(name__iexact=title).select_related("logo").first()
-                    if series and series.logo:
-                        vod_logo = series.logo
-                if vod_logo:
-                    poster_logo_id = vod_logo.id
-            except Exception as e:
-                logger.debug(f"VOD logo fallback failed: {e}")
-
-        # External metadata lookups (TMDB/OMDb) when EPG/VOD didn't provide an image
-        if not poster_url and not poster_logo_id:
-            try:
-                tmdb_key = os.environ.get('TMDB_API_KEY')
-                omdb_key = os.environ.get('OMDB_API_KEY')
-                title = (program.get('title') or channel.name or '').strip()
-                year = None
-                imdb_id = None
-
-                # Try to derive year and imdb from EPG program custom_properties
-                try:
-                    from apps.epg.models import ProgramData
-                    prog_id = program.get('id')
-                    epg_program = ProgramData.objects.filter(id=prog_id).only('custom_properties').first() if prog_id else None
-                    if epg_program and epg_program.custom_properties:
-                        d = epg_program.custom_properties.get('date')
-                        if d and len(str(d)) >= 4:
-                            year = str(d)[:4]
-                        imdb_id = epg_program.custom_properties.get('imdb.com_id') or imdb_id
-                except Exception:
-                    pass
-
-                # TMDB: by IMDb ID
-                if not poster_url and tmdb_key and imdb_id:
-                    try:
-                        url = f"https://api.themoviedb.org/3/find/{quote(imdb_id)}?api_key={tmdb_key}&external_source=imdb_id"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            picks = []
-                            for k in ('movie_results', 'tv_results', 'tv_episode_results', 'tv_season_results'):
-                                lst = data.get(k) or []
-                                picks.extend(lst)
-                            poster_path = None
-                            for item in picks:
-                                if item.get('poster_path'):
-                                    poster_path = item['poster_path']
-                                    break
-                            if poster_path:
-                                poster_url = f"https://image.tmdb.org/t/p/w780{poster_path}"
-                    except Exception:
-                        pass
-
-                # TMDB: by title (and year if available)
-                if not poster_url and tmdb_key and title:
-                    try:
-                        q = quote(title)
-                        extra = f"&year={year}" if year else ""
-                        url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={q}{extra}"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            results = data.get('results') or []
-                            results.sort(key=lambda x: float(x.get('popularity') or 0), reverse=True)
-                            for item in results:
-                                if item.get('poster_path'):
-                                    poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
-                                    break
-                    except Exception:
-                        pass
-
-                # OMDb fallback
-                if not poster_url and omdb_key:
-                    try:
-                        if imdb_id:
-                            url = f"https://www.omdbapi.com/?apikey={omdb_key}&i={quote(imdb_id)}"
-                        elif title:
-                            yy = f"&y={year}" if year else ""
-                            url = f"https://www.omdbapi.com/?apikey={omdb_key}&t={quote(title)}{yy}"
-                        else:
-                            url = None
-                        if url:
-                            resp = requests.get(url, timeout=5)
-                            if resp.ok:
-                                data = resp.json() or {}
-                                p = data.get('Poster')
-                                if p and p != 'N/A':
-                                    poster_url = p
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.debug(f"External poster lookup failed: {e}")
-
-        # Keyless fallback providers (no API keys required) — only search when
-        # real program title is present; channel names return unrelated results.
-        _program_title = (program.get('title') or '').strip()
-        if not poster_url and not poster_logo_id and _program_title:
-            try:
-                title = _program_title
-                if title:
-                    # 1) TVMaze (TV shows) - singlesearch by title
-                    try:
-                        url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            img = (data.get('image') or {})
-                            p = img.get('original') or img.get('medium')
-                            if p:
-                                poster_url = p
-                    except Exception:
-                        pass
-
-                    # 2) iTunes Search API (movies or tv shows)
-                    if not poster_url:
-                        try:
-                            for media in ('movie', 'tvShow'):
-                                url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
-                                resp = requests.get(url, timeout=5)
-                                if resp.ok:
-                                    data = resp.json() or {}
-                                    results = data.get('results') or []
-                                    if results:
-                                        art = results[0].get('artworkUrl100')
-                                        if art:
-                                            # Scale up to 600x600 by convention
-                                            poster_url = art.replace('100x100', '600x600')
-                                            break
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.debug(f"Keyless poster lookup failed: {e}")
-
-        # Last: check direct fields on provided program object
-        if not poster_url and not poster_logo_id:
-            for key in ("poster", "cover", "cover_big", "image", "icon"):
-                val = program.get(key)
-                if isinstance(val, dict):
-                    candidate = val.get("url")
-                    if candidate:
-                        poster_url = candidate
-                        break
-                elif isinstance(val, str) and val:
-                    poster_url = val
-                    break
-
-        # Create or assign Logo
-        if not poster_logo_id and poster_url and len(poster_url) <= 1000:
-            try:
-                logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": program.get("title") or channel.name})
-                poster_logo_id = logo.id
-            except Exception as e:
-                logger.debug(f"Unable to persist poster to Logo: {e}")
-
-        # Fall back to the channel's own logo so the card always has an image
-        if not poster_logo_id and not poster_url and channel.logo_id:
-            poster_logo_id = channel.logo_id
-
+        # Resolve poster art via the shared pipeline (EPG → VOD → TMDB/OMDb →
+        # TVMaze/iTunes → direct program fields → Logo table → channel logo).
+        poster_logo_id, poster_url = _resolve_poster_for_program(
+            channel.name, program, channel_logo_id=channel.logo_id,
+        )
         if poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id
         if poster_url and "poster_url" not in cp:
@@ -1860,7 +1767,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Merge only the keys explicitly set into the fresh copy
         for key in ("status", "started_at", "file_url", "output_file_url",
                      "file_name", "file_path", "_temp_file_path",
-                     "poster_logo_id", "poster_url"):
+                     "program", "poster_logo_id", "poster_url"):
             if key in cp:
                 fresh_cp[key] = cp[key]
         recording_obj.custom_properties = fresh_cp
@@ -1933,6 +1840,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     _dvr_db_retry_interval = 1  # seconds (base for exponential backoff)
     # FFmpeg remux retry: covers transient I/O errors.
     _dvr_remux_max_retries = 2
+    _dvr_remux_retry_interval = 2  # seconds (base for exponential backoff)
 
     for base in candidates:
         test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
@@ -2308,7 +2216,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                         pass
             break  # Completed (success or deterministic failure)
 
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             # Clean up partial output before potential retry
             try:
                 if os.path.exists(final_path):
@@ -2316,7 +2224,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             except Exception:
                 pass
             if _remux_attempt + 1 < _dvr_remux_max_retries:
-                _wait = _dvr_db_retry_interval * (2 ** _remux_attempt)
+                _wait = _dvr_remux_retry_interval * (2 ** _remux_attempt)
                 logger.warning(
                     f"DVR recording {recording_id}: remux failed "
                     f"({type(e).__name__}), retrying in {_wait}s "
@@ -2422,8 +2330,6 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             )
             return
 
-        recording_obj.custom_properties = cp
-
         def _save_final_metadata():
             recording_obj.custom_properties = cp
             recording_obj.save(update_fields=["custom_properties"])
@@ -2525,18 +2431,27 @@ def recover_recordings_on_startup():
         # Ensure future recordings are scheduled.
         # With ClockedSchedule, PeriodicTasks survive restarts in the DB.
         # Only recreate if the PeriodicTask is missing (safety net).
+        from django_celery_beat.models import PeriodicTask as _PT
+        from apps.channels.signals import _dvr_task_name
+
         upcoming = _db_retry(
             lambda: list(Recording.objects.filter(
                 start_time__gt=now, end_time__gt=now
             )),
             label="DVR recovery: fetching upcoming recordings",
         )
+
+        # Batch-fetch existing PeriodicTask names to avoid N+1 queries
+        task_names = {_dvr_task_name(r.id) for r in upcoming}
+        existing_tasks = set(_db_retry(
+            lambda: list(_PT.objects.filter(name__in=task_names).values_list("name", flat=True)),
+            label="DVR recovery: fetching existing periodic tasks",
+        )) if task_names else set()
+
         for rec in upcoming:
             try:
-                from django_celery_beat.models import PeriodicTask as _PT
-                from apps.channels.signals import _dvr_task_name
                 task_name = _dvr_task_name(rec.id)
-                if _PT.objects.filter(name=task_name).exists():
+                if task_name in existing_tasks:
                     if rec.task_id != task_name:
                         rec.task_id = task_name
                         _db_retry(
@@ -2809,14 +2724,23 @@ def comskip_process_recording(recording_id: int):
         _persist_custom_properties()
         _ws('error', {"reason": str(e)})
         return f"error:{e}"
-def _resolve_poster_for_program(channel_name, program):
-    """Internal helper that attempts to resolve a poster URL and/or Logo id.
+def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
+    """Resolve poster URL and/or Logo id for a recording program.
+
+    Callers should enrich the program dict via _match_epg_program_by_timeslot
+    before invoking this function so that EPG data is already available.
+
+    Pipeline: EPG images → VOD logo → TMDB/OMDb → TVMaze/iTunes →
+    direct program fields → Logo table → Logo creation → channel logo.
     Returns (poster_logo_id, poster_url) where either may be None.
     """
     poster_logo_id = None
     poster_url = None
+    epg_props = None
 
-    # Try EPG Program images first
+    _title = ((program.get("title") if isinstance(program, dict) else None) or "").strip() or None
+
+    # Stage 1: EPG Program images/icon (with URL validation)
     try:
         from apps.epg.models import ProgramData
         prog_id = program.get("id") if isinstance(program, dict) else None
@@ -2824,46 +2748,26 @@ def _resolve_poster_for_program(channel_name, program):
             epg_program = ProgramData.objects.filter(id=prog_id).only("custom_properties").first()
             if epg_program and epg_program.custom_properties:
                 epg_props = epg_program.custom_properties or {}
-
-                def pick_best_image_from_epg_props(epg_props):
-                    images = epg_props.get("images") or []
-                    if not isinstance(images, list):
-                        return None
-                    size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
-                    def score(img):
-                        t = (img.get("type") or "").lower()
-                        size = (img.get("size") or "").lower()
-                        return (2 if t in ("poster", "cover") else 1, size_order.get(size, 0))
-                    best = None
-                    for im in images:
-                        if not isinstance(im, dict):
-                            continue
-                        url = im.get("url")
-                        if not url:
-                            continue
-                        if best is None or score(im) > score(best):
-                            best = im
-                    return best.get("url") if best else None
-
-                poster_url = pick_best_image_from_epg_props(epg_props)
+                poster_url = _pick_best_image_from_epg_props(epg_props)
+                if poster_url and not _validate_url(poster_url):
+                    poster_url = None
                 if not poster_url:
                     icon = epg_props.get("icon")
-                    if isinstance(icon, str) and icon:
+                    if isinstance(icon, str) and icon and _validate_url(icon):
                         poster_url = icon
     except Exception:
         pass
 
-    # VOD logo fallback by title
-    if not poster_url and not poster_logo_id:
+    # Stage 2: VOD logo fallback by title
+    if not poster_url and not poster_logo_id and _title:
         try:
             from apps.vod.models import Movie, Series
-            title = (program.get("title") if isinstance(program, dict) else None) or channel_name
             vod_logo = None
-            movie = Movie.objects.filter(name__iexact=title).select_related("logo").first()
+            movie = Movie.objects.filter(name__iexact=_title).select_related("logo").first()
             if movie and movie.logo:
                 vod_logo = movie.logo
             if not vod_logo:
-                series = Series.objects.filter(name__iexact=title).select_related("logo").first()
+                series = Series.objects.filter(name__iexact=_title).select_related("logo").first()
                 if series and series.logo:
                     vod_logo = series.logo
             if vod_logo:
@@ -2871,65 +2775,150 @@ def _resolve_poster_for_program(channel_name, program):
         except Exception:
             pass
 
-    # Keyless providers (TVMaze & iTunes) — only when real program title is 
-    # present. Searching by channel name returns unrelated art work from
-    # fuzzy API matching.
-    program_title = program.get('title') if isinstance(program, dict) else None
-    if not poster_url and not poster_logo_id and program_title:
+    # Stage 3: TMDB/OMDb (keyed APIs)
+    if not poster_url and not poster_logo_id and _title:
         try:
-            title = program_title
-            if title:
-                # TVMaze
+            tmdb_key = os.environ.get('TMDB_API_KEY')
+            omdb_key = os.environ.get('OMDB_API_KEY')
+            title = _title
+            year = None
+            imdb_id = None
+
+            # Derive year and imdb_id from cached EPG data
+            if epg_props:
+                d = epg_props.get('date')
+                if d and len(str(d)) >= 4:
+                    year = str(d)[:4]
+                imdb_id = epg_props.get('imdb.com_id')
+
+            # TMDB: by IMDb ID
+            if not poster_url and tmdb_key and imdb_id:
                 try:
-                    url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
+                    url = f"https://api.themoviedb.org/3/find/{quote(imdb_id)}?api_key={tmdb_key}&external_source=imdb_id"
                     resp = requests.get(url, timeout=5)
                     if resp.ok:
                         data = resp.json() or {}
-                        img = (data.get('image') or {})
-                        p = img.get('original') or img.get('medium')
-                        if p:
-                            poster_url = p
+                        picks = []
+                        for k in ('movie_results', 'tv_results', 'tv_episode_results', 'tv_season_results'):
+                            picks.extend(data.get(k) or [])
+                        for item in picks:
+                            if item.get('poster_path'):
+                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
+                                break
                 except Exception:
                     pass
-                # iTunes
-                if not poster_url:
-                    try:
-                        for media in ('movie', 'tvShow'):
-                            url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
-                            resp = requests.get(url, timeout=5)
-                            if resp.ok:
-                                data = resp.json() or {}
-                                results = data.get('results') or []
-                                if results:
-                                    art = results[0].get('artworkUrl100')
-                                    if art:
-                                        poster_url = art.replace('100x100', '600x600')
-                                        break
-                    except Exception:
-                        pass
+
+            # TMDB: by title (and year if available)
+            if not poster_url and tmdb_key and title:
+                try:
+                    q = quote(title)
+                    extra = f"&year={year}" if year else ""
+                    url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={q}{extra}"
+                    resp = requests.get(url, timeout=5)
+                    if resp.ok:
+                        data = resp.json() or {}
+                        results = data.get('results') or []
+                        results.sort(key=lambda x: float(x.get('popularity') or 0), reverse=True)
+                        for item in results:
+                            if item.get('poster_path'):
+                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
+                                break
+                except Exception:
+                    pass
+
+            # OMDb fallback
+            if not poster_url and omdb_key:
+                try:
+                    if imdb_id:
+                        url = f"https://www.omdbapi.com/?apikey={omdb_key}&i={quote(imdb_id)}"
+                    elif title:
+                        yy = f"&y={year}" if year else ""
+                        url = f"https://www.omdbapi.com/?apikey={omdb_key}&t={quote(title)}{yy}"
+                    else:
+                        url = None
+                    if url:
+                        resp = requests.get(url, timeout=5)
+                        if resp.ok:
+                            data = resp.json() or {}
+                            p = data.get('Poster')
+                            if p and p != 'N/A':
+                                poster_url = p
+                except Exception:
+                    pass
         except Exception:
             pass
 
-    # Fallback: search existing Logo entries by name if we still have nothing
-    if not poster_logo_id and not poster_url:
+    # Stage 4: Keyless providers (TVMaze & iTunes)
+    if not poster_url and not poster_logo_id and _title:
+        try:
+            title = _title
+            # TVMaze
+            try:
+                url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
+                resp = requests.get(url, timeout=5)
+                if resp.ok:
+                    data = resp.json() or {}
+                    img = (data.get('image') or {})
+                    p = img.get('original') or img.get('medium')
+                    if p:
+                        poster_url = p
+            except Exception:
+                pass
+            # iTunes
+            if not poster_url:
+                try:
+                    for media in ('movie', 'tvShow'):
+                        url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
+                        resp = requests.get(url, timeout=5)
+                        if resp.ok:
+                            data = resp.json() or {}
+                            results = data.get('results') or []
+                            if results:
+                                art = results[0].get('artworkUrl100')
+                                if art:
+                                    poster_url = art.replace('100x100', '600x600')
+                                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Stage 5: Direct fields on program object (with URL validation)
+    if not poster_url and not poster_logo_id and isinstance(program, dict):
+        for key in ("poster", "cover", "cover_big", "image", "icon"):
+            val = program.get(key)
+            if isinstance(val, dict):
+                candidate = val.get("url")
+                if candidate and _validate_url(candidate):
+                    poster_url = candidate
+                    break
+            elif isinstance(val, str) and val and _validate_url(val):
+                poster_url = val
+                break
+
+    # Stage 6: Search existing Logo entries by program title
+    if not poster_logo_id and not poster_url and _title:
         try:
             from .models import Logo
-            title = (program.get("title") if isinstance(program, dict) else None) or channel_name
-            existing = Logo.objects.filter(name__iexact=title).first()
+            existing = Logo.objects.filter(name__iexact=_title).first()
             if existing:
                 poster_logo_id = existing.id
                 poster_url = existing.url
         except Exception:
             pass
 
-    # Save to Logo if URL available
+    # Stage 7: Persist to Logo table if URL available
     if not poster_logo_id and poster_url and len(poster_url) <= 1000:
         try:
             from .models import Logo
-            logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": (program.get("title") if isinstance(program, dict) else None) or channel_name})
+            logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": _title or channel_name})
             poster_logo_id = logo.id
         except Exception:
             pass
+
+    # Stage 8: Fall back to channel logo
+    if not poster_logo_id and not poster_url and channel_logo_id:
+        poster_logo_id = channel_logo_id
 
     return poster_logo_id, poster_url
 
@@ -2949,11 +2938,20 @@ def prefetch_recording_artwork(recording_id):
             return "skipped: status is " + current_status
 
         program = cp.get("program") or {}
-        poster_logo_id, poster_url = _resolve_poster_for_program(rec.channel.name, program)
-        # Fall back to the channel's own logo so the card always has an image
-        # rather than relying on the frontend's async channelsById lookup.
-        if not poster_logo_id and not poster_url and rec.channel.logo_id:
-            poster_logo_id = rec.channel.logo_id
+
+        # Enrich empty program dicts (manual recordings) from EPG time-slot data.
+        # Persists matched title/description for display in the recording card.
+        if isinstance(program, dict) and not program.get("user_edited") and not program.get("id") and not program.get("title"):
+            epg_match = _match_epg_program_by_timeslot(
+                rec.channel.epg_data, rec.start_time, rec.end_time,
+            )
+            if epg_match:
+                program.update(epg_match)
+                cp["program"] = program
+
+        poster_logo_id, poster_url = _resolve_poster_for_program(
+            rec.channel.name, program, channel_logo_id=rec.channel.logo_id,
+        )
         updated = False
         if poster_logo_id and cp.get("poster_logo_id") != poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id
@@ -2996,8 +2994,8 @@ def prefetch_recording_artwork(recording_id):
             # the stop endpoint or run_recording's final metadata save.
             rec.refresh_from_db()
             fresh_cp = rec.custom_properties or {}
-            for key in ("poster_logo_id", "poster_url", "rating", "rating_system",
-                        "season", "episode", "onscreen_episode"):
+            for key in ("program", "poster_logo_id", "poster_url", "rating",
+                        "rating_system", "season", "episode", "onscreen_episode"):
                 if key in cp:
                     fresh_cp[key] = cp[key]
             rec.custom_properties = fresh_cp

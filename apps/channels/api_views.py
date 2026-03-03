@@ -11,7 +11,7 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 from django.db.models import Count, F
 from django.db.models import Q
-import os, json, requests, logging, mimetypes, threading
+import os, json, requests, logging, mimetypes, threading, time
 from datetime import timedelta
 from django.utils.http import http_date
 from urllib.parse import unquote
@@ -72,6 +72,12 @@ from rest_framework.pagination import PageNumberPagination
 
 
 logger = logging.getLogger(__name__)
+
+# Negative cache for remote logo URLs that failed to fetch.
+# Prevents repeated blocking requests to unreachable hosts (e.g., dead CDNs)
+# from exhausting Daphne workers.  Keyed by URL, value is expiry timestamp.
+_logo_fetch_failures = {}
+_LOGO_FAIL_TTL = 300  # seconds
 
 
 class OrInFilter(django_filters.Filter):
@@ -1957,6 +1963,12 @@ class LogoViewSet(viewsets.ModelViewSet):
             return response
 
         else:  # Remote image
+            # Skip URLs that recently failed to avoid blocking Daphne workers
+            # on unreachable hosts (e.g., dead CDNs referenced by old recordings).
+            fail_expiry = _logo_fetch_failures.get(logo_url)
+            if fail_expiry and time.monotonic() < fail_expiry:
+                raise Http404("Remote image temporarily unavailable")
+
             try:
                 # Get the default user agent
                 try:
@@ -1975,6 +1987,9 @@ class LogoViewSet(viewsets.ModelViewSet):
                     headers={'User-Agent': user_agent}
                 )
                 if remote_response.status_code == 200:
+                    # Success — clear any previous failure entry
+                    _logo_fetch_failures.pop(logo_url, None)
+
                     # Try to get content type from response headers first
                     content_type = remote_response.headers.get("Content-Type")
 
@@ -1998,14 +2013,19 @@ class LogoViewSet(viewsets.ModelViewSet):
                         os.path.basename(logo_url)
                     )
                     return response
+                # Non-200 response — cache the failure and evict stale entries
+                now = time.monotonic()
+                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
+                if len(_logo_fetch_failures) > 256:
+                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
+                        _logo_fetch_failures.pop(k, None)
                 raise Http404("Remote image not found")
-            except requests.exceptions.Timeout:
-                logger.warning(f"Timeout fetching logo from {logo_url}")
-                raise Http404("Logo request timed out")
-            except requests.exceptions.ConnectionError:
-                logger.warning(f"Connection error fetching logo from {logo_url}")
-                raise Http404("Unable to connect to logo server")
             except requests.RequestException as e:
+                now = time.monotonic()
+                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
+                if len(_logo_fetch_failures) > 256:
+                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
+                        _logo_fetch_failures.pop(k, None)
                 logger.warning(f"Error fetching logo from {logo_url}: {e}")
                 raise Http404("Error fetching remote image")
 
@@ -2396,10 +2416,22 @@ class RecordingViewSet(viewsets.ModelViewSet):
         """Stop a recording early while retaining the partial content for playback."""
         instance = self.get_object()
 
+        cp = instance.custom_properties or {}
+        current_status = cp.get("status", "")
+
+        # Reject stop on recordings that are already in a terminal state.
+        # Without this guard, stop() would overwrite "completed" or
+        # "interrupted" with "stopped", losing the original outcome.
+        terminal = {"completed", "interrupted", "failed"}
+        if current_status in terminal:
+            return Response(
+                {"success": False, "error": f"Recording is already {current_status}"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         # Mark as stopped in the DB first so run_recording detects it.
         # This is the only operation that MUST be synchronous — run_recording reads
         # the status field to decide whether the stream disconnection was deliberate.
-        cp = instance.custom_properties or {}
         cp["status"] = "stopped"
         cp["stopped_at"] = str(timezone.now())
         instance.custom_properties = cp
@@ -2442,7 +2474,6 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.debug(f"Unable to revoke task for stopped recording: {e}")
 
-            # Close the DB connection opened by this thread so it isn't leaked
             try:
                 from django.db import connection as _conn
                 _conn.close()
@@ -2504,6 +2535,121 @@ class RecordingViewSet(viewsets.ModelViewSet):
             pass
 
         return Response({"success": True, "new_end_time": new_end_time.isoformat()})
+
+    @action(detail=True, methods=["post"], url_path="refresh-artwork")
+    def refresh_artwork(self, request, pk=None):
+        """Re-run the poster resolution pipeline for this recording.
+
+        Useful when a recording fell back to a channel logo or default logo
+        because external sources were temporarily unavailable.
+        """
+        instance = self.get_object()
+
+        def _background_refresh(rec_id):
+            try:
+                from .tasks import _resolve_poster_for_program
+                from .models import Recording
+                from core.utils import send_websocket_update
+                from django.db import close_old_connections
+
+                rec = Recording.objects.select_related("channel").get(id=rec_id)
+                cp = rec.custom_properties or {}
+                program = cp.get("program") or {}
+
+                poster_logo_id, poster_url = _resolve_poster_for_program(
+                    rec.channel.name, program, channel_logo_id=rec.channel.logo_id,
+                )
+
+                # Refresh and merge to avoid overwriting concurrent changes.
+                # Only upgrade — never replace a real poster with a channel logo fallback.
+                rec.refresh_from_db()
+                fresh_cp = rec.custom_properties or {}
+                updated = False
+                is_channel_logo_fallback = (
+                    poster_logo_id == rec.channel.logo_id
+                    and not poster_url
+                )
+                if program and program.get("id"):
+                    fresh_cp["program"] = program
+                    updated = True
+                if not is_channel_logo_fallback:
+                    if poster_logo_id and fresh_cp.get("poster_logo_id") != poster_logo_id:
+                        fresh_cp["poster_logo_id"] = poster_logo_id
+                        updated = True
+                    if poster_url and fresh_cp.get("poster_url") != poster_url:
+                        fresh_cp["poster_url"] = poster_url
+                        updated = True
+
+                if updated:
+                    rec.custom_properties = fresh_cp
+                    rec.save(update_fields=["custom_properties"])
+
+                send_websocket_update('updates', 'update', {
+                    "success": True,
+                    "type": "recording_updated",
+                    "recording_id": rec_id,
+                })
+            except Exception as e:
+                logger.debug(f"refresh-artwork background failed for {rec_id}: {e}")
+            finally:
+                close_old_connections()
+
+        t = threading.Thread(target=_background_refresh, args=(instance.id,), daemon=True)
+        t.start()
+
+        return Response({"success": True, "message": "Artwork refresh started"})
+
+    @action(detail=True, methods=["post"], url_path="update-metadata")
+    def update_metadata(self, request, pk=None):
+        """Update user-editable recording metadata (title, description).
+
+        Sets user_edited flag to prevent EPG auto-enrichment from overwriting
+        the user's changes on subsequent task runs.
+        """
+        instance = self.get_object()
+        title = request.data.get("title")
+        description = request.data.get("description")
+
+        if title is None and description is None:
+            return Response(
+                {"success": False, "error": "No fields to update"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Strip whitespace; treat blank strings as "no change"
+        clean_title = str(title).strip() if title is not None else None
+        clean_desc = str(description).strip() if description is not None else None
+
+        if not clean_title and not clean_desc:
+            return Response(
+                {"success": False, "error": "Title and description cannot be blank"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cp = instance.custom_properties or {}
+        program = cp.get("program") or {}
+
+        if clean_title:
+            program["title"] = clean_title
+        if clean_desc:
+            program["description"] = clean_desc
+        program["user_edited"] = True
+
+        cp["program"] = program
+        instance.custom_properties = cp
+        instance.save(update_fields=["custom_properties"])
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_updated",
+                "recording_id": instance.id,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True})
 
     def destroy(self, request, *args, **kwargs):
         """Delete the Recording and ensure any active DVR client connection is closed.
@@ -2581,7 +2727,6 @@ class RecordingViewSet(viewsets.ModelViewSet):
             _safe_remove(file_path)
             _safe_remove(temp_ts_path)
 
-            # Close the DB connection opened by this thread so it isn't leaked
             try:
                 from django.db import connection as _conn
                 _conn.close()
@@ -2718,16 +2863,44 @@ class DeleteSeriesRuleAPIView(APIView):
 
     @extend_schema(
         summary="Delete a series rule",
-        description="Remove a series recording rule by TVG ID. This does not remove already scheduled recordings.",
+        description="Remove a series recording rule by TVG ID and clean up future scheduled recordings.",
         parameters=[
             OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
         ],
     )
     def delete(self, request, tvg_id):
         tvg_id = unquote(str(tvg_id or ""))
-        rules = [r for r in CoreSettings.get_dvr_series_rules() if str(r.get("tvg_id")) != tvg_id]
-        CoreSettings.set_dvr_series_rules(rules)
-        return Response({"success": True, "rules": rules})
+
+        # Find the rule before removing to retain the title for cleanup
+        rules = CoreSettings.get_dvr_series_rules()
+        deleted_rule = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
+        remaining = [r for r in rules if str(r.get("tvg_id")) != tvg_id]
+        CoreSettings.set_dvr_series_rules(remaining)
+
+        # Delete only FUTURE recordings — preserve previously recorded episodes
+        removed = 0
+        if deleted_rule:
+            from .models import Recording
+            qs = Recording.objects.filter(
+                start_time__gte=timezone.now(),
+                custom_properties__program__tvg_id=tvg_id,
+            )
+            title = deleted_rule.get("title")
+            if title:
+                qs = qs.filter(custom_properties__program__title=title)
+            removed = qs.count()
+            qs.delete()
+
+        # Notify frontend to refresh recordings list
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True, "type": "recordings_refreshed", "removed": removed,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True, "rules": remaining, "removed": removed})
 
 
 class EvaluateSeriesRulesAPIView(APIView):

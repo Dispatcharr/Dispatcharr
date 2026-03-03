@@ -33,7 +33,7 @@ import {
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
 
-const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
+const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecording, onEditOccurrence }) => {
   const channels = useChannelsStore((s) => s.channels);
   const recurringRules = useChannelsStore((s) => s.recurringRules);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
@@ -202,7 +202,45 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   if (!rule) {
     return (
       <Modal opened={opened} onClose={onClose} title="Recurring Rule" centered>
-        <Text size="sm">Recurring rule not found.</Text>
+        <Stack gap="md">
+          <Text size="sm">
+            The recurring rule for this recording no longer exists.
+          </Text>
+          {sourceRecording && (
+            <>
+              <Text size="sm" c="dimmed">
+                Would you like to delete this recording?
+              </Text>
+              <Group justify="flex-end">
+                <Button variant="default" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button
+                  color="red"
+                  loading={deleting}
+                  onClick={async () => {
+                    setDeleting(true);
+                    try {
+                      await deleteRecordingById(sourceRecording.id);
+                      notifications.show({
+                        title: 'Recording deleted',
+                        color: 'green',
+                        autoClose: 2500,
+                      });
+                      onClose();
+                    } catch (e) {
+                      console.error('Failed to delete orphaned recording', e);
+                    } finally {
+                      setDeleting(false);
+                    }
+                  }}
+                >
+                  Delete Recording
+                </Button>
+              </Group>
+            </>
+          )}
+        </Stack>
       </Modal>
     );
   }

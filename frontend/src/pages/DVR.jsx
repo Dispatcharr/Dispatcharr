@@ -76,7 +76,7 @@ const DVRPage = () => {
   };
   const closeDetails = () => setDetailsOpen(false);
 
-  const openRuleModal = (recording) => {
+  const openRuleModal = (recording, isDelete) => {
     const ruleId = recording?.custom_properties?.rule?.id;
     if (!ruleId) {
       openDetails(recording);
@@ -85,7 +85,7 @@ const DVRPage = () => {
     setDetailsOpen(false);
     setDetailsRecording(null);
     setEditRecording(null);
-    setRuleModal({ open: true, ruleId });
+    setRuleModal({ open: true, ruleId, recording, isDelete: isDelete || false });
   };
 
   const closeRuleModal = () => setRuleModal({ open: false, ruleId: null });
@@ -285,6 +285,7 @@ const DVRPage = () => {
         opened={ruleModal.open}
         onClose={closeRuleModal}
         ruleId={ruleModal.ruleId}
+        recording={ruleModal.recording}
         onEditOccurrence={(occ) => {
           setRuleModal({ open: false, ruleId: null });
           setEditRecording(occ);
