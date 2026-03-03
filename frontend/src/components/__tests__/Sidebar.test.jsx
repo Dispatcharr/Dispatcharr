@@ -16,6 +16,10 @@ vi.mock('../../utils', () => ({
   copyToClipboard: vi.fn(),
 }));
 
+vi.mock('../NotificationCenter', () => ({
+  default: () => <div data-testid="notification-center">Notification Center</div>,
+}));
+
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
   ListOrdered: ({ onClick }) => <div data-testid="list-ordered-icon" onClick={onClick} />,
@@ -30,6 +34,12 @@ vi.mock('lucide-react', () => ({
   LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
   User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
   FileImage: ({ onClick }) => <div data-testid="file-image-icon" onClick={onClick} />,
+  Webhook: () => <div data-testid="webhook-icon" />,
+  Logs: () => <div data-testid="logs-icon" />,
+  ChevronDown: () => <div data-testid="chevron-down-icon" />,
+  ChevronRight: () => <div data-testid="chevron-right-icon" />,
+  MonitorCog: () => <div data-testid="monitor-cog-icon" />,
+  Blocks: () => <div data-testid="blocks-icon" />,
 }));
 
 // Mock UserForm component
@@ -85,14 +95,11 @@ vi.mock('@mantine/core', async () => {
         {children}
       </nav>
     ),
+    ScrollArea: ({ children }) => <div>{children}</div>,
   };
 });
 
-const mockChannels = {
-  'channel-1': { id: 'channel-1', name: 'Channel 1' },
-  'channel-2': { id: 'channel-2', name: 'Channel 2' },
-  'channel-3': { id: 'channel-3', name: 'Channel 3' },
-};
+const mockChannels = [ 'channel-1', 'channel-2', 'channel-3' ];
 
 const mockEnvironment = {
   public_ip: '192.168.1.1',
@@ -182,7 +189,7 @@ describe('Sidebar', () => {
   });
 
   describe('Navigation Links - Admin User', () => {
-    it('should render all admin navigation items', () => {
+    it('should render all admin navigation items', async () => {
       renderSidebar();
 
       expect(screen.getByText('Channels')).toBeInTheDocument();
@@ -192,9 +199,16 @@ describe('Sidebar', () => {
       expect(screen.getByText('DVR')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
       expect(screen.getByText('Plugins')).toBeInTheDocument();
-      expect(screen.getByText('Users')).toBeInTheDocument();
-      expect(screen.getByText('Logo Manager')).toBeInTheDocument();
-      expect(screen.getByText('Settings')).toBeInTheDocument();
+
+      // Expand System group to access Users
+      const systemButton = screen.getByText('System');
+      fireEvent.click(systemButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Users')).toBeInTheDocument();
+        expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+        expect(screen.getByText('Settings')).toBeInTheDocument();
+      });
     });
 
     it('should display channel count badge', () => {
@@ -450,6 +464,165 @@ describe('Sidebar', () => {
       renderSidebar();
       const flag = screen.getByAltText('US');
       expect(flag).toBeInTheDocument();
+    });
+  });
+
+  describe('NavGroup Component', () => {
+    it('should render Integrations group with children collapsed by default', () => {
+      renderSidebar();
+
+      expect(screen.getByText('Integrations')).toBeInTheDocument();
+      expect(screen.queryByText('Connections')).not.toBeInTheDocument();
+      expect(screen.queryByText('Logs')).not.toBeInTheDocument();
+    });
+
+    it('should expand Integrations group when clicked', async () => {
+      renderSidebar();
+
+      const integrationsGroup = screen.getByText('Integrations').closest('button');
+      fireEvent.click(integrationsGroup);
+
+      await waitFor(() => {
+        expect(screen.getByText('Connections')).toBeInTheDocument();
+        expect(screen.getByText('Logs')).toBeInTheDocument();
+      });
+    });
+
+    it('should collapse Integrations group when clicked again', async () => {
+      renderSidebar();
+
+      const integrationsGroup = screen.getByText('Integrations').closest('button');
+
+      // Expand
+      fireEvent.click(integrationsGroup);
+      await waitFor(() => {
+        expect(screen.getByText('Connections')).toBeInTheDocument();
+      });
+
+      // Collapse
+      fireEvent.click(integrationsGroup);
+      await waitFor(() => {
+        expect(screen.queryByText('Connections')).not.toBeInTheDocument();
+        expect(screen.queryByText('Logs')).not.toBeInTheDocument();
+      });
+    });
+
+    it('should render System group with children collapsed by default', () => {
+      renderSidebar();
+
+      expect(screen.getByText('System')).toBeInTheDocument();
+      expect(screen.queryByText('Users')).not.toBeInTheDocument();
+      expect(screen.queryByText('Logo Manager')).not.toBeInTheDocument();
+    });
+
+    it('should expand System group when clicked', async () => {
+      renderSidebar();
+
+      const systemGroup = screen.getByText('System').closest('button');
+      fireEvent.click(systemGroup);
+
+      await waitFor(() => {
+        expect(screen.getByText('Users')).toBeInTheDocument();
+        expect(screen.getByText('Logo Manager')).toBeInTheDocument();
+        expect(screen.getByText('Settings')).toBeInTheDocument();
+      });
+    });
+
+    it('should hide group label when collapsed sidebar', () => {
+      renderSidebar({ collapsed: true });
+
+      expect(screen.queryByText('Integrations')).not.toBeInTheDocument();
+      expect(screen.queryByText('System')).not.toBeInTheDocument();
+    });
+
+    it('should not show multiple groups collapsed when both expanded', async () => {
+      renderSidebar();
+
+      const integrationsGroup = screen.getByText('Integrations').closest('button');
+      const systemGroup = screen.getByText('System').closest('button');
+
+      // Expand Integrations
+      fireEvent.click(integrationsGroup);
+      await waitFor(() => {
+        expect(screen.getByText('Connections')).toBeInTheDocument();
+      });
+
+      // Expand System (Integrations should remain expanded)
+      fireEvent.click(systemGroup);
+      await waitFor(() => {
+        expect(screen.getByText('Users')).toBeInTheDocument();
+        expect(screen.getByText('Connections')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('NotificationCenter Integration', () => {
+    it('should render NotificationCenter when authenticated and expanded', () => {
+      renderSidebar();
+
+      expect(screen.getByTestId('notification-center')).toBeInTheDocument();
+    });
+
+    it('should render NotificationCenter when authenticated and collapsed', () => {
+      renderSidebar({ collapsed: true });
+
+      expect(screen.getByTestId('notification-center')).toBeInTheDocument();
+    });
+
+    it('should not render NotificationCenter when not authenticated', () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          isAuthenticated: false,
+          user: null,
+          logout: vi.fn(),
+        };
+        return selector(state);
+      });
+
+      renderSidebar();
+
+      expect(screen.queryByTestId('notification-center')).not.toBeInTheDocument();
+    });
+
+    it('should not render NotificationCenter when not authenticated and collapsed', () => {
+      useAuthStore.mockImplementation((selector) => {
+        const state = {
+          isAuthenticated: false,
+          user: null,
+          logout: vi.fn(),
+        };
+        return selector(state);
+      });
+
+      renderSidebar({ collapsed: true });
+
+      expect(screen.queryByTestId('notification-center')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Channel Count Badge', () => {
+    it('should display 0 when no channels exist', () => {
+      useChannelsStore.mockReturnValue({});
+
+      renderSidebar();
+
+      expect(screen.getByText('(0)')).toBeInTheDocument();
+    });
+
+    it('should handle null channelIds gracefully', () => {
+      useChannelsStore.mockReturnValue(null);
+
+      renderSidebar();
+
+      expect(screen.getByText('(0)')).toBeInTheDocument();
+    });
+
+    it('should handle array of channel IDs', () => {
+      useChannelsStore.mockReturnValue(['channel-1', 'channel-2', 'channel-3']);
+
+      renderSidebar();
+
+      expect(screen.getByText('(3)')).toBeInTheDocument();
     });
   });
 });
