@@ -43,13 +43,17 @@ class ProxyServer:
             return inst
         if inst is None:
             cls._instance = cls._INITIALIZING
-            from .server import ProxyServer
-            from .stream_manager import StreamManager
-            from .stream_buffer import StreamBuffer
-            from .client_manager import ClientManager
-            real_instance = ProxyServer()
-            cls._instance = real_instance
-            return real_instance
+            try:
+                from .server import ProxyServer
+                from .stream_manager import StreamManager
+                from .stream_buffer import StreamBuffer
+                from .client_manager import ClientManager
+                real_instance = ProxyServer()
+                cls._instance = real_instance
+                return real_instance
+            except Exception:
+                cls._instance = None  # Reset so next call can retry
+                raise
         # Another greenlet is initializing — wait for completion
         while True:
             inst = cls._instance
@@ -391,20 +395,16 @@ class ProxyServer:
             # Create a lock key with proper namespace
             lock_key = RedisKeys.channel_owner(channel_id)
 
-            # Use Redis SETNX for atomic locking with error handling
+            # Use atomic SET NX EX for locking with error handling
             acquired = self._execute_redis_command(
-                lambda: self.redis_client.setnx(lock_key, self.worker_id)
+                lambda: self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
             )
 
             if acquired is None:  # Redis command failed
                 logger.warning(f"Redis command failed during ownership acquisition - assuming ownership")
                 return True
 
-            # If acquired, set expiry to prevent orphaned locks
             if acquired:
-                self._execute_redis_command(
-                    lambda: self.redis_client.expire(lock_key, ttl)
-                )
                 logger.info(f"Worker {self.worker_id} acquired ownership of channel {channel_id}")
                 return True
 
