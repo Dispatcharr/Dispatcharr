@@ -269,6 +269,19 @@ const ChannelsTable = ({ onReady }) => {
   // store/channelsTable
   const data = useChannelsTableStore((s) => s.channels);
   const pageCount = useChannelsTableStore((s) => s.pageCount);
+
+  const rowClassMap = useMemo(() => {
+    const map = {};
+    for (const channel of data) {
+      const hasStreams = channel.streams?.length > 0;
+      if (!hasStreams) {
+        map[channel.id] = 'no-streams-row';
+      } else if (channel.streams.some((s) => s.is_stale)) {
+        map[channel.id] = 'partially-stale-streams-row';
+      }
+    }
+    return map;
+  }, [data]);
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
@@ -1130,20 +1143,8 @@ const ChannelsTable = ({ onReady }) => {
       epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
-      const hasStreams =
-        row.original.streams && row.original.streams.length > 0;
-      const hasStaleStreams =
-        hasStreams && row.original.streams.some((s) => s.is_stale);
-
-      if (!hasStreams) {
-        return { className: 'no-streams-row' };
-      }
-
-      if (hasStaleStreams) {
-        return { className: 'partially-stale-streams-row' };
-      }
-
-      return {};
+      const cls = rowClassMap[row.original.id];
+      return cls ? { className: cls } : {};
     },
   });
 
