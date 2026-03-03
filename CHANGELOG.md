@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Channel table filter for channels that have stale streams: A new "Has Stale Streams" filter option in the channel table header menu highlights and filters channels containing at least one stale stream. Channels with stale streams are visually distinguished with an orange tint. The filter is mutually exclusive with "Only Empty Channels". - Thanks [@JCBird1012](https://github.com/JCBird1012)
 
+### Fixed
+
+- TS proxy streams dying after 30–200 seconds in multi-worker uWSGI/Celery deployments, caused by three interrelated bugs. (Fixes #992, #980) - Thanks [@PFalko](https://github.com/PFalko)
+  - **Double ProxyServer instantiation**: `ProxyConfig.ready()` called `TSProxyServer()` directly while `TSProxyConfig.ready()` also called `TSProxyServer.get_instance()`, creating two instances per worker — each with its own cleanup thread. The orphaned thread could not extend ownership because it had no entries in `stream_managers`. Fixed by using `TSProxyServer.get_instance()` in `ProxyConfig.ready()`.
+  - **`flushdb()` on every Redis client init**: `RedisClient.get_client()` called `client.flushdb()` whenever `_client` was `None`. Celery autoscale (`--autoscale=6,1`) spawning new workers mid-stream triggered this path, nuking all Redis keys including active ownership keys, client records, and channel metadata. Removed the `flushdb()` call entirely.
+  - **No recovery from expired ownership**: `get_channel_owner()` called `redis.get()` twice inside a lambda (TOCTOU race — key could expire between calls); `extend_ownership()` silently returned `False` on expiry with no re-acquisition; and the non-owner cleanup path unconditionally killed streams even when the worker held the `stream_manager`. Fixed with a single `GET` in `get_channel_owner()`, re-acquisition via atomic `SET NX EX` in `extend_ownership()`, and a re-acquisition attempt with client-aware cleanup deferral in the cleanup thread.
+- `get_instance()` deadlock: if `ProxyServer()` raised an exception during singleton construction, `_instance` was left permanently as the `_INITIALIZING` sentinel, causing all subsequent `get_instance()` callers to spin in an infinite `gevent.sleep()` loop. Construction is now wrapped in `try/except`; on failure `_instance` resets to `None` so the next call can retry.
+- Non-atomic ownership acquisition in `try_acquire_ownership()`: replaced the separate `setnx()` + `expire()` calls with a single atomic `SET NX EX`, eliminating the race window where a process crash between the two calls could leave an ownership key with no TTL (permanent ownership lock).
+
 ## [0.20.2] - 2026-03-03
 
 ### Security
