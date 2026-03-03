@@ -140,14 +140,14 @@ html {
   background-color: color-mix(in srgb, rgb(239, 68, 68) 30%, #27272a) !important;
 }
 
-/* Rows that contain some stale streams (may be mixed with active) */
-.partially-stale-streams-row {
+/* Rows that contain at least 1 stale stream (may be mixed with active) */
+.has-stale-streams-row {
   background-color: rgba(239, 154, 68, 0.15) !important;
   /* orange-500 @ 12% */
   box-shadow: inset 0 0 0 1px rgba(239, 154, 68, 0.3);
 }
 
-.table-striped .tbody .tr.partially-stale-streams-row:hover {
+.table-striped .tbody .tr.has-stale-streams-row:hover {
   background-color: rgba(239, 154, 68, 0.3) !important;
 }
 

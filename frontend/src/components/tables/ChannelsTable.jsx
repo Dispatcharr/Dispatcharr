@@ -277,7 +277,7 @@ const ChannelsTable = ({ onReady }) => {
       if (!hasStreams) {
         map[channel.id] = 'no-streams-row';
       } else if (channel.streams.some((s) => s.is_stale)) {
-        map[channel.id] = 'partially-stale-streams-row';
+        map[channel.id] = 'has-stale-streams-row';
       }
     }
     return map;
