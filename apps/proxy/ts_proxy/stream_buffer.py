@@ -45,6 +45,15 @@ class StreamBuffer:
         self._write_buffer = bytearray()
         self.target_chunk_size = ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)  # ~1MB default
 
+        # Register Lua scripts once — subsequent calls use EVALSHA (just the
+        # SHA hash) instead of sending the full script text on every invocation.
+        if self.redis_client:
+            self._find_oldest_chunk_sha = self.redis_client.register_script(
+                self._FIND_OLDEST_CHUNK_LUA
+            )
+        else:
+            self._find_oldest_chunk_sha = None
+
         # Track timers for proper cleanup
         self.stopping = False
         self.fill_timers = []
@@ -327,6 +336,89 @@ class StreamBuffer:
                 chunk_count += len(more_chunks)  # Fixed: count actual additional chunks retrieved
 
         return chunks, client_index + chunk_count
+
+    # Lua script that runs an atomic binary search on the Redis server.
+    # Chunks expire in FIFO order (same TTL, sequential writes), so the
+    # alive range is contiguous: [oldest_surviving .. buffer_head].
+    # Binary search finds the boundary in O(log N) EXISTS calls with zero
+    # round-trips between steps and no TOCTOU races (Lua scripts are atomic).
+    #
+    # ARGV[1] = key prefix  (e.g. "ts_proxy:channel:<id>:buffer:chunk:")
+    # ARGV[2] = low index   (client_index + 1, first chunk the client needs)
+    # ARGV[3] = high index  (buffer head, most recent chunk)
+    #
+    # Returns: the index of the oldest existing chunk, or -1 if none exist.
+    _FIND_OLDEST_CHUNK_LUA = """
+    local prefix = ARGV[1]
+    local low    = tonumber(ARGV[2])
+    local high   = tonumber(ARGV[3])
+
+    if redis.call('EXISTS', prefix .. high) == 0 then
+        return -1
+    end
+
+    local result = high
+    while low <= high do
+        local mid = math.floor((low + high) / 2)
+        if redis.call('EXISTS', prefix .. mid) == 1 then
+            result = mid
+            high = mid - 1
+        else
+            low = mid + 1
+        end
+    end
+    return result
+    """
+
+    def find_oldest_available_chunk(self, client_index):
+        """Find the oldest (lowest-index) chunk that still exists in Redis.
+
+        Executes an atomic Lua binary search on the Redis server — one
+        round-trip, ~log2(N) EXISTS calls, no TOCTOU between steps.
+
+        The actual read attempt (get_optimized_client_data) is what
+        authoritatively detects expiration; this method is best-effort
+        positioning that self-corrects on the next iteration if the found
+        chunk also expires before the client can read it.
+
+        Args:
+            client_index: The client's current local_index (last consumed chunk).
+
+        Returns:
+            int or None: The local_index value the client should jump to
+                         (one before the first available chunk), or None if no
+                         chunks are available at all.
+        """
+        if not self.redis_client:
+            return None
+
+        low = client_index + 1   # First chunk the client needs
+        high = self.index        # Latest chunk written
+
+        if low > high:
+            return None
+
+        try:
+            # Uses EVALSHA under the hood — sends only the SHA hash,
+            # not the full script text, on every call after the first.
+            result = self._find_oldest_chunk_sha(
+                args=[
+                    RedisKeys.buffer_chunk_prefix(self.channel_id),
+                    low,
+                    high,
+                ],
+            )
+
+            if result == -1:
+                return None
+
+            # Return result - 1 so local_index points to one before the
+            # first available chunk (matching the "last consumed" convention).
+            return int(result) - 1
+
+        except Exception as e:
+            logger.error(f"Error running find_oldest_chunk Lua script for channel {self.channel_id}: {e}")
+            return None
 
     # Add a new method to safely create timers
     def schedule_timer(self, delay, callback, *args, **kwargs):

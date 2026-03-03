@@ -224,17 +224,35 @@ class StreamGenerator:
                 self.empty_reads += 1
                 self.consecutive_empty += 1
 
-                # Check if we're too far behind (chunks expired from Redis)
+                # We got no data despite being behind the buffer head.
+                # The read itself is the authoritative signal — no separate
+                # existence check needed, avoiding TOCTOU races with Redis TTL.
                 chunks_behind = self.buffer.index - self.local_index
-                if chunks_behind > 50:  # If more than 50 chunks behind, jump forward
-                    # Calculate new position: stay a few chunks behind current buffer
-                    initial_behind = ConfigHelper.initial_behind_chunks()
-                    new_index = max(self.local_index, self.buffer.index - initial_behind)
+                if chunks_behind > 0:
+                    # Next chunk has expired — find the oldest chunk still in Redis
+                    new_index = self.buffer.find_oldest_available_chunk(self.local_index)
 
-                    logger.warning(f"[{self.client_id}] Client too far behind ({chunks_behind} chunks), jumping from {self.local_index} to {new_index}")
-                    self.local_index = new_index
-                    self.consecutive_empty = 0  # Reset since we're repositioning
-                    continue  # Try again immediately with new position
+                    if new_index is not None:
+                        skipped = new_index - self.local_index
+                        logger.warning(
+                            f"[{self.client_id}] Next chunk expired (index {self.local_index + 1}), "
+                            f"jumping to oldest available: {new_index + 1} "
+                            f"(skipped {skipped} chunks, buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+                    else:
+                        # No chunks available at all — jump to near the buffer head
+                        initial_behind = ConfigHelper.initial_behind_chunks()
+                        new_index = max(self.local_index, self.buffer.index - initial_behind)
+                        logger.warning(
+                            f"[{self.client_id}] No chunks available in buffer, "
+                            f"jumping to near buffer head: {new_index} "
+                            f"(buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+
+                    self.consecutive_empty = 0
+                    continue  # Retry immediately with the new position
 
                 if self._should_send_keepalive(self.local_index):
                     keepalive_packet = create_ts_packet('keepalive')
