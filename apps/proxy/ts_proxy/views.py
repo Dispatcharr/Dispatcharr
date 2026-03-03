@@ -327,6 +327,7 @@ def stream_ts(request, channel_id):
                 # Release stream lock before redirecting
                 if not channel.release_stream():
                     logger.warning(f"[{client_id}] Failed to release stream before redirect")
+                connection_allocated = False
                 # Final decision based on validation results
                 if is_valid:
                     logger.info(
