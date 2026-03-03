@@ -1404,14 +1404,15 @@ def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_d
     except Exception:
         logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
         tz = timezone.get_current_timezone()
-    start_limit = rule.start_date or now.date()
+    local_today = now.astimezone(tz).date()
+    start_limit = rule.start_date or local_today
     end_limit = rule.end_date
     horizon = now + timedelta(days=horizon_days)
-    start_window = max(start_limit, now.date())
+    start_window = max(start_limit, local_today)
     if drop_existing and end_limit:
         end_window = end_limit
     else:
-        end_window = horizon.date()
+        end_window = horizon.astimezone(tz).date()
         if end_limit and end_limit < end_window:
             end_window = end_limit
     if end_window < start_window:
@@ -1633,6 +1634,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     from .models import Recording, Logo
 
     # --- Idempotency guard (prevents duplicate recordings from task redelivery) ---
+    # Fail closed: if the DB is unreachable, abort rather than risk a duplicate
+    # task overwriting a valid recording.
     try:
         rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
         if not rec_check:
@@ -1648,7 +1651,11 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             )
             return
     except Exception as e:
-        logger.debug(f"Idempotency guard check failed (proceeding anyway): {e}")
+        logger.error(
+            f"Idempotency guard DB check failed for recording {recording_id} "
+            f"({type(e).__name__}: {e}) — aborting to prevent potential duplicate."
+        )
+        return
 
     # --- Clean up the one-off PeriodicTask that dispatched this task ---
     try:
@@ -2114,7 +2121,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     recording_cancelled = not Recording.objects.filter(id=recording_id).exists()
     if recording_cancelled:
         logger.info(f"Recording {recording_id} was cancelled — skipping remux and metadata.")
-        # Clean up any remaining temp or stub output files
+        # Clean up all artifacts for the cancelled recording
         for _cleanup_path in [temp_ts_path, final_path]:
             if not _cleanup_path:
                 continue
@@ -2129,6 +2136,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     # Remux TS to MKV container with retry for transient I/O errors
     remux_success = False
+    existing_mkv_size = 0
+    try:
+        if final_path and os.path.exists(final_path):
+            existing_mkv_size = os.path.getsize(final_path)
+    except OSError:
+        pass
     for _remux_attempt in range(_dvr_remux_max_retries):
         try:
             if temp_ts_path and os.path.exists(temp_ts_path):
@@ -2197,6 +2210,43 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                     else:
                         logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
 
+                # Sanity-check the remuxed file.  Two checks:
+                # 1. If a pre-existing MKV was overwritten, reject a
+                #    file that is drastically smaller (duplicate-task
+                #    overwrite protection).
+                # 2. If the MKV is smaller than the .ts source, the
+                #    remux likely produced a corrupt or truncated file.
+                if remux_success:
+                    try:
+                        new_size = os.path.getsize(final_path)
+                        ts_size = os.path.getsize(temp_ts_path) if temp_ts_path and os.path.exists(temp_ts_path) else 0
+                        reject = False
+                        if existing_mkv_size > 0 and new_size < existing_mkv_size * 0.5:
+                            logger.error(
+                                f"DVR recording {recording_id}: new MKV "
+                                f"({new_size:,} bytes) is less than 50%% of "
+                                f"the previous MKV ({existing_mkv_size:,} bytes) "
+                                f"— refusing to overwrite. Keeping .ts for "
+                                f"manual recovery."
+                            )
+                            reject = True
+                        elif ts_size > 0 and new_size < ts_size * 0.1:
+                            logger.error(
+                                f"DVR recording {recording_id}: remuxed MKV "
+                                f"({new_size:,} bytes) is less than 10%% of "
+                                f"the source TS ({ts_size:,} bytes) — likely "
+                                f"corrupt. Keeping .ts for manual recovery."
+                            )
+                            reject = True
+                        if reject:
+                            remux_success = False
+                            try:
+                                os.remove(final_path)
+                            except OSError:
+                                pass
+                    except OSError:
+                        pass
+
                 # Clean up temp TS file only on successful remux
                 if remux_success:
                     try:
@@ -2234,7 +2284,8 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             else:
                 logger.warning(
                     f"DVR recording {recording_id}: remux failed "
-                    f"after {_dvr_remux_max_retries} attempts: {e}"
+                    f"after {_dvr_remux_max_retries} attempts: {e}. "
+                    f"Keeping .ts for manual recovery: {temp_ts_path}"
                 )
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
