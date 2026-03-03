@@ -48,7 +48,7 @@ export default function M3URefreshNotification() {
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
   const fetchStreams = useStreamsStore((s) => s.fetchStreams);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
-  const fetchChannelIds = useChannelsStore((s) => s.fetchChannelIds);
+  const fetchChannels = useChannelsStore((s) => s.fetchChannels);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const fetchEPGData = useEPGsStore((s) => s.fetchEPGData);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
@@ -149,28 +149,6 @@ export default function M3URefreshNotification() {
 
     if (data.progress == 100) {
       triggerPostCompletionFetches(data.action);
-    }
-
-    if (taskProgress == 0) {
-      message = `${message} starting...`;
-    } else if (taskProgress == 100) {
-      message = `${message} complete!`;
-
-      // Only trigger additional fetches on successful completion
-      if (data.action == 'parsing') {
-        fetchStreams();
-        API.requeryChannels();
-        fetchChannelIds();
-      } else if (data.action == 'processing_groups') {
-        fetchStreams();
-        fetchChannelGroups();
-        fetchEPGData();
-        fetchPlaylists();
-      } else if (data.action == 'vod_refresh') {
-        // VOD refresh completed, trigger VOD categories refresh
-        fetchPlaylists(); // Refresh playlist data to show updated VOD info
-        fetchCategories(); // Refresh VOD categories to make them visible
-      }
     }
 
     showNotification({

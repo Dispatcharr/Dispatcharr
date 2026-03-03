@@ -84,18 +84,16 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
     .includes(location.pathname);
 
   return (
-    <Box
-      style={{ width: '100%', paddingRight: 2 }}
+    <Box w='100%' pr={2}
       className={open ? 'navgroup-open' : ''}
     >
-      <UnstyledButton
+      <UnstyledButton w='100%'
         onClick={() => setOpen((o) => !o)}
         className={`navlink ${parentActive ? 'navlink-parent-active' : ''} ${open ? 'navlink-collapsed' : ''}`}
-        style={{ width: '100%' }}
       >
         {icon}
         {!collapsed && (
-          <Group justify="space-between" style={{ width: '100%' }}>
+          <Group justify="space-between" w='100%'>
             <Text
               sx={{
                 opacity: open ? 0 : 1,
@@ -109,7 +107,7 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
               {label}
             </Text>
 
-            <Box alignItems="center" style={{ display: 'flex' }}>
+            <Box alignItems="center" display='flex'>
               {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </Box>
           </Group>
@@ -117,13 +115,13 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
       </UnstyledButton>
 
       {open && (
-        <Box style={{ paddingTop: 10 }}>
+        <Box pt={10}>
           <Stack gap="xs" pl={open ? 0 : 'lg'}>
             {paths.map((child) => {
               const active = location.pathname === child.path;
               return (
                 <Box
-                  style={{ paddingLeft: collapsed ? 0 : 35 }}
+                  pl={collapsed ? 0 : 35}
                   key={child.path}
                 >
                   <NavLink
@@ -251,9 +249,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       p="xs"
       mih="100vh"
       display='flex'
+      br='1px solid #2A2A2E'
       style={{
         backgroundColor: '#1A1A1E',
-        borderRight: '1px solid #2A2A2E',
         flexDirection: 'column',
       }}
     >
@@ -297,9 +295,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         <Stack
           gap="xs"
           mt="lg"
+          flex={1}
+          mih={0}
           style={{
-            flex: 1,
-            minHeight: 0,
             overflowY: 'auto',
             overflowX: 'hidden',
           }}
@@ -337,10 +335,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
         mt='auto'
         p={16}
         display='flex'
+        bt='1px solid #2A2A2E'
         style={{
           alignItems: 'center',
           gap: 10,
-          borderTop: '1px solid #2A2A2E',
           justifyContent: collapsed ? 'center' : 'flex-start',
         }}
       >
@@ -378,7 +376,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             {!collapsed && authUser && (
               <Group
                 gap="xs"
-                style={{ justifyContent: 'space-between', width: '100%' }}
+                w='100%'
+                style={{ justifyContent: 'space-between' }}
               >
                 <Group gap="xs">
                   <Avatar src="" radius="xl" />
@@ -404,7 +403,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       {!collapsed && (
         <Group
           gap="xs"
-          style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
+          p={'0 16px 16px'}
+          style={{ justifyContent: 'space-between' }}
         >
           <Text size="xs" c="dimmed">
             v{appVersion?.version || '0.0.0'}
@@ -415,9 +415,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       )}
       {collapsed && isAuthenticated && (
         <Box
+          p={'0 16px 16px'}
+          display='flex'
           style={{
-            padding: '0 16px 16px',
-            display: 'flex',
             justifyContent: 'center',
           }}
         >

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ActionIcon,
@@ -10,7 +10,9 @@ import {
   Group,
   Indicator,
   Popover,
-  ScrollArea,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollAreaAutosize,
   Stack,
   Text,
   ThemeIcon,
@@ -18,22 +20,26 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import {
+  AlertTriangle,
+  ArrowRight,
   Bell,
   Check,
   CheckCheck,
   Download,
   ExternalLink,
-  Info,
-  Settings,
-  AlertTriangle,
-  Megaphone,
-  X,
   Eye,
   EyeOff,
-  ArrowRight,
+  Info,
+  Megaphone,
+  Settings,
+  X,
 } from 'lucide-react';
 import useNotificationsStore from '../store/notifications';
-import API from '../api';
+import {
+  dismissAllNotifications,
+  dismissNotification,
+  getNotifications,
+} from '../utils/components/NotificationCenterUtils.js';
 
 // Get icon for notification type
 const getNotificationIcon = (type) => {
@@ -139,7 +145,9 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
             color="gray"
             size="sm"
             onClick={handleDismiss}
-            style={{ position: 'absolute', top: 8, right: 8 }}
+            pos='absolute'
+            top={8}
+            right={8}
           >
             <X size={14} />
           </ActionIcon>
@@ -149,7 +157,7 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
         <ThemeIcon color={typeColor} variant="light" size="md" radius="xl">
           {getNotificationIcon(notification.notification_type)}
         </ThemeIcon>
-        <Box style={{ flex: 1 }}>
+        <Box flex={1}>
           <Group gap="xs" mb={4}>
             <Text size="sm" fw={600} lineClamp={1}>
               {notification.title}
@@ -249,7 +257,7 @@ const NotificationCenter = ({ onSettingAction }) => {
   // Fetch notifications on mount and periodically
   const fetchNotifications = useCallback(async () => {
     try {
-      await API.getNotifications(showDismissed);
+      await getNotifications(showDismissed);
     } catch (error) {
       console.error('Failed to fetch notifications:', error);
     }
@@ -265,7 +273,7 @@ const NotificationCenter = ({ onSettingAction }) => {
 
   const handleDismiss = async (notificationId, actionTaken = null) => {
     try {
-      await API.dismissNotification(notificationId, actionTaken);
+      await dismissNotification(notificationId, actionTaken);
     } catch (error) {
       console.error('Failed to dismiss notification:', error);
     }
@@ -273,7 +281,7 @@ const NotificationCenter = ({ onSettingAction }) => {
 
   const handleDismissAll = async () => {
     try {
-      await API.dismissAllNotifications();
+      await dismissAllNotifications();
     } catch (error) {
       console.error('Failed to dismiss all notifications:', error);
     }
@@ -302,7 +310,7 @@ const NotificationCenter = ({ onSettingAction }) => {
       shadow="lg"
       withArrow
     >
-      <Popover.Target>
+      <PopoverTarget>
         <Indicator
           color="red"
           size={16}
@@ -321,9 +329,9 @@ const NotificationCenter = ({ onSettingAction }) => {
             <Bell size={20} />
           </ActionIcon>
         </Indicator>
-      </Popover.Target>
+      </PopoverTarget>
 
-      <Popover.Dropdown p={0}>
+      <PopoverDropdown p={0}>
         {/* Header */}
         <Group justify="space-between" p="sm" pb="xs">
           <Group gap="xs">
@@ -367,7 +375,7 @@ const NotificationCenter = ({ onSettingAction }) => {
         <Divider />
 
         {/* Notification list */}
-        <ScrollArea.Autosize mah={400} type="auto" offsetScrollbars>
+        <ScrollAreaAutosize mah={400} type="auto" offsetScrollbars>
           {displayedNotifications.length === 0 ? (
             <Box p="lg" ta="center">
               <ThemeIcon
@@ -403,7 +411,7 @@ const NotificationCenter = ({ onSettingAction }) => {
               ))}
             </Stack>
           )}
-        </ScrollArea.Autosize>
+        </ScrollAreaAutosize>
 
         {/* Footer with info text */}
         {!showDismissed &&
@@ -421,7 +429,7 @@ const NotificationCenter = ({ onSettingAction }) => {
               </Box>
             </>
           )}
-      </Popover.Dropdown>
+      </PopoverDropdown>
     </Popover>
   );
 };
