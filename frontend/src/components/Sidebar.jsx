@@ -86,6 +86,7 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
   return (
     <Box
       style={{ width: '100%', paddingRight: 2 }}
+      className={open ? 'navgroup-open' : ''}
     >
       <UnstyledButton
         onClick={() => setOpen((o) => !o)}
@@ -377,6 +378,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
             {!collapsed && authUser && (
               <Group
+                gap="xs"
                 style={{ justifyContent: 'space-between', width: '100%' }}
               >
                 <Group gap="xs">
@@ -402,6 +404,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       {/* Version and Notification */}
       {!collapsed && (
         <Group
+          gap="xs"
           style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
         >
           <Text size="xs" c="dimmed">
