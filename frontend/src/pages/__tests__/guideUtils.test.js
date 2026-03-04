@@ -705,6 +705,32 @@ describe('guideUtils', () => {
 
       expect(result.size).toBe(0);
     });
+
+    it('should include completed and stopped recordings', () => {
+      const recordings = [
+        { id: 1, custom_properties: { program: { id: 'p1' }, status: 'completed' } },
+        { id: 2, custom_properties: { program: { id: 'p2' }, status: 'stopped' } },
+      ];
+
+      const result = guideUtils.mapRecordingsByProgramId(recordings);
+
+      expect(result.size).toBe(2);
+      expect(result.get('p1').id).toBe(1);
+      expect(result.get('p2').id).toBe(2);
+    });
+
+    it('should exclude interrupted and failed recordings', () => {
+      const recordings = [
+        { id: 1, custom_properties: { program: { id: 'p1' }, status: 'interrupted' } },
+        { id: 2, custom_properties: { program: { id: 'p2' }, status: 'failed' } },
+        { id: 3, custom_properties: { program: { id: 'p3' }, status: 'recording' } },
+      ];
+
+      const result = guideUtils.mapRecordingsByProgramId(recordings);
+
+      expect(result.size).toBe(1);
+      expect(result.get('p3').id).toBe(3);
+    });
   });
 
   describe('formatTime', () => {
