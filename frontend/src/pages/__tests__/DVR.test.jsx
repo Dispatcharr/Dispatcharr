@@ -33,10 +33,35 @@ vi.mock('../../api');
 
 // Mock Mantine components
 vi.mock('@mantine/core', () => ({
+  ActionIcon: ({ children, onClick }) => (
+    <button data-testid="action-icon" onClick={onClick}>{children}</button>
+  ),
   Box: ({ children }) => <div data-testid="box">{children}</div>,
   Container: ({ children }) => <div data-testid="container">{children}</div>,
+  Flex: ({ children }) => <div data-testid="flex">{children}</div>,
   Title: ({ children, order }) => <h1 data-order={order}>{children}</h1>,
   Text: ({ children }) => <p>{children}</p>,
+  TextInput: ({ placeholder, value, onChange, ...props }) => (
+    <input
+      data-testid="text-input"
+      placeholder={placeholder}
+      value={value}
+      onChange={onChange}
+    />
+  ),
+  Select: ({ placeholder, data, value, onChange, ...props }) => (
+    <select
+      data-testid="select"
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value || null)}
+      aria-label={placeholder}
+    >
+      <option value="">{placeholder}</option>
+      {(data || []).map((opt) => (
+        <option key={opt.value} value={opt.value}>{opt.label}</option>
+      ))}
+    </select>
+  ),
   Button: ({ children, onClick, leftSection, loading, ...props }) => (
     <button onClick={onClick} disabled={loading} {...props}>
       {leftSection}

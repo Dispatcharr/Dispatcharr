@@ -49,7 +49,6 @@ from .serializers import (
 )
 from .tasks import (
     match_epg_channels,
-    evaluate_series_rules,
     evaluate_series_rules_impl,
     match_single_channel_epg,
     match_selected_channels_epg,
@@ -2846,11 +2845,9 @@ class SeriesRulesAPIView(APIView):
         else:
             rules.append({"tvg_id": tvg_id, "mode": mode, "title": title})
         CoreSettings.set_dvr_series_rules(rules)
-        # Evaluate immediately for this tvg_id (async)
-        try:
-            evaluate_series_rules.delay(tvg_id)
-        except Exception:
-            pass
+        # Note: frontend calls the evaluate endpoint explicitly after creating
+        # the rule, so do NOT fire evaluate_series_rules.delay() here to
+        # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
 
 

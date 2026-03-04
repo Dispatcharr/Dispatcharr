@@ -276,6 +276,43 @@ class SignalIntegrationTests(TestCase):
         )
 
     @patch("apps.channels.signals.prefetch_recording_artwork")
+    def test_post_save_schedules_currently_playing_recording(self, mock_artwork):
+        """A recording with past start_time but future end_time schedules immediately."""
+        mock_artwork.apply_async.return_value = MagicMock()
+
+        past_start = timezone.now() - timedelta(minutes=30)
+        future_end = timezone.now() + timedelta(minutes=30)
+        rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=past_start,
+            end_time=future_end,
+        )
+
+        rec.refresh_from_db()
+        task_name = f"dvr-recording-{rec.id}"
+        self.assertEqual(rec.task_id, task_name)
+        self.assertTrue(PeriodicTask.objects.filter(name=task_name).exists())
+
+    @patch("apps.channels.signals.prefetch_recording_artwork")
+    def test_post_save_skips_fully_past_recording(self, mock_artwork):
+        """A recording with both start_time and end_time in the past is not scheduled."""
+        mock_artwork.apply_async.return_value = MagicMock()
+
+        past_start = timezone.now() - timedelta(hours=2)
+        past_end = timezone.now() - timedelta(hours=1)
+        rec = Recording.objects.create(
+            channel=self.channel,
+            start_time=past_start,
+            end_time=past_end,
+        )
+
+        rec.refresh_from_db()
+        self.assertIsNone(rec.task_id)
+        self.assertFalse(
+            PeriodicTask.objects.filter(name=f"dvr-recording-{rec.id}").exists()
+        )
+
+    @patch("apps.channels.signals.prefetch_recording_artwork")
     def test_pre_save_revokes_on_time_change(self, mock_artwork):
         """Changing a recording's start_time revokes the old task and creates a new one."""
         mock_artwork.apply_async.return_value = MagicMock()

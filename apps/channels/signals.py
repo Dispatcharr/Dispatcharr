@@ -191,28 +191,30 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
 
         if not instance.task_id:
             start_time = instance.start_time
+            end_time = instance.end_time
 
-            # Make both datetimes aware (in UTC)
+            # Make datetimes aware (in UTC)
             if not is_aware(start_time):
-                print("Start time was not aware, making aware")
                 start_time = make_aware(start_time)
+            if end_time and not is_aware(end_time):
+                end_time = make_aware(end_time)
 
             current_time = now()
 
-            # Debug log
-            print(f"Start time: {start_time}, Now: {current_time}")
-
-            # Optionally allow slight fudge factor (1 second) to ensure scheduling happens
             if start_time > current_time - timedelta(seconds=1):
-                print("Scheduling recording task!")
-                # Pass the corrected, timezone-aware start_time explicitly so
-                # schedule_recording_task uses it as the Celery ETA rather than
-                # re-reading instance.start_time which may still be naive.
+                # Future recording — schedule at start_time
+                logger.info(f"Recording {instance.id}: scheduling task at {start_time}")
                 task_id = schedule_recording_task(instance, eta=start_time)
                 instance.task_id = task_id
                 instance.save(update_fields=['task_id'])
+            elif end_time and end_time > current_time:
+                # Currently-playing — start immediately (e.g. series rule for in-progress program)
+                logger.info(f"Recording {instance.id}: start_time in past but end_time still future, scheduling immediately")
+                task_id = schedule_recording_task(instance, eta=current_time)
+                instance.task_id = task_id
+                instance.save(update_fields=['task_id'])
             else:
-                print("Start time is in the past. Not scheduling.")
+                logger.info(f"Recording {instance.id}: start_time and end_time both in past, not scheduling")
         # Kick off poster/artwork prefetch to enrich Upcoming cards.
         # Skip when the recording is already active or finished — run_recording
         # handles its own poster resolution, and scheduling artwork prefetch

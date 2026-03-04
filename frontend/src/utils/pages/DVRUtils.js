@@ -88,3 +88,55 @@ export const categorizeRecordings = (recordings, toUserTime, now) => {
     completed,
   };
 };
+
+export const filterRecordings = (recordings, searchQuery, selectedChannelId) => {
+  return recordings.filter((rec) => {
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const cp = rec.custom_properties || {};
+      const program = cp.program || {};
+      const title = (program.title || '').toLowerCase();
+      const subTitle = (program.sub_title || '').toLowerCase();
+      const description = (program.description || cp.description || '').toLowerCase();
+
+      if (!title.includes(q) && !subTitle.includes(q) && !description.includes(q)) {
+        return false;
+      }
+    }
+
+    if (selectedChannelId) {
+      if (String(rec.channel) !== String(selectedChannelId)) return false;
+    }
+
+    return true;
+  });
+};
+
+export const buildChannelOptions = (channelsById, ...buckets) => {
+  const channelIds = new Set();
+  for (const bucket of buckets) {
+    for (const rec of bucket) {
+      if (rec.channel != null) channelIds.add(rec.channel);
+    }
+  }
+
+  const options = [];
+  for (const id of channelIds) {
+    const ch = channelsById[id];
+    if (ch) {
+      options.push({
+        value: String(ch.id),
+        label: ch.channel_number ? `${ch.channel_number} - ${ch.name}` : ch.name,
+      });
+    }
+  }
+
+  options.sort((a, b) => {
+    const aNum = parseInt(a.label, 10);
+    const bNum = parseInt(b.label, 10);
+    if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+    return a.label.localeCompare(b.label);
+  });
+
+  return options;
+};
