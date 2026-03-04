@@ -1,6 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { Badge, Box, Button, Flex, Group, Image, Loader, Modal, Select, Stack, Text, Title, } from '@mantine/core';
-import { Copy, Play } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Button,
+  Flex,
+  Group,
+  Image,
+  Text,
+  Title,
+  Select,
+  Badge,
+  Loader,
+  Stack,
+  Modal,
+} from '@mantine/core';
+import { Play, Copy } from 'lucide-react';
 import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
@@ -327,7 +340,7 @@ const VODModal = ({ vod, opened, onClose }) => {
         size="xl"
         centered
       >
-        <Box pos="relative" mih={400}>
+        <Box style={{ position: 'relative', minHeight: 400 }}>
           {/* Backdrop image as background */}
           {displayVOD.backdrop_path && displayVOD.backdrop_path.length > 0 && (
             <>
@@ -335,41 +348,41 @@ const VODModal = ({ vod, opened, onClose }) => {
                 src={displayVOD.backdrop_path[0]}
                 alt={`${displayVOD.name} backdrop`}
                 fit="cover"
-                pos="absolute"
-                top={0}
-                left={0}
-                w="100%"
-                h="100%"
-                bdrs={8}
                 style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
                   objectFit: 'cover',
                   zIndex: 0,
+                  borderRadius: 8,
                   filter: 'blur(2px) brightness(0.5)',
                 }}
               />
               {/* Overlay for readability */}
               <Box
-                pos="absolute"
-                top={0}
-                left={0}
-                w="100%"
-                h="100%"
-                bdrs={8}
                 style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
                   background:
                     'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
                   zIndex: 1,
+                  borderRadius: 8,
                 }}
               />
             </>
           )}
           {/* Modal content above backdrop */}
-          <Box pos="relative" style={{ zIndex: 2 }}>
+          <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack spacing="md">
               {loadingDetails && (
                 <Group spacing="xs" mb={8}>
                   <Loader size="xs" />
-                  <Text size="xs" c="dimmed">
+                  <Text size="xs" color="dimmed">
                     Loading additional details...
                   </Text>
                 </Group>
@@ -386,19 +399,19 @@ const VODModal = ({ vod, opened, onClose }) => {
                       height={300}
                       alt={displayVOD.name}
                       fit="contain"
-                      bdrs={8}
+                      style={{ borderRadius: '8px' }}
                     />
                   </Box>
                 ) : (
                   <Box
-                    w={200}
-                    h={300}
-                    display="flex"
-                    bdrs={8}
                     style={{
+                      width: 200,
+                      height: 300,
                       backgroundColor: '#404040',
+                      display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
+                      borderRadius: '8px',
                       flexShrink: 0,
                     }}
                   >
@@ -419,10 +432,12 @@ const VODModal = ({ vod, opened, onClose }) => {
               <Group spacing="md" align="flex-end" mt="md">
                 {/* Provider Selection */}
                 {providers.length > 0 && (
-                  <Box miw={200}>
+                  <Box style={{ minWidth: 200 }}>
                     <Text size="sm" weight={500} mb={8}>
                       Stream Selection
-                      {loadingProviders && <Loader size="xs" ml={8} />}
+                      {loadingProviders && (
+                        <Loader size="xs" style={{ marginLeft: 8 }} />
+                      )}
                     </Text>
                     {providers.length === 1 ? (
                       <Group spacing="md">
@@ -439,7 +454,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                         value={selectedProvider?.id?.toString() || ''}
                         onChange={(value) => onChangeSelectedProvider(value)}
                         placeholder="Select stream..."
-                        miw={250}
+                        style={{ minWidth: 250 }}
                         disabled={loadingProviders}
                       />
                     )}

@@ -57,12 +57,16 @@ export default function M3URefreshNotification() {
 
   const handleM3UUpdate = (data) => {
     // Skip if status hasn't changed
-    if (JSON.stringify(notificationStatus[data.account]) == JSON.stringify(data)) {
+    if (
+      JSON.stringify(notificationStatus[data.account]) == JSON.stringify(data)
+    ) {
       return;
     }
 
     const playlist = playlists.find((pl) => pl.id == data.account);
-    if (!playlist) return;
+    if (!playlist) {
+      return;
+    }
 
     // Update notification status
     setNotificationStatus(prev => ({
@@ -82,7 +86,8 @@ export default function M3URefreshNotification() {
     }
 
     // Skip if already errored
-    if (notificationStatus[data.account]?.status === 'error') {
+    const currentStatus = notificationStatus[data.account];
+    if (currentStatus && currentStatus.status === 'error') {
       return;
     }
 

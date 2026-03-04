@@ -1,9 +1,9 @@
 // frontend/src/components/FloatingVideo.js
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import mpegts from 'mpegts.js';
-import {Box, CloseButton, Flex, Loader, Text} from '@mantine/core';
+import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
 import {
   applyConstraints,
   calculateNewDimensions,
@@ -644,15 +644,20 @@ export default function FloatingVideo() {
         }}
       >
         {/* Simple header row with a close button */}
-        <Flex justify="flex-end" p={3}>
+        <Flex
+          justify="flex-end"
+          style={{
+            padding: 3,
+          }}
+        >
           <CloseButton
             onClick={handleClose}
             onTouchEnd={handleClose}
             onMouseDown={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
-            mih={32}
-            miw={32}
             style={{
+              minHeight: '32px',
+              minWidth: '32px',
               cursor: 'pointer',
               touchAction: 'manipulation',
             }}
@@ -661,7 +666,7 @@ export default function FloatingVideo() {
 
         {/* Video container with relative positioning for the overlay */}
         <Box
-          pos="relative"
+          style={{ position: 'relative' }}
           onMouseEnter={() => {
             if (contentType === 'vod' && !isLoading) {
               setShowOverlay(true);
@@ -701,17 +706,17 @@ export default function FloatingVideo() {
           {/* VOD title overlay when not loading - auto-hides after 4 seconds */}
           {!isLoading && metadata && contentType === 'vod' && showOverlay && (
             <Box
-              pos="absolute"
-              top={0}
-              left={0}
-              right={0}
-              p={'10px 10px 20px'}
-              color={'white'}
-              opacity={showOverlay ? 1 : 0}
               style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
                 background: 'linear-gradient(rgba(0,0,0,0.8), transparent)',
+                padding: '10px 10px 20px',
+                color: 'white',
                 pointerEvents: 'none', // Allow clicks to pass through to video controls
                 transition: 'opacity 0.3s ease-in-out',
+                opacity: showOverlay ? 1 : 0,
               }}
             >
               <Text
@@ -724,7 +729,7 @@ export default function FloatingVideo() {
               {metadata.year && (
                 <Text
                   size="xs"
-                  c="dimmed"
+                  color="dimmed"
                   style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8)' }}
                 >
                   {metadata.year}
@@ -736,14 +741,14 @@ export default function FloatingVideo() {
           {/* Loading overlay - only show when loading */}
           {isLoading && (
             <Box
-              pos="absolute"
-              top={0}
-              left={0}
-              w={'100%'}
-              h={'100%'}
-              display="flex"
               style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
                 backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -751,7 +756,7 @@ export default function FloatingVideo() {
               }}
             >
               <Loader color="cyan" size="md" />
-              <Text c="white" size="sm" mt={10}>
+              <Text color="white" size="sm" mt={10}>
                 Loading {contentType === 'vod' ? 'video' : 'stream'}...
               </Text>
             </Box>
@@ -761,13 +766,13 @@ export default function FloatingVideo() {
         {/* Error message below video - doesn't block controls */}
         {!isLoading && loadError && (
           <Box
-            p={10}
             style={{
+              padding: '10px',
               backgroundColor: '#2d1b2e',
               borderTop: '1px solid #444',
             }}
           >
-            <Text c="red" size="xs" ta="center">
+            <Text color="red" size="xs" style={{ textAlign: 'center' }}>
               {loadError}
             </Text>
           </Box>

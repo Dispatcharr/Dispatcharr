@@ -1,31 +1,31 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  ActionIcon,
-  Badge,
   Box,
   Button,
-  Divider,
   Flex,
   Group,
   Image,
-  Loader,
-  Modal,
+  Text,
+  Title,
   Select,
+  Badge,
+  Loader,
   Stack,
+  ActionIcon,
+  Modal,
+  Tabs,
   Table,
+  Divider,
   TableTbody,
   TableTd,
   TableTh,
   TableThead,
   TableTr,
-  Tabs,
   TabsList,
   TabsPanel,
   TabsTab,
-  Text,
-  Title,
 } from '@mantine/core';
-import { Copy, Play } from 'lucide-react';
+import { Play, Copy } from 'lucide-react';
 import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
@@ -486,7 +486,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
         size="xl"
         centered
       >
-        <Box pos="relative" mih={400}>
+        <Box style={{ position: 'relative', minHeight: 400 }}>
           {/* Backdrop image as background */}
           {displaySeries.backdrop_path &&
             displaySeries.backdrop_path.length > 0 && (
@@ -495,42 +495,42 @@ const SeriesModal = ({ series, opened, onClose }) => {
                   src={displaySeries.backdrop_path[0]}
                   alt={`${displaySeries.name} backdrop`}
                   fit="cover"
-                  pos="absolute"
-                  top={0}
-                  left={0}
-                  w={'100%'}
-                  h={'100%'}
-                  bdrs={8}
                   style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
                     objectFit: 'cover',
                     zIndex: 0,
+                    borderRadius: 8,
                     filter: 'blur(2px) brightness(0.5)',
                   }}
                 />
                 {/* Overlay for readability */}
                 <Box
-                  pos="absolute"
-                  top={0}
-                  left={0}
-                  w={'100%'}
-                  h={'100%'}
-                  bdrs={8}
                   style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
                     background:
                       'linear-gradient(180deg, rgba(24,24,27,0.85) 60%, rgba(24,24,27,1) 100%)',
                     zIndex: 1,
+                    borderRadius: 8,
                   }}
                 />
               </>
             )}
 
           {/* Modal content above backdrop */}
-          <Box pos="relative" style={{ zIndex: 2 }}>
+          <Box style={{ position: 'relative', zIndex: 2 }}>
             <Stack spacing="md">
               {loadingDetails && (
                 <Group spacing="xs" mb={8}>
                   <Loader size="xs" />
-                  <Text size="xs" c="dimmed">
+                  <Text size="xs" color="dimmed">
                     Loading series details and episodes...
                   </Text>
                 </Group>
@@ -546,7 +546,9 @@ const SeriesModal = ({ series, opened, onClose }) => {
               <Box mt="md">
                 <Text size="sm" weight={500} mb={4}>
                   Stream Selection
-                  {loadingProviders && <Loader size="xs" ml={8} />}
+                  {loadingProviders && (
+                    <Loader size="xs" style={{ marginLeft: 8 }} />
+                  )}
                 </Text>
                 {providers.length === 0 &&
                 !loadingProviders &&
@@ -576,7 +578,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                     value={selectedProvider?.id?.toString() || ''}
                     onChange={(value) => onChangeSelectedProvider(value)}
                     placeholder="Select stream..."
-                    maw={350}
+                    style={{ maxWidth: 350 }}
                     disabled={loadingProviders}
                   />
                 ) : null}
@@ -608,11 +610,11 @@ const SeriesModal = ({ series, opened, onClose }) => {
                       <Table striped highlightOnHover>
                         <TableThead>
                           <TableTr>
-                            <TableTh w={60}>Ep</TableTh>
+                            <TableTh style={{ width: '60px' }}>Ep</TableTh>
                             <TableTh>Title</TableTh>
-                            <TableTh w={80}>Duration</TableTh>
-                            <TableTh w={60}>Date</TableTh>
-                            <TableTh w={80}>Action</TableTh>
+                            <TableTh style={{ width: '80px' }}>Duration</TableTh>
+                            <TableTh style={{ width: '60px' }}>Date</TableTh>
+                            <TableTh style={{ width: '80px' }}>Action</TableTh>
                           </TableTr>
                         </TableThead>
                         <TableTbody>
@@ -633,19 +635,19 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                       {episode.name}
                                     </Text>
                                     {episode.genre && (
-                                      <Text size="xs" c="dimmed">
+                                      <Text size="xs" color="dimmed">
                                         {episode.genre}
                                       </Text>
                                     )}
                                   </Stack>
                                 </TableTd>
                                 <TableTd>
-                                  <Text size="xs" c="dimmed">
+                                  <Text size="xs" color="dimmed">
                                     {formatDuration(episode.duration_secs)}
                                   </Text>
                                 </TableTd>
                                 <TableTd>
-                                  <Text size="xs" c="dimmed">
+                                  <Text size="xs" color="dimmed">
                                     {getEpisodeAirdate(episode)}
                                   </Text>
                                 </TableTd>
@@ -704,7 +706,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                   ))}
                 </Tabs>
               ) : (
-                <Text c="dimmed" align="center" py="xl">
+                <Text color="dimmed" align="center" py="xl">
                   No episodes found for this series.
                 </Text>
               )}

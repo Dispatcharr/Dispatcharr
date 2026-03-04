@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ActionIcon,
@@ -20,19 +20,19 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import {
-  AlertTriangle,
-  ArrowRight,
   Bell,
   Check,
   CheckCheck,
   Download,
   ExternalLink,
+  Info,
+  Settings,
+  AlertTriangle,
+  Megaphone,
+  X,
   Eye,
   EyeOff,
-  Info,
-  Megaphone,
-  Settings,
-  X,
+  ArrowRight,
 } from 'lucide-react';
 import useNotificationsStore from '../store/notifications';
 import {
@@ -145,9 +145,7 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
             color="gray"
             size="sm"
             onClick={handleDismiss}
-            pos='absolute'
-            top={8}
-            right={8}
+            style={{ position: 'absolute', top: 8, right: 8 }}
           >
             <X size={14} />
           </ActionIcon>
@@ -157,7 +155,7 @@ const NotificationItem = ({ notification, onDismiss, onAction, onClose }) => {
         <ThemeIcon color={typeColor} variant="light" size="md" radius="xl">
           {getNotificationIcon(notification.notification_type)}
         </ThemeIcon>
-        <Box flex={1}>
+        <Box style={{ flex: 1 }}>
           <Group gap="xs" mb={4}>
             <Text size="sm" fw={600} lineClamp={1}>
               {notification.title}

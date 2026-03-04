@@ -171,17 +171,16 @@ const SystemEvents = () => {
   const [events, setEvents] = useState([]);
   const [totalEvents, setTotalEvents] = useState(0);
   const [isExpanded, setIsExpanded] = useState(false);
+  const { ref: cardRef, width: cardWidth } = useElementSize();
+  const isNarrow = cardWidth < 650;
   const [isLoading, setIsLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
 
   const [eventsRefreshInterval, setEventsRefreshInterval] = useLocalStorage(
     'events-refresh-interval',
     0
   );
   const [eventsLimit, setEventsLimit] = useLocalStorage('events-limit', 100);
-
-  const { ref: cardRef, width: cardWidth } = useElementSize();
-  const isNarrow = cardWidth < 650;
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Calculate offset based on current page and limit
   const offset = (currentPage - 1) * eventsLimit;
@@ -225,13 +224,13 @@ const SystemEvents = () => {
       padding="sm"
       radius="md"
       withBorder
-      color="#fff"
-      w={'100%'}
-      maw={isExpanded ? '100%' : 800}
-      ml="auto"
-      mr="auto"
       style={{
+        color: '#fff',
         backgroundColor: '#27272A',
+        width: '100%',
+        maxWidth: isExpanded ? '100%' : '800px',
+        marginLeft: 'auto',
+        marginRight: 'auto',
         transition: 'max-width 0.3s ease',
       }}
     >
@@ -251,7 +250,7 @@ const SystemEvents = () => {
                 min={10}
                 max={1000}
                 step={10}
-                w={130}
+                style={{ width: 130 }}
               />
               <Select
                 size="xs"
@@ -265,14 +264,14 @@ const SystemEvents = () => {
                   { value: '30', label: '30s' },
                   { value: '60', label: '1m' },
                 ]}
-                w={120}
+                style={{ width: 120 }}
               />
               <Button
                 size="xs"
                 variant="subtle"
                 onClick={fetchEvents}
                 loading={isLoading}
-                mt="auto"
+                style={{ marginTop: 'auto' }}
               >
                 Refresh
               </Button>
@@ -312,8 +311,8 @@ const SystemEvents = () => {
           <Stack
             gap="xs"
             mt="sm"
-            mah="60vh"
             style={{
+              maxHeight: '60vh',
               overflowY: 'auto',
             }}
           >
