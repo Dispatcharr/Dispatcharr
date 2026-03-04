@@ -214,15 +214,15 @@ export const mapChannelsById = (guideChannels) => {
   return map;
 };
 
-const _excludedStatuses = new Set(['interrupted', 'failed']);
+const _terminalStatuses = new Set(['stopped', 'completed', 'interrupted', 'failed']);
 
 export const mapRecordingsByProgramId = (recordings) => {
   const map = new Map();
   (recordings || []).forEach((recording) => {
     const programId = recording?.custom_properties?.program?.id;
     const status = recording?.custom_properties?.status;
-    // Show indicator for all recordings except interrupted/failed
-    if (programId != null && !_excludedStatuses.has(status)) {
+    // Only show indicator for pending/active recordings, not terminal ones
+    if (programId != null && !_terminalStatuses.has(status)) {
       map.set(programId, recording);
     }
   });
