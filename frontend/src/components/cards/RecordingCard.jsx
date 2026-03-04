@@ -350,11 +350,6 @@ const RecordingCard = ({
                   Recurring
                 </Badge>
               )}
-              {seLabel && !isSeriesGroup && (
-                <Badge color="gray" variant="light">
-                  {seLabel}
-                </Badge>
-              )}
             </Group>
           </Stack>
         </Group>
@@ -420,13 +415,23 @@ const RecordingCard = ({
           fallbackSrc={getChannelLogoUrl(channel) || defaultLogo}
         />
         <Stack gap={6} flex={1} style={{ alignSelf: 'stretch' }}>
-          {!isSeriesGroup && subTitle && (
+          {subTitle && (
             <Group justify="space-between">
               <Text size="sm" c="dimmed">
                 Episode
               </Text>
               <Text size="sm" fw={700} title={subTitle}>
                 {subTitle}
+              </Text>
+            </Group>
+          )}
+          {seLabel && (
+            <Group justify="space-between">
+              <Text size="sm" c="dimmed">
+                Season/Episode
+              </Text>
+              <Text size="sm" fw={700}>
+                {seLabel}
               </Text>
             </Group>
           )}
