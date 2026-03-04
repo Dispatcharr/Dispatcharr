@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New Client Buffer proxy setting: new clients joining an active channel are now positioned a configurable number of seconds behind live rather than a fixed chunk count. The start position is determined by wall-clock chunk receive time (stored as a Redis sorted set alongside the buffer), so the buffer depth is consistent in seconds regardless of stream bitrate. Setting the value to `0` starts clients at live with no buffer. Defaults to 2 seconds. Existing chunk-count gating for the first client connecting to a channel is unchanged. The setting is exposed in Settings → Proxy as "New Client Buffer (seconds)".
 - Channel table filter for channels that have stale streams: A new "Has Stale Streams" filter option in the channel table header menu highlights and filters channels containing at least one stale stream. Channels with stale streams are visually distinguished with an orange tint. The filter is mutually exclusive with "Only Empty Channels". - Thanks [@JCBird1012](https://github.com/JCBird1012)
 
 ### Fixed
