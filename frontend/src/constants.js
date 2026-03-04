@@ -55,6 +55,11 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Channel Initialization Grace Period',
     description: 'Grace period in seconds during channel initialization',
   },
+  new_client_behind_seconds: {
+    label: 'New Client Buffer (seconds)',
+    description:
+      'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+  },
 };
 
 export const M3U_FILTER_TYPES = [
