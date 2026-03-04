@@ -186,10 +186,47 @@ class StreamGenerator:
             logger.error(f"[{self.client_id}] No buffer found for channel {self.channel_id}")
             return False
 
-        # Client state tracking - use config for initial position
-        initial_behind = ConfigHelper.initial_behind_chunks()
+        # Client state tracking — determine start position
+        # When behind_seconds > 0, use time-based positioning to start
+        # the client that many seconds behind live.
+        # When behind_seconds == 0, start at live (buffer head).
+        behind_seconds = ConfigHelper.new_client_behind_seconds()
         current_buffer_index = buffer.index
-        self.local_index = max(0, current_buffer_index - initial_behind)
+
+        if behind_seconds > 0:
+            time_index = buffer.find_chunk_index_by_time(behind_seconds)
+            if time_index is not None:
+                self.local_index = max(0, time_index)
+                logger.info(
+                    f"[{self.client_id}] Time-based positioning: "
+                    f"{behind_seconds}s behind -> index {self.local_index} "
+                    f"(buffer head at {current_buffer_index})"
+                )
+            else:
+                # Not enough buffer for the requested time — start as far
+                # back as possible (oldest available chunk).
+                oldest = buffer.find_oldest_available_chunk(0)
+                if oldest is not None:
+                    self.local_index = max(0, oldest)
+                    logger.info(
+                        f"[{self.client_id}] Buffer shorter than {behind_seconds}s, "
+                        f"starting at oldest available chunk {self.local_index} "
+                        f"(buffer head at {current_buffer_index})"
+                    )
+                else:
+                    # No timestamp data at all — start at live
+                    self.local_index = current_buffer_index
+                    logger.info(
+                        f"[{self.client_id}] No timestamp data, starting at live: "
+                        f"index {self.local_index} (buffer head at {current_buffer_index})"
+                    )
+        else:
+            # 0 = start at live (buffer head)
+            self.local_index = current_buffer_index
+            logger.info(
+                f"[{self.client_id}] Starting at live (behind_seconds=0): "
+                f"index {self.local_index} (buffer head at {current_buffer_index})"
+            )
 
         # Store important objects as instance variables
         self.buffer = buffer
