@@ -1643,7 +1643,7 @@ def generate_epg(request, profile_name=None, user=None):
                 # For real EPG data - filter only if days parameter was specified
                 if num_days > 0:
                     programs_qs = channel.epg_data.programs.filter(
-                        start_time__gte=now,
+                        end_time__gte=now,
                         start_time__lt=cutoff_date
                     ).order_by('id')  # Explicit ordering for consistent chunking
                 else:
