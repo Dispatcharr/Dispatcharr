@@ -8,7 +8,7 @@ import logging
 import threading
 import gevent  # Add this import at the top of your file
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel
+from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from .server import ProxyServer
 from .utils import create_ts_packet, get_logger
@@ -199,10 +199,47 @@ class StreamGenerator:
             logger.error(f"[{self.client_id}] No buffer found for channel {self.channel_id}")
             return False
 
-        # Client state tracking - use config for initial position
-        initial_behind = ConfigHelper.initial_behind_chunks()
+        # Client state tracking — determine start position
+        # When behind_seconds > 0, use time-based positioning to start
+        # the client that many seconds behind live.
+        # When behind_seconds == 0, start at live (buffer head).
+        behind_seconds = ConfigHelper.new_client_behind_seconds()
         current_buffer_index = buffer.index
-        self.local_index = max(0, current_buffer_index - initial_behind)
+
+        if behind_seconds > 0:
+            time_index = buffer.find_chunk_index_by_time(behind_seconds)
+            if time_index is not None:
+                self.local_index = max(0, time_index)
+                logger.info(
+                    f"[{self.client_id}] Time-based positioning: "
+                    f"{behind_seconds}s behind -> index {self.local_index} "
+                    f"(buffer head at {current_buffer_index})"
+                )
+            else:
+                # Not enough buffer for the requested time — start as far
+                # back as possible (oldest available chunk).
+                oldest = buffer.find_oldest_available_chunk(0)
+                if oldest is not None:
+                    self.local_index = max(0, oldest)
+                    logger.info(
+                        f"[{self.client_id}] Buffer shorter than {behind_seconds}s, "
+                        f"starting at oldest available chunk {self.local_index} "
+                        f"(buffer head at {current_buffer_index})"
+                    )
+                else:
+                    # No timestamp data at all — start at live
+                    self.local_index = current_buffer_index
+                    logger.info(
+                        f"[{self.client_id}] No timestamp data, starting at live: "
+                        f"index {self.local_index} (buffer head at {current_buffer_index})"
+                    )
+        else:
+            # 0 = start at live (buffer head)
+            self.local_index = current_buffer_index
+            logger.info(
+                f"[{self.client_id}] Starting at live (behind_seconds=0): "
+                f"index {self.local_index} (buffer head at {current_buffer_index})"
+            )
 
         # Store important objects as instance variables
         self.proxy_server = proxy_server
@@ -238,17 +275,35 @@ class StreamGenerator:
                 self.empty_reads += 1
                 self.consecutive_empty += 1
 
-                # Check if we're too far behind (chunks expired from Redis)
+                # We got no data despite being behind the buffer head.
+                # The read itself is the authoritative signal — no separate
+                # existence check needed, avoiding TOCTOU races with Redis TTL.
                 chunks_behind = self.buffer.index - self.local_index
-                if chunks_behind > 50:  # If more than 50 chunks behind, jump forward
-                    # Calculate new position: stay a few chunks behind current buffer
-                    initial_behind = ConfigHelper.initial_behind_chunks()
-                    new_index = max(self.local_index, self.buffer.index - initial_behind)
+                if chunks_behind > 0:
+                    # Next chunk has expired — find the oldest chunk still in Redis
+                    new_index = self.buffer.find_oldest_available_chunk(self.local_index)
 
-                    logger.warning(f"[{self.client_id}] Client too far behind ({chunks_behind} chunks), jumping from {self.local_index} to {new_index}")
-                    self.local_index = new_index
-                    self.consecutive_empty = 0  # Reset since we're repositioning
-                    continue  # Try again immediately with new position
+                    if new_index is not None:
+                        skipped = new_index - self.local_index
+                        logger.warning(
+                            f"[{self.client_id}] Next chunk expired (index {self.local_index + 1}), "
+                            f"jumping to oldest available: {new_index + 1} "
+                            f"(skipped {skipped} chunks, buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+                    else:
+                        # No chunks available at all — jump to near the buffer head
+                        initial_behind = ConfigHelper.initial_behind_chunks()
+                        new_index = max(self.local_index, self.buffer.index - initial_behind)
+                        logger.warning(
+                            f"[{self.client_id}] No chunks available in buffer, "
+                            f"jumping to near buffer head: {new_index} "
+                            f"(buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+
+                    self.consecutive_empty = 0
+                    continue  # Retry immediately with the new position
 
                 if self._should_send_keepalive(self.local_index):
                     keepalive_packet = create_ts_packet('keepalive')
@@ -486,11 +541,16 @@ class StreamGenerator:
                             # Only the last client or owner should release the stream
                             if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
                                 try:
-                                    # Get the channel by UUID
-                                    channel = Channel.objects.get(uuid=self.channel_id)
-                                    channel.release_stream()
-                                    stream_released = True
-                                    logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                                    # Try Channel first (normal flow), fall back to Stream (preview flow)
+                                    try:
+                                        obj = Channel.objects.get(uuid=self.channel_id)
+                                    except (Channel.DoesNotExist, Exception):
+                                        obj = Stream.objects.get(stream_hash=self.channel_id)
+                                    stream_released = obj.release_stream()
+                                    if stream_released:
+                                        logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                                    else:
+                                        logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
                                 except Exception as e:
                                     logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
             except Exception as e:
@@ -519,8 +579,7 @@ class StreamGenerator:
                 logger.error(f"Could not log client disconnect event: {e}")
 
             # Schedule channel shutdown if no clients left
-            if not stream_released:  # Only if we haven't already released the stream
-                self._schedule_channel_shutdown_if_needed(local_clients)
+            self._schedule_channel_shutdown_if_needed(local_clients)
 
     def _schedule_channel_shutdown_if_needed(self, local_clients):
         """

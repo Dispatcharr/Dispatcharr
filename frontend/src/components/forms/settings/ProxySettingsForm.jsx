@@ -24,6 +24,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'redis_chunk_ttl',
       'channel_shutdown_delay',
       'channel_init_grace_period',
+      'new_client_behind_seconds',
     ].includes(key);
   };
   const isFloatField = (key) => {
@@ -36,7 +37,9 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
         ? 3600
         : key === 'channel_shutdown_delay'
           ? 300
-          : 60;
+          : key === 'new_client_behind_seconds'
+            ? 120
+            : 60;
   };
   return (
     <>
@@ -97,7 +100,12 @@ const ProxySettingsForm = React.memo(({ active }) => {
   useEffect(() => {
     if (settings) {
       if (settings['proxy_settings']?.value) {
-        proxySettingsForm.setValues(settings['proxy_settings'].value);
+        // Merge defaults so any newly-added keys not yet in the stored
+        // settings object still show their default value rather than blank.
+        proxySettingsForm.setValues({
+          ...getProxySettingDefaults(),
+          ...settings['proxy_settings'].value,
+        });
       }
     }
   }, [settings]);
