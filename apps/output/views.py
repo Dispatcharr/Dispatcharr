@@ -1647,8 +1647,10 @@ def generate_epg(request, profile_name=None, user=None):
                         start_time__lt=cutoff_date
                     ).order_by('id')  # Explicit ordering for consistent chunking
                 else:
-                    # Return all programs if days=0 or not specified
-                    programs_qs = channel.epg_data.programs.all().order_by('id')
+                    # Return all non-expired programs if days=0 or not specified
+                    programs_qs = channel.epg_data.programs.filter(
+                        end_time__gte=now
+                    ).order_by('id')
 
                 # Process programs in chunks to avoid cursor timeout issues
                 program_batch = []
