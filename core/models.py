@@ -329,7 +329,7 @@ class CoreSettings(models.Model):
             "redis_chunk_ttl": 60,
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 5,
-            "new_client_behind_seconds": 2,
+            "new_client_behind_seconds": 5,
         })
 
     # System Settings

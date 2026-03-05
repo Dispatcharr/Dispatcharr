@@ -9,11 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- New Client Buffer proxy setting: new clients joining an active channel are now positioned a configurable number of seconds behind live rather than a fixed chunk count. The start position is determined by wall-clock chunk receive time (stored as a Redis sorted set alongside the buffer), so the buffer depth is consistent in seconds regardless of stream bitrate. Setting the value to `0` starts clients at live with no buffer. Defaults to 2 seconds. Existing chunk-count gating for the first client connecting to a channel is unchanged. The setting is exposed in Settings → Proxy as "New Client Buffer (seconds)".
+- Floating video player now displays the channel, stream, or VOD title in the player header bar. Title is passed through from all preview entry points: channel table, stream table, stream connection card, guide, DVR, recording cards, recording details modal, VOD modal, and series modal.
+- New Client Buffer proxy setting: new clients joining an active channel are now positioned a configurable number of seconds behind live rather than a fixed chunk count. The start position is determined by wall-clock chunk receive time (stored as a Redis sorted set alongside the buffer), so the buffer depth is consistent in seconds regardless of stream bitrate. Setting the value to `0` starts clients at live with no buffer. Defaults to 5 seconds. Existing chunk-count gating for the first client connecting to a channel is unchanged. The setting is exposed in Settings → Proxy as "New Client Buffer (seconds)".
 - Channel table filter for channels that have stale streams: A new "Has Stale Streams" filter option in the channel table header menu highlights and filters channels containing at least one stale stream. Channels with stale streams are visually distinguished with an orange tint. The filter is mutually exclusive with "Only Empty Channels". - Thanks [@JCBird1012](https://github.com/JCBird1012)
+- DVR enhancements — Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - **Stop Recording**: A new Stop button (distinct from Cancel) cleanly ends an in-progress recording early and keeps the partial file available for playback. The API returns immediately; stream teardown and task revocation happen in a background thread to prevent 504 timeouts. When multiple recordings run simultaneously, stopping one only terminates that recording's proxy client by ID, leaving all others unaffected. (Closes #454)
+  - **Extend Recording**: In-progress recordings can be extended by 15, 30, or 60 minutes without interrupting the stream.
+  - **Inline metadata editing**: Title and description can now be edited directly in the recording details modal.
+  - **Refresh artwork button**: Manually re-run poster resolution on demand from the recording card.
+  - **Multi-source poster resolution**: Added pipeline querying EPG, VOD, TMDB, OMDb, TVMaze, and iTunes for richer recording artwork.
+  - **Series rules for currently-airing episodes**: Series rules now capture currently-airing episodes in addition to future scheduled ones. (Closes #473)
+  - **Search and filter controls**: Added search and filter controls to the recordings list.
+  - **Stream generator throttling**: Cached the `ProxyServer` singleton reference per client and throttled Redis resource checks (1 s) and non-owner health checks (2 s), eliminating 3+ Redis round-trips per stream loop iteration.
+  - **Automatic crash recovery on worker restart**: A `worker_ready` Celery signal now fires `recover_recordings_on_startup` automatically when the worker starts, so recordings stuck in "recording" status are recovered without manual intervention.
+
+### Changed
+
+- EPG output when no `days` parameter is specified now excludes already-ended programs instead of returning all historical data.
 
 ### Fixed
 
+- EPG output was filtering programs using `start_time__gte=now` when the `days` parameter was specified, which caused currently-airing programs (started before the request time but not yet ended) to be omitted from the XML output. This produced a gap in clients' guides immediately after an EPG refresh, lasting until the next program started. Fixed by changing the filter to `end_time__gte=now` so any program that has not yet finished is included.
 - TS proxy connection slot leaks and TOCTOU races in stream initialization (Fixes #947) - Thanks [@CodeBormen](https://github.com/CodeBormen)
   - **TOCTOU race in slot reservation**: `get_stream()` previously used a `GET`→check→`INCR` sequence, allowing concurrent requests to both read the same count below the limit and both reserve a slot, silently exceeding `max_streams`. Replaced with an atomic `INCR`-first pattern: increment unconditionally, check the result, roll back with `DECR` if over capacity.
   - **Leak on URL generation failure**: `generate_stream_url()` called `get_stream()` (which `INCR`s the counter) but had no cleanup path if subsequent DB lookups or URL construction failed. The post-`get_stream()` block is now wrapped in a `try/except` that calls `release_stream()` on any error.
@@ -31,6 +47,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **No recovery from expired ownership**: `get_channel_owner()` called `redis.get()` twice inside a lambda (TOCTOU race — key could expire between calls); `extend_ownership()` silently returned `False` on expiry with no re-acquisition; and the non-owner cleanup path unconditionally killed streams even when the worker held the `stream_manager`. Fixed with a single `GET` in `get_channel_owner()`, re-acquisition via atomic `SET NX EX` in `extend_ownership()`, and a re-acquisition attempt with client-aware cleanup deferral in the cleanup thread.
 - `get_instance()` deadlock: if `ProxyServer()` raised an exception during singleton construction, `_instance` was left permanently as the `_INITIALIZING` sentinel, causing all subsequent `get_instance()` callers to spin in an infinite `gevent.sleep()` loop. Construction is now wrapped in `try/except`; on failure `_instance` resets to `None` so the next call can retry.
 - Non-atomic ownership acquisition in `try_acquire_ownership()`: replaced the separate `setnx()` + `expire()` calls with a single atomic `SET NX EX`, eliminating the race window where a process crash between the two calls could leave an ownership key with no TTL (permanent ownership lock).
+- DVR bug fixes — Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - **Duplicate recording execution**: `run_recording.apply_async(countdown=...)` exceeded Redis' default `visibility_timeout` (3600 s) for recordings scheduled more than one hour out, causing Redis to redeliver the task to multiple workers simultaneously and producing corrupted output files. Replaced `apply_async` with `ClockedSchedule` + `PeriodicTask` for database-backed one-shot scheduling that survives restarts and upgrades without the redelivery race. `run_recording` also now exits immediately if the recording is already in progress, completed, or stopped. `revoke_task()` cleans up both the `PeriodicTask` and its orphaned `ClockedSchedule` on execution. (Fixes #940, #641)
+  - **Stream reconnection resilience**: Recordings now survive transient network drops with automatic reconnection retrying up to 5 times and appending to the existing file. DB operations use exponential-backoff retry for transient database errors throughout the recording lifecycle.
+  - **Crash recovery pipeline**: On worker restart, recordings stuck in "recording" status have their segments concatenated and remuxed. Remux sanity checks reject MKV output that is less than 50% the size of a previous MKV (duplicate-task overwrite) or less than 10% of the source TS (corrupt first attempt); the source `.ts` is preserved for manual recovery on all failure paths. (Fixes #619, #624)
+  - **Output file collision**: Fixed collision when multiple tasks targeted the same filename.
+  - **WebSocket deadlock**: `send_websocket_update()` was deadlocking the gevent event loop, causing one recording's WebSocket events to block all other simultaneous recordings.
+  - **DVR client isolation**: Stop and Cancel operations now identify the target client by recording ID (via `User-Agent: Dispatcharr-DVR/recording-{id}`), ensuring only the correct proxy client is torn down and never affecting other recordings on the same channel.
+  - **Accidental stream termination on delete**: `destroy()` now only calls `_stop_dvr_clients()` for in-progress recordings, preventing stream termination when deleting a completed recording.
+  - **Recording card logos**: Logos were not displaying due to a channel summary API shape mismatch.
+  - **Logo fetch negative cache**: Added negative cache for failed remote logo fetches so dead CDNs no longer block Daphne workers on repeated requests.
+  - **Artwork fuzzy-match sanitisation**: Poster artwork fuzzy-matching against external APIs (TMDB, OMDb, etc.) was producing incorrect results for channels with names like "USA A&E SD\*"; channel-name strings are now sanitised before querying external sources.
+  - **Series modal "No upcoming episodes"**: Fixed due to a missing `_group_count` merge and an incorrect time filter.
+  - **Series rule cleanup**: Deleting a series rule left orphaned recordings and stale Guide indicators; rule deletion now cleans up all associated recordings. Orphaned recordings with no parent rule are also cleaned up automatically. (Fixes #1041)
+  - **Series rule timezone calculation**: Recurring rules silently dropped scheduled recordings for users in UTC-negative timezones after 4 pm local time. (Fixes #1042)
+  - **Recording modal TDZ crash**: Modal crashed on load in production bundles due to a Temporal Dead Zone error — editing state was referenced before its declaration in the minified bundle.
+  - **Description textarea focus loss**: The description textarea lost focus immediately when opened because the inline editing component was remounting on every render.
+  - **WebSocket-driven refresh**: Replaced all manual `fetchRecordings()` polling calls with debounced WebSocket-driven refresh so the recordings list stays up to date without redundant API requests.
+  - **comskip exit code handling**: comskip treated exit code 1 ("no commercials found") as a fatal error, causing post-processing to fail on clean recordings. Exit code 1 is now recognised as a successful no-op.
+  - **Differentiated WebSocket notification events**: `recording_stopped`, `recording_cancelled` (in-progress cancel), and `recording_deleted` with a `was_in_progress` flag now allow the frontend to display distinct "Recording stopped", "Recording cancelled", and "Recording deleted" toasts.
+  - **Duplicate series rule evaluation race**: Creating a series rule fired `evaluate_series_rules.delay()` in the API view while the frontend immediately called the synchronous evaluate endpoint, racing to create duplicate recordings for the same program. Removed the redundant async call from the API; the frontend's explicit evaluate call is now the sole evaluation path.
+  - **Recording card S/E badge overlap**: Season/episode badges were overlapping and metadata was hidden on the recording card.
+  - **Orphaned recording fallback in series modal**: When a series rule no longer exists, the recurring rule modal now shows a "Delete Recording" button for the orphaned recording instead of failing silently.
 
 ## [0.20.2] - 2026-03-03
 

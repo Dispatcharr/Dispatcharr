@@ -58,6 +58,19 @@ class StreamGenerator:
         self.last_ttl_refresh = time.time()
         self.ttl_refresh_interval = 3  # Refresh TTL every 3 seconds of active streaming
 
+        # Cached proxy server reference
+        self.proxy_server = None
+
+        # Non-owner health check throttle: avoid Redis GET on every loop iteration
+        self._last_health_check_time = 0.0
+        self._last_health_check_result = False
+        self._health_check_interval = 2.0  # seconds
+
+        # Resource check throttle: Redis stop/state checks are expensive; throttle
+        # them while allowing cheap in-memory checks to run every iteration.
+        self._last_resource_check_time = 0.0
+        self._resource_check_interval = 1.0  # seconds
+
     def generate(self):
         """
         Generator function that produces the stream content for the client.
@@ -229,6 +242,7 @@ class StreamGenerator:
             )
 
         # Store important objects as instance variables
+        self.proxy_server = proxy_server
         self.buffer = buffer
         self.stream_manager = stream_manager
         self.last_yield_time = time.time()
@@ -320,9 +334,7 @@ class StreamGenerator:
 
     def _check_resources(self):
         """Check if required resources still exist."""
-        proxy_server = ProxyServer.get_instance()
-
-        # Enhanced resource checks
+        proxy_server = self.proxy_server or ProxyServer.get_instance()
         if self.channel_id not in proxy_server.stream_buffers:
             logger.info(f"[{self.client_id}] Channel buffer no longer exists, terminating stream")
             return False
@@ -331,35 +343,43 @@ class StreamGenerator:
             logger.info(f"[{self.client_id}] Client manager no longer exists, terminating stream")
             return False
 
-        # Check if this specific client has been stopped (Redis keys, etc.)
-        if proxy_server.redis_client:
-            # Channel stop check - with extended key set
-            stop_key = RedisKeys.channel_stopping(self.channel_id)
-            if proxy_server.redis_client.exists(stop_key):
-                logger.info(f"[{self.client_id}] Detected channel stop signal, terminating stream")
+        client_manager = proxy_server.client_managers[self.channel_id]
+        if self.client_id not in client_manager.clients:
+            logger.info(f"[{self.client_id}] Client no longer in client manager, terminating stream")
+            return False
+
+        # --- Redis checks: throttled to _resource_check_interval (default 1s) ---
+        # 3 Redis round-trips on every iteration is expensive at stream rates;
+        # stop/state signals change infrequently so a 1-second poll is sufficient.
+        if not proxy_server.redis_client:
+            return True
+
+        now = time.time()
+        if now - self._last_resource_check_time < self._resource_check_interval:
+            return True
+
+        self._last_resource_check_time = now
+
+        # Channel stop check
+        stop_key = RedisKeys.channel_stopping(self.channel_id)
+        if proxy_server.redis_client.exists(stop_key):
+            logger.info(f"[{self.client_id}] Detected channel stop signal, terminating stream")
+            return False
+
+        # Channel state in metadata
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        metadata = proxy_server.redis_client.hgetall(metadata_key)
+        if metadata and b'state' in metadata:
+            state = metadata[b'state'].decode('utf-8')
+            if state in ['error', 'stopped', 'stopping']:
+                logger.info(f"[{self.client_id}] Channel in {state} state, terminating stream")
                 return False
 
-            # Also check channel state in metadata
-            metadata_key = RedisKeys.channel_metadata(self.channel_id)
-            metadata = proxy_server.redis_client.hgetall(metadata_key)
-            if metadata and b'state' in metadata:
-                state = metadata[b'state'].decode('utf-8')
-                if state in ['error', 'stopped', 'stopping']:
-                    logger.info(f"[{self.client_id}] Channel in {state} state, terminating stream")
-                    return False
-
-            # Client stop check
-            client_stop_key = RedisKeys.client_stop(self.channel_id, self.client_id)
-            if proxy_server.redis_client.exists(client_stop_key):
-                logger.info(f"[{self.client_id}] Detected client stop signal, terminating stream")
-                return False
-
-            # Also check if client has been removed from client_manager
-            if self.channel_id in proxy_server.client_managers:
-                client_manager = proxy_server.client_managers[self.channel_id]
-                if self.client_id not in client_manager.clients:
-                    logger.info(f"[{self.client_id}] Client no longer in client manager, terminating stream")
-                    return False
+        # Client stop check
+        client_stop_key = RedisKeys.client_stop(self.channel_id, self.client_id)
+        if proxy_server.redis_client.exists(client_stop_key):
+            logger.info(f"[{self.client_id}] Detected client stop signal, terminating stream")
+            return False
 
         return True
 
@@ -368,7 +388,7 @@ class StreamGenerator:
         # Process and send chunks
         total_size = sum(len(c) for c in chunks)
         logger.debug(f"[{self.client_id}] Retrieved {len(chunks)} chunks ({total_size} bytes) from index {self.local_index+1} to {next_index}")
-        proxy_server = ProxyServer.get_instance()
+        proxy_server = self.proxy_server or ProxyServer.get_instance()
 
         # Send the chunks to the client
         for chunk in chunks:
@@ -436,10 +456,38 @@ class StreamGenerator:
         """Determine if a keepalive packet should be sent."""
         # Check if we're caught up to buffer head
         at_buffer_head = local_index >= self.buffer.index
+        if not at_buffer_head or self.consecutive_empty < 5:
+            return False
 
-        # If we're at buffer head and no data is coming, send keepalive
-        stream_healthy = self.stream_manager.healthy if self.stream_manager else True
-        return at_buffer_head and not stream_healthy and self.consecutive_empty >= 5
+        if self.stream_manager is not None:
+            # Owner worker: use the in-memory health flag directly.
+            return not self.stream_manager.healthy
+        else:
+            # Non-owner worker: stream_manager only exists in the owner process.
+            # Approximate health from the Redis last_data timestamp; if stale
+            # beyond CONNECTION_TIMEOUT, send keepalives to prevent DVR timeout.
+            # Throttled: only re-query Redis every _health_check_interval seconds
+            # to avoid a Redis GET on every loop iteration during sustained waits.
+            now = time.time()
+            if now - self._last_health_check_time < self._health_check_interval:
+                return self._last_health_check_result
+            try:
+                proxy_server = self.proxy_server or ProxyServer.get_instance()
+                if proxy_server.redis_client:
+                    raw = proxy_server.redis_client.get(RedisKeys.last_data(self.channel_id))
+                    if raw:
+                        age = now - float(raw)
+                        timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
+                        result = age >= timeout_threshold
+                    else:
+                        # No timestamp in Redis → key missing or expired → unhealthy
+                        result = True
+                    self._last_health_check_time = now
+                    self._last_health_check_result = result
+                    return result
+            except Exception:
+                pass
+            return False
 
     def _is_ghost_client(self, local_index):
         """Check if this appears to be a ghost client (stuck but buffer advancing)."""
