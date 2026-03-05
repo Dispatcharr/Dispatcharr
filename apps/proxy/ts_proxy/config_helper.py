@@ -48,7 +48,7 @@ class ConfigHelper:
         Loaded from DB proxy_settings so users can change it at runtime."""
         from apps.proxy.config import TSConfig
         settings = TSConfig.get_proxy_settings()
-        return settings.get('new_client_behind_seconds', 2)
+        return settings.get('new_client_behind_seconds', 5)
 
     @staticmethod
     def keepalive_interval():
