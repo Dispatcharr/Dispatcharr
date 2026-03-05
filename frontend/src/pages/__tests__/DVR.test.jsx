@@ -34,7 +34,9 @@ vi.mock('../../api');
 // Mock Mantine components
 vi.mock('@mantine/core', () => ({
   ActionIcon: ({ children, onClick }) => (
-    <button data-testid="action-icon" onClick={onClick}>{children}</button>
+    <button data-testid="action-icon" onClick={onClick}>
+      {children}
+    </button>
   ),
   Box: ({ children }) => <div data-testid="box">{children}</div>,
   Container: ({ children }) => <div data-testid="container">{children}</div>,
@@ -58,7 +60,9 @@ vi.mock('@mantine/core', () => ({
     >
       <option value="">{placeholder}</option>
       {(data || []).map((opt) => (
-        <option key={opt.value} value={opt.value}>{opt.label}</option>
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
+        </option>
       ))}
     </select>
   ),
@@ -542,7 +546,8 @@ describe('DVRPage', () => {
 
       expect(mockShowVideo).toHaveBeenCalledWith(
         expect.stringContaining('stream.url'),
-        'live'
+        'live',
+        { name: 'Channel 1' }
       );
     });
 
