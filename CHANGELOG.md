@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Celery worker memory leak during M3U/XC refresh causing 20–80 MB growth per cycle with no reclamation (Fixes #1012, #1053) - Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - Restructured `refresh_single_m3u_account()` with a `try/finally` that guarantees `del` of large data structures runs before Celery's `gc.collect()`, and lock release on all exit paths (success, exception, early return)
+  - Re-enabled batch data cleanup in `process_m3u_batch_direct()` (was commented out)
+  - Added `CELERY_WORKER_MAX_MEMORY_PER_CHILD = 512 MB` as a safety net against pymalloc arena fragmentation
 - EPG output was filtering programs using `start_time__gte=now` when the `days` parameter was specified, which caused currently-airing programs (started before the request time but not yet ended) to be omitted from the XML output. This produced a gap in clients' guides immediately after an EPG refresh, lasting until the next program started. Fixed by changing the filter to `end_time__gte=now` so any program that has not yet finished is included.
 - TS proxy connection slot leaks and TOCTOU races in stream initialization (Fixes #947) - Thanks [@CodeBormen](https://github.com/CodeBormen)
   - **TOCTOU race in slot reservation**: `get_stream()` previously used a `GET`→check→`INCR` sequence, allowing concurrent requests to both read the same count below the limit and both reserve a slot, silently exceeding `max_streams`. Replaced with an atomic `INCR`-first pattern: increment unconditionally, check the result, roll back with `DECR` if over capacity.
