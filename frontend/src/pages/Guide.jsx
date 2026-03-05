@@ -724,7 +724,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
         return;
       }
 
-      showVideo(getShowVideoUrl(matched, env_mode));
+      showVideo(getShowVideoUrl(matched, env_mode), 'live', {
+        name: matched.name,
+      });
     },
     [env_mode, findChannelByTvgId, showVideo]
   );
@@ -733,7 +735,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
     (channel, event) => {
       event.stopPropagation();
 
-      showVideo(getShowVideoUrl(channel, env_mode));
+      showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+        name: channel.name,
+      });
     },
     [env_mode, showVideo]
   );
@@ -1342,9 +1346,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           }}
           pos="relative"
         >
-          <LoadingOverlay
-            visible={isProgramsLoading || isChannelsLoading}
-          />
+          <LoadingOverlay visible={isProgramsLoading || isChannelsLoading} />
           {nowPosition >= 0 && (
             <Box
               ref={nowLineRef}

@@ -99,7 +99,11 @@ const RecordingCard = ({
   const status = customProps.status;
   const isTimeActive = now.isAfter(start) && now.isBefore(end);
   const isInterrupted = status === 'interrupted';
-  const isInProgress = isTimeActive && !isInterrupted && status !== 'completed' && status !== 'stopped';
+  const isInProgress =
+    isTimeActive &&
+    !isInterrupted &&
+    status !== 'completed' &&
+    status !== 'stopped';
   const isUpcoming = now.isBefore(start);
   const isSeriesGroup = Boolean(
     recording._group_count && recording._group_count > 1
@@ -114,7 +118,9 @@ const RecordingCard = ({
 
   const handleWatchLive = () => {
     if (!channel) return;
-    showVideo(getShowVideoUrl(channel, env_mode), 'live');
+    showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+      name: channel.name,
+    });
   };
 
   const handleWatchRecording = () => {
@@ -197,7 +203,9 @@ const RecordingCard = ({
     } finally {
       setBusy(false);
       setStopConfirmOpen(false);
-      try { await fetchRecordings(); } catch {}
+      try {
+        await fetchRecordings();
+      } catch {}
     }
   };
 
@@ -371,9 +379,15 @@ const RecordingCard = ({
                   </Menu.Target>
                   <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
                     <Menu.Label>Extend recording by</Menu.Label>
-                    <Menu.Item onClick={(e) => handleExtend(15, e)}>+15 minutes</Menu.Item>
-                    <Menu.Item onClick={(e) => handleExtend(30, e)}>+30 minutes</Menu.Item>
-                    <Menu.Item onClick={(e) => handleExtend(60, e)}>+1 hour</Menu.Item>
+                    <Menu.Item onClick={(e) => handleExtend(15, e)}>
+                      +15 minutes
+                    </Menu.Item>
+                    <Menu.Item onClick={(e) => handleExtend(30, e)}>
+                      +30 minutes
+                    </Menu.Item>
+                    <Menu.Item onClick={(e) => handleExtend(60, e)}>
+                      +1 hour
+                    </Menu.Item>
                   </Menu.Dropdown>
                 </Menu>
               </Box>
@@ -391,7 +405,15 @@ const RecordingCard = ({
               </ActionIcon>
             </Tooltip>
           )}
-          <Tooltip label={isInProgress ? 'Cancel & delete' : isUpcoming ? 'Cancel' : 'Delete'}>
+          <Tooltip
+            label={
+              isInProgress
+                ? 'Cancel & delete'
+                : isUpcoming
+                  ? 'Cancel'
+                  : 'Delete'
+            }
+          >
             <ActionIcon
               variant="transparent"
               color="red.9"
@@ -467,12 +489,19 @@ const RecordingCard = ({
             </Text>
           )}
 
-          <Group justify="flex-end" gap="xs" pt={4} style={{ marginTop: 'auto' }}>
+          <Group
+            justify="flex-end"
+            gap="xs"
+            pt={4}
+            style={{ marginTop: 'auto' }}
+          >
             {isInProgress && <WatchLive />}
 
             {!isUpcoming && <WatchRecording />}
             {!isUpcoming &&
-              (customProps?.status === 'completed' || customProps?.status === 'stopped' || customProps?.status === 'interrupted') &&
+              (customProps?.status === 'completed' ||
+                customProps?.status === 'stopped' ||
+                customProps?.status === 'interrupted') &&
               (!customProps?.comskip ||
                 customProps?.comskip?.status !== 'completed') && (
                 <Button
@@ -517,7 +546,11 @@ const RecordingCard = ({
             will be saved and available for playback.
           </Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setStopConfirmOpen(false)} disabled={busy}>
+            <Button
+              variant="default"
+              onClick={() => setStopConfirmOpen(false)}
+              disabled={busy}
+            >
               Go Back
             </Button>
             <Button color="yellow" loading={busy} onClick={confirmStop}>
@@ -530,7 +563,9 @@ const RecordingCard = ({
       <Modal
         opened={deleteConfirmOpen}
         onClose={() => setDeleteConfirmOpen(false)}
-        title={isInProgress || isUpcoming ? 'Cancel Recording' : 'Delete Recording'}
+        title={
+          isInProgress || isUpcoming ? 'Cancel Recording' : 'Delete Recording'
+        }
         centered
         size="md"
         zIndex={9999}
@@ -544,11 +579,19 @@ const RecordingCard = ({
                 : 'This recording and all associated files will be permanently deleted.'}
           </Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteConfirmOpen(false)} disabled={busy}>
+            <Button
+              variant="default"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={busy}
+            >
               Go Back
             </Button>
             <Button color="red" loading={busy} onClick={confirmDelete}>
-              {isInProgress ? 'Cancel & Delete' : isUpcoming ? 'Cancel' : 'Delete'}
+              {isInProgress
+                ? 'Cancel & Delete'
+                : isUpcoming
+                  ? 'Cancel'
+                  : 'Delete'}
             </Button>
           </Group>
         </Stack>
@@ -556,12 +599,13 @@ const RecordingCard = ({
     </>
   );
 
-  if (!isSeriesGroup) return (
-    <>
-      {ConfirmModals}
-      {MainCard}
-    </>
-  );
+  if (!isSeriesGroup)
+    return (
+      <>
+        {ConfirmModals}
+        {MainCard}
+      </>
+    );
 
   // Stacked look for series groups: render two shadow layers behind the main card
   return (

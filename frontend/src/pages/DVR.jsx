@@ -26,7 +26,11 @@ const RecordingDetailsModal = lazy(
 );
 import RecurringRuleModal from '../components/forms/RecurringRuleModal.jsx';
 import RecordingCard from '../components/cards/RecordingCard.jsx';
-import { categorizeRecordings, filterRecordings, buildChannelOptions } from '../utils/pages/DVRUtils.js';
+import {
+  categorizeRecordings,
+  filterRecordings,
+  buildChannelOptions,
+} from '../utils/pages/DVRUtils.js';
 import {
   getChannelLogoUrl,
   getPosterUrl,
@@ -101,7 +105,12 @@ const DVRPage = () => {
     setDetailsOpen(false);
     setDetailsRecording(null);
     setEditRecording(null);
-    setRuleModal({ open: true, ruleId, recording, isDelete: isDelete || false });
+    setRuleModal({
+      open: true,
+      ruleId,
+      recording,
+      isDelete: isDelete || false,
+    });
   };
 
   const closeRuleModal = () => setRuleModal({ open: false, ruleId: null });
@@ -152,7 +161,8 @@ const DVRPage = () => {
   }, [channelsById, inProgress, upcoming, completed]);
 
   // Filtered buckets
-  const hasActiveFilters = searchQuery !== '' || selectedChannelId !== null || selectedStatus !== null;
+  const hasActiveFilters =
+    searchQuery !== '' || selectedChannelId !== null || selectedStatus !== null;
 
   const filteredInProgress = useMemo(() => {
     if (selectedStatus && selectedStatus !== 'recording') return [];
@@ -165,13 +175,21 @@ const DVRPage = () => {
   }, [upcoming, searchQuery, selectedChannelId, selectedStatus]);
 
   const filteredCompleted = useMemo(() => {
-    if (selectedStatus && !['completed', 'interrupted'].includes(selectedStatus)) return [];
+    if (
+      selectedStatus &&
+      !['completed', 'interrupted'].includes(selectedStatus)
+    )
+      return [];
     let filtered = filterRecordings(completed, searchQuery, selectedChannelId);
     if (selectedStatus === 'interrupted') {
-      filtered = filtered.filter((rec) => rec.custom_properties?.status === 'interrupted');
+      filtered = filtered.filter(
+        (rec) => rec.custom_properties?.status === 'interrupted'
+      );
     } else if (selectedStatus === 'completed') {
       // "Completed" includes both completed and stopped recordings
-      filtered = filtered.filter((rec) => rec.custom_properties?.status !== 'interrupted');
+      filtered = filtered.filter(
+        (rec) => rec.custom_properties?.status !== 'interrupted'
+      );
     }
     return filtered;
   }, [completed, searchQuery, selectedChannelId, selectedStatus]);
@@ -196,7 +214,7 @@ const DVRPage = () => {
         channel,
         useSettingsStore.getState().environment.env_mode
       );
-      useVideoStore.getState().showVideo(url, 'live');
+      useVideoStore.getState().showVideo(url, 'live', { name: channel.name });
     }
   };
 

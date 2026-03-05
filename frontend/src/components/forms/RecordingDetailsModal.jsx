@@ -82,7 +82,12 @@ const RecordingDetailsModal = ({
 
   // Derive poster URL from live store data instead of the stale prop snapshot.
   const livePosterUrl = React.useMemo(
-    () => getPosterUrl(customProps.poster_logo_id, customProps, getChannelLogoUrl(channel)),
+    () =>
+      getPosterUrl(
+        customProps.poster_logo_id,
+        customProps,
+        getChannelLogoUrl(channel)
+      ),
     [customProps.poster_logo_id, customProps, channel]
   );
 
@@ -91,7 +96,8 @@ const RecordingDetailsModal = ({
   const [savedTitle, setSavedTitle] = React.useState(null);
   const [savedDescription, setSavedDescription] = React.useState(null);
   const recordingName = savedTitle ?? (program.title || 'Custom Recording');
-  const description = savedDescription ?? (program.description || customProps.description || '');
+  const description =
+    savedDescription ?? (program.description || customProps.description || '');
 
   const [editTitle, setEditTitle] = React.useState('');
   const [editDescription, setEditDescription] = React.useState('');
@@ -186,7 +192,9 @@ const RecordingDetailsModal = ({
         channelsById[rec.channel] ||
         (rec.channel === recording?.channel ? channel : null);
       if (!ch) return;
-      useVideoStore.getState().showVideo(getShowVideoUrl(ch, env_mode), 'live');
+      useVideoStore
+        .getState()
+        .showVideo(getShowVideoUrl(ch, env_mode), 'live', { name: ch.name });
     }
   };
 
@@ -281,7 +289,9 @@ const RecordingDetailsModal = ({
     const se = getSeasonLabel(season, episode, onscreen);
     const posterLogoId = cp.poster_logo_id;
     const purl = getPosterUrl(posterLogoId, cp, livePosterUrl);
-    const epChannel = channelsById[rec.channel] || (rec.channel === recording?.channel ? channel : null);
+    const epChannel =
+      channelsById[rec.channel] ||
+      (rec.channel === recording?.channel ? channel : null);
 
     const onRemove = async (e) => {
       e?.stopPropagation?.();
@@ -533,12 +543,25 @@ const RecordingDetailsModal = ({
               size="sm"
               style={{ flex: 1 }}
               autoFocus
-              onKeyDown={(e) => { if (e.key === 'Enter') saveMetadata(); if (e.key === 'Escape') cancelEditing(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveMetadata();
+                if (e.key === 'Escape') cancelEditing();
+              }}
             />
-            <ActionIcon size="sm" variant="subtle" color="green" onClick={saveMetadata}>
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="green"
+              onClick={saveMetadata}
+            >
               <Check size={14} />
             </ActionIcon>
-            <ActionIcon size="sm" variant="subtle" color="gray" onClick={cancelEditing}>
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={cancelEditing}
+            >
               <X size={14} />
             </ActionIcon>
           </Group>
@@ -552,7 +575,12 @@ const RecordingDetailsModal = ({
                   : `${recordingName}${program.sub_title ? ` - ${program.sub_title}` : ''}`}
             </span>
             {!isSeriesGroup && (
-              <ActionIcon size="sm" variant="subtle" color="dimmed" onClick={startEditing}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="dimmed"
+                onClick={startEditing}
+              >
                 <Pencil size={14} />
               </ActionIcon>
             )}
