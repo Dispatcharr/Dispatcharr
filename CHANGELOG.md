@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Multi-source poster resolution**: Added pipeline querying EPG, VOD, TMDB, OMDb, TVMaze, and iTunes for richer recording artwork.
   - **Series rules for currently-airing episodes**: Series rules now capture currently-airing episodes in addition to future scheduled ones. (Closes #473)
   - **Search and filter controls**: Added search and filter controls to the recordings list.
+  - **Stream generator throttling**: Cached the `ProxyServer` singleton reference per client and throttled Redis resource checks (1 s) and non-owner health checks (2 s), eliminating 3+ Redis round-trips per stream loop iteration.
+  - **Automatic crash recovery on worker restart**: A `worker_ready` Celery signal now fires `recover_recordings_on_startup` automatically when the worker starts, so recordings stuck in "recording" status are recovered without manual intervention.
 
 ### Fixed
 
@@ -40,8 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_instance()` deadlock: if `ProxyServer()` raised an exception during singleton construction, `_instance` was left permanently as the `_INITIALIZING` sentinel, causing all subsequent `get_instance()` callers to spin in an infinite `gevent.sleep()` loop. Construction is now wrapped in `try/except`; on failure `_instance` resets to `None` so the next call can retry.
 - Non-atomic ownership acquisition in `try_acquire_ownership()`: replaced the separate `setnx()` + `expire()` calls with a single atomic `SET NX EX`, eliminating the race window where a process crash between the two calls could leave an ownership key with no TTL (permanent ownership lock).
 - DVR bug fixes — Thanks [@CodeBormen](https://github.com/CodeBormen)
-  - **Duplicate recording execution**: Shared `ClockedSchedule` objects were firing `run_recording` multiple times for the same recording, producing corrupted output files. `run_recording` now exits immediately if the recording is already in progress, completed, or stopped (failing closed on DB errors to prevent duplicate tasks from overwriting valid recordings). `revoke_task()` also cleans up both the `PeriodicTask` and its `ClockedSchedule` on execution to eliminate orphaned schedule objects. (Fixes #641)
-  - **Long-range scheduling**: Recordings scheduled more than one hour out were handed off to multiple workers simultaneously because Redis' 3600 s timer limit triggered the job more than once, corrupting the output file. Migrated to `ClockedSchedule` for database-backed persistence that survives restarts and upgrades and avoids the multi-worker race entirely. (Fixes #940)
+  - **Duplicate recording execution**: `run_recording.apply_async(countdown=...)` exceeded Redis' default `visibility_timeout` (3600 s) for recordings scheduled more than one hour out, causing Redis to redeliver the task to multiple workers simultaneously and producing corrupted output files. Replaced `apply_async` with `ClockedSchedule` + `PeriodicTask` for database-backed one-shot scheduling that survives restarts and upgrades without the redelivery race. `run_recording` also now exits immediately if the recording is already in progress, completed, or stopped. `revoke_task()` cleans up both the `PeriodicTask` and its orphaned `ClockedSchedule` on execution. (Fixes #940, #641)
   - **Stream reconnection resilience**: Recordings now survive transient network drops with automatic reconnection retrying up to 5 times and appending to the existing file. DB operations use exponential-backoff retry for transient database errors throughout the recording lifecycle.
   - **Crash recovery pipeline**: On worker restart, recordings stuck in "recording" status have their segments concatenated and remuxed. Remux sanity checks reject MKV output that is less than 50% the size of a previous MKV (duplicate-task overwrite) or less than 10% of the source TS (corrupt first attempt); the source `.ts` is preserved for manual recovery on all failure paths. (Fixes #619, #624)
   - **Output file collision**: Fixed collision when multiple tasks targeted the same filename.
@@ -59,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **WebSocket-driven refresh**: Replaced all manual `fetchRecordings()` polling calls with debounced WebSocket-driven refresh so the recordings list stays up to date without redundant API requests.
   - **comskip exit code handling**: comskip treated exit code 1 ("no commercials found") as a fatal error, causing post-processing to fail on clean recordings. Exit code 1 is now recognised as a successful no-op.
   - **Differentiated WebSocket notification events**: `recording_stopped`, `recording_cancelled` (in-progress cancel), and `recording_deleted` with a `was_in_progress` flag now allow the frontend to display distinct "Recording stopped", "Recording cancelled", and "Recording deleted" toasts.
+  - **Duplicate series rule evaluation race**: Creating a series rule fired `evaluate_series_rules.delay()` in the API view while the frontend immediately called the synchronous evaluate endpoint, racing to create duplicate recordings for the same program. Removed the redundant async call from the API; the frontend's explicit evaluate call is now the sole evaluation path.
+  - **Recording card S/E badge overlap**: Season/episode badges were overlapping and metadata was hidden on the recording card.
+  - **Orphaned recording fallback in series modal**: When a series rule no longer exists, the recurring rule modal now shows a "Delete Recording" button for the orphaned recording instead of failing silently.
 
 ## [0.20.2] - 2026-03-03
 
