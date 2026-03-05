@@ -462,6 +462,13 @@ def get_case_insensitive_attr(attributes, key, default=""):
     return default
 
 
+def parse_is_adult(value):
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
@@ -875,7 +882,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
-                            "is_adult": int(stream.get("is_adult", 0)) == 1,
+                            "is_adult": parse_is_adult(stream.get("is_adult", 0)),
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
@@ -1093,7 +1100,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
-                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
+                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
