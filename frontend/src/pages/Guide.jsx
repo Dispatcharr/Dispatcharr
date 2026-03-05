@@ -93,7 +93,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
-  const isLoading = useChannelsStore((s) => s.isLoading);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
   const logos = useLogosStore((s) => s.logos);
 
@@ -699,14 +698,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const saveSeriesRule = useCallback(async (program, mode) => {
     await createSeriesRule(program, mode);
     await evaluateSeriesRule(program);
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (error) {
-      console.warn(
-        'Failed to refresh recordings after saving series rule',
-        error
-      );
-    }
+    // recordings_refreshed WS event triggers the debounced fetchRecordings()
     showNotification({
       title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
     });
@@ -1351,7 +1343,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           pos="relative"
         >
           <LoadingOverlay
-            visible={isLoading || isProgramsLoading || isChannelsLoading}
+            visible={isProgramsLoading || isChannelsLoading}
           />
           {nowPosition >= 0 && (
             <Box
