@@ -99,31 +99,35 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
-# Global variables, stored so other users inherit them
-if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
-    # Define all variables to process
-    variables=(
-        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
-        POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-        DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
-        DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
-    )
+# Global variables, stored so other users inherit them.
+# Rewritten every startup so that container restarts with changed env vars
+# pick up the new values (not stale ones from a previous run).
+# Define all variables to process
+variables=(
+    PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
+    POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
+    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
+    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
+    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+)
 
-    # Process each variable for both profile.d and environment
-    for var in "${variables[@]}"; do
-        # Check if the variable is set in the environment
-        if [ -n "${!var+x}" ]; then
-            # Add to profile.d
-            echo "export ${var}=${!var}" >> /etc/profile.d/dispatcharr.sh
-            # Add to /etc/environment if not already there
-            grep -q "^${var}=" /etc/environment || echo "${var}=${!var}" >> /etc/environment
-        else
-            echo "Warning: Environment variable $var is not set"
-        fi
-    done
-fi
+# Truncate files before rewriting
+> /etc/profile.d/dispatcharr.sh
+
+# Process each variable for both profile.d and environment
+for var in "${variables[@]}"; do
+    # Check if the variable is set in the environment
+    if [ -n "${!var+x}" ]; then
+        # Add to profile.d (quoted to handle special characters in values)
+        echo "export ${var}='${!var}'" >> /etc/profile.d/dispatcharr.sh
+        # Add/update in /etc/environment
+        sed -i "/^${var}=/d" /etc/environment
+        echo "${var}='${!var}'" >> /etc/environment
+    else
+        echo "Warning: Environment variable $var is not set"
+    fi
+done
 
 chmod +x /etc/profile.d/dispatcharr.sh
 
