@@ -15,7 +15,7 @@ import {
 import API from '../api.js';
 
 export const PROGRAM_HEIGHT = 90;
-export const EXPANDED_PROGRAM_HEIGHT = 180;
+export const EXPANDED_PROGRAM_HEIGHT = 200;
 /** Layout constants */
 export const CHANNEL_WIDTH = 120; // Width of the channel/logo column
 export const HOUR_WIDTH = 450; // Increased from 300 to 450 to make each program wider
@@ -214,7 +214,12 @@ export const mapChannelsById = (guideChannels) => {
   return map;
 };
 
-const _terminalStatuses = new Set(['stopped', 'completed', 'interrupted', 'failed']);
+const _terminalStatuses = new Set([
+  'stopped',
+  'completed',
+  'interrupted',
+  'failed',
+]);
 
 export const mapRecordingsByProgramId = (recordings) => {
   const map = new Map();

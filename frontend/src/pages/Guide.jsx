@@ -966,8 +966,13 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 transition: 'transform 0.1s ease-out',
                 display: 'flex',
                 flexDirection: 'column',
-                justifyContent: !isExpanded && (program.sub_title || seasonEpisodeLabel) ? 'space-between' : 'flex-start',
-                height: '100%',
+                justifyContent:
+                  !isExpanded && (program.sub_title || program.description)
+                    ? 'space-between'
+                    : 'flex-start',
+                flex: '1 1 0',
+                minHeight: 0,
+                overflow: 'hidden',
               }}
             >
               <Text
@@ -994,13 +999,49 @@ export default function TVChannelGuide({ startDate, endDate }) {
                     ></div>
                   )}
                   {program.title}
+                  {!isExpanded && seasonEpisodeLabel && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="gray"
+                      style={{ flexShrink: 0 }}
+                    >
+                      {seasonEpisodeLabel}
+                    </Badge>
+                  )}
                 </Group>
               </Text>
-              {(program.sub_title || seasonEpisodeLabel) && (
+              {!isExpanded && (program.sub_title || program.description) && (
+                <Text
+                  size="xs"
+                  fs={program.sub_title ? 'italic' : 'normal'}
+                  style={{
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                    overflow: 'hidden',
+                    minWidth: 0,
+                  }}
+                  c={isPast ? '#718096' : '#e2e8f0'}
+                >
+                  {program.sub_title || program.description}
+                </Text>
+              )}
+              <Text
+                size="sm"
+                style={{
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  overflow: 'hidden',
+                }}
+              >
+                {format(programStart, timeFormat)} -{' '}
+                {format(programEnd, timeFormat)}
+              </Text>
+              {isExpanded && (program.sub_title || seasonEpisodeLabel) && (
                 <Group gap="xs" wrap="nowrap" align="center">
                   {program.sub_title && (
                     <Text
-                      size="xs"
+                      size="sm"
                       fs="italic"
                       style={{
                         whiteSpace: 'nowrap',
@@ -1008,7 +1049,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                         overflow: 'hidden',
                         minWidth: 0,
                       }}
-                      c={isPast ? '#718096' : '#a0aec0'}
+                      c={isPast ? '#718096' : '#e2e8f0'}
                     >
                       {program.sub_title}
                     </Text>
@@ -1025,28 +1066,16 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   )}
                 </Group>
               )}
-              <Text
-                size="sm"
-                style={{
-                  whiteSpace: 'nowrap',
-                  textOverflow: 'ellipsis',
-                  overflow: 'hidden',
-                }}
-              >
-                {format(programStart, timeFormat)} -{' '}
-                {format(programEnd, timeFormat)}
-              </Text>
-              {(isExpanded || (!program.sub_title && !seasonEpisodeLabel)) && program.description && (
+              {isExpanded && program.description && (
                 <Text
                   size="xs"
                   style={{
-                    whiteSpace: isExpanded ? 'normal' : 'nowrap',
-                    textOverflow: isExpanded ? 'clip' : 'ellipsis',
-                    overflow: isExpanded ? 'auto' : 'hidden',
+                    whiteSpace: 'normal',
+                    overflow: 'auto',
                   }}
                   mt={4}
                   c={isPast ? '#718096' : '#cbd5e0'}
-                  mah={isExpanded ? '80px' : undefined}
+                  mah={'100px'}
                 >
                   {program.description}
                 </Text>

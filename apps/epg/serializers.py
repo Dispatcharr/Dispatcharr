@@ -83,38 +83,26 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
 class ProgramDataSerializer(serializers.ModelSerializer):
-    season = serializers.SerializerMethodField()
-    episode = serializers.SerializerMethodField()
-
     class Meta:
         model = ProgramData
-        fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id', 'season', 'episode']
+        fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id']
 
-    def _parse_onscreen(self, obj):
-        """Parse season/episode from onscreen_episode string (e.g. 'S12 E6')."""
-        onscreen = (obj.custom_properties or {}).get('onscreen_episode', '')
-        match = _ONSCREEN_RE.search(onscreen)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-        return None, None
-
-    def get_season(self, obj):
-        if obj.custom_properties:
-            season = obj.custom_properties.get('season')
-            if season is not None:
-                return season
-            season, _ = self._parse_onscreen(obj)
-            return season
-        return None
-
-    def get_episode(self, obj):
-        if obj.custom_properties:
-            episode = obj.custom_properties.get('episode')
-            if episode is not None:
-                return episode
-            _, episode = self._parse_onscreen(obj)
-            return episode
-        return None
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        cp = obj.custom_properties or {}
+        season = cp.get('season')
+        episode = cp.get('episode')
+        # Only run the regex if at least one value is still missing
+        if (season is None or episode is None) and cp.get('onscreen_episode'):
+            match = _ONSCREEN_RE.search(cp['onscreen_episode'])
+            if match:
+                if season is None:
+                    season = int(match.group(1))
+                if episode is None:
+                    episode = int(match.group(2))
+        data['season'] = season
+        data['episode'] = episode
+        return data
 
 class EPGDataSerializer(serializers.ModelSerializer):
     """
