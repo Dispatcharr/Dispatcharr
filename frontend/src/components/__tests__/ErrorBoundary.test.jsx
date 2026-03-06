@@ -34,7 +34,7 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>
     );
 
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
     expect(screen.queryByText('Child component')).not.toBeInTheDocument();
   });
 
@@ -72,7 +72,7 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>
     );
 
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
   });
 
   it('should have hasError state set to true after catching error', () => {
@@ -83,7 +83,9 @@ describe('ErrorBoundary', () => {
     );
 
     // Verify error boundary rendered fallback UI
-    expect(container.querySelector('div')).toHaveTextContent('Something went wrong');
+    expect(container.querySelector('div')).toHaveTextContent(
+      'Something went wrong'
+    );
   });
 
   it('should have hasError state set to false initially', () => {
