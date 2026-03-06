@@ -45,6 +45,22 @@ class StreamBuffer:
         self._write_buffer = bytearray()
         self.target_chunk_size = ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)  # ~1MB default
 
+        # Sorted-set key for chunk receive-timestamps (time-based positioning)
+        self.chunk_timestamps_key = RedisKeys.chunk_timestamps(channel_id) if channel_id else ""
+
+        # Register Lua scripts once — subsequent calls use EVALSHA (just the
+        # SHA hash) instead of sending the full script text on every invocation.
+        if self.redis_client:
+            self._find_oldest_chunk_sha = self.redis_client.register_script(
+                self._FIND_OLDEST_CHUNK_LUA
+            )
+            self._find_chunk_by_time_sha = self.redis_client.register_script(
+                self._FIND_CHUNK_BY_TIME_LUA
+            )
+        else:
+            self._find_oldest_chunk_sha = None
+            self._find_chunk_by_time_sha = None
+
         # Track timers for proper cleanup
         self.stopping = False
         self.fill_timers = []
@@ -91,6 +107,14 @@ class StreamBuffer:
                         chunk_index = self.redis_client.incr(self.buffer_index_key)
                         chunk_key = RedisKeys.buffer_chunk(self.channel_id, chunk_index)
                         self.redis_client.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
+
+                        # Record receive timestamp for time-based client positioning
+                        if self.chunk_timestamps_key:
+                            now = time.time()
+                            self.redis_client.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
+                            # Prune entries whose chunks have expired from Redis
+                            self.redis_client.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
+                            self.redis_client.expire(self.chunk_timestamps_key, self.chunk_ttl)
 
                         # Update local tracking
                         self.index = chunk_index
@@ -275,6 +299,13 @@ class StreamBuffer:
                 if hasattr(self, '_partial_packet'):
                     self._partial_packet = bytearray()
 
+            # Clean up the chunk timestamps sorted set
+            if self.redis_client and self.chunk_timestamps_key:
+                try:
+                    self.redis_client.delete(self.chunk_timestamps_key)
+                except Exception as e:
+                    logger.error(f"Error deleting chunk timestamps key: {e}")
+
         except Exception as e:
             logger.error(f"Error during buffer stop: {e}")
 
@@ -327,6 +358,146 @@ class StreamBuffer:
                 chunk_count += len(more_chunks)  # Fixed: count actual additional chunks retrieved
 
         return chunks, client_index + chunk_count
+
+    # Lua script that runs an atomic binary search on the Redis server.
+    # Chunks expire in FIFO order (same TTL, sequential writes), so the
+    # alive range is contiguous: [oldest_surviving .. buffer_head].
+    # Binary search finds the boundary in O(log N) EXISTS calls with zero
+    # round-trips between steps and no TOCTOU races (Lua scripts are atomic).
+    #
+    # ARGV[1] = key prefix  (e.g. "ts_proxy:channel:<id>:buffer:chunk:")
+    # ARGV[2] = low index   (client_index + 1, first chunk the client needs)
+    # ARGV[3] = high index  (buffer head, most recent chunk)
+    #
+    # Returns: the index of the oldest existing chunk, or -1 if none exist.
+    _FIND_OLDEST_CHUNK_LUA = """
+    local prefix = ARGV[1]
+    local low    = tonumber(ARGV[2])
+    local high   = tonumber(ARGV[3])
+
+    if redis.call('EXISTS', prefix .. high) == 0 then
+        return -1
+    end
+
+    local result = high
+    while low <= high do
+        local mid = math.floor((low + high) / 2)
+        if redis.call('EXISTS', prefix .. mid) == 1 then
+            result = mid
+            high = mid - 1
+        else
+            low = mid + 1
+        end
+    end
+    return result
+    """
+
+    def find_oldest_available_chunk(self, client_index):
+        """Find the oldest (lowest-index) chunk that still exists in Redis.
+
+        Executes an atomic Lua binary search on the Redis server — one
+        round-trip, ~log2(N) EXISTS calls, no TOCTOU between steps.
+
+        The actual read attempt (get_optimized_client_data) is what
+        authoritatively detects expiration; this method is best-effort
+        positioning that self-corrects on the next iteration if the found
+        chunk also expires before the client can read it.
+
+        Args:
+            client_index: The client's current local_index (last consumed chunk).
+
+        Returns:
+            int or None: The local_index value the client should jump to
+                         (one before the first available chunk), or None if no
+                         chunks are available at all.
+        """
+        if not self.redis_client:
+            return None
+
+        low = client_index + 1   # First chunk the client needs
+        high = self.index        # Latest chunk written
+
+        if low > high:
+            return None
+
+        try:
+            # Uses EVALSHA under the hood — sends only the SHA hash,
+            # not the full script text, on every call after the first.
+            result = self._find_oldest_chunk_sha(
+                args=[
+                    RedisKeys.buffer_chunk_prefix(self.channel_id),
+                    low,
+                    high,
+                ],
+            )
+
+            if result == -1:
+                return None
+
+            # Return result - 1 so local_index points to one before the
+            # first available chunk (matching the "last consumed" convention).
+            return int(result) - 1
+
+        except Exception as e:
+            logger.error(f"Error running find_oldest_chunk Lua script for channel {self.channel_id}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Lua script: atomic reverse-scan of the chunk_timestamps sorted set.
+    # Finds the chunk whose receive-timestamp is closest to (but <=) a
+    # target wall-clock time.  Returns the chunk index or -1.
+    #
+    # KEYS[1] = chunk_timestamps sorted-set key
+    # ARGV[1] = target timestamp  (time.time() - desired_seconds_behind)
+    # ------------------------------------------------------------------
+    _FIND_CHUNK_BY_TIME_LUA = """
+    local ts_key  = KEYS[1]
+    local target  = tonumber(ARGV[1])
+
+    -- ZREVRANGEBYSCORE returns members with score <= target, highest first.
+    local result = redis.call('ZREVRANGEBYSCORE', ts_key, target, '-inf', 'LIMIT', 0, 1)
+    if #result == 0 then
+        return -1
+    end
+    return tonumber(result[1])
+    """
+
+    def find_chunk_index_by_time(self, seconds_behind):
+        """Find the chunk index that was received approximately *seconds_behind*
+        seconds ago.
+
+        Uses an atomic Lua script against the chunk_timestamps sorted set so
+        no data can expire between the lookup and the read.
+
+        Returns:
+            int or None: The chunk index to position the client at (this is
+                         the *last consumed* convention, so the next read
+                         starts at index+1).  None if no suitable chunk
+                         exists.
+        """
+        if not self.redis_client or not self.chunk_timestamps_key:
+            return None
+
+        target_time = time.time() - seconds_behind
+
+        try:
+            result = self._find_chunk_by_time_sha(
+                keys=[self.chunk_timestamps_key],
+                args=[target_time],
+            )
+            if result is None or int(result) == -1:
+                # No chunk old enough — fall back to the oldest available chunk
+                oldest = self.redis_client.zrange(self.chunk_timestamps_key, 0, 0)
+                if oldest:
+                    return max(0, int(oldest[0]) - 1)  # "last consumed" convention
+                return None
+
+            # Return index - 1 so next read starts at that chunk
+            return max(0, int(result) - 1)
+
+        except Exception as e:
+            logger.error(f"Error in find_chunk_index_by_time for channel {self.channel_id}: {e}")
+            return None
 
     # Add a new method to safely create timers
     def schedule_timer(self, delay, callback, *args, **kwargs):

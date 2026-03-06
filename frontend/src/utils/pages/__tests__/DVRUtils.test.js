@@ -541,4 +541,162 @@ describe('DVRUtils', () => {
       expect(result.upcoming[0]._group_count).toBe(1);
     });
   });
+
+  describe('filterRecordings', () => {
+    const makeRec = (id, title, subTitle, description, channel) => ({
+      id,
+      channel,
+      custom_properties: {
+        program: { title, sub_title: subTitle, description },
+      },
+    });
+
+    it('returns all recordings when no filters active', () => {
+      const recs = [makeRec(1, 'News', 'Episode 1', 'Daily news', 5)];
+      expect(DVRUtils.filterRecordings(recs, '', null)).toEqual(recs);
+    });
+
+    it('filters by title case-insensitively', () => {
+      const recs = [
+        makeRec(1, 'Morning News', '', '', 1),
+        makeRec(2, 'Sports Center', '', '', 1),
+      ];
+      const result = DVRUtils.filterRecordings(recs, 'news', null);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(1);
+    });
+
+    it('filters by sub_title', () => {
+      const recs = [
+        makeRec(1, 'Show A', 'Pilot Episode', '', 1),
+        makeRec(2, 'Show B', 'Finale', '', 1),
+      ];
+      const result = DVRUtils.filterRecordings(recs, 'pilot', null);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(1);
+    });
+
+    it('filters by description', () => {
+      const recs = [
+        makeRec(1, 'Show A', '', 'A thriller about detectives', 1),
+        makeRec(2, 'Show B', '', 'A comedy special', 1),
+      ];
+      const result = DVRUtils.filterRecordings(recs, 'detective', null);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(1);
+    });
+
+    it('filters by channel id', () => {
+      const recs = [
+        makeRec(1, 'Show A', '', '', 5),
+        makeRec(2, 'Show B', '', '', 10),
+      ];
+      const result = DVRUtils.filterRecordings(recs, '', '5');
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(1);
+    });
+
+    it('combines search and channel filter with AND logic', () => {
+      const recs = [
+        makeRec(1, 'News', '', '', 5),
+        makeRec(2, 'News', '', '', 10),
+        makeRec(3, 'Sports', '', '', 5),
+      ];
+      const result = DVRUtils.filterRecordings(recs, 'news', '5');
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(1);
+    });
+
+    it('handles recordings without custom_properties', () => {
+      const recs = [{ id: 1, channel: 5 }];
+      const result = DVRUtils.filterRecordings(recs, 'anything', null);
+      expect(result).toHaveLength(0);
+    });
+
+    it('handles recordings without custom_properties and no search', () => {
+      const recs = [{ id: 1, channel: 5 }];
+      const result = DVRUtils.filterRecordings(recs, '', null);
+      expect(result).toHaveLength(1);
+    });
+
+    it('handles empty array', () => {
+      expect(DVRUtils.filterRecordings([], 'test', '5')).toEqual([]);
+    });
+
+    it('falls back to custom_properties.description', () => {
+      const recs = [{
+        id: 1,
+        channel: 1,
+        custom_properties: {
+          description: 'A fallback description',
+          program: { title: 'Show' },
+        },
+      }];
+      const result = DVRUtils.filterRecordings(recs, 'fallback', null);
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('buildChannelOptions', () => {
+    const channelsById = {
+      5: { id: 5, name: 'CNN', channel_number: '5' },
+      10: { id: 10, name: 'ESPN', channel_number: '10' },
+      3: { id: 3, name: 'NBC', channel_number: '3' },
+      20: { id: 20, name: 'Local Access' },
+    };
+
+    it('returns only channels present in recordings', () => {
+      const bucket = [{ channel: 5 }, { channel: 10 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, bucket);
+      expect(result).toHaveLength(2);
+      expect(result.map((o) => o.value)).toEqual(['5', '10']);
+    });
+
+    it('sorts by channel number numerically', () => {
+      const bucket = [{ channel: 10 }, { channel: 3 }, { channel: 5 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, bucket);
+      expect(result[0].label).toBe('3 - NBC');
+      expect(result[1].label).toBe('5 - CNN');
+      expect(result[2].label).toBe('10 - ESPN');
+    });
+
+    it('handles multiple buckets', () => {
+      const b1 = [{ channel: 5 }];
+      const b2 = [{ channel: 10 }];
+      const b3 = [{ channel: 3 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, b1, b2, b3);
+      expect(result).toHaveLength(3);
+    });
+
+    it('deduplicates channels across buckets', () => {
+      const b1 = [{ channel: 5 }, { channel: 10 }];
+      const b2 = [{ channel: 5 }, { channel: 3 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, b1, b2);
+      expect(result).toHaveLength(3);
+    });
+
+    it('skips channels not in channelsById', () => {
+      const bucket = [{ channel: 5 }, { channel: 999 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, bucket);
+      expect(result).toHaveLength(1);
+      expect(result[0].value).toBe('5');
+    });
+
+    it('formats label with channel number when available', () => {
+      const bucket = [{ channel: 5 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, bucket);
+      expect(result[0].label).toBe('5 - CNN');
+    });
+
+    it('formats label without channel number when missing', () => {
+      const bucket = [{ channel: 20 }];
+      const result = DVRUtils.buildChannelOptions(channelsById, bucket);
+      expect(result[0].label).toBe('Local Access');
+    });
+
+    it('returns empty array for empty buckets', () => {
+      const result = DVRUtils.buildChannelOptions(channelsById, [], []);
+      expect(result).toEqual([]);
+    });
+  });
 });

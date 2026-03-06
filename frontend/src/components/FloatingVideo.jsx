@@ -643,13 +643,35 @@ export default function FloatingVideo() {
           boxShadow: '0 2px 10px rgba(0,0,0,0.7)',
         }}
       >
-        {/* Simple header row with a close button */}
+        {/* Header row with optional title and close button */}
         <Flex
-          justify="flex-end"
+          justify="space-between"
+          align="center"
           style={{
-            padding: 3,
+            padding: '3px 3px 3px 8px',
+            minHeight: '38px',
           }}
         >
+          {metadata?.name ? (
+            <Text
+              size="xs"
+              fw={600}
+              style={{
+                color: 'rgba(255,255,255,0.9)',
+                flex: 1,
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis',
+                paddingRight: 4,
+                textShadow: '0px 1px 3px rgba(0,0,0,0.8)',
+                userSelect: 'none',
+              }}
+            >
+              {metadata.name}
+            </Text>
+          ) : (
+            <Box style={{ flex: 1 }} />
+          )}
           <CloseButton
             onClick={handleClose}
             onTouchEnd={handleClose}
@@ -660,6 +682,7 @@ export default function FloatingVideo() {
               minWidth: '32px',
               cursor: 'pointer',
               touchAction: 'manipulation',
+              flexShrink: 0,
             }}
           />
         </Flex>

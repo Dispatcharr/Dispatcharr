@@ -482,8 +482,10 @@ def parse_extinf_line(line: str) -> dict:
     attrs = {}
     last_attr_end = 0
 
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+    # Use a single regex that handles both quote types.
+    # Keys must stop at '=' so values like base64-padded URLs ending with '=='
+    # don't get folded into the preceding attribute name.
+    for match in re.finditer(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2', content):
         key = match.group(1)
         value = match.group(3)
         attrs[key] = value
@@ -1170,13 +1172,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
 
-    # Aggressive garbage collection
-    # del streams_to_create, streams_to_update, stream_hashes, existing_streams
-    # from core.utils import cleanup_memory
-    # cleanup_memory(log_usage=True, force_collection=True)
-
     # Clean up database connections for threading
     connections.close_all()
+
+    # Free batch data structures (reference-counted deallocation)
+    del streams_to_create, streams_to_update, stream_hashes, existing_streams
 
     return retval
 
@@ -2642,6 +2642,16 @@ def refresh_single_m3u_account(account_id):
     lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
     lock_renewer.start()
 
+    try:
+        return _refresh_single_m3u_account_impl(account_id)
+    finally:
+        # Guaranteed cleanup on all exit paths (success, exception, early return)
+        lock_renewer.stop()
+        release_task_lock("refresh_single_m3u_account", account_id)
+
+
+def _refresh_single_m3u_account_impl(account_id):
+    """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
     start_time = time.time()  # For tracking elapsed time as float
@@ -2653,8 +2663,6 @@ def refresh_single_m3u_account(account_id):
         account = M3UAccount.objects.get(id=account_id, is_active=True)
         if not account.is_active:
             logger.debug(f"Account {account_id} is not active, skipping.")
-            lock_renewer.stop()
-            release_task_lock("refresh_single_m3u_account", account_id)
             return
 
         # Set status to fetching
@@ -2683,8 +2691,6 @@ def refresh_single_m3u_account(account_id):
         else:
             logger.debug(f"No orphaned task found for M3U account {account_id}")
 
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive, task cleaned up"
 
     # Fetch M3U lines and handle potential issues
@@ -2699,6 +2705,7 @@ def refresh_single_m3u_account(account_id):
 
             extinf_data = data["extinf_data"]
             groups = data["groups"]
+            del data  # Free top-level dict; extinf_data/groups retain their references
         except json.JSONDecodeError as e:
             # Handle corrupted JSON file
             logger.error(
@@ -2734,8 +2741,6 @@ def refresh_single_m3u_account(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                lock_renewer.stop()
-                release_task_lock("refresh_single_m3u_account", account_id)
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -2768,8 +2773,6 @@ def refresh_single_m3u_account(account_id):
                 status="error",
                 error=f"Error refreshing M3U groups: {str(e)}",
             )
-            lock_renewer.stop()
-            release_task_lock("refresh_single_m3u_account", account_id)
             return "Failed to update m3u account"
 
     # Only proceed with parsing if we actually have data and no errors were encountered
@@ -2792,8 +2795,6 @@ def refresh_single_m3u_account(account_id):
             status="error",
             error="No data available for processing",
         )
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
         return "Failed to update m3u account, no data available"
 
     hash_keys = CoreSettings.get_m3u_hash_key().split(",")
@@ -2938,6 +2939,9 @@ def refresh_single_m3u_account(account_id):
                 ]
 
                 logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
+
+                # Free the original list; batches hold independent sliced copies
+                del all_xc_streams
 
                 # Use threading for XC stream processing - now with consistent batch sizes
                 max_workers = min(4, len(batches))
@@ -3099,32 +3103,38 @@ def refresh_single_m3u_account(account_id):
 
     except Exception as e:
         logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = f"Error processing M3U: {str(e)}"
-        account.save(update_fields=["status", "last_message"])
+        try:
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = f"Error processing M3U: {str(e)}"
+            account.save(update_fields=["status", "last_message"])
+        except Exception:
+            logger.debug(f"Failed to update account {account_id} status during error handling")
         raise  # Re-raise the exception for Celery to handle
     finally:
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
+        # Free large data structures regardless of success or failure
+        if 'existing_groups' in locals():
+            del existing_groups
+        if 'extinf_data' in locals():
+            del extinf_data
+        if 'groups' in locals():
+            del groups
+        if 'batches' in locals():
+            del batches
+        if 'all_xc_streams' in locals():
+            del all_xc_streams
+        if 'data' in locals():
+            del data
+        if 'filtered_groups' in locals():
+            del filtered_groups
+        if 'channel_group_relationships' in locals():
+            del channel_group_relationships
 
-    # Aggressive garbage collection
-    # Only delete variables if they exist
-    if 'existing_groups' in locals():
-        del existing_groups
-    if 'extinf_data' in locals():
-        del extinf_data
-    if 'groups' in locals():
-        del groups
-    if 'batches' in locals():
-        del batches
-
-    from core.utils import cleanup_memory
-
-    cleanup_memory(log_usage=True, force_collection=True)
-
-    # Clean up cache file since we've fully processed it
-    if os.path.exists(cache_path):
-        os.remove(cache_path)
+        # Remove cache file after processing (success or failure)
+        cache_path = os.path.join(m3u_dir, f"{account_id}.json")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
 
     return f"Dispatched jobs complete."
 
