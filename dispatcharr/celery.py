@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun  # Add import for signals
+from celery.signals import task_postrun, worker_ready
 
 # Initialize with defaults before Django settings are loaded
 DEFAULT_LOG_LEVEL = 'DEBUG'
@@ -149,3 +149,10 @@ def setup_celery_logging(**kwargs):
         except (AttributeError, TypeError):
             # If the log level string is invalid, default to DEBUG
             logger.setLevel(logging.DEBUG)
+
+
+@worker_ready.connect
+def on_worker_ready(**kwargs):
+    """Resume or finalize interrupted DVR recordings after a worker restart."""
+    from apps.channels.tasks import recover_recordings_on_startup
+    recover_recordings_on_startup.delay()

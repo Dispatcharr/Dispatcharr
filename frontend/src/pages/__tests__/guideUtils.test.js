@@ -705,6 +705,23 @@ describe('guideUtils', () => {
 
       expect(result.size).toBe(0);
     });
+
+    it('should exclude terminal status recordings', () => {
+      const recordings = [
+        { id: 1, custom_properties: { program: { id: 'p1' }, status: 'completed' } },
+        { id: 2, custom_properties: { program: { id: 'p2' }, status: 'stopped' } },
+        { id: 3, custom_properties: { program: { id: 'p3' }, status: 'interrupted' } },
+        { id: 4, custom_properties: { program: { id: 'p4' }, status: 'failed' } },
+        { id: 5, custom_properties: { program: { id: 'p5' }, status: 'recording' } },
+        { id: 6, custom_properties: { program: { id: 'p6' } } },
+      ];
+
+      const result = guideUtils.mapRecordingsByProgramId(recordings);
+
+      expect(result.size).toBe(2);
+      expect(result.get('p5').id).toBe(5);
+      expect(result.get('p6').id).toBe(6);
+    });
   });
 
   describe('formatTime', () => {

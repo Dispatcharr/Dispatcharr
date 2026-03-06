@@ -23,7 +23,6 @@ import {
 } from 'lucide-react';
 import {
   Avatar,
-  AppShell,
   Group,
   Stack,
   Box,
@@ -31,6 +30,7 @@ import {
   UnstyledButton,
   TextInput,
   ActionIcon,
+  AppShellNavbar,
   ScrollArea,
 } from '@mantine/core';
 import logo from '../images/logo.png';
@@ -200,7 +200,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           },
           {
             label: 'System',
-            icon: <LucideSettings size={20} />,
+            icon: <MonitorCog size={20} />,
             paths: [
               {
                 label: 'Users',
@@ -214,7 +214,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               },
               {
                 label: 'Settings',
-                icon: <MonitorCog size={20} />,
+                icon: <LucideSettings size={20} />,
                 path: '/settings',
               },
             ],
@@ -246,7 +246,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   };
 
   return (
-    <AppShell.Navbar
+    <AppShellNavbar
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
@@ -427,7 +427,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
-    </AppShell.Navbar>
+    </AppShellNavbar>
   );
 };
 

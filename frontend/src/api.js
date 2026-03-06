@@ -1314,7 +1314,6 @@ export default class API {
   static async getEPGs() {
     try {
       const response = await request(`${host}/api/epg/sources/`);
-
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPGs', e);
@@ -1331,11 +1330,11 @@ export default class API {
     }
   }
 
-  static async getCurrentPrograms(channelIds = null) {
+  static async getCurrentPrograms(channelUUIDs = null) {
     try {
       const response = await request(`${host}/api/epg/current-programs/`, {
         method: 'POST',
-        body: { channel_ids: channelIds },
+        body: { channel_uuids: channelUUIDs },
       });
 
       return response;
@@ -2660,6 +2659,55 @@ export default class API {
       } catch {}
     } catch (e) {
       errorNotification(`Failed to delete recording ${id}`, e);
+    }
+  }
+
+  static async stopRecording(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/stop/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to stop recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async extendRecording(id, extraMinutes) {
+    try {
+      const resp = await request(`${host}/api/channels/recordings/${id}/extend/`, {
+        method: 'POST',
+        body: JSON.stringify({ extra_minutes: extraMinutes }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      return resp;
+    } catch (e) {
+      errorNotification(`Failed to extend recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async refreshArtwork(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/refresh-artwork/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to refresh artwork for recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async updateRecordingMetadata(id, { title, description }) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/update-metadata/`, {
+        method: 'POST',
+        body: JSON.stringify({ title, description }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) {
+      errorNotification(`Failed to update recording metadata`, e);
+      throw e;
     }
   }
 
