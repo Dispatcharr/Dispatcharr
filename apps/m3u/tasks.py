@@ -482,8 +482,10 @@ def parse_extinf_line(line: str) -> dict:
     attrs = {}
     last_attr_end = 0
 
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+    # Use a single regex that handles both quote types.
+    # Keys must stop at '=' so values like base64-padded URLs ending with '=='
+    # don't get folded into the preceding attribute name.
+    for match in re.finditer(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2', content):
         key = match.group(1)
         value = match.group(3)
         attrs[key] = value
