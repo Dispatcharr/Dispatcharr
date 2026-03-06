@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { CircleCheck } from 'lucide-react';
 import { showNotification } from '../utils/notificationUtils.js';
 
-const M3uSetupSuccess = (data) => {
+const M3uSetupSuccess = ({ data }) => {
   const navigate = useNavigate();
 
   const onClickRefresh = () => {
