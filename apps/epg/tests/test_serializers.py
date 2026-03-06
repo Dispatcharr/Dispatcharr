@@ -94,6 +94,7 @@ class ProgramDataSerializerTests(TestCase):
         expected_fields = {
             "id", "start_time", "end_time", "title", "sub_title",
             "description", "tvg_id", "season", "episode",
+            "is_new", "is_live", "is_premiere", "is_finale",
         }
         self.assertEqual(set(data.keys()), expected_fields)
 
@@ -168,3 +169,113 @@ class ProgramDataSerializerTests(TestCase):
         self.assertIsNone(data[1]["episode"])
         self.assertIsNone(data[2]["season"])
         self.assertIsNone(data[2]["episode"])
+
+    def test_is_new_true_when_flag_set(self):
+        """is_new should be True when custom_properties has 'new' flag."""
+        program = self._create_program(custom_properties={"new": True})
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_new"])
+
+    def test_is_live_true_when_flag_set(self):
+        """is_live should be True when custom_properties has 'live' flag."""
+        program = self._create_program(custom_properties={"live": True})
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_live"])
+
+    def test_is_premiere_true_when_flag_set(self):
+        """is_premiere should be True when custom_properties has 'premiere' flag."""
+        program = self._create_program(custom_properties={"premiere": True})
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_premiere"])
+
+    def test_flags_false_when_not_set(self):
+        """All boolean flags should be False when not in custom_properties."""
+        program = self._create_program(custom_properties={"season": 1})
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_new"])
+        self.assertFalse(data["is_live"])
+        self.assertFalse(data["is_premiere"])
+
+    def test_flags_false_when_custom_properties_none(self):
+        """All boolean flags should be False when custom_properties is None."""
+        program = self._create_program(custom_properties=None)
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_new"])
+        self.assertFalse(data["is_live"])
+        self.assertFalse(data["is_premiere"])
+
+    def test_flags_false_when_custom_properties_empty(self):
+        """All boolean flags should be False when custom_properties is empty."""
+        program = self._create_program(custom_properties={})
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_new"])
+        self.assertFalse(data["is_live"])
+        self.assertFalse(data["is_premiere"])
+
+    def test_multiple_flags_set(self):
+        """Multiple flags can be true simultaneously."""
+        program = self._create_program(
+            custom_properties={"new": True, "live": True, "premiere": True}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_new"])
+        self.assertTrue(data["is_live"])
+        self.assertTrue(data["is_premiere"])
+
+    def test_flags_with_season_episode(self):
+        """Flags should work alongside season/episode data."""
+        program = self._create_program(
+            custom_properties={"season": 5, "episode": 1, "new": True, "premiere": True}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertEqual(data["season"], 5)
+        self.assertEqual(data["episode"], 1)
+        self.assertTrue(data["is_new"])
+        self.assertFalse(data["is_live"])
+        self.assertTrue(data["is_premiere"])
+
+    def test_is_finale_from_premiere_text_season_finale(self):
+        """is_finale should be True when premiere_text contains 'Season Finale'."""
+        program = self._create_program(
+            custom_properties={"premiere": True, "premiere_text": "Season Finale"}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_finale"])
+
+    def test_is_finale_from_premiere_text_series_finale(self):
+        """is_finale should be True when premiere_text contains 'Series Finale'."""
+        program = self._create_program(
+            custom_properties={"premiere": True, "premiere_text": "Series Finale"}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_finale"])
+
+    def test_is_finale_case_insensitive(self):
+        """is_finale detection should be case-insensitive."""
+        program = self._create_program(
+            custom_properties={"premiere": True, "premiere_text": "SEASON FINALE"}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_finale"])
+
+    def test_is_finale_false_for_premiere_text(self):
+        """is_finale should be False when premiere_text is 'Season Premiere'."""
+        program = self._create_program(
+            custom_properties={"premiere": True, "premiere_text": "Season Premiere"}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_finale"])
+
+    def test_is_finale_false_when_no_premiere_text(self):
+        """is_finale should be False when premiere_text is absent."""
+        program = self._create_program(
+            custom_properties={"premiere": True}
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_finale"])
+
+    def test_is_finale_false_when_custom_properties_none(self):
+        """is_finale should be False when custom_properties is None."""
+        program = self._create_program(custom_properties=None)
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_finale"])

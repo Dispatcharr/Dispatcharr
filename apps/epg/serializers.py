@@ -102,6 +102,11 @@ class ProgramDataSerializer(serializers.ModelSerializer):
                     episode = int(match.group(2))
         data['season'] = season
         data['episode'] = episode
+        data['is_new'] = bool(cp.get('new'))
+        data['is_live'] = bool(cp.get('live'))
+        data['is_premiere'] = bool(cp.get('premiere'))
+        premiere_text = cp.get('premiere_text', '')
+        data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
         return data
 
 class EPGDataSerializer(serializers.ModelSerializer):

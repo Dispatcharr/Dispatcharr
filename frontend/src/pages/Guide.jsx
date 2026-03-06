@@ -1009,6 +1009,26 @@ export default function TVChannelGuide({ startDate, endDate }) {
                       {seasonEpisodeLabel}
                     </Badge>
                   )}
+                  {!isExpanded && program.is_live && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      style={{ flexShrink: 0 }}
+                    >
+                      LIVE
+                    </Badge>
+                  )}
+                  {!isExpanded && program.is_new && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="green"
+                      style={{ flexShrink: 0 }}
+                    >
+                      NEW
+                    </Badge>
+                  )}
                 </Group>
               </Text>
               {!isExpanded && (program.sub_title || program.description) && (
@@ -1026,18 +1046,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   {program.sub_title || program.description}
                 </Text>
               )}
-              <Text
-                size="sm"
-                style={{
-                  whiteSpace: 'nowrap',
-                  textOverflow: 'ellipsis',
-                  overflow: 'hidden',
-                }}
-              >
-                {format(programStart, timeFormat)} -{' '}
-                {format(programEnd, timeFormat)}
-              </Text>
-              {isExpanded && (program.sub_title || seasonEpisodeLabel) && (
+              {isExpanded && (program.sub_title || seasonEpisodeLabel || program.is_new || program.is_live || program.is_premiere || program.is_finale) && (
                 <Group gap="xs" wrap="nowrap" align="center">
                   {program.sub_title && (
                     <Text
@@ -1064,8 +1073,59 @@ export default function TVChannelGuide({ startDate, endDate }) {
                       {seasonEpisodeLabel}
                     </Badge>
                   )}
+                  {program.is_live && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      style={{ flexShrink: 0 }}
+                    >
+                      LIVE
+                    </Badge>
+                  )}
+                  {program.is_new && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="green"
+                      style={{ flexShrink: 0 }}
+                    >
+                      NEW
+                    </Badge>
+                  )}
+                  {program.is_premiere && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="yellow"
+                      style={{ flexShrink: 0 }}
+                    >
+                      PREMIERE
+                    </Badge>
+                  )}
+                  {program.is_finale && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="orange"
+                      style={{ flexShrink: 0 }}
+                    >
+                      FINALE
+                    </Badge>
+                  )}
                 </Group>
               )}
+              <Text
+                size="sm"
+                style={{
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  overflow: 'hidden',
+                }}
+              >
+                {format(programStart, timeFormat)} -{' '}
+                {format(programEnd, timeFormat)}
+              </Text>
               {isExpanded && program.description && (
                 <Text
                   size="xs"

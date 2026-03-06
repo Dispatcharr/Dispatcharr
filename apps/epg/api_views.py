@@ -298,6 +298,10 @@ class EPGGridAPIView(APIView):
                             "custom_properties": None,
                             "season": None,
                             "episode": None,
+                            "is_new": False,
+                            "is_live": False,
+                            "is_premiere": False,
+                            "is_finale": False,
                         }
                         dummy_programs.append(dummy_program)
                 else:
@@ -357,6 +361,10 @@ class EPGGridAPIView(APIView):
                         "custom_properties": None,
                         "season": None,
                         "episode": None,
+                        "is_new": False,
+                        "is_live": False,
+                        "is_premiere": False,
+                        "is_finale": False,
                     }
                     dummy_programs.append(dummy_program)
 
