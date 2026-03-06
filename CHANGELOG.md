@@ -34,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `M3URefreshNotification` now uses the centralized `showNotification()` utility (from `notificationUtils.js`) instead of calling `notifications.show()` directly, bringing it in line with the rest of the app. State updates also converted to functional updater form (`prev => ...`) to eliminate potential stale-closure bugs.
   - `SystemEvents` now imports `format` from `dateTimeUtils` for consistent date/time formatting.
   - Removed a dead `onLogout` handler in `Sidebar` that called `logout()` and `window.location.reload()` but was never wired to any UI element.
-
 - EPG output when no `days` parameter is specified now excludes already-ended programs instead of returning all historical data.
 
 ### Fixed
