@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `debian_install.sh` hardened for non-UTF8 environments (common in minimal LXC containers) - Thanks [@marcinolek](https://github.com/marcinolek)
+  - Added `setup_locales` step that installs the `locales` package, enables `en_US.UTF-8`, regenerates locales, and exports `LANG`/`LC_ALL` before any other work runs, preventing PostgreSQL from defaulting to `SQL_ASCII` encoding.
+  - PostgreSQL database creation now explicitly passes `-E UTF8` to `createdb`.
+  - `PATH` in the Celery worker, Celery Beat, and Daphne systemd service files extended to include `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`, fixing failures where background tasks could not locate `ffmpeg` or `ffprobe`.
 - M3U EXTINF attribute parsing for values containing `=` or `==` (e.g. base64-padded `tvg-logo` URLs, catchup tokens with query strings). The previous regex used `[^\s]+` for the key pattern, allowing `=` signs inside a quoted value to be greedily absorbed into the next attribute's key name, causing that attribute and all subsequent ones on the line to be silently dropped. Changed to `[^\s=]+` so the key match always stops at the first `=`. (Fixes #1055) - Thanks [@JCBird1012](https://github.com/JCBird1012)
 - Celery worker memory leak during M3U/XC refresh causing 20–80 MB growth per cycle with no reclamation (Fixes #1012, #1053) - Thanks [@CodeBormen](https://github.com/CodeBormen)
   - Restructured `refresh_single_m3u_account()` with a `try/finally` that guarantees `del` of large data structures runs before Celery's `gc.collect()`, and lock release on all exit paths (success, exception, early return)
