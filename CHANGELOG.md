@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Improved frontend table stability during M3U imports: Fixed incorrect default `state` initialization (`[]` → `{}`) in `CustomTable` to match TanStack Table v8's expected state object shape. Added `autoResetPageIndex: false` and `autoResetExpanded: false` to prevent TanStack Table from issuing internal state resets on data updates. Memoized `processedData` in `M3UsTable` to avoid redundant sort/filter recomputation on re-renders. - Thanks [@marcinolek](https://github.com/marcinolek)
 - `debian_install.sh` hardened for non-UTF8 environments (common in minimal LXC containers) - Thanks [@marcinolek](https://github.com/marcinolek)
   - Added `setup_locales` step that installs the `locales` package, enables `en_US.UTF-8`, regenerates locales, and exports `LANG`/`LC_ALL` before any other work runs, preventing PostgreSQL from defaulting to `SQL_ASCII` encoding.
   - PostgreSQL database creation now explicitly passes `-E UTF8` to `createdb`.
