@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 504 Gateway Timeout when saving M3U group settings on slower hardware (e.g. Synology NAS). Replaced per-row `update_or_create()` loops with `bulk_create(update_conflicts=True)` wrapped in `transaction.atomic()` for both `ChannelGroupM3UAccount` and `M3UVODCategoryRelation`, reducing hundreds of individual DB round-trips to a single query per model. (Fixes #745) — Thanks [@nickgerrer](https://github.com/nickgerrer)
 - Improved frontend table stability during M3U imports: Fixed incorrect default `state` initialization (`[]` → `{}`) in `CustomTable` to match TanStack Table v8's expected state object shape. Added `autoResetPageIndex: false` and `autoResetExpanded: false` to prevent TanStack Table from issuing internal state resets on data updates. Memoized `processedData` in `M3UsTable` to avoid redundant sort/filter recomputation on re-renders. - Thanks [@marcinolek](https://github.com/marcinolek)
 - `debian_install.sh` hardened for non-UTF8 environments (common in minimal LXC containers) - Thanks [@marcinolek](https://github.com/marcinolek)
   - Added `setup_locales` step that installs the `locales` package, enables `en_US.UTF-8`, regenerates locales, and exports `LANG`/`LC_ALL` before any other work runs, preventing PostgreSQL from defaulting to `SQL_ASCII` encoding.
