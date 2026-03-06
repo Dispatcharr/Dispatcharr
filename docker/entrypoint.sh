@@ -175,23 +175,17 @@ else
     check_external_postgres_version || exit 1
 fi
 
-# Wait for Redis to be ready (modular mode uses external Redis)
+# Wait for Redis to be ready and flush stale state.
+# In modular mode Redis is external — call wait_for_redis.py here
+# because uWSGI's exec-pre runs under 'su -' which strips env vars
+# (DISPATCHARR_ENV, REDIS_HOST, etc.).
+# In AIO mode Redis is started by uWSGI (attach-daemon), so the
+# exec-pre in uwsgi.ini handles the wait + flush there instead.
 if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
     echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
-    echo_with_timestamp "Waiting for external Redis to be ready..."
-    until python3 -c "
-import socket, sys
-try:
-    s = socket.create_connection(('${REDIS_HOST}', ${REDIS_PORT}), timeout=2)
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
-        echo_with_timestamp "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
-        sleep 1
-    done
-    echo "✅ External Redis is ready"
+    echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
 fi
 
 # Ensure database encoding is UTF8 (handles both internal and external databases)

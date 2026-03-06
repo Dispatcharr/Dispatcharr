@@ -21,23 +21,40 @@ class WaitForRedisTests(SimpleTestCase):
     """
     Tests for scripts/wait_for_redis.py.
 
-    The critical regression test is test_successful_connection_does_not_call_flushdb
-    which ensures the removed flushdb() call is never re-added.
+    Verifies flush behaviour: full flushdb in AIO mode, selective
+    (non-Celery) key deletion in modular mode.
     """
 
     @patch('wait_for_redis.redis.Redis')
-    def test_successful_connection_does_not_call_flushdb(self, mock_redis_cls):
-        """After connecting successfully, flushdb must NOT be called."""
+    def test_aio_mode_calls_flushdb(self, mock_redis_cls):
+        """In AIO mode (default), flushdb is called after successful ping."""
         mock_client = MagicMock()
         mock_client.ping.return_value = True
         mock_redis_cls.return_value = mock_client
 
-        wait_for_redis = _import_wait_for_redis()
-        result = wait_for_redis(max_retries=1, retry_interval=0)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('DISPATCHARR_ENV', None)
+            wait_for_redis = _import_wait_for_redis()
+            result = wait_for_redis(max_retries=1, retry_interval=0)
 
         self.assertTrue(result)
-        mock_client.ping.assert_called_once()
+        mock_client.flushdb.assert_called_once()
+
+    @patch('wait_for_redis._flush_non_celery_keys')
+    @patch('wait_for_redis.redis.Redis')
+    def test_modular_mode_does_not_call_flushdb(self, mock_redis_cls, mock_selective):
+        """In modular mode, flushdb must NOT be called — selective flush instead."""
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+        mock_redis_cls.return_value = mock_client
+
+        with patch.dict(os.environ, {'DISPATCHARR_ENV': 'modular'}):
+            wait_for_redis = _import_wait_for_redis()
+            result = wait_for_redis(max_retries=1, retry_interval=0)
+
+        self.assertTrue(result)
         mock_client.flushdb.assert_not_called()
+        mock_selective.assert_called_once_with(mock_client)
 
     @patch('wait_for_redis.redis.Redis')
     def test_retries_on_connection_error(self, mock_redis_cls):
