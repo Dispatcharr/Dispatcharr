@@ -1248,6 +1248,56 @@ describe('guideUtils', () => {
     });
   });
 
+  describe('formatSeasonEpisode', () => {
+    it('should format both season and episode', () => {
+      expect(guideUtils.formatSeasonEpisode(1, 3)).toBe('S01E03');
+    });
+
+    it('should pad numbers to 2 digits', () => {
+      expect(guideUtils.formatSeasonEpisode(1, 1)).toBe('S01E01');
+    });
+
+    it('should handle large numbers without truncation', () => {
+      expect(guideUtils.formatSeasonEpisode(12, 24)).toBe('S12E24');
+    });
+
+    it('should handle numbers greater than 99', () => {
+      expect(guideUtils.formatSeasonEpisode(100, 200)).toBe('S100E200');
+    });
+
+    it('should return season only when episode is null', () => {
+      expect(guideUtils.formatSeasonEpisode(5, null)).toBe('S05');
+    });
+
+    it('should return season only when episode is undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(5, undefined)).toBe('S05');
+    });
+
+    it('should return episode only when season is null', () => {
+      expect(guideUtils.formatSeasonEpisode(null, 7)).toBe('E07');
+    });
+
+    it('should return episode only when season is undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(undefined, 7)).toBe('E07');
+    });
+
+    it('should return null when both are null', () => {
+      expect(guideUtils.formatSeasonEpisode(null, null)).toBeNull();
+    });
+
+    it('should return null when both are undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(undefined, undefined)).toBeNull();
+    });
+
+    it('should handle zero values as valid', () => {
+      expect(guideUtils.formatSeasonEpisode(0, 0)).toBe('S00E00');
+    });
+
+    it('should handle season zero with episode', () => {
+      expect(guideUtils.formatSeasonEpisode(0, 5)).toBe('S00E05');
+    });
+  });
+
   describe('deleteSeriesRuleByTvgId', () => {
     it('should delete series rule via API', async () => {
       await guideUtils.deleteSeriesRuleByTvgId('tvg-1');

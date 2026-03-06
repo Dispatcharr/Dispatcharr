@@ -13,6 +13,7 @@ import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import {
   ActionIcon,
+  Badge,
   Box,
   Button,
   Flex,
@@ -51,6 +52,7 @@ import {
   fetchPrograms,
   fetchRules,
   filterGuideChannels,
+  formatSeasonEpisode,
   formatTime,
   getProfileOptions,
   getRuleByProgram,
@@ -875,6 +877,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
         textOffsetLeft = Math.min(visibleStart, maxOffset);
       }
 
+      const seasonEpisodeLabel = formatSeasonEpisode(
+        program.season,
+        program.episode
+      );
+
       const RecordButton = () => {
         return (
           <Button
@@ -931,7 +938,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             style={{
               overflow: 'hidden',
               flexDirection: 'column',
-              justifyContent: isExpanded ? 'flex-start' : 'space-between',
+              justifyContent: 'flex-start',
               backgroundColor: isExpanded
                 ? isLive
                   ? '#1a365d'
@@ -957,6 +964,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
               style={{
                 transform: `translateX(${textOffsetLeft}px)`,
                 transition: 'transform 0.1s ease-out',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: !isExpanded && (program.sub_title || seasonEpisodeLabel) ? 'space-between' : 'flex-start',
+                height: '100%',
               }}
             >
               <Text
@@ -969,7 +980,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 }}
                 fw={'bold'}
               >
-                <Group gap="xs">
+                <Group gap="xs" wrap="nowrap">
                   {recording && (
                     <div
                       style={{
@@ -977,6 +988,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                         width: '10px',
                         height: '10px',
                         display: 'flex',
+                        flexShrink: 0,
                         backgroundColor: 'red',
                       }}
                     ></div>
@@ -984,6 +996,35 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   {program.title}
                 </Group>
               </Text>
+              {(program.sub_title || seasonEpisodeLabel) && (
+                <Group gap="xs" wrap="nowrap" align="center">
+                  {program.sub_title && (
+                    <Text
+                      size="xs"
+                      fs="italic"
+                      style={{
+                        whiteSpace: 'nowrap',
+                        textOverflow: 'ellipsis',
+                        overflow: 'hidden',
+                        minWidth: 0,
+                      }}
+                      c={isPast ? '#718096' : '#a0aec0'}
+                    >
+                      {program.sub_title}
+                    </Text>
+                  )}
+                  {seasonEpisodeLabel && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="gray"
+                      style={{ flexShrink: 0 }}
+                    >
+                      {seasonEpisodeLabel}
+                    </Badge>
+                  )}
+                </Group>
+              )}
               <Text
                 size="sm"
                 style={{
@@ -995,15 +1036,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 {format(programStart, timeFormat)} -{' '}
                 {format(programEnd, timeFormat)}
               </Text>
-            </Box>
-
-            {program.description && (
-              <Box
-                style={{
-                  transform: `translateX(${textOffsetLeft}px)`,
-                  transition: 'transform 0.1s ease-out',
-                }}
-              >
+              {(isExpanded || (!program.sub_title && !seasonEpisodeLabel)) && program.description && (
                 <Text
                   size="xs"
                   style={{
@@ -1013,12 +1046,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
                   }}
                   mt={4}
                   c={isPast ? '#718096' : '#cbd5e0'}
-                  mah={isExpanded ? '80px' : 'unset'}
+                  mah={isExpanded ? '80px' : undefined}
                 >
                   {program.description}
                 </Text>
-              </Box>
-            )}
+              )}
+            </Box>
 
             {isExpanded && (
               <Box mt={'auto'}>

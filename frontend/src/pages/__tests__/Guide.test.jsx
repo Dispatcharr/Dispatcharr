@@ -126,6 +126,11 @@ vi.mock('@mantine/core', async () => {
         ))}
       </select>
     ),
+    Badge: ({ children, size, variant, color, style }) => (
+      <span data-size={size} data-variant={variant} data-color={color} style={style}>
+        {children}
+      </span>
+    ),
     ActionIcon: ({ children, onClick, variant, size, color }) => (
       <button
         onClick={onClick}
@@ -325,7 +330,10 @@ describe('Guide', () => {
         id: 'prog-1',
         tvg_id: 'tvg-1',
         title: 'Test Program 1',
+        sub_title: 'The Pilot',
         description: 'Description 1',
+        season: 1,
+        episode: 3,
         start_time: now.toISOString(),
         end_time: now.add(1, 'hour').toISOString(),
         programStart: now,

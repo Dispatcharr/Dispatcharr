@@ -406,6 +406,14 @@ export const getProfileOptions = (profiles) => {
   return options;
 };
 
+export const formatSeasonEpisode = (season, episode) => {
+  if (season != null && episode != null)
+    return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  if (season != null) return `S${String(season).padStart(2, '0')}`;
+  if (episode != null) return `E${String(episode).padStart(2, '0')}`;
+  return null;
+};
+
 export const deleteSeriesRuleByTvgId = async (tvg_id) => {
   await API.deleteSeriesRule(tvg_id);
 };

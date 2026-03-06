@@ -296,6 +296,8 @@ class EPGGridAPIView(APIView):
                             "tvg_id": dummy_tvg_id,
                             "sub_title": None,
                             "custom_properties": None,
+                            "season": None,
+                            "episode": None,
                         }
                         dummy_programs.append(dummy_program)
                 else:
@@ -353,6 +355,8 @@ class EPGGridAPIView(APIView):
                         "tvg_id": dummy_tvg_id,
                         "sub_title": None,
                         "custom_properties": None,
+                        "season": None,
+                        "episode": None,
                     }
                     dummy_programs.append(dummy_program)
 

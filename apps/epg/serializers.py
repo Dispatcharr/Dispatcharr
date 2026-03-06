@@ -1,7 +1,12 @@
+import re
+
 from core.utils import validate_flexible_url
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from apps.channels.models import Channel
+
+# Matches patterns like "S12 E6", "S3E21", "S8 E8 P2/2"
+_ONSCREEN_RE = re.compile(r'S(\d+)\s*E(\d+)', re.IGNORECASE)
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -78,9 +83,38 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
 class ProgramDataSerializer(serializers.ModelSerializer):
+    season = serializers.SerializerMethodField()
+    episode = serializers.SerializerMethodField()
+
     class Meta:
         model = ProgramData
-        fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id']
+        fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id', 'season', 'episode']
+
+    def _parse_onscreen(self, obj):
+        """Parse season/episode from onscreen_episode string (e.g. 'S12 E6')."""
+        onscreen = (obj.custom_properties or {}).get('onscreen_episode', '')
+        match = _ONSCREEN_RE.search(onscreen)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+        return None, None
+
+    def get_season(self, obj):
+        if obj.custom_properties:
+            season = obj.custom_properties.get('season')
+            if season is not None:
+                return season
+            season, _ = self._parse_onscreen(obj)
+            return season
+        return None
+
+    def get_episode(self, obj):
+        if obj.custom_properties:
+            episode = obj.custom_properties.get('episode')
+            if episode is not None:
+                return episode
+            _, episode = self._parse_onscreen(obj)
+            return episode
+        return None
 
 class EPGDataSerializer(serializers.ModelSerializer):
     """
