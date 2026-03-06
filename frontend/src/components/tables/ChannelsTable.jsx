@@ -269,6 +269,19 @@ const ChannelsTable = ({ onReady }) => {
   // store/channelsTable
   const data = useChannelsTableStore((s) => s.channels);
   const pageCount = useChannelsTableStore((s) => s.pageCount);
+
+  const rowClassMap = useMemo(() => {
+    const map = {};
+    for (const channel of data) {
+      const hasStreams = channel.streams?.length > 0;
+      if (!hasStreams) {
+        map[channel.id] = 'no-streams-row';
+      } else if (channel.streams.some((s) => s.is_stale)) {
+        map[channel.id] = 'has-stale-streams-row';
+      }
+    }
+    return map;
+  }, [data]);
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
@@ -324,6 +337,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
+  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -423,6 +437,9 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStreamlessChannels === true) {
       params.append('only_streamless', true);
     }
+    if (showOnlyStaleChannels === true) {
+      params.append('only_stale', true);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -510,6 +527,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -675,7 +693,7 @@ const ChannelsTable = ({ onReady }) => {
     );
     const url = getChannelURL(channel);
     console.log(`Stream URL: ${url}`);
-    showVideo(url);
+    showVideo(url, 'live', { name: channel.name });
   };
 
   const onRowSelectionChange = (newSelection) => {
@@ -1125,13 +1143,8 @@ const ChannelsTable = ({ onReady }) => {
       epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
-      const hasStreams =
-        row.original.streams && row.original.streams.length > 0;
-      return hasStreams
-        ? {} // Default style for channels with streams
-        : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+      const cls = rowClassMap[row.original.id];
+      return cls ? { className: cls } : {};
     },
   });
 
@@ -1434,6 +1447,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            showOnlyStaleChannels={showOnlyStaleChannels}
+            setShowOnlyStaleChannels={setShowOnlyStaleChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
