@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components. — Thanks [@nick4810](https://github.com/nick4810)
 - Floating video player now displays the channel, stream, or VOD title in the player header bar. Title is passed through from all preview entry points: channel table, stream table, stream connection card, guide, DVR, recording cards, recording details modal, VOD modal, and series modal.
 - New Client Buffer proxy setting: new clients joining an active channel are now positioned a configurable number of seconds behind live rather than a fixed chunk count. The start position is determined by wall-clock chunk receive time (stored as a Redis sorted set alongside the buffer), so the buffer depth is consistent in seconds regardless of stream bitrate. Setting the value to `0` starts clients at live with no buffer. Defaults to 5 seconds. Existing chunk-count gating for the first client connecting to a channel is unchanged. The setting is exposed in Settings → Proxy as "New Client Buffer (seconds)".
 - Channel table filter for channels that have stale streams: A new "Has Stale Streams" filter option in the channel table header menu highlights and filters channels containing at least one stale stream. Channels with stale streams are visually distinguished with an orange tint. The filter is mutually exclusive with "Only Empty Channels". - Thanks [@JCBird1012](https://github.com/JCBird1012)
@@ -25,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Frontend component refactoring and cleanup — Thanks [@nick4810](https://github.com/nick4810)
+  - `FloatingVideo`, `SeriesModal`, `VODModal`, `SystemEvents`, `M3URefreshNotification`, and `NotificationCenter` significantly reduced in size by separating business logic into dedicated utility modules under `utils/components/` (`FloatingVideoUtils.js`, `SeriesModalUtils.js`, `VODModalUtils.js`, `NotificationCenterUtils.js`).
+  - `FloatingVideo` resize handle elements extracted into a standalone `ResizeHandles` sub-component.
+  - `YouTubeTrailerModal` extracted into a standalone component (`components/modals/YouTubeTrailerModal.jsx`).
+  - `NotificationCenter` and `Sidebar` updated from Mantine dot-notation sub-components (`Popover.Target`, `Popover.Dropdown`, `ScrollArea.Autosize`, `AppShell.Navbar`) to Mantine v7 named imports (`PopoverTarget`, `PopoverDropdown`, `ScrollAreaAutosize`, `AppShellNavbar`).
+  - `M3URefreshNotification` now uses the centralized `showNotification()` utility (from `notificationUtils.js`) instead of calling `notifications.show()` directly, bringing it in line with the rest of the app. State updates also converted to functional updater form (`prev => ...`) to eliminate potential stale-closure bugs.
+  - `SystemEvents` now imports `format` from `dateTimeUtils` for consistent date/time formatting.
+  - Removed a dead `onLogout` handler in `Sidebar` that called `logout()` and `window.location.reload()` but was never wired to any UI element.
 - EPG output when no `days` parameter is specified now excludes already-ended programs instead of returning all historical data.
 
 ### Fixed
