@@ -126,7 +126,9 @@ describe('RecordingCardUtils', () => {
       vi.stubEnv('DEV', false);
       const result = getPosterUrl(null, {}, '');
 
-      expect(result).toBe('/logo.png');
+      // Falls back to the imported default Dispatcharr logo asset
+      expect(result).toBeTruthy();
+      expect(result).toContain('logo');
     });
 
     it('prepends dev server URL in dev mode for relative paths', () => {

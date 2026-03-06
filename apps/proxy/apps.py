@@ -12,6 +12,6 @@ class ProxyConfig(AppConfig):
             from .hls_proxy.server import ProxyServer as HLSProxyServer
             from .ts_proxy.server import ProxyServer as TSProxyServer
 
-            # Initialize proxy servers
+            # Initialize proxy servers (TS uses singleton to prevent duplicate instances)
             self.hls_proxy = HLSProxyServer()
-            self.ts_proxy = TSProxyServer()
+            self.ts_proxy = TSProxyServer.get_instance()

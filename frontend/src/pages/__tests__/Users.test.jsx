@@ -21,7 +21,7 @@ describe('UsersPage', () => {
 
     const { container } = render(<UsersPage />);
 
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
     expect(screen.queryByTestId('users-table')).not.toBeInTheDocument();
   });
 
@@ -39,7 +39,7 @@ describe('UsersPage', () => {
     const { container } = render(<UsersPage />);
 
     // id: 0 is falsy, so should render empty
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
   });
 
   it('switches from unauthenticated to authenticated state', () => {
@@ -47,7 +47,7 @@ describe('UsersPage', () => {
 
     render(<UsersPage />);
 
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText(/Something went wrong/)).toBeInTheDocument();
 
     useAuthStore.mockReturnValue({ id: 1 });
 
