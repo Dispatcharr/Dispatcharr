@@ -286,6 +286,7 @@ class EPGGridAPIView(APIView):
                     logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
                     # Convert generated programs to API format
                     for program in generated:
+                        prog_custom = program.get('custom_properties') or {}
                         dummy_program = {
                             "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
                             "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
@@ -294,12 +295,12 @@ class EPGGridAPIView(APIView):
                             "title": program['title'],
                             "description": program['description'],
                             "tvg_id": dummy_tvg_id,
-                            "sub_title": None,
-                            "custom_properties": None,
+                            "sub_title": program.get('sub_title'),
+                            "custom_properties": prog_custom if prog_custom else None,
                             "season": None,
                             "episode": None,
-                            "is_new": False,
-                            "is_live": False,
+                            "is_new": prog_custom.get('new', False),
+                            "is_live": prog_custom.get('live', False),
                             "is_premiere": False,
                             "is_finale": False,
                         }
