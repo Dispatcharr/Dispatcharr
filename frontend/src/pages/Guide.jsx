@@ -957,7 +957,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
             h={'100%'}
             pos="relative"
             display={'flex'}
-            p={isExpanded ? 12 : 8}
+            px={isExpanded ? 12 : 8}
+            py={isExpanded ? 6 : 4}
             c={isPast ? '#a0aec0' : '#fff'}
           >
             <Box
