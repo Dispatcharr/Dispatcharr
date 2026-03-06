@@ -1,5 +1,6 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
+import defaultLogo from '../../images/logo.png';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -19,20 +20,30 @@ export const removeRecording = (id) => {
   });
 };
 
+/**
+ * Resolve the channel logo cache URL from either a full channel object
+ * (has logo.cache_url) or a summary object (has logo_id integer).
+ */
+export const getChannelLogoUrl = (channel) => {
+  if (!channel) return null;
+  if (channel.logo_id) return `/api/channels/logos/${channel.logo_id}/cache/`;
+  return channel.logo?.cache_url || null;
+};
+
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
     ? `/api/channels/logos/${posterLogoId}/cache/`
-    : customProperties?.poster_url || posterUrl || '/logo.png';
+    : customProperties?.poster_url || posterUrl || null;
   if (
+    purl &&
     typeof import.meta !== 'undefined' &&
     import.meta.env &&
     import.meta.env.DEV &&
-    purl &&
     purl.startsWith('/')
   ) {
     purl = `${window.location.protocol}//${window.location.hostname}:5656${purl}`;
   }
-  return purl;
+  return purl || defaultLogo;
 };
 
 export const getShowVideoUrl = (channel, env_mode) => {
@@ -49,6 +60,14 @@ export const runComSkip = async (recording) => {
 
 export const deleteRecordingById = async (recordingId) => {
   await API.deleteRecording(recordingId);
+};
+
+export const stopRecordingById = async (recordingId) => {
+  await API.stopRecording(recordingId);
+};
+
+export const extendRecordingById = async (recordingId, extraMinutes) => {
+  await API.extendRecording(recordingId, extraMinutes);
 };
 
 export const deleteSeriesAndRule = async (seriesInfo) => {

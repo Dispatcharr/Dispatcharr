@@ -2,14 +2,15 @@
 
 from django.db.models.signals import m2m_changed, pre_save, post_save, post_delete
 from django.dispatch import receiver
-from django.utils.timezone import now
+from django.utils.timezone import now, is_aware, make_aware
 from celery.result import AsyncResult
+from django_celery_beat.models import ClockedSchedule, PeriodicTask
 from .models import Channel, Stream, ChannelProfile, ChannelProfileMembership, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
-import logging, requests, time
+import json
+import logging
 from .tasks import run_recording, prefetch_recording_artwork
-from django.utils.timezone import now, is_aware, make_aware
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
@@ -85,29 +86,76 @@ def create_profile_memberships(sender, instance, created, **kwargs):
             for channel in channels
         ])
 
+def _dvr_task_name(recording_id):
+    """Predictable PeriodicTask name for a DVR recording."""
+    return f"dvr-recording-{recording_id}"
+
+
 def schedule_recording_task(instance, eta=None):
-    # Use the explicitly-passed (and timezone-aware) eta if provided;
-    # fall back to instance.start_time only as a last resort.
+    """Schedule a recording task via ClockedSchedule + one-off PeriodicTask.
+
+    The task is stored in the database and dispatched by Celery Beat at the
+    scheduled time with no countdown.  This avoids the Redis visibility_timeout
+    redelivery bug that caused duplicate recordings when using apply_async
+    with long countdowns.
+    """
     if eta is None:
         eta = instance.start_time
-    # Ensure eta is timezone-aware before comparing against now()
     if eta is not None and not is_aware(eta):
         eta = make_aware(eta)
-    # countdown=0 fires immediately (in-progress programs whose start_time was
-    # clamped to now by the serializer), countdown>0 delays until start_time
-    # (future programs).  Using an integer countdown avoids any timezone
-    # serialization ambiguity that can occur with an absolute eta datetime.
-    countdown = max(0, int((eta - now()).total_seconds()))
-    # Pass recording_id first so task can persist metadata to the correct row
-    task = run_recording.apply_async(
-        args=[instance.id, instance.channel_id, str(instance.start_time), str(instance.end_time)],
-        countdown=countdown,
+    # Clamp to now so Beat dispatches immediately for past/current start times
+    if eta <= now():
+        eta = now()
+
+    task_args = [
+        instance.id,
+        instance.channel_id,
+        str(instance.start_time),
+        str(instance.end_time),
+    ]
+
+    clocked, _ = ClockedSchedule.objects.get_or_create(clocked_time=eta)
+    task_name = _dvr_task_name(instance.id)
+    PeriodicTask.objects.update_or_create(
+        name=task_name,
+        defaults={
+            "task": "apps.channels.tasks.run_recording",
+            "clocked": clocked,
+            "args": json.dumps(task_args),
+            "one_off": True,
+            "enabled": True,
+            "interval": None,
+            "crontab": None,
+            "solar": None,
+        },
     )
-    return task.id
+    return task_name
+
 
 def revoke_task(task_id):
-    if task_id:
+    """Cancel a pending recording task.
+
+    task_id is normally a PeriodicTask name (e.g. "dvr-recording-42").
+    For backwards compatibility with legacy Celery async-result UUIDs,
+    falls back to AsyncResult.revoke().
+    """
+    if not task_id:
+        return
+    # Primary path: delete the PeriodicTask and clean up its ClockedSchedule
+    try:
+        pt = PeriodicTask.objects.get(name=task_id)
+        old_clocked = pt.clocked
+        pt.delete()
+        if old_clocked and not PeriodicTask.objects.filter(clocked=old_clocked).exists():
+            old_clocked.delete()
+        return
+    except PeriodicTask.DoesNotExist:
+        pass
+    # Fallback for legacy Celery task UUIDs
+    try:
         AsyncResult(task_id).revoke()
+    except Exception:
+        pass
 
 @receiver(pre_save, sender=Recording)
 def revoke_old_task_on_update(sender, instance, **kwargs):
@@ -120,6 +168,12 @@ def revoke_old_task_on_update(sender, instance, **kwargs):
             old.end_time != instance.end_time or
             old.channel_id != instance.channel_id
         ):
+            # Do NOT revoke while the recording is actively streaming.
+            # run_recording re-reads end_time from the DB every ~2 s and extends
+            # its internal deadline dynamically — revoking here would kill the task.
+            old_status = (old.custom_properties or {}).get("status", "")
+            if old_status == "recording":
+                return
             revoke_task(old.task_id)
             instance.task_id = None
     except Recording.DoesNotExist:
@@ -128,35 +182,50 @@ def revoke_old_task_on_update(sender, instance, **kwargs):
 @receiver(post_save, sender=Recording)
 def schedule_task_on_save(sender, instance, created, **kwargs):
     try:
+        # Skip processing for internal field-only saves (metadata updates,
+        # task_id assignment, end_time extensions) to prevent re-entrant
+        # artwork dispatch and redundant recording_updated WS events.
+        update_fields = kwargs.get('update_fields')
+        if not created and update_fields is not None and set(update_fields) <= {'custom_properties', 'task_id', 'end_time'}:
+            return
+
         if not instance.task_id:
             start_time = instance.start_time
+            end_time = instance.end_time
 
-            # Make both datetimes aware (in UTC)
+            # Make datetimes aware (in UTC)
             if not is_aware(start_time):
-                print("Start time was not aware, making aware")
                 start_time = make_aware(start_time)
+            if end_time and not is_aware(end_time):
+                end_time = make_aware(end_time)
 
             current_time = now()
 
-            # Debug log
-            print(f"Start time: {start_time}, Now: {current_time}")
-
-            # Optionally allow slight fudge factor (1 second) to ensure scheduling happens
             if start_time > current_time - timedelta(seconds=1):
-                print("Scheduling recording task!")
-                # Pass the corrected, timezone-aware start_time explicitly so
-                # schedule_recording_task uses it as the Celery ETA rather than
-                # re-reading instance.start_time which may still be naive.
+                # Future recording — schedule at start_time
+                logger.info(f"Recording {instance.id}: scheduling task at {start_time}")
                 task_id = schedule_recording_task(instance, eta=start_time)
                 instance.task_id = task_id
                 instance.save(update_fields=['task_id'])
+            elif end_time and end_time > current_time:
+                # Currently-playing — start immediately (e.g. series rule for in-progress program)
+                logger.info(f"Recording {instance.id}: start_time in past but end_time still future, scheduling immediately")
+                task_id = schedule_recording_task(instance, eta=current_time)
+                instance.task_id = task_id
+                instance.save(update_fields=['task_id'])
             else:
-                print("Start time is in the past. Not scheduling.")
-        # Kick off poster/artwork prefetch to enrich Upcoming cards
-        try:
-            prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
-        except Exception as e:
-            print("Error scheduling artwork prefetch:", e)
+                logger.info(f"Recording {instance.id}: start_time and end_time both in past, not scheduling")
+        # Kick off poster/artwork prefetch to enrich Upcoming cards.
+        # Skip when the recording is already active or finished — run_recording
+        # handles its own poster resolution, and scheduling artwork prefetch
+        # while the task is running causes a race that can overwrite status.
+        cp = instance.custom_properties or {}
+        rec_status = cp.get("status", "")
+        if rec_status not in ("recording", "completed", "stopped", "interrupted"):
+            try:
+                prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
+            except Exception as e:
+                print("Error scheduling artwork prefetch:", e)
     except Exception as e:
         import traceback
         print("Error in post_save signal:", e)

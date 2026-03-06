@@ -116,6 +116,8 @@ const ChannelTableHeader = ({
   setShowDisabled,
   showOnlyStreamlessChannels,
   setShowOnlyStreamlessChannels,
+  showOnlyStaleChannels,
+  setShowOnlyStaleChannels,
 }) => {
   const theme = useMantineTheme();
 
@@ -218,7 +220,21 @@ const ChannelTableHeader = ({
   };
 
   const toggleShowOnlyStreamlessChannels = () => {
-    setShowOnlyStreamlessChannels(!showOnlyStreamlessChannels);
+    const newVal = !showOnlyStreamlessChannels;
+    setShowOnlyStreamlessChannels(newVal);
+    if (newVal) {
+      // Ensure stale toggle is cleared when enabling streamless-only
+      setShowOnlyStaleChannels(false);
+    }
+  };
+
+  const toggleShowOnlyStaleChannels = () => {
+    const newVal = !showOnlyStaleChannels;
+    setShowOnlyStaleChannels(newVal);
+    if (newVal) {
+      // Ensure streamless toggle is cleared when enabling stale-only
+      setShowOnlyStreamlessChannels(false);
+    }
   };
 
   const toggleHeaderPinned = () => {
@@ -306,6 +322,15 @@ const ChannelTableHeader = ({
                 }
               >
                 <Text size="xs">Only Empty Channels</Text>
+              </Menu.Item>
+
+              <Menu.Item
+                onClick={toggleShowOnlyStaleChannels}
+                leftSection={
+                  showOnlyStaleChannels ? <SquareCheck size={18} /> : <Square size={18} />
+                }
+              >
+                <Text size="xs">Has Stale Streams</Text>
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
