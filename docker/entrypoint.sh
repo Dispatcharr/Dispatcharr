@@ -41,7 +41,6 @@ export REDIS_DB=${REDIS_DB:-0}
 export REDIS_PASSWORD=${REDIS_PASSWORD:-}
 export REDIS_USER=${REDIS_USER:-}
 export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
-export NGINX_UWSGI_TIMEOUT=${NGINX_UWSGI_TIMEOUT:-300}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
 export SECRET_FILE="/data/jwt"

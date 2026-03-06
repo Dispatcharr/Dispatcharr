@@ -36,7 +36,6 @@ if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
     DISPATCHARR_PORT=9191
 fi
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
-sed -i "s/NGINX_UWSGI_TIMEOUT/${NGINX_UWSGI_TIMEOUT}/g" /etc/nginx/sites-enabled/default
 
 # Configure nginx based on IPv6 availability
 if ip -6 addr show | grep -q "inet6"; then
