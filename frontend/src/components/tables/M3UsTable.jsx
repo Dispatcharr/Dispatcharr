@@ -139,6 +139,21 @@ const M3UTable = () => {
   const setRefreshProgress = usePlaylistsStore((s) => s.setRefreshProgress);
   const editPlaylistId = usePlaylistsStore((s) => s.editPlaylistId);
   const setEditPlaylistId = usePlaylistsStore((s) => s.setEditPlaylistId);
+
+  // Memoize data to prevent unnecessary re-renders during progress updates
+  const processedData = useMemo(() => {
+    return playlists
+      .filter((playlist) => playlist.locked === false)
+      .sort((a, b) => {
+        // First sort by active status (active items first)
+        if (a.is_active !== b.is_active) {
+          return a.is_active ? -1 : 1;
+        }
+        // Then sort by name (case-insensitive)
+        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      });
+  }, [playlists]);
+
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -640,18 +655,7 @@ const M3UTable = () => {
 
   // Listen for edit playlist requests from notifications
   useEffect(() => {
-    setData(
-      playlists
-        .filter((playlist) => playlist.locked === false)
-        .sort((a, b) => {
-          // First sort by active status (active items first)
-          if (a.is_active !== b.is_active) {
-            return a.is_active ? -1 : 1;
-          }
-          // Then sort by name (case-insensitive)
-          return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-        })
-    );
+    setData(processedData);
 
     if (editPlaylistId) {
       const playlistToEdit = playlists.find((p) => p.id === editPlaylistId);
@@ -661,7 +665,7 @@ const M3UTable = () => {
         setEditPlaylistId(null);
       }
     }
-  }, [editPlaylistId, playlists]);
+  }, [editPlaylistId, processedData, playlists, setEditPlaylistId]);
 
   const onSortingChange = (column) => {
     console.log(column);

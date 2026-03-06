@@ -1,4 +1,4 @@
-import { Modal, Group, Text, Button, Checkbox, Box } from '@mantine/core';
+import { Modal, Group, Button, Checkbox, Box } from '@mantine/core';
 import React, { useState } from 'react';
 import useWarningsStore from '../store/warnings';
 

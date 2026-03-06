@@ -431,7 +431,7 @@ const StreamConnectionCard = ({
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
     }
 
-    showVideo(url);
+    showVideo(url, 'live', { name: actualChannel.name });
   };
 
   if (location.pathname !== '/stats') {

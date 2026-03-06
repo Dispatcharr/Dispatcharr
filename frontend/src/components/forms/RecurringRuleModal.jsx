@@ -33,11 +33,10 @@ import {
   updateRecurringRuleEnabled,
 } from '../../utils/forms/RecurringRuleModalUtils.js';
 
-const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
+const RecurringRuleModal = ({ opened, onClose, ruleId, recording: sourceRecording, onEditOccurrence }) => {
   const channels = useChannelsStore((s) => s.channels);
   const recurringRules = useChannelsStore((s) => s.recurringRules);
   const fetchRecurringRules = useChannelsStore((s) => s.fetchRecurringRules);
-  const fetchRecordings = useChannelsStore((s) => s.fetchRecordings);
   const recordings = useChannelsStore((s) => s.recordings);
   const { toUserTime, userNow } = useTimeHelpers();
   const { timeFormat: timeformat, dateFormat: dateformat } =
@@ -125,7 +124,7 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setSaving(true);
     try {
       await updateRecurringRule(ruleId, values);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
       notifications.show({
         title: 'Recurring rule updated',
         message: 'Schedule adjustments saved',
@@ -145,7 +144,7 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setDeleting(true);
     try {
       await deleteRecurringRuleById(ruleId);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
       notifications.show({
         title: 'Recurring rule removed',
         message: 'All future occurrences were cancelled',
@@ -165,7 +164,7 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setSaving(true);
     try {
       await updateRecurringRuleEnabled(ruleId, checked);
-      await Promise.all([fetchRecurringRules(), fetchRecordings()]);
+      await fetchRecurringRules(); // recordings_refreshed WS event handles recording list update
       notifications.show({
         title: checked ? 'Recurring rule enabled' : 'Recurring rule paused',
         message: checked
@@ -186,7 +185,7 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
     setBusyOccurrence(occurrence.id);
     try {
       await deleteRecordingById(occurrence.id);
-      await fetchRecordings();
+      // recording_cancelled WS event handles recording list update
       notifications.show({
         title: 'Occurrence cancelled',
         message: 'The selected airing was removed',
@@ -203,7 +202,45 @@ const RecurringRuleModal = ({ opened, onClose, ruleId, onEditOccurrence }) => {
   if (!rule) {
     return (
       <Modal opened={opened} onClose={onClose} title="Recurring Rule" centered>
-        <Text size="sm">Recurring rule not found.</Text>
+        <Stack gap="md">
+          <Text size="sm">
+            The recurring rule for this recording no longer exists.
+          </Text>
+          {sourceRecording && (
+            <>
+              <Text size="sm" c="dimmed">
+                Would you like to delete this recording?
+              </Text>
+              <Group justify="flex-end">
+                <Button variant="default" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button
+                  color="red"
+                  loading={deleting}
+                  onClick={async () => {
+                    setDeleting(true);
+                    try {
+                      await deleteRecordingById(sourceRecording.id);
+                      notifications.show({
+                        title: 'Recording deleted',
+                        color: 'green',
+                        autoClose: 2500,
+                      });
+                      onClose();
+                    } catch (e) {
+                      console.error('Failed to delete orphaned recording', e);
+                    } finally {
+                      setDeleting(false);
+                    }
+                  }}
+                >
+                  Delete Recording
+                </Button>
+              </Group>
+            </>
+          )}
+        </Stack>
       </Modal>
     );
   }
