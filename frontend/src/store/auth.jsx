@@ -39,22 +39,22 @@ const useAuthStore = create((set, get) => ({
 
   updateUserPreferences: async (preferences) => {
     const currentUser = get().user;
-    const updatedCustomProperties = {
-      ...currentUser.custom_properties,
-      ...preferences,
-    };
 
     // Optimistic update
     set({
       user: {
         ...currentUser,
-        custom_properties: updatedCustomProperties,
+        custom_properties: {
+          ...currentUser.custom_properties,
+          ...preferences,
+        },
       },
     });
 
     try {
+      // Send only the delta - backend merges with DB value authoritatively
       const response = await API.updateMe({
-        custom_properties: updatedCustomProperties,
+        custom_properties: preferences,
       });
       set({ user: response });
       return response;
