@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Channels page default splitter ratio changed from 50/50 to 60/40 (channels/streams) so all channel action buttons are visible without scrolling on 1080p displays.
 - Frontend component refactoring and cleanup — Thanks [@nick4810](https://github.com/nick4810)
   - `FloatingVideo`, `SeriesModal`, `VODModal`, `SystemEvents`, `M3URefreshNotification`, and `NotificationCenter` significantly reduced in size by separating business logic into dedicated utility modules under `utils/components/` (`FloatingVideoUtils.js`, `SeriesModalUtils.js`, `VODModalUtils.js`, `NotificationCenterUtils.js`).
   - `FloatingVideo` resize handle elements extracted into a standalone `ResizeHandles` sub-component.
