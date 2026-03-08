@@ -61,7 +61,7 @@ class UserPreferencesAPITests(TestCase):
         self.assertEqual(response.data["custom_properties"]["navOrder"], nav_order)
 
     def test_patch_me_partial_update_preserves_other_properties(self):
-        """Test partial update doesn't overwrite other custom_properties"""
+        """Test partial update merges into existing custom_properties, preserving other keys"""
         # Set initial custom_properties
         self.user.custom_properties = {
             "theme": "dark",
@@ -69,7 +69,7 @@ class UserPreferencesAPITests(TestCase):
         }
         self.user.save()
 
-        # Update only navOrder
+        # Update only navOrder - send delta, not full object
         nav_order = ["channels", "vods"]
         data = {
             "custom_properties": {
@@ -80,9 +80,10 @@ class UserPreferencesAPITests(TestCase):
         response = self.client.patch(self.me_url, data, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        # Note: JSONField replacement behavior - the entire custom_properties is replaced
-        # This is expected Django behavior for JSONField
+        # Backend merge semantics: existing keys are preserved
         self.assertEqual(response.data["custom_properties"]["navOrder"], nav_order)
+        self.assertEqual(response.data["custom_properties"]["theme"], "dark")
+        self.assertEqual(response.data["custom_properties"]["someOtherSetting"], True)
 
     def test_patch_me_with_empty_nav_order(self):
         """Test PATCH with empty navOrder array"""
@@ -125,3 +126,17 @@ class UserPreferencesAPITests(TestCase):
         response = unauthenticated_client.patch(self.me_url, data, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_patch_me_cannot_escalate_privileges(self):
+        """Test PATCH /me/ rejects attempts to change user_level or is_staff"""
+        original_level = self.user.user_level
+
+        data = {"user_level": 99, "is_staff": True, "is_superuser": True}
+        response = self.client.patch(self.me_url, data, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.user_level, original_level)
+        self.assertFalse(self.user.is_staff)
+        self.assertFalse(self.user.is_superuser)

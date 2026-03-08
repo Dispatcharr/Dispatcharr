@@ -148,12 +148,11 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Get user's saved navigation order and hidden items using store getters
-  const navOrder = getNavOrder();
-  const hiddenNav = getHiddenNav();
   const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
 
   // Navigation Items - computed from user's saved order, filtered by visibility
+  const navOrder = getNavOrder();
+  const hiddenNav = getHiddenNav();
   const navItems = useMemo(() => {
     const orderedItems = getOrderedNavItems(navOrder, isAdmin, channels);
     return orderedItems.filter((item) => !hiddenNav.includes(item.id));
