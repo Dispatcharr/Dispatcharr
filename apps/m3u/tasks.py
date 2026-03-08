@@ -751,6 +751,14 @@ def collect_xc_streams(account_id, enabled_groups):
             # Filter streams based on enabled categories
             filtered_count = 0
             for stream in all_xc_streams:
+                # Fall back to a generated name if the provider returns null/empty
+                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                if not stream.get("name"):
+                    logger.warning(
+                        f"XC stream has null/empty name; using generated name '{stream_name}' "
+                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                    )
+
                 # Get the category_id for this stream
                 category_id = str(stream.get("category_id", ""))
 
@@ -760,7 +768,7 @@ def collect_xc_streams(account_id, enabled_groups):
 
                     # Convert XC stream to our standard format with all properties preserved
                     stream_data = {
-                        "name": stream["name"],
+                        "name": stream_name,
                         "url": xc_client.get_stream_url(stream["stream_id"]),
                         "attributes": {
                             "tvg-id": stream.get("epg_channel_id", ""),
@@ -844,7 +852,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     )
 
                     for stream in streams:
-                        name = stream["name"]
+                        name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                        if not stream.get("name"):
+                            logger.warning(
+                                f"XC stream has null/empty name in category {group_name}; "
+                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
+                            )
                         raw_stream_id = stream.get("stream_id", "")
                         provider_stream_id = None
                         if raw_stream_id:
