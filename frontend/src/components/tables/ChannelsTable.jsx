@@ -693,7 +693,7 @@ const ChannelsTable = ({ onReady }) => {
     );
     const url = getChannelURL(channel);
     console.log(`Stream URL: ${url}`);
-    showVideo(url);
+    showVideo(url, 'live', { name: channel.name });
   };
 
   const onRowSelectionChange = (newSelection) => {

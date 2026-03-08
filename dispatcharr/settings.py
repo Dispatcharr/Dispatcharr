@@ -240,6 +240,10 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
+# Worker memory safety net: recycle prefork workers exceeding 512MB RSS.
+# Prevents unbounded growth from memory fragmentation or unexpected leaks.
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
+
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
     # Explicitly disable the old fetch-channel-statuses task

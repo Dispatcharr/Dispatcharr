@@ -19,11 +19,9 @@ import {
   Download,
   Gauge,
   HardDriveDownload,
-  List,
   LogIn,
   LogOut,
   RefreshCw,
-  Shield,
   ShieldAlert,
   SquareX,
   Timer,
@@ -31,9 +29,143 @@ import {
   Video,
   XCircle,
 } from 'lucide-react';
-import dayjs from 'dayjs';
 import API from '../api';
 import useLocalStorage from '../hooks/useLocalStorage';
+import { format } from '../utils/dateTimeUtils.js';
+
+const getEventIcon = (eventType) => {
+  switch (eventType) {
+    case 'channel_start':
+      return <CirclePlay size={16} />;
+    case 'channel_stop':
+      return <SquareX size={16} />;
+    case 'channel_reconnect':
+      return <RefreshCw size={16} />;
+    case 'channel_buffering':
+      return <Timer size={16} />;
+    case 'channel_failover':
+      return <HardDriveDownload size={16} />;
+    case 'client_connect':
+      return <Users size={16} />;
+    case 'client_disconnect':
+      return <Users size={16} />;
+    case 'recording_start':
+      return <Video size={16} />;
+    case 'recording_end':
+      return <Video size={16} />;
+    case 'stream_switch':
+      return <HardDriveDownload size={16} />;
+    case 'm3u_refresh':
+      return <RefreshCw size={16} />;
+    case 'm3u_download':
+      return <Download size={16} />;
+    case 'epg_refresh':
+      return <RefreshCw size={16} />;
+    case 'epg_download':
+      return <Download size={16} />;
+    case 'login_success':
+      return <LogIn size={16} />;
+    case 'login_failed':
+      return <ShieldAlert size={16} />;
+    case 'logout':
+      return <LogOut size={16} />;
+    case 'm3u_blocked':
+      return <XCircle size={16} />;
+    case 'epg_blocked':
+      return <XCircle size={16} />;
+    default:
+      return <Gauge size={16} />;
+  }
+};
+
+const getEventColor = (eventType) => {
+  switch (eventType) {
+    case 'channel_start':
+    case 'client_connect':
+    case 'recording_start':
+    case 'login_success':
+      return 'green';
+    case 'channel_reconnect':
+      return 'yellow';
+    case 'channel_stop':
+    case 'client_disconnect':
+    case 'recording_end':
+    case 'logout':
+      return 'gray';
+    case 'channel_buffering':
+      return 'yellow';
+    case 'channel_failover':
+    case 'channel_error':
+      return 'orange';
+    case 'stream_switch':
+      return 'blue';
+    case 'm3u_refresh':
+    case 'epg_refresh':
+      return 'cyan';
+    case 'm3u_download':
+    case 'epg_download':
+      return 'teal';
+    case 'login_failed':
+    case 'm3u_blocked':
+    case 'epg_blocked':
+      return 'red';
+    default:
+      return 'gray';
+  }
+};
+
+const getSystemEvents = (eventsLimit, offset) => {
+  return API.getSystemEvents(eventsLimit, offset);
+}
+
+const Event = ({ event }) => {
+  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
+  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
+
+  return (
+    <Box
+      p="xs"
+      bdrs={4}
+      style={{
+        backgroundColor: '#1A1B1E',
+        borderLeft: `3px solid var(--mantine-color-${getEventColor(event.event_type)}-6)`,
+      }}
+    >
+      <Group justify="space-between" wrap="nowrap">
+        <Group gap="xs" flex={1} miw={0}>
+          <Box c={`${getEventColor(event.event_type)}.6`}>
+            {getEventIcon(event.event_type)}
+          </Box>
+          <Stack gap={2} flex={1} miw={0}>
+            <Group gap="xs" wrap="nowrap">
+              <Text size="sm" fw={500}>
+                {event.event_type_display || event.event_type}
+              </Text>
+              {event.channel_name && (
+                <Text size="sm" c="dimmed" truncate maw={300}>
+                  {event.channel_name}
+                </Text>
+              )}
+            </Group>
+            {event.details &&
+              Object.keys(event.details).length > 0 && (
+                <Text size="xs" c="dimmed">
+                  {Object.entries(event.details)
+                    .filter(([key]) =>
+                      !['stream_url', 'new_url'].includes(key))
+                    .map(([key, value]) => `${key}: ${value}`)
+                    .join(', ')}
+                </Text>
+              )}
+          </Stack>
+        </Group>
+        <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+          {format(event.timestamp, `${dateFormat} HH:mm:ss`)}
+        </Text>
+      </Group>
+    </Box>
+  );
+};
 
 const SystemEvents = () => {
   const [events, setEvents] = useState([]);
@@ -42,8 +174,7 @@ const SystemEvents = () => {
   const { ref: cardRef, width: cardWidth } = useElementSize();
   const isNarrow = cardWidth < 650;
   const [isLoading, setIsLoading] = useState(false);
-  const [dateFormatSetting] = useLocalStorage('date-format', 'mdy');
-  const dateFormat = dateFormatSetting === 'mdy' ? 'MM/DD' : 'DD/MM';
+
   const [eventsRefreshInterval, setEventsRefreshInterval] = useLocalStorage(
     'events-refresh-interval',
     0
@@ -58,7 +189,7 @@ const SystemEvents = () => {
   const fetchEvents = useCallback(async () => {
     try {
       setIsLoading(true);
-      const response = await API.getSystemEvents(eventsLimit, offset);
+      const response = await getSystemEvents(eventsLimit, offset);
       if (response && response.events) {
         setEvents(response.events);
         setTotalEvents(response.total || 0);
@@ -85,87 +216,6 @@ const SystemEvents = () => {
   useEffect(() => {
     setCurrentPage(1);
   }, [eventsLimit]);
-
-  const getEventIcon = (eventType) => {
-    switch (eventType) {
-      case 'channel_start':
-        return <CirclePlay size={16} />;
-      case 'channel_stop':
-        return <SquareX size={16} />;
-      case 'channel_reconnect':
-        return <RefreshCw size={16} />;
-      case 'channel_buffering':
-        return <Timer size={16} />;
-      case 'channel_failover':
-        return <HardDriveDownload size={16} />;
-      case 'client_connect':
-        return <Users size={16} />;
-      case 'client_disconnect':
-        return <Users size={16} />;
-      case 'recording_start':
-        return <Video size={16} />;
-      case 'recording_end':
-        return <Video size={16} />;
-      case 'stream_switch':
-        return <HardDriveDownload size={16} />;
-      case 'm3u_refresh':
-        return <RefreshCw size={16} />;
-      case 'm3u_download':
-        return <Download size={16} />;
-      case 'epg_refresh':
-        return <RefreshCw size={16} />;
-      case 'epg_download':
-        return <Download size={16} />;
-      case 'login_success':
-        return <LogIn size={16} />;
-      case 'login_failed':
-        return <ShieldAlert size={16} />;
-      case 'logout':
-        return <LogOut size={16} />;
-      case 'm3u_blocked':
-        return <XCircle size={16} />;
-      case 'epg_blocked':
-        return <XCircle size={16} />;
-      default:
-        return <Gauge size={16} />;
-    }
-  };
-
-  const getEventColor = (eventType) => {
-    switch (eventType) {
-      case 'channel_start':
-      case 'client_connect':
-      case 'recording_start':
-      case 'login_success':
-        return 'green';
-      case 'channel_reconnect':
-        return 'yellow';
-      case 'channel_stop':
-      case 'client_disconnect':
-      case 'recording_end':
-      case 'logout':
-        return 'gray';
-      case 'channel_buffering':
-        return 'yellow';
-      case 'channel_failover':
-      case 'channel_error':
-        return 'orange';
-      case 'stream_switch':
-        return 'blue';
-      case 'm3u_refresh':
-      case 'epg_refresh':
-        return 'cyan';
-      case 'm3u_download':
-      case 'epg_download':
-        return 'teal';
-      case 'login_failed':
-      case 'm3u_blocked':
-      case 'epg_blocked':
-        return 'red';
-      default:
-        return 'gray';
-    }
-  };
 
   return (
     <Card
@@ -272,55 +322,7 @@ const SystemEvents = () => {
               </Text>
             ) : (
               events.map((event) => (
-                <Box
-                  key={event.id}
-                  p="xs"
-                  style={{
-                    backgroundColor: '#1A1B1E',
-                    borderRadius: '4px',
-                    borderLeft: `3px solid var(--mantine-color-${getEventColor(event.event_type)}-6)`,
-                  }}
-                >
-                  <Group justify="space-between" wrap="nowrap">
-                    <Group gap="xs" style={{ flex: 1, minWidth: 0 }}>
-                      <Box c={`${getEventColor(event.event_type)}.6`}>
-                        {getEventIcon(event.event_type)}
-                      </Box>
-                      <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
-                        <Group gap="xs" wrap="nowrap">
-                          <Text size="sm" fw={500}>
-                            {event.event_type_display || event.event_type}
-                          </Text>
-                          {event.channel_name && (
-                            <Text
-                              size="sm"
-                              c="dimmed"
-                              truncate
-                              style={{ maxWidth: '300px' }}
-                            >
-                              {event.channel_name}
-                            </Text>
-                          )}
-                        </Group>
-                        {event.details &&
-                          Object.keys(event.details).length > 0 && (
-                            <Text size="xs" c="dimmed">
-                              {Object.entries(event.details)
-                                .filter(
-                                  ([key]) =>
-                                    !['stream_url', 'new_url'].includes(key)
-                                )
-                                .map(([key, value]) => `${key}: ${value}`)
-                                .join(', ')}
-                            </Text>
-                          )}
-                      </Stack>
-                    </Group>
-                    <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-                      {dayjs(event.timestamp).format(`${dateFormat} HH:mm:ss`)}
-                    </Text>
-                  </Group>
-                </Box>
+                <Event key={event.id} event={event} />
               ))
             )}
           </Stack>
