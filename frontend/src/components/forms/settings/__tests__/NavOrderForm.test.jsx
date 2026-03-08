@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import NavOrderForm from '../NavOrderForm';
 import useAuthStore from '../../../../store/auth';
 import { USER_LEVELS } from '../../../../constants';
-import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../../../../config/navigation';
+import {
+  DEFAULT_ADMIN_ORDER,
+  DEFAULT_USER_ORDER,
+} from '../../../../config/navigation';
 
 // Mock dependencies
 vi.mock('../../../../store/auth');
@@ -26,7 +29,9 @@ vi.mock('@dnd-kit/core', () => ({
 }));
 
 vi.mock('@dnd-kit/sortable', () => ({
-  SortableContext: ({ children }) => <div data-testid="sortable-context">{children}</div>,
+  SortableContext: ({ children }) => (
+    <div data-testid="sortable-context">{children}</div>
+  ),
   useSortable: () => ({
     transform: null,
     transition: null,
@@ -66,7 +71,9 @@ vi.mock('@mantine/core', () => ({
   ),
   Text: ({ children }) => <span>{children}</span>,
   Group: ({ children }) => <div>{children}</div>,
-  ActionIcon: ({ children, ...props }) => <button {...props}>{children}</button>,
+  ActionIcon: ({ children, ...props }) => (
+    <button {...props}>{children}</button>
+  ),
   Stack: ({ children }) => <div>{children}</div>,
   useMantineTheme: () => ({}),
 }));
@@ -112,9 +119,12 @@ describe('NavOrderForm', () => {
       expect(screen.getByText('DVR')).toBeInTheDocument();
       expect(screen.getByText('Stats')).toBeInTheDocument();
       expect(screen.getByText('Plugins')).toBeInTheDocument();
-      expect(screen.getByText('Users')).toBeInTheDocument();
-      expect(screen.getByText('Logo Manager')).toBeInTheDocument();
-      expect(screen.getByText('Settings')).toBeInTheDocument();
+      expect(screen.getByText('Integrations')).toBeInTheDocument();
+      expect(screen.getByText('System')).toBeInTheDocument();
+      // Users, Logo Manager, Settings are children of System group, not top-level
+      expect(screen.queryByText('Users')).not.toBeInTheDocument();
+      expect(screen.queryByText('Logo Manager')).not.toBeInTheDocument();
+      expect(screen.queryByText('Settings')).not.toBeInTheDocument();
     });
 
     it('renders reset to default button', () => {
@@ -174,14 +184,24 @@ describe('NavOrderForm', () => {
     });
 
     it('uses saved order when available', () => {
-      const customOrder = ['settings', 'channels', 'vods', 'sources', 'guide', 'dvr', 'stats', 'plugins', 'users', 'logos'];
+      const customOrder = [
+        'guide',
+        'channels',
+        'vods',
+        'sources',
+        'dvr',
+        'stats',
+        'plugins',
+        'integrations',
+        'system',
+      ];
       mockGetNavOrder.mockReturnValue(customOrder);
 
       render(<NavOrderForm active={true} />);
 
       // The component should render with custom order
       expect(screen.getByText('Channels')).toBeInTheDocument();
-      expect(screen.getByText('Settings')).toBeInTheDocument();
+      expect(screen.getByText('System')).toBeInTheDocument();
     });
   });
 
