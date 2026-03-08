@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.proxy.apps.ProxyConfig",
     "apps.proxy.ts_proxy",
     "apps.vod.apps.VODConfig",
+    "apps.connect.apps.ConnectConfig",
     "core",
     "daphne",
     "drf_spectacular",
@@ -167,6 +168,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.accounts.authentication.ApiKeyAuthentication",
     ],
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
 }
@@ -237,6 +239,10 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
+
+# Worker memory safety net: recycle prefork workers exceeding 512MB RSS.
+# Prevents unbounded growth from memory fragmentation or unexpected leaks.
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
@@ -411,3 +417,18 @@ LOGGING = {
         "level": LOG_LEVEL,  # Use user-configured level instead of hardcoded 'INFO'
     },
 }
+
+# Connect script execution safety settings
+# Allowed base directories for custom scripts; real paths must be inside
+_allowed_dirs_env = os.environ.get("DISPATCHARR_ALLOWED_SCRIPT_DIRS", "/data/scripts")
+CONNECT_ALLOWED_SCRIPT_DIRS = [p for p in _allowed_dirs_env.split(":") if p]
+
+# Max execution time (seconds) for scripts
+CONNECT_SCRIPT_TIMEOUT = int(os.environ.get("DISPATCHARR_SCRIPT_TIMEOUT", "10"))
+
+# Truncate stdout/stderr to this many characters to avoid large outputs
+CONNECT_SCRIPT_MAX_OUTPUT = int(os.environ.get("DISPATCHARR_SCRIPT_MAX_OUTPUT", "65536"))
+
+# Require executable bit and disallow world-writable files
+CONNECT_SCRIPT_REQUIRE_EXECUTABLE = True
+CONNECT_SCRIPT_DISALLOW_WORLD_WRITABLE = True

@@ -99,31 +99,35 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
-# Global variables, stored so other users inherit them
-if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
-    # Define all variables to process
-    variables=(
-        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
-        POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-        DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
-        DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
-    )
+# Global variables, stored so other users inherit them.
+# Rewritten every startup so that container restarts with changed env vars
+# pick up the new values (not stale ones from a previous run).
+# Define all variables to process
+variables=(
+    PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
+    POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
+    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
+    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
+    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+)
 
-    # Process each variable for both profile.d and environment
-    for var in "${variables[@]}"; do
-        # Check if the variable is set in the environment
-        if [ -n "${!var+x}" ]; then
-            # Add to profile.d
-            echo "export ${var}=${!var}" >> /etc/profile.d/dispatcharr.sh
-            # Add to /etc/environment if not already there
-            grep -q "^${var}=" /etc/environment || echo "${var}=${!var}" >> /etc/environment
-        else
-            echo "Warning: Environment variable $var is not set"
-        fi
-    done
-fi
+# Truncate files before rewriting
+> /etc/profile.d/dispatcharr.sh
+
+# Process each variable for both profile.d and environment
+for var in "${variables[@]}"; do
+    # Check if the variable is set in the environment
+    if [ -n "${!var+x}" ]; then
+        # Add to profile.d (quoted to handle special characters in values)
+        echo "export ${var}='${!var}'" >> /etc/profile.d/dispatcharr.sh
+        # Add/update in /etc/environment
+        sed -i "/^${var}=/d" /etc/environment
+        echo "${var}='${!var}'" >> /etc/environment
+    else
+        echo "Warning: Environment variable $var is not set"
+    fi
+done
 
 chmod +x /etc/profile.d/dispatcharr.sh
 
@@ -163,20 +167,9 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     pids+=("$postgres_pid")
 else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
-    # Wait for external PostgreSQL to be ready using Python (no pg_isready needed)
+    # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until python3 -c "
-import socket
-import sys
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2)
-    s.connect(('${POSTGRES_HOST}', ${POSTGRES_PORT}))
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -186,26 +179,17 @@ except Exception:
     check_external_postgres_version || exit 1
 fi
 
-# Wait for Redis to be ready (modular mode uses external Redis)
+# Wait for Redis to be ready and flush stale state.
+# In modular mode Redis is external — call wait_for_redis.py here
+# because uWSGI's exec-pre runs under 'su -' which strips env vars
+# (DISPATCHARR_ENV, REDIS_HOST, etc.).
+# In AIO mode Redis is started by uWSGI (attach-daemon), so the
+# exec-pre in uwsgi.ini handles the wait + flush there instead.
 if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
     echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
-    echo_with_timestamp "Waiting for external Redis to be ready..."
-    until python3 -c "
-import socket
-import sys
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2)
-    s.connect(('${REDIS_HOST}', ${REDIS_PORT}))
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
-        echo_with_timestamp "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
-        sleep 1
-    done
-    echo "✅ External Redis is ready"
+    echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
 fi
 
 # Ensure database encoding is UTF8 (handles both internal and external databases)

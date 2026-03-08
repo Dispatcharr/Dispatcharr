@@ -19,6 +19,21 @@ import useAuthStore from './store/auth';
 
 export const WebsocketContext = createContext([false, () => {}, null]);
 
+// Debounce: coalesces rapid recording WS events into a single fetchRecordings()
+// call (400 ms window) to prevent redundant re-renders in the TV Guide.
+let _recordingFetchTimer = null;
+function scheduleRecordingFetch() {
+  if (_recordingFetchTimer) clearTimeout(_recordingFetchTimer);
+  _recordingFetchTimer = setTimeout(async () => {
+    _recordingFetchTimer = null;
+    try {
+      await useChannelsStore.getState().fetchRecordings();
+    } catch (e) {
+      console.warn('Failed to refresh recordings:', e);
+    }
+  }, 400);
+}
+
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
   const [val, setVal] = useState(null);
@@ -193,21 +208,21 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 4000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               } else if (status === 'skipped') {
+                const reasonMap = {
+                  no_commercials_detected: 'No commercials were detected in this recording',
+                  no_commercials: 'No commercials were detected in this recording',
+                };
                 notifications.update({
                   id,
                   title: 'No commercials to remove',
-                  message: parsedEvent.data.reason || '',
+                  message: reasonMap[parsedEvent.data.reason] || parsedEvent.data.reason || '',
                   color: 'teal',
                   loading: false,
                   autoClose: 3000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               } else if (status === 'error') {
                 notifications.update({
                   id,
@@ -217,9 +232,7 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 6000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               }
               break;
             }
@@ -424,7 +437,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data and logos
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
 
                   // Get updated channel data and extract logo IDs to load
                   const channels = useChannelsStore.getState().channels;
@@ -489,7 +502,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
                 } catch (e) {
                   console.warn(
                     'Failed to refresh channels after name setting:',
@@ -508,19 +521,11 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'recording_updated':
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on update:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recordings_refreshed':
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on refreshed:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recording_started':
@@ -528,11 +533,7 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording started!',
                 message: `Started recording channel ${parsedEvent.data.channel}`,
               });
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on start:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recording_ended':
@@ -540,10 +541,36 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording finished!',
                 message: `Stopped recording channel ${parsedEvent.data.channel}`,
               });
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on end:', e);
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_stopped':
+              notifications.show({
+                title: 'Recording stopped',
+                message: `Recording stopped early for ${parsedEvent.data.channel || 'channel'}. Partial content has been saved.`,
+                color: 'yellow',
+              });
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_extended':
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_cancelled':
+              notifications.show({
+                title: parsedEvent.data.was_in_progress ? 'Recording cancelled' : 'Recording deleted',
+                message: parsedEvent.data.was_in_progress
+                  ? 'Recording cancelled and content removed.'
+                  : 'Recording deleted.',
+                color: 'red',
+              });
+              // Surgical removal by ID avoids a full fetchRecordings() re-render.
+              // Fall back to a full refresh if the ID is missing (e.g. older server).
+              if (parsedEvent.data.recording_id != null) {
+                useChannelsStore.getState().removeRecording(parsedEvent.data.recording_id);
+              } else {
+                scheduleRecordingFetch();
               }
               break;
 
@@ -704,7 +731,7 @@ export const WebsocketProvider = ({ children }) => {
                 try {
                   await API.requeryChannels();
                   await API.requeryStreams();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
                 } catch (error) {
                   console.error(
                     'Error refreshing channels/streams after rehash:',
@@ -767,7 +794,7 @@ export const WebsocketProvider = ({ children }) => {
               try {
                 await API.requeryChannels();
                 await API.requeryStreams();
-                await useChannelsStore.getState().fetchChannels();
+                useChannelsStore.getState().fetchChannelIds();
                 await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {

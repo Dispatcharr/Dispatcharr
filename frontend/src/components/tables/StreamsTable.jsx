@@ -112,7 +112,7 @@ const StreamRowActions = ({
       'Hash:',
       row.original.stream_hash
     );
-    handleWatchStream(row.original.stream_hash);
+    handleWatchStream(row.original.stream_hash, row.original.name);
   }, [row.original, handleWatchStream]); // Add proper dependencies to ensure correct stream
 
   const iconSize =
@@ -1012,12 +1012,12 @@ const StreamsTable = ({ onReady }) => {
     });
   };
 
-  function handleWatchStream(streamHash) {
+  function handleWatchStream(streamHash, streamName) {
     let vidUrl = `/proxy/ts/stream/${streamHash}`;
     if (env_mode == 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
-    showVideo(vidUrl);
+    showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
   }
 
   const onSortingChange = (column) => {
@@ -1261,7 +1261,7 @@ const StreamsTable = ({ onReady }) => {
     getRowStyles: (row) => {
       if (row.original.is_stale) {
         return {
-          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          className: 'stale-stream-row',
         };
       }
       return {};

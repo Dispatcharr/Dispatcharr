@@ -55,6 +55,11 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Channel Initialization Grace Period',
     description: 'Grace period in seconds during channel initialization',
   },
+  new_client_behind_seconds: {
+    label: 'New Client Buffer (seconds)',
+    description:
+      'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+  },
 };
 
 export const M3U_FILTER_TYPES = [
@@ -354,3 +359,21 @@ export const CONTAINER_EXTENSIONS = [
   'ts',
   'mpg',
 ];
+
+export const SUBSCRIPTION_EVENTS = {
+  channel_start: 'Channel Started',
+  channel_stop: 'Channel Stopped',
+  channel_reconnect: 'Channel Reconnected',
+  channel_error: 'Channel Error',
+  channel_failover: 'Channel Failover',
+  stream_switch: 'Stream Switch',
+  recording_start: 'Recording Started',
+  recording_end: 'Recording Ended',
+  epg_refresh: 'EPG Refreshed',
+  m3u_refresh: 'M3U Refreshed',
+  client_connect: 'Client Connected',
+  client_disconnect: 'Client Disconnected',
+  login_failed: 'Login Failed',
+  epg_blocked: 'EPG Blocked',
+  m3u_blocked: 'M3U Blocked',
+};

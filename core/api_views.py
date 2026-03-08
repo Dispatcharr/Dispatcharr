@@ -183,6 +183,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+                "new_client_behind_seconds": 5,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
@@ -506,7 +507,7 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         )
 
         # Filter admin-only notifications for non-admins
-        if not getattr(user, 'is_superuser', False) and getattr(user, 'user_level', 0) < 10:
+        if getattr(user, 'user_level', 0) < 10:
             queryset = queryset.filter(admin_only=False)
 
         # For developer notifications, evaluate conditions

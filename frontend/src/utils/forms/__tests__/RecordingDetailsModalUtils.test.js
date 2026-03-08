@@ -282,6 +282,7 @@ describe('RecordingDetailsModalUtils', () => {
       const recordings = [
         {
           start_time: '2024-01-02T12:00:00',
+          end_time: '2024-01-02T13:00:00',
           channel: 'ch1',
           custom_properties: {
             program: { tvg_id: 'show1', title: 'Test Show' },
@@ -289,6 +290,7 @@ describe('RecordingDetailsModalUtils', () => {
         },
         {
           start_time: '2024-01-02T13:00:00',
+          end_time: '2024-01-02T14:00:00',
           channel: 'ch1',
           custom_properties: {
             program: { tvg_id: 'show2', title: 'Other Show' },
@@ -313,6 +315,7 @@ describe('RecordingDetailsModalUtils', () => {
       const recordings = [
         {
           start_time: '2023-12-31T12:00:00',
+          end_time: '2023-12-31T13:00:00',
           channel: 'ch1',
           custom_properties: {
             program: { tvg_id: 'show1', title: 'Test Show' },
@@ -320,6 +323,7 @@ describe('RecordingDetailsModalUtils', () => {
         },
         {
           start_time: '2024-01-02T12:00:00',
+          end_time: '2024-01-02T13:00:00',
           channel: 'ch1',
           custom_properties: {
             program: { tvg_id: 'show1', title: 'Test Show' },

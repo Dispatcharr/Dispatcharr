@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
-import useVideoStore from '../store/useVideoStore'; // NEW import
+import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import {
   ActionIcon,
@@ -52,11 +52,9 @@ import {
   fetchRules,
   filterGuideChannels,
   formatTime,
-  getGroupOptions,
   getProfileOptions,
   getRuleByProgram,
   HOUR_WIDTH,
-  mapChannelsById,
   mapProgramsByChannel,
   mapRecordingsByProgramId,
   matchChannelByTvgId,
@@ -65,6 +63,7 @@ import {
   PROGRAM_HEIGHT,
   sortChannels,
 } from './guideUtils';
+import API from '../api';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import {
   add,
@@ -87,11 +86,13 @@ import { showNotification } from '../utils/notificationUtils.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 export default function TVChannelGuide({ startDate, endDate }) {
-  const channels = useChannelsStore((s) => s.channels);
+  const [isChannelsLoading, setIsChannelsLoading] = useState(false);
+  const [allowAllGroups, setAllowAllGroups] = useState(true);
+  const MAX_ALL_CHANNELS = 99999;
+
   const recordings = useChannelsStore((s) => s.recordings);
   const channelGroups = useChannelsStore((s) => s.channelGroups);
   const profiles = useChannelsStore((s) => s.profiles);
-  const isLoading = useChannelsStore((s) => s.isLoading);
   const [isProgramsLoading, setIsProgramsLoading] = useState(true);
   const logos = useLogosStore((s) => s.logos);
 
@@ -123,38 +124,120 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const tvGuideRef = useRef(null); // Ref for the main tv-guide wrapper
   const isSyncingScroll = useRef(false);
   const guideScrollLeftRef = useRef(0);
+  const nowLineRef = useRef(null);
+  const [settledScrollLeft, setSettledScrollLeft] = useState(0);
+  const scrollDebounceRef = useRef(null);
   const {
     ref: guideContainerRef,
     width: guideWidth,
     height: guideHeight,
   } = useElementSize();
-  const [guideScrollLeft, setGuideScrollLeft] = useState(0);
 
-  // Add new state to track hovered logo
-  const [hoveredChannelId, setHoveredChannelId] = useState(null);
-
-  // Load program data once
+  // Decide if 'All Channel Groups' should be enabled (based on total channel count)
   useEffect(() => {
-    if (Object.keys(channels).length === 0) {
-      console.warn('No channels provided or empty channels array');
-      showNotification({ title: 'No channels available', color: 'red.5' });
-      setIsProgramsLoading(false);
-      return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        const ids = await API.getAllChannelIds(params);
+        if (cancelled) {
+          return;
+        }
+
+        const total = Array.isArray(ids)
+          ? ids.length
+          : (ids?.length ?? ids?.count ?? 0);
+        setAllowAllGroups(total <= MAX_ALL_CHANNELS);
+      } catch (e) {
+        // If we cannot determine, keep current default (true)
+        console.error('Failed to get total channel IDs', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If 'All' is not allowed, default to the first available group
+  useEffect(() => {
+    if (!allowAllGroups && selectedGroupId === 'all') {
+      const firstGroup = Object.values(channelGroups).find(
+        (g) => g?.hasChannels
+      );
+      if (firstGroup) {
+        setSelectedGroupId(String(firstGroup.id));
+      }
     }
+  }, [allowAllGroups, channelGroups, selectedGroupId]);
 
-    const sortedChannels = sortChannels(channels);
-    setGuideChannels(sortedChannels);
+  // Fetch channels on demand based on filters
+  useEffect(() => {
+    let cancelled = false;
+    const fetchGuideChannels = async () => {
+      try {
+        setIsChannelsLoading(true);
+        const params = new URLSearchParams();
+        // Group filter by name, if not 'all'
+        if (selectedGroupId !== 'all') {
+          const group = channelGroups[Number(selectedGroupId)];
+          if (group?.name) params.set('channel_group', group.name);
+        } else if (!allowAllGroups) {
+          // If 'all' is not allowed, fall back to first available group
+          const firstGroup = Object.values(channelGroups).find(
+            (g) => g?.hasChannels
+          );
+          if (firstGroup?.name) params.set('channel_group', firstGroup.name);
+        }
 
-    fetchPrograms()
-      .then((data) => {
-        setPrograms(data);
+        // Profile filter
+        if (selectedProfileId && selectedProfileId !== 'all') {
+          params.set('channel_profile_id', String(selectedProfileId));
+        }
+
+        // Search filter
+        if (searchQuery && searchQuery.trim() !== '') {
+          params.set('search', searchQuery.trim());
+        }
+
+        // Use lightweight summary endpoint — returns only the fields
+        // the Guide needs (id, name, logo_id, channel_number, uuid,
+        // epg_data_id, channel_group_id) without serializer/join overhead.
+        const channels = await API.getChannelsSummary(params);
+
+        if (cancelled) return;
+
+        const sorted = sortChannels(channels || []);
+        setGuideChannels(sorted);
+
+        // Load program data after channels are available
+        fetchPrograms()
+          .then((data) => {
+            setPrograms(data);
+            setIsProgramsLoading(false);
+          })
+          .catch((error) => {
+            console.error('Failed to fetch programs:', error);
+            setIsProgramsLoading(false);
+          });
+      } catch (e) {
+        if (cancelled) return;
         setIsProgramsLoading(false);
-      })
-      .catch((error) => {
-        console.error('Failed to fetch programs:', error);
-        setIsProgramsLoading(false);
-      });
-  }, [channels]);
+      } finally {
+        if (!cancelled) setIsChannelsLoading(false);
+      }
+    };
+
+    fetchGuideChannels();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    allowAllGroups,
+    channelGroups,
+    searchQuery,
+    selectedGroupId,
+    selectedProfileId,
+  ]);
 
   // Apply filters when search, group, or profile changes
   const filteredChannels = useMemo(() => {
@@ -195,15 +278,24 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const start = calculateStart(earliestProgramStart, defaultStart);
   const end = calculateEnd(latestProgramEnd, defaultEnd);
 
+  // Pre-compute timeline origin in ms for horizontal culling in GuideRow
+  const timelineStartMs = useMemo(() => convertToMs(start), [start]);
+
   const channelIdByTvgId = useMemo(
     () => buildChannelIdMap(guideChannels, tvgsById, epgs),
     [guideChannels, tvgsById, epgs]
   );
 
-  const channelById = useMemo(
-    () => mapChannelsById(guideChannels),
-    [guideChannels]
-  );
+  // Local map of channel id -> channel object for quick lookup
+  const channelById = useMemo(() => {
+    const map = new Map();
+    for (const ch of guideChannels) {
+      if (ch && ch.id !== undefined && ch.id !== null) {
+        map.set(ch.id, ch);
+      }
+    }
+    return map;
+  }, [guideChannels]);
 
   const programsByChannelId = useMemo(
     () => mapProgramsByChannel(programs, channelIdByTvgId),
@@ -263,14 +355,14 @@ export default function TVChannelGuide({ startDate, endDate }) {
         isSyncingScroll.current = true;
         timelineRef.current.scrollLeft = scrollLeft;
         guideScrollLeftRef.current = scrollLeft;
-        setGuideScrollLeft(scrollLeft);
+        updateNowLine();
         requestAnimationFrame(() => {
           isSyncingScroll.current = false;
         });
       } else if (scrollLeft !== guideScrollLeftRef.current) {
         // Update ref even if timeline was already synced
         guideScrollLeftRef.current = scrollLeft;
-        setGuideScrollLeft(scrollLeft);
+        updateNowLine();
       }
     };
 
@@ -281,11 +373,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
     };
   }, []);
 
-  // Update "now" every second
+  // Update "now" every 60 seconds (on a 24h guide, per-second is imperceptible)
   useEffect(() => {
     const interval = setInterval(() => {
       setNow(getNow());
-    }, 1000);
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -294,6 +386,25 @@ export default function TVChannelGuide({ startDate, endDate }) {
     () => calculateNowPosition(now, start, end),
     [now, start, end]
   );
+
+  // Update the now-line DOM element directly (no React re-render)
+  const updateNowLine = useCallback(() => {
+    if (nowLineRef.current) {
+      nowLineRef.current.style.left = `${nowPosition + CHANNEL_WIDTH - guideScrollLeftRef.current}px`;
+    }
+    // Debounce horizontal culling update — fires 150ms after scrolling stops
+    if (scrollDebounceRef.current) {
+      clearTimeout(scrollDebounceRef.current);
+    }
+    scrollDebounceRef.current = setTimeout(() => {
+      setSettledScrollLeft(guideScrollLeftRef.current);
+    }, 150);
+  }, [nowPosition]);
+
+  // Sync now-line whenever nowPosition changes (every 60s)
+  useEffect(() => {
+    updateNowLine();
+  }, [updateNowLine]);
 
   useEffect(() => {
     const tvGuide = tvGuideRef.current;
@@ -333,7 +444,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
         // Update the ref to keep state in sync
         guideScrollLeftRef.current = newScrollLeft;
-        setGuideScrollLeft(newScrollLeft);
+        updateNowLine();
       }
     };
 
@@ -363,7 +474,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         if (guide && timeline && guide.scrollLeft !== timeline.scrollLeft) {
           timeline.scrollLeft = guide.scrollLeft;
           guideScrollLeftRef.current = guide.scrollLeft;
-          setGuideScrollLeft(guide.scrollLeft);
+          updateNowLine();
         }
         lastCheck = timestamp;
       }
@@ -400,7 +511,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       if (currentScroll !== lastScrollLeft) {
         timeline.scrollLeft = currentScroll;
         guideScrollLeftRef.current = currentScroll;
-        setGuideScrollLeft(currentScroll);
+        updateNowLine();
         lastScrollLeft = currentScroll;
         stableFrames = 0;
         return true; // Still scrolling
@@ -496,21 +607,53 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
 
     guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
+    updateNowLine();
 
     requestAnimationFrame(() => {
       isSyncingScroll.current = false;
     });
   }, []);
 
-  // Scroll to the nearest half-hour mark ONLY on initial load
-  useEffect(() => {
-    if (programs.length > 0 && !initialScrollComplete) {
-      syncScrollLeft(calculateScrollPosition(now, start));
+  // Holds the scroll position to restore after a filter-induced remount.
+  // null means "use the default scroll-to-now on first load".
+  const savedScrollLeftRef = useRef(null);
 
+  // When channels become empty (filter transition unmounts the list), save the
+  // current scroll position so we can restore it once new channels arrive.
+  // Only save if the initial scroll has already happened — otherwise the saved
+  // position would be 0 (the DOM default) and we'd skip the scroll-to-now.
+  useEffect(() => {
+    if (filteredChannels.length === 0) {
+      if (initialScrollComplete) {
+        savedScrollLeftRef.current = guideScrollLeftRef.current;
+      }
+      setInitialScrollComplete(false);
+    }
+  }, [filteredChannels.length, initialScrollComplete]);
+
+  // Scroll on initial load, or restore saved position after a filter transition.
+  // Guard with guideRef.current — the VariableSizeList outer div is null while
+  // unmounted, so we must wait until it remounts before calling syncScrollLeft.
+  useEffect(() => {
+    if (programs.length > 0 && !initialScrollComplete && guideRef.current) {
+      if (savedScrollLeftRef.current !== null) {
+        // Restore where the user was before the filter change
+        syncScrollLeft(savedScrollLeftRef.current);
+        savedScrollLeftRef.current = null;
+      } else {
+        // Genuine first load — scroll to current time
+        syncScrollLeft(calculateScrollPosition(now, start));
+      }
       setInitialScrollComplete(true);
     }
-  }, [programs, start, now, initialScrollComplete, syncScrollLeft]);
+  }, [
+    programs,
+    start,
+    now,
+    initialScrollComplete,
+    syncScrollLeft,
+    filteredChannels.length,
+  ]);
 
   const findChannelByTvgId = useCallback(
     (tvgId) => matchChannelByTvgId(channelIdByTvgId, channelById, tvgId),
@@ -555,14 +698,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const saveSeriesRule = useCallback(async (program, mode) => {
     await createSeriesRule(program, mode);
     await evaluateSeriesRule(program);
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (error) {
-      console.warn(
-        'Failed to refresh recordings after saving series rule',
-        error
-      );
-    }
+    // recordings_refreshed WS event triggers the debounced fetchRecordings()
     showNotification({
       title: mode === 'new' ? 'Record new episodes' : 'Record all episodes',
     });
@@ -588,7 +724,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
         return;
       }
 
-      showVideo(getShowVideoUrl(matched, env_mode));
+      showVideo(getShowVideoUrl(matched, env_mode), 'live', {
+        name: matched.name,
+      });
     },
     [env_mode, findChannelByTvgId, showVideo]
   );
@@ -597,7 +735,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
     (channel, event) => {
       event.stopPropagation();
 
-      showVideo(getShowVideoUrl(channel, env_mode));
+      showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+        name: channel.name,
+      });
     },
     [env_mode, showVideo]
   );
@@ -658,7 +798,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
 
     guideScrollLeftRef.current = nextLeft;
-    setGuideScrollLeft(nextLeft);
+    updateNowLine();
 
     isSyncingScroll.current = true;
     if (guideRef.current) {
@@ -724,7 +864,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
 
       const programStartInView = leftPx + gapSize;
       const programEndInView = leftPx + gapSize + widthPx;
-      const viewportLeft = guideScrollLeft;
+      const viewportLeft = guideScrollLeftRef.current;
       const startsBeforeView = programStartInView < viewportLeft;
       const extendsIntoView = programEndInView > viewportLeft;
 
@@ -895,10 +1035,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
     },
     [
       expandedProgramId,
-      guideScrollLeft,
       handleProgramClick,
       handleWatchStream,
-      now,
       openRecordChoice,
       recordingsByProgramId,
       start,
@@ -935,11 +1073,15 @@ export default function TVChannelGuide({ startDate, endDate }) {
       expandedProgramId,
       rowHeights,
       logos,
-      hoveredChannelId,
-      setHoveredChannelId,
       renderProgram,
       handleLogoClick,
       contentWidth,
+      guideScrollLeftRef,
+      viewportWidth:
+        guideWidth ||
+        (typeof window !== 'undefined' ? window.innerWidth : 1200),
+      timelineStartMs,
+      settledScrollLeft, // triggers row re-renders after scrolling stops
     }),
     [
       filteredChannels,
@@ -947,11 +1089,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
       expandedProgramId,
       rowHeights,
       logos,
-      hoveredChannelId,
       renderProgram,
       handleLogoClick,
       contentWidth,
-      setHoveredChannelId,
+      guideWidth,
+      timelineStartMs,
+      settledScrollLeft,
     ]
   );
 
@@ -967,11 +1110,20 @@ export default function TVChannelGuide({ startDate, endDate }) {
     }
   }, [searchQuery, selectedGroupId, selectedProfileId]);
 
-  // Create group options for dropdown - but only include groups used by guide channels
-  const groupOptions = useMemo(
-    () => getGroupOptions(channelGroups, guideChannels),
-    [channelGroups, guideChannels]
-  );
+  // Group options: show all groups; gate 'All' if too many channels
+  const groupOptions = useMemo(() => {
+    const opts = [];
+    if (allowAllGroups) {
+      opts.push({ value: 'all', label: 'All Channel Groups' });
+    }
+    const groupsArr = Object.values(channelGroups)
+      .filter((g) => g?.hasChannels)
+      .sort((a, b) => (a?.name || '').localeCompare(b?.name || ''));
+    groupsArr.forEach((g) => {
+      opts.push({ value: String(g.id), label: g.name });
+    });
+    return opts;
+  }, [channelGroups, allowAllGroups]);
 
   // Create profile options for dropdown
   const profileOptions = useMemo(() => getProfileOptions(profiles), [profiles]);
@@ -1075,7 +1227,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
             value={selectedGroupId}
             onChange={handleGroupChange} // Use the new handler
             w={'220px'}
-            clearable={true} // Allow clearing the selection
+            clearable={allowAllGroups} // Allow clearing the selection
           />
 
           <Select
@@ -1194,16 +1346,17 @@ export default function TVChannelGuide({ startDate, endDate }) {
           }}
           pos="relative"
         >
-          <LoadingOverlay visible={isLoading || isProgramsLoading} />
+          <LoadingOverlay visible={isProgramsLoading || isChannelsLoading} />
           {nowPosition >= 0 && (
             <Box
+              ref={nowLineRef}
               style={{
                 backgroundColor: '#38b2ac',
                 zIndex: 15,
                 pointerEvents: 'none',
+                left: `${nowPosition + CHANNEL_WIDTH - guideScrollLeftRef.current}px`,
               }}
               pos="absolute"
-              left={nowPosition + CHANNEL_WIDTH - guideScrollLeft}
               top={0}
               bottom={0}
               w={'2px'}
@@ -1222,7 +1375,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               itemData={listData}
               ref={listRef}
               outerRef={guideRef}
-              overscanCount={8}
+              overscanCount={3}
             >
               {GuideRow}
             </VariableSizeList>

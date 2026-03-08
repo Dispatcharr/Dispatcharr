@@ -12,6 +12,7 @@ export const Field = ({ field, value, onChange }) => {
   const description = field.help_text ?? field.description ?? field.value;
   const common = { label: field.label, description };
   const effective = value ?? field.default;
+
   switch (field.type) {
     case 'info':
       return (

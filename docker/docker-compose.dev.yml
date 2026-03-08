@@ -5,6 +5,7 @@ services:
     #   dockerfile: docker/Dockerfile.dev
     image: ghcr.io/dispatcharr/dispatcharr:base
     container_name: dispatcharr_dev
+    restart: unless-stopped
     ports:
       - 5656:5656
       - 9191:9191
@@ -33,6 +34,7 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
@@ -43,6 +45,7 @@ services:
 
   redis-commander:
     image: rediscommander/redis-commander:latest
+    restart: unless-stopped
     environment:
       - REDIS_HOSTS=dispatcharr:dispatcharr:6379:0
       - TRUST_PROXY=true

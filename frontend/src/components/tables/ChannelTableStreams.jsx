@@ -94,7 +94,7 @@ const DraggableRow = ({ row, index }) => {
     <Box
       ref={setNodeRef}
       key={row.id}
-      className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'}`}
+      className={`tr ${index % 2 == 0 ? 'tr-even' : 'tr-odd'}${row.original.is_stale ? ' stale-stream-row' : ''}`}
       style={{
         ...style,
         display: 'flex',
@@ -105,7 +105,6 @@ const DraggableRow = ({ row, index }) => {
       }}
     >
       {row.getVisibleCells().map((cell) => {
-        const isStale = row.original.is_stale;
         return (
           <Box
             className="td"
@@ -116,9 +115,6 @@ const DraggableRow = ({ row, index }) => {
                 ? cell.column.getSize()
                 : undefined,
               minWidth: 0,
-              ...(isStale && {
-                backgroundColor: 'rgba(239, 68, 68, 0.15)',
-              }),
             }}
           >
             <Flex align="center" style={{ height: '100%' }}>
@@ -144,12 +140,12 @@ const ChannelStreams = ({ channel, isExpanded }) => {
   const authUser = useAuthStore((s) => s.user);
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
-  function handleWatchStream(streamHash) {
+  function handleWatchStream(streamHash, streamName) {
     let vidUrl = `/proxy/ts/stream/${streamHash}`;
     if (env_mode === 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
-    showVideo(vidUrl);
+    showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
   }
 
   const [data, setData] = useState(channelStreams || []);
@@ -394,7 +390,10 @@ const ChannelStreams = ({ channel, isExpanded }) => {
                           color="blue"
                           variant="light"
                           onClick={() =>
-                            handleWatchStream(stream.stream_hash || stream.id)
+                            handleWatchStream(
+                              stream.stream_hash || stream.id,
+                              stream.name
+                            )
                           }
                           style={{ marginLeft: 2 }}
                         >
@@ -614,7 +613,10 @@ const ChannelStreams = ({ channel, isExpanded }) => {
   const rows = table.getRowModel().rows;
 
   return (
-    <Box style={{ width: '100%', padding: 10, backgroundColor: '#163632' }}>
+    <Box
+      className="channel-streams-container"
+      style={{ width: '100%', padding: 10, backgroundColor: '#163632' }}
+    >
       <DndContext
         collisionDetection={closestCenter}
         modifiers={[restrictToVerticalAxis]}
