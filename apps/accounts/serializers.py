@@ -9,7 +9,7 @@ from apps.channels.models import ChannelProfile
 # Valid navigation item IDs for validation
 VALID_NAV_ITEM_IDS = {
     'channels', 'vods', 'sources', 'guide', 'dvr',
-    'stats', 'plugins', 'users', 'logos', 'settings'
+    'stats', 'plugins', 'integrations', 'system', 'settings'
 }
 MAX_CUSTOM_PROPS_SIZE = 10240  # 10KB limit
 

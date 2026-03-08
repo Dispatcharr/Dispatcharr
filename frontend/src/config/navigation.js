@@ -9,6 +9,10 @@ import {
   PlugZap,
   User,
   FileImage,
+  Webhook,
+  Logs,
+  Blocks,
+  MonitorCog,
 } from 'lucide-react';
 
 export const NAV_ITEMS = {
@@ -62,19 +66,27 @@ export const NAV_ITEMS = {
     path: '/plugins',
     adminOnly: true,
   },
-  users: {
-    id: 'users',
-    label: 'Users',
-    icon: User,
-    path: '/users',
+  integrations: {
+    id: 'integrations',
+    label: 'Integrations',
+    icon: Blocks,
     adminOnly: true,
+    paths: [
+      { label: 'Connections', icon: Webhook, path: '/connect' },
+      { label: 'Logs', icon: Logs, path: '/connect/logs' },
+    ],
   },
-  logos: {
-    id: 'logos',
-    label: 'Logo Manager',
-    icon: FileImage,
-    path: '/logos',
+  system: {
+    id: 'system',
+    label: 'System',
+    icon: MonitorCog,
     adminOnly: true,
+    canHide: false,
+    paths: [
+      { label: 'Users', icon: User, path: '/users' },
+      { label: 'Logo Manager', icon: FileImage, path: '/logos' },
+      { label: 'Settings', icon: LucideSettings, path: '/settings' },
+    ],
   },
   settings: {
     id: 'settings',
@@ -82,7 +94,7 @@ export const NAV_ITEMS = {
     icon: LucideSettings,
     path: '/settings',
     adminOnly: false,
-    canHide: false,  // Settings can never be hidden
+    canHide: false,
   },
 };
 
@@ -94,9 +106,8 @@ export const DEFAULT_ADMIN_ORDER = [
   'dvr',
   'stats',
   'plugins',
-  'users',
-  'logos',
-  'settings',
+  'integrations',
+  'system',
 ];
 
 export const DEFAULT_USER_ORDER = [
@@ -105,7 +116,7 @@ export const DEFAULT_USER_ORDER = [
   'settings',
 ];
 
-export const getOrderedNavItems = (userOrder, isAdmin, channels = {}) => {
+export const getOrderedNavItems = (userOrder, isAdmin, channelIds = []) => {
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
 
   let order;
@@ -127,17 +138,28 @@ export const getOrderedNavItems = (userOrder, isAdmin, channels = {}) => {
     const item = NAV_ITEMS[id];
     if (!item) return null;
 
+    // Group item (has paths array)
+    if (item.paths) {
+      return {
+        id: item.id,
+        label: item.label,
+        icon: item.icon,
+        paths: item.paths,
+        canHide: item.canHide,
+      };
+    }
+
     const navItem = {
       id: item.id,
       label: item.label,
       icon: item.icon,
       path: item.path,
-      canHide: item.canHide,  // Include canHide property
+      canHide: item.canHide,
     };
 
     // Add badge for channels
     if (id === 'channels') {
-      navItem.badge = `(${Object.keys(channels).length})`;
+      navItem.badge = `(${Array.isArray(channelIds) ? channelIds.length : 0})`;
     }
 
     return navItem;

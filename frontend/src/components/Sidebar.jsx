@@ -62,9 +62,9 @@ const NavLink = ({ item, isActive, collapsed }) => {
   );
 };
 
-function NavGroup({ label, icon, paths, location, collapsed }) {
+function NavGroup({ label, icon: IconComponent, paths, location, collapsed }) {
   const [open, setOpen] = useState(() =>
-    location.pathname.startsWith('/connect')
+    paths.some((p) => location.pathname.startsWith(p.path))
   );
 
   const parentActive = paths
@@ -81,7 +81,7 @@ function NavGroup({ label, icon, paths, location, collapsed }) {
         className={`navlink ${parentActive ? 'navlink-parent-active' : ''} ${open ? 'navlink-collapsed' : ''}`}
         style={{ width: '100%' }}
       >
-        {icon}
+        {IconComponent && <IconComponent size={20} />}
         {!collapsed && (
           <Group justify="space-between" style={{ width: '100%' }}>
             <Text
@@ -154,9 +154,9 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
   const navItems = useMemo(() => {
-    const orderedItems = getOrderedNavItems(navOrder, isAdmin, channels);
+    const orderedItems = getOrderedNavItems(navOrder, isAdmin, channelIds);
     return orderedItems.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, channels]);
+  }, [navOrder, hiddenNav, isAdmin, channelIds]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values
