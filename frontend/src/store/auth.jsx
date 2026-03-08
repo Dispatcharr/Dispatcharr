@@ -8,6 +8,7 @@ import useUserAgentsStore from './userAgents';
 import useUsersStore from './users';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
+import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
 
 const decodeToken = (token) => {
   if (!token) return null;
@@ -76,7 +77,13 @@ const useAuthStore = create((set, get) => ({
 
   getHiddenNav: () => {
     const user = get().user;
-    return user?.custom_properties?.hiddenNav || [];
+    const hiddenNav = user?.custom_properties?.hiddenNav || [];
+    // Filter out stale IDs that are no longer valid for this user's role
+    const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
+    const validIds = new Set(
+      isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER
+    );
+    return hiddenNav.filter((id) => validIds.has(id));
   },
 
   toggleNavVisibility: async (itemId) => {

@@ -115,10 +115,20 @@ class UserSerializer(serializers.ModelSerializer):
         channel_profiles = validated_data.pop("channel_profiles", None)
 
         # Merge custom_properties instead of replacing (prevents data loss)
+        # Strip null values — sending null for a key omits it rather than overwriting with null
         custom_properties = validated_data.pop("custom_properties", None)
         if custom_properties is not None:
             existing = instance.custom_properties or {}
-            instance.custom_properties = {**existing, **custom_properties}
+            cleaned = {k: v for k, v in custom_properties.items() if v is not None}
+            merged = {**existing, **cleaned}
+            # Scrub stale nav IDs so the DB self-heals on next save
+            for nav_field in ('navOrder', 'hiddenNav'):
+                if nav_field in merged and isinstance(merged[nav_field], list):
+                    merged[nav_field] = [
+                        item for item in merged[nav_field]
+                        if item in VALID_NAV_ITEM_IDS
+                    ]
+            instance.custom_properties = merged
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
