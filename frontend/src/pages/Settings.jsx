@@ -7,6 +7,7 @@ import {
   AccordionPanel,
   Box,
   Center,
+  Divider,
   Text,
   Loader,
 } from '@mantine/core';
@@ -69,18 +70,19 @@ const SettingsPage = () => {
             <AccordionControl>UI Settings</AccordionControl>
             <AccordionPanel>
               <UiSettingsForm active={accordianValue === 'ui-settings'} />
-            </AccordionPanel>
-          </AccordionItem>
-
-          <AccordionItem value="nav-order">
-            <AccordionControl>Navigation</AccordionControl>
-            <AccordionPanel>
-              <ErrorBoundary>
-                <Suspense fallback={<Loader />}>
-                  <NavOrderForm
-                    active={accordianValue === 'nav-order'} />
-                </Suspense>
-              </ErrorBoundary>
+              <Divider my="md" />
+              <Accordion variant="contained">
+                <AccordionItem value="nav-order">
+                  <AccordionControl>Navigation</AccordionControl>
+                  <AccordionPanel>
+                    <ErrorBoundary>
+                      <Suspense fallback={<Loader />}>
+                        <NavOrderForm active={accordianValue === 'ui-settings'} />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </AccordionPanel>
+                </AccordionItem>
+              </Accordion>
             </AccordionPanel>
           </AccordionItem>
 
