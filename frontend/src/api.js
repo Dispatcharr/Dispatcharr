@@ -2675,11 +2675,14 @@ export default class API {
 
   static async extendRecording(id, extraMinutes) {
     try {
-      const resp = await request(`${host}/api/channels/recordings/${id}/extend/`, {
-        method: 'POST',
-        body: JSON.stringify({ extra_minutes: extraMinutes }),
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const resp = await request(
+        `${host}/api/channels/recordings/${id}/extend/`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ extra_minutes: extraMinutes }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
       return resp;
     } catch (e) {
       errorNotification(`Failed to extend recording ${id}`, e);
@@ -2900,16 +2903,10 @@ export default class API {
   }
 
   static async updateMe(data) {
-    try {
-      const response = await request(`${host}/api/accounts/users/me/`, {
-        method: 'PATCH',
-        body: data,
-      });
-      return response;
-    } catch (e) {
-      errorNotification('Failed to update user preferences', e);
-      throw e;
-    }
+    return await request(`${host}/api/accounts/users/me/`, {
+      method: 'PATCH',
+      body: data,
+    });
   }
 
   static async getUsers() {
