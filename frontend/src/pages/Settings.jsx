@@ -77,7 +77,9 @@ const SettingsPage = () => {
                   <AccordionPanel>
                     <ErrorBoundary>
                       <Suspense fallback={<Loader />}>
-                        <NavOrderForm active={accordianValue === 'ui-settings'} />
+                        <NavOrderForm
+                          active={accordianValue === 'ui-settings'}
+                        />
                       </Suspense>
                     </ErrorBoundary>
                   </AccordionPanel>

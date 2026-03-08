@@ -15,7 +15,7 @@ MAX_CUSTOM_PROPS_SIZE = 10240  # 10KB limit
 
 
 def validate_nav_array(value, field_name):
-    """Validate that a value is an array of strings."""
+    """Validate that a value is an array of valid nav item ID strings."""
     if not isinstance(value, list):
         raise serializers.ValidationError(f"{field_name} must be an array")
     if len(value) > 50:
@@ -23,8 +23,8 @@ def validate_nav_array(value, field_name):
     for item in value:
         if not isinstance(item, str):
             raise serializers.ValidationError(f"{field_name} items must be strings")
-        if len(item) > 50:
-            raise serializers.ValidationError(f"{field_name} item exceeds maximum length of 50 characters")
+        if item not in VALID_NAV_ITEM_IDS:
+            raise serializers.ValidationError(f"'{item}' is not a valid navigation item ID")
 
 
 # 🔹 Fix for Permission serialization

@@ -107,17 +107,16 @@ export const DEFAULT_USER_ORDER = [
 
 export const getOrderedNavItems = (userOrder, isAdmin, channels = {}) => {
   const defaultOrder = isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER;
-  const allowedItems = isAdmin
-    ? Object.keys(NAV_ITEMS)
-    : Object.keys(NAV_ITEMS).filter((id) => !NAV_ITEMS[id].adminOnly);
 
   let order;
   if (userOrder && Array.isArray(userOrder) && userOrder.length > 0) {
     // Filter saved order to only include allowed items
-    const filteredOrder = userOrder.filter((id) => allowedItems.includes(id));
+    const filteredOrder = userOrder.filter((id) => defaultOrder.includes(id));
 
     // Find any new items that aren't in the saved order and append them
-    const missingItems = allowedItems.filter((id) => !filteredOrder.includes(id));
+    const missingItems = defaultOrder.filter(
+      (id) => !filteredOrder.includes(id)
+    );
 
     order = [...filteredOrder, ...missingItems];
   } else {
