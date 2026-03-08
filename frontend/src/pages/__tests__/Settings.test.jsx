@@ -71,6 +71,9 @@ vi.mock('../../components/forms/settings/SystemSettingsForm', () => ({
     </div>
   ),
 }));
+vi.mock('../../components/forms/settings/NavOrderForm', () => ({
+  default: ({ active }) => <div data-testid="nav-order-form">NavOrderForm {active ? 'active' : 'inactive'}</div>,
+}));
 vi.mock('../../components/ErrorBoundary', () => ({
   default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));
@@ -157,6 +160,13 @@ describe('SettingsPage', () => {
       expect(screen.queryByText('Proxy Settings')).not.toBeInTheDocument();
       expect(screen.queryByText('Backup & Restore')).not.toBeInTheDocument();
     });
+
+    it('renders Navigation accordion item for regular users', () => {
+      render(<SettingsPage />);
+
+      expect(screen.getByTestId('accordion-item-nav-order')).toBeInTheDocument();
+      expect(screen.getByText('Navigation')).toBeInTheDocument();
+    });
   });
 
   describe('Rendering for Admin User', () => {
@@ -181,6 +191,7 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Network Access')).toBeInTheDocument();
         expect(screen.getByText('Proxy Settings')).toBeInTheDocument();
         expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
+        expect(screen.getByText('Navigation')).toBeInTheDocument();
       });
     });
 
@@ -244,6 +255,12 @@ describe('SettingsPage', () => {
       renderWithRouter(<SettingsPage />);
 
       expect(screen.getByTestId('accordion-item-backups')).toBeInTheDocument();
+    });
+
+    it('renders Navigation accordion item', () => {
+      render(<SettingsPage />);
+
+      expect(screen.getByTestId('accordion-item-nav-order')).toBeInTheDocument();
     });
   });
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Configurable sidebar navigation ordering and visibility — Thanks [@jcasimir](https://github.com/jcasimir)
+  - Sidebar nav items can be reordered via drag-and-drop in Settings → UI Settings → Navigation.
+  - Individual nav items can be hidden from the sidebar using the eye toggle. Hiding an item preserves its position in the order.
+  - A "Reset to Default" button restores the role-appropriate default order and clears all hidden items.
+  - Order and visibility are saved per-user with optimistic updates and automatic rollback on failure. Changes appear in the sidebar immediately without a page reload.
+  - Admin users see a grouped navigation: flat items (`Channels`, `VODs`, `M3U & EPG Manager`, `TV Guide`, `DVR`, `Stats`, `Plugins`) plus collapsible `Integrations` (Connections, Logs) and `System` (Users, Logo Manager, Settings) groups. The `System` group cannot be hidden.
+  - Non-admin users see `Channels`, `TV Guide`, and `Settings`, with the `Settings` item not hideable.
 - Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components. — Thanks [@nick4810](https://github.com/nick4810)
 - Unit tests for DVR port resolution (`build_dvr_candidates`) and selective Redis flush behavior in modular mode. — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Floating video player now displays the channel, stream, or VOD title in the player header bar. Title is passed through from all preview entry points: channel table, stream table, stream connection card, guide, DVR, recording cards, recording details modal, VOD modal, and series modal.
@@ -39,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security**: Any authenticated user could self-escalate privileges by sending `user_level`, `is_staff`, or `is_superuser` in a `PATCH /api/accounts/users/me/` request. The `/me/` endpoint now enforces an allowlist (`custom_properties`, `first_name`, `last_name`, `email`, `password`); any other fields return HTTP 400. Privilege-sensitive fields can only be changed via the admin-only `PATCH /api/accounts/users/{id}/` endpoint.
+- Double error notification when saving user preferences: `API.updateMe` was catching errors internally and displaying a notification before re-throwing, causing callers to display a second notification for the same failure.
+- Navigation preference saves from concurrent sessions could overwrite each other due to a double-merge race: the frontend was pre-merging `custom_properties` before sending, then the backend merged again against the DB value, causing the second session's write to silently drop keys set by the first. The frontend now sends only the delta; the backend merges authoritatively against the stored value.
+- Stale nav item IDs (e.g. from a previous nav structure) are now scrubbed from `navOrder` and `hiddenNav` on the next preference save, preventing unbounded growth of the `custom_properties` JSON field.
 - Version update notification persisting after upgrading to the notified version (e.g. "v0.20.2 available" shown while already running v0.20.2). Root cause: `check_for_version_update.delay()` was called from `AppConfig.ready()`, which fires inside Celery prefork pool subprocesses before the broker connection is established, causing the dispatch to fail silently with no log output. Fixed by moving the startup dispatch to the `worker_ready` signal in `celery.py` (consistent with the existing `recover_recordings_on_startup` pattern), and deleting the stale `version-{current_version}` notification at the top of the production check path so it is cleared even when GitHub is unreachable. A WebSocket update is sent immediately on deletion so the frontend badge clears without waiting for the API response.
 - VOD orphan cleanup crashing with a `ForeignKeyViolation` (`IntegrityError`) when a concurrent refresh task created a new `M3UMovieRelation` or `M3USeriesRelation` for a movie/series between the orphan-detection query and the `DELETE` SQL. Both `orphaned_movies.delete()` and `orphaned_series.delete()` are now wrapped in `try/except IntegrityError`; affected records are skipped with a warning and will be cleaned up on the next scheduled run.
 - XC stream refresh crashing with a `null value in column "name"` database error when a provider returns streams with a null or empty name. Affected streams are now assigned a generated fallback name in the format `<account name> - <stream_id>` so the refresh completes successfully and the stream remains accessible. A warning is logged for each affected stream.
