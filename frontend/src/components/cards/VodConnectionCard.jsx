@@ -141,6 +141,33 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
   );
 };
 
+const ConnectionProgress = ({ connection, durationSecs }) => {
+  const { totalTime, currentTime, percentage } = calculateProgress(connection, durationSecs);
+  return totalTime > 0 ? (
+    <Stack gap="xs" mt="sm">
+      <Group justify="space-between" align="center">
+        <Text size="xs" fw={500} c="dimmed">
+          Progress
+        </Text>
+        <Text size="xs" c="dimmed">
+          {formatTime(currentTime)} / {formatTime(totalTime)}
+        </Text>
+      </Group>
+      <Progress
+        value={percentage}
+        size="sm"
+        color="blue"
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        }}
+      />
+      <Text size="xs" c="dimmed" ta="center">
+        {percentage.toFixed(1)}% watched
+      </Text>
+    </Stack>
+  ) : null;
+};
+
 // Create a VOD Card component similar to ChannelCard
 const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   const { fullDateTimeFormat } = useDateTimeFormat();
@@ -201,11 +228,6 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
       </Text>
     );
   };
-
-  // Calculate progress percentage and time
-  const getProgressInfo = useCallback(() => {
-    return calculateProgress(connection, metadata.duration_secs);
-  }, [connection, metadata.duration_secs]);
 
   // Calculate duration for connection
   const getConnectionDuration = useCallback((connection) => {
@@ -357,32 +379,11 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
         {/* Progress bar - show current position in content */}
         {connection &&
           metadata.duration_secs &&
-          (() => {
-            const { totalTime, currentTime, percentage } = getProgressInfo();
-            return totalTime > 0 ? (
-              <Stack gap="xs" mt="sm">
-                <Group justify="space-between" align="center">
-                  <Text size="xs" fw={500} c="dimmed">
-                    Progress
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatTime(currentTime)} / {formatTime(totalTime)}
-                  </Text>
-                </Group>
-                <Progress
-                  value={percentage}
-                  size="sm"
-                  color="blue"
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                  }}
-                />
-                <Text size="xs" c="dimmed" ta="center">
-                  {percentage.toFixed(1)}% watched
-                </Text>
-              </Stack>
-            ) : null;
-          })()}
+          <ConnectionProgress
+            connection={connection}
+            durationSecs={metadata.duration_secs}
+          />
+        }
 
         {/* Client information section - collapsible like channel cards */}
         {connection && (

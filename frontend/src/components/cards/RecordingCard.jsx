@@ -2,6 +2,9 @@ import useChannelsStore from '../../store/channels.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import useVideoStore from '../../store/useVideoStore.jsx';
 import {
+  format,
+  isAfter,
+  isBefore,
   useDateTimeFormat,
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
@@ -97,14 +100,14 @@ const RecordingCard = ({
   const end = toUserTime(recording.end_time);
   const now = userNow();
   const status = customProps.status;
-  const isTimeActive = now.isAfter(start) && now.isBefore(end);
+  const isTimeActive = isAfter(now, start) && isBefore(now, end);
   const isInterrupted = status === 'interrupted';
   const isInProgress =
     isTimeActive &&
     !isInterrupted &&
     status !== 'completed' &&
     status !== 'stopped';
-  const isUpcoming = now.isBefore(start);
+  const isUpcoming = isBefore(now, start);
   const isSeriesGroup = Boolean(
     recording._group_count && recording._group_count > 1
   );
@@ -471,8 +474,8 @@ const RecordingCard = ({
               {isSeriesGroup ? 'Next recording' : 'Time'}
             </Text>
             <Text size="sm">
-              {start.format(`${dateformat}, YYYY ${timeformat}`)} –{' '}
-              {end.format(timeformat)}
+              {format(start, `${dateformat}, YYYY ${timeformat}`)} –{' '}
+              {format(end, timeformat)}
             </Text>
           </Group>
 
