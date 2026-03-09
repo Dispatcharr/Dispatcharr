@@ -17,23 +17,39 @@ vi.mock('../../utils', () => ({
 }));
 
 vi.mock('../NotificationCenter', () => ({
-  default: () => <div data-testid="notification-center">Notification Center</div>,
+  default: () => (
+    <div data-testid="notification-center">Notification Center</div>
+  ),
 }));
 
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
-  ListOrdered: ({ onClick }) => <div data-testid="list-ordered-icon" onClick={onClick} />,
+  ListOrdered: ({ onClick }) => (
+    <div data-testid="list-ordered-icon" onClick={onClick} />
+  ),
   Play: ({ onClick }) => <div data-testid="play-icon" onClick={onClick} />,
-  Database: ({ onClick }) => <div data-testid="database-icon" onClick={onClick} />,
-  LayoutGrid: ({ onClick }) => <div data-testid="layout-grid-icon" onClick={onClick} />,
-  Settings: ({ onClick }) => <div data-testid="settings-icon" onClick={onClick} />,
+  Database: ({ onClick }) => (
+    <div data-testid="database-icon" onClick={onClick} />
+  ),
+  LayoutGrid: ({ onClick }) => (
+    <div data-testid="layout-grid-icon" onClick={onClick} />
+  ),
+  Settings: ({ onClick }) => (
+    <div data-testid="settings-icon" onClick={onClick} />
+  ),
   Copy: ({ onClick }) => <div data-testid="copy-icon" onClick={onClick} />,
-  ChartLine: ({ onClick }) => <div data-testid="chart-line-icon" onClick={onClick} />,
+  ChartLine: ({ onClick }) => (
+    <div data-testid="chart-line-icon" onClick={onClick} />
+  ),
   Video: ({ onClick }) => <div data-testid="video-icon" onClick={onClick} />,
-  PlugZap: ({ onClick }) => <div data-testid="plug-zap-icon" onClick={onClick} />,
+  PlugZap: ({ onClick }) => (
+    <div data-testid="plug-zap-icon" onClick={onClick} />
+  ),
   LogOut: ({ onClick }) => <div data-testid="logout-icon" onClick={onClick} />,
   User: ({ onClick }) => <div data-testid="user-icon" onClick={onClick} />,
-  FileImage: ({ onClick }) => <div data-testid="file-image-icon" onClick={onClick} />,
+  FileImage: ({ onClick }) => (
+    <div data-testid="file-image-icon" onClick={onClick} />
+  ),
   Webhook: () => <div data-testid="webhook-icon" />,
   Logs: () => <div data-testid="logs-icon" />,
   ChevronDown: () => <div data-testid="chevron-down-icon" />,
@@ -44,21 +60,22 @@ vi.mock('lucide-react', () => ({
 
 // Mock UserForm component
 vi.mock('../forms/User', () => ({
-  default: ({ isOpen, onClose, user }) => (
+  default: ({ isOpen, onClose, user }) =>
     isOpen ? (
       <div data-testid="user-form">
         User Form for {user?.username}
         <button onClick={onClose}>Close</button>
       </div>
-    ) : null
-  ),
+    ) : null,
 }));
 
 vi.mock('@mantine/core', async () => {
   return {
     Avatar: ({ children }) => <div>{children}</div>,
     Group: ({ children, onClick, ...props }) => (
-      <div onClick={onClick} {...props}>{children}</div>
+      <div onClick={onClick} {...props}>
+        {children}
+      </div>
     ),
     Stack: ({ children }) => <div>{children}</div>,
     Box: ({ children }) => <div>{children}</div>,
@@ -88,7 +105,8 @@ vi.mock('@mantine/core', async () => {
       <nav
         style={{
           ...style,
-          width: typeof width?.base === 'number' ? `${width.base}px` : width?.base
+          width:
+            typeof width?.base === 'number' ? `${width.base}px` : width?.base,
         }}
         {...props}
       >
@@ -99,7 +117,7 @@ vi.mock('@mantine/core', async () => {
   };
 });
 
-const mockChannels = [ 'channel-1', 'channel-2', 'channel-3' ];
+const mockChannels = ['channel-1', 'channel-2', 'channel-3'];
 
 const mockEnvironment = {
   public_ip: '192.168.1.1',
@@ -168,7 +186,9 @@ describe('Sidebar', () => {
       const { container } = renderSidebar();
 
       expect(screen.getByText('Dispatcharr')).toBeInTheDocument();
-      const logo = container.querySelectorAll('img[src="/src/images/logo.png"]');
+      const logo = container.querySelectorAll(
+        'img[src="/src/images/logo.png"]'
+      );
       expect(logo).toHaveLength(1);
     });
 
@@ -413,20 +433,28 @@ describe('Sidebar', () => {
       renderSidebar({ collapsed: true });
 
       const links = screen.getAllByRole('link');
-      links.forEach(link => {
+      links.forEach((link) => {
         expect(link).toHaveClass('navlink-collapsed');
       });
     });
 
     it('should adjust width based on collapsed state', () => {
-      const { rerender } = renderSidebar({ collapsed: false, drawerWidth: 250 });
+      const { rerender } = renderSidebar({
+        collapsed: false,
+        drawerWidth: 250,
+      });
       const navbar = screen.getByRole('navigation');
 
       expect(navbar).toHaveStyle({ width: '250px' });
 
       rerender(
         <BrowserRouter>
-          <Sidebar collapsed={true} drawerWidth={250} miniDrawerWidth={80} toggleDrawer={vi.fn()} />
+          <Sidebar
+            collapsed={true}
+            drawerWidth={250}
+            miniDrawerWidth={80}
+            toggleDrawer={vi.fn()}
+          />
         </BrowserRouter>
       );
 
@@ -446,7 +474,9 @@ describe('Sidebar', () => {
 
       renderSidebar();
       expect(screen.getByDisplayValue('192.168.1.1')).toBeInTheDocument();
-      expect(screen.queryByRole('img', { name: /flag/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('img', { name: /flag/i })
+      ).not.toBeInTheDocument();
     });
 
     it('should use country code as alt text if country name is missing', () => {
@@ -479,7 +509,9 @@ describe('Sidebar', () => {
     it('should expand Integrations group when clicked', async () => {
       renderSidebar();
 
-      const integrationsGroup = screen.getByText('Integrations').closest('button');
+      const integrationsGroup = screen
+        .getByText('Integrations')
+        .closest('button');
       fireEvent.click(integrationsGroup);
 
       await waitFor(() => {
@@ -491,7 +523,9 @@ describe('Sidebar', () => {
     it('should collapse Integrations group when clicked again', async () => {
       renderSidebar();
 
-      const integrationsGroup = screen.getByText('Integrations').closest('button');
+      const integrationsGroup = screen
+        .getByText('Integrations')
+        .closest('button');
 
       // Expand
       fireEvent.click(integrationsGroup);
@@ -538,7 +572,9 @@ describe('Sidebar', () => {
     it('should not show multiple groups collapsed when both expanded', async () => {
       renderSidebar();
 
-      const integrationsGroup = screen.getByText('Integrations').closest('button');
+      const integrationsGroup = screen
+        .getByText('Integrations')
+        .closest('button');
       const systemGroup = screen.getByText('System').closest('button');
 
       // Expand Integrations
@@ -581,7 +617,9 @@ describe('Sidebar', () => {
 
       renderSidebar();
 
-      expect(screen.queryByTestId('notification-center')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('notification-center')
+      ).not.toBeInTheDocument();
     });
 
     it('should not render NotificationCenter when not authenticated and collapsed', () => {
@@ -596,7 +634,9 @@ describe('Sidebar', () => {
 
       renderSidebar({ collapsed: true });
 
-      expect(screen.queryByTestId('notification-center')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('notification-center')
+      ).not.toBeInTheDocument();
     });
   });
 
