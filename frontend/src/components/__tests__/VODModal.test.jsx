@@ -16,7 +16,9 @@ vi.mock('../../utils', () => ({
 }));
 
 vi.mock('../../utils/components/SeriesModalUtils.js', () => ({
-  formatStreamLabel: vi.fn((provider) => `${provider.m3u_account.name} - Stream ${provider.stream_id}`),
+  formatStreamLabel: vi.fn(
+    (provider) => `${provider.m3u_account.name} - Stream ${provider.stream_id}`
+  ),
   imdbUrl: vi.fn((id) => `https://www.imdb.com/title/${id}`),
   tmdbUrl: vi.fn((id, type) => `https://www.themoviedb.org/${type}/${id}`),
   formatDuration: vi.fn((secs) => `${Math.floor(secs / 60)} min`),
@@ -30,7 +32,9 @@ vi.mock('@mantine/core', async () => {
       opened ? (
         <div data-testid="modal">
           <div data-testid="modal-title">{title}</div>
-          <button data-testid="modal-close" onClick={onClose}>Close</button>
+          <button data-testid="modal-close" onClick={onClose}>
+            Close
+          </button>
           {children}
         </div>
       ) : null,
@@ -56,8 +60,12 @@ vi.mock('@mantine/core', async () => {
         <span {...props}>{children}</span>
       ),
     Select: ({ data, value, onChange, placeholder, disabled }) => (
-      <select data-testid="provider-select" value={value}
-              onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+      <select
+        data-testid="provider-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      >
         <option value="">{placeholder}</option>
         {data.map((item) => (
           <option key={item.value} value={item.value}>
@@ -71,10 +79,14 @@ vi.mock('@mantine/core', async () => {
 });
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
-  Play: () => <span>Play Icon</span>,
-  Copy: () => <span>Copy Icon</span>,
-}));
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    Play: () => <span>Play Icon</span>,
+    Copy: () => <span>Copy Icon</span>,
+  };
+});
 
 describe('VODModal', () => {
   const mockShowVideo = vi.fn();
@@ -158,7 +170,9 @@ describe('VODModal', () => {
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Original: Original Test Movie')).toBeInTheDocument();
+      expect(
+        screen.getByText('Original: Original Test Movie')
+      ).toBeInTheDocument();
     });
 
     expect(screen.getByText('2023')).toBeInTheDocument();
@@ -174,7 +188,9 @@ describe('VODModal', () => {
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
     await waitFor(() => {
-      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(mockVOD.id);
+      expect(mockFetchMovieDetailsFromProvider).toHaveBeenCalledWith(
+        mockVOD.id
+      );
     });
   });
 
@@ -193,7 +209,9 @@ describe('VODModal', () => {
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
-    expect(screen.getByText('Loading additional details...')).toBeInTheDocument();
+    expect(
+      screen.getByText('Loading additional details...')
+    ).toBeInTheDocument();
   });
 
   it('should handle play button click', async () => {
@@ -210,7 +228,10 @@ describe('VODModal', () => {
   });
 
   it('should disable play button when multiple providers and none selected', async () => {
-    mockFetchMovieProviders.mockResolvedValue([mockProvider, { ...mockProvider, id: 2 }]);
+    mockFetchMovieProviders.mockResolvedValue([
+      mockProvider,
+      { ...mockProvider, id: 2 },
+    ]);
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
@@ -255,7 +276,9 @@ describe('VODModal', () => {
   });
 
   it('should handle fetch details error gracefully', async () => {
-    mockFetchMovieDetailsFromProvider.mockRejectedValue(new Error('Fetch failed'));
+    mockFetchMovieDetailsFromProvider.mockRejectedValue(
+      new Error('Fetch failed')
+    );
 
     render(<VODModal vod={mockVOD} opened={true} onClose={mockOnClose} />);
 
@@ -310,8 +333,14 @@ describe('VODModal', () => {
     const imdbLink = screen.getByText('IMDb');
     const tmdbLink = screen.getByText('TMDb');
 
-    expect(imdbLink).toHaveAttribute('href', 'https://www.imdb.com/title/tt1234567');
-    expect(tmdbLink).toHaveAttribute('href', 'https://www.themoviedb.org/movie/12345');
+    expect(imdbLink).toHaveAttribute(
+      'href',
+      'https://www.imdb.com/title/tt1234567'
+    );
+    expect(tmdbLink).toHaveAttribute(
+      'href',
+      'https://www.themoviedb.org/movie/12345'
+    );
   });
 
   describe('Copy Link Functionality', () => {
@@ -350,7 +379,7 @@ describe('VODModal', () => {
       });
 
       await waitFor(() => {
-        const copyButton = screen.getByText('Copy Link')
+        const copyButton = screen.getByText('Copy Link');
         fireEvent.click(copyButton);
       });
 
@@ -432,7 +461,9 @@ describe('VODModal', () => {
       render(<VODModal vod={minimalVOD} opened={true} onClose={mockOnClose} />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('modal-title')).toHaveTextContent('Test Movie');
+        expect(screen.getByTestId('modal-title')).toHaveTextContent(
+          'Test Movie'
+        );
       });
     });
   });
