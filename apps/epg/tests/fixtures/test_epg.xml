@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv generator-info-name="test">
+  <channel id="channel.current">
+    <display-name>Current Channel</display-name>
+  </channel>
+  <channel id="channel.past">
+    <display-name>Past Channel</display-name>
+  </channel>
+  <channel id="channel.empty">
+    <display-name>Empty Channel</display-name>
+  </channel>
+  <programme start="20200101000000 +0000" stop="20200101060000 +0000" channel="channel.past">
+    <title>Past Show</title>
+    <desc>A show that already ended</desc>
+  </programme>
+  <programme start="20200101060000 +0000" stop="20200101120000 +0000" channel="channel.past">
+    <title>Another Past Show</title>
+    <desc>Another show that ended</desc>
+  </programme>
+  <programme start="20000101000000 +0000" stop="20991231235959 +0000" channel="channel.current">
+    <title>Always On Show</title>
+    <sub-title>The eternal broadcast</sub-title>
+    <desc>This programme spans a very long time for testing</desc>
+  </programme>
+  <programme start="20200101000000 +0000" stop="20200101060000 +0000" channel="channel.current">
+    <title>Old Current Show</title>
+    <desc>An old show on current channel</desc>
+  </programme>
+</tv>

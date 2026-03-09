@@ -3,6 +3,7 @@
 import logging
 import gzip
 import os
+import re
 import uuid
 import requests
 import time  # Add import for tracking download progress
@@ -197,6 +198,10 @@ def refresh_epg_data(source_id):
         # Continue with the normal processing...
         logger.info(f"Processing EPGSource: {source.name} (type: {source.source_type})")
         if source.source_type == 'xmltv':
+            # Invalidate the byte-offset index before downloading the new file
+            # so stale offsets are never used during the refresh window.
+            EPGSource.objects.filter(id=source.id).update(programme_index=None)
+
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
@@ -214,6 +219,9 @@ def refresh_epg_data(source_id):
                 # Force garbage collection before exit
                 gc.collect()
                 return
+
+            # Build byte-offset index for preview lookups (runs before full program parse)
+            build_programme_index(source.id)
 
             parse_programs_for_source(source)
 
@@ -1136,7 +1144,7 @@ def parse_channels_only(source):
 
 
 @shared_task(time_limit=3600, soft_time_limit=3500)
-def parse_programs_for_tvg_id(epg_id):
+def parse_programs_for_tvg_id(epg_id, force=False):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
@@ -1177,7 +1185,7 @@ def parse_programs_for_tvg_id(epg_id):
             release_task_lock('parse_epg_programs', epg_id)
             return
 
-        if not Channel.objects.filter(epg_data=epg).exists():
+        if not force and not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
             lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
@@ -2171,3 +2179,448 @@ def generate_dummy_epg(source):
     logger.warning(f"generate_dummy_epg() called for {source.name} but this function is deprecated. "
                    f"Dummy EPG programs are now generated on-demand.")
     return True
+
+
+# EPG program byte-offset index for channel preview lookups
+
+
+def _resolve_source_file(epg_source):
+    """Resolve the XML file path for an EPG source."""
+    file_path = epg_source.extracted_file_path or epg_source.file_path
+    if not file_path:
+        file_path = epg_source.get_cache_file()
+    return file_path
+
+
+_CHANNEL_ATTR_RE = re.compile(rb"""channel=(?:"([^"]+)"|'([^']+)')""")
+_PROGRAMME_TAG = b'<programme'
+_PROGRAMME_TAG_LEN = len(_PROGRAMME_TAG)
+_TAG_FOLLOW = b' \t\n\r>/'
+_MAX_START_TAG = 4096  # generous upper bound for a start tag with namespaces/extra attrs
+_OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the file as interleaved
+
+
+def _find_programme_tag(buf, start):
+    """
+    Find the next <programme element in *buf* starting from *start*.
+    Returns (tag_pos, tag_end) or (-1, -1) if not found.
+    """
+    pos = start
+    while True:
+        idx = buf.find(_PROGRAMME_TAG, pos)
+        if idx == -1:
+            return -1, -1
+        # Validate next byte is whitespace or '>'
+        follow = idx + _PROGRAMME_TAG_LEN
+        if follow >= len(buf):
+            return idx, -1  # need more data
+        if buf[follow: follow + 1] not in _TAG_FOLLOW:
+            pos = follow  # false match (e.g. <programmeXYZ), skip
+            continue
+        # Find the '>' that closes the opening tag (scan up to _MAX_START_TAG bytes)
+        tag_end = buf.find(b'>', follow, idx + _MAX_START_TAG)
+        if tag_end == -1:
+            if len(buf) >= idx + _MAX_START_TAG:
+                logger.warning(
+                    f'[_find_programme_tag] <programme> start tag exceeds {_MAX_START_TAG} bytes at offset {idx}, skipping'
+                )
+                return -1, -1
+            return idx, -1  # need more data
+        return idx, tag_end
+
+
+def _programme_to_dict(elem, start_time, end_time):
+    """Convert a <programme> lxml element to a serializable dict."""
+    title_el = elem.find('title')
+    desc_el = elem.find('desc')
+    sub_el = elem.find('sub-title')
+    return {
+        'title': title_el.text if title_el is not None and title_el.text else '',
+        'description': desc_el.text if desc_el is not None and desc_el.text else '',
+        'sub_title': sub_el.text if sub_el is not None and sub_el.text else '',
+        'start_time': start_time.isoformat(),
+        'end_time': end_time.isoformat(),
+    }
+
+
+def build_programme_index(source_id):
+    """
+    Scan the XML file with raw binary I/O to build a {tvg_id: [byte_offset, ...]} map.
+    Persists the result to EPGSource.programme_index. Most XMLTV files group programmes
+    by channel, but some split a channel across multiple non-contiguous blocks, so we
+    record the start offset of every block.
+    """
+    try:
+        source = EPGSource.objects.get(id=source_id)
+    except EPGSource.DoesNotExist:
+        logger.error(f'[build_programme_index] EPGSource {source_id} not found')
+        return
+
+    file_path = _resolve_source_file(source)
+    if not file_path or not os.path.exists(file_path):
+        logger.warning(
+            f'[build_programme_index] File not found for source {source_id}: {file_path}'
+        )
+        return
+
+    logger.info(
+        f'[build_programme_index] Building byte-offset index for source {source_id} from {file_path}'
+    )
+    start = time.monotonic()
+    index = {}
+    prev_channel = None
+    interleaved = False
+
+    CHUNK = 8 * 1024 * 1024  # 8MB
+
+    with open(file_path, 'rb') as f:
+        buf = bytearray()
+        buf_offset = 0  # absolute file offset of buf[0]
+
+        while True:
+            chunk = f.read(CHUNK)
+            if not chunk and not buf:
+                break
+            buf.extend(chunk)
+            search_from = 0
+
+            while True:
+                idx, tag_end = _find_programme_tag(buf, search_from)
+                if idx == -1:
+                    break
+                if tag_end == -1 and chunk:
+                    break  # incomplete tag at buffer edge, need more data
+
+                abs_pos = buf_offset + idx
+                m = _CHANNEL_ATTR_RE.search(
+                    buf, idx, tag_end + 1 if tag_end != -1 else idx + _MAX_START_TAG
+                )
+                if m:
+                    channel_id = (m.group(1) or m.group(2)).decode(
+                        'utf-8', errors='replace'
+                    )
+                    if channel_id not in index:
+                        index[channel_id] = [abs_pos]
+                    elif channel_id != prev_channel:
+                        if len(index[channel_id]) < _OFFSET_CAP:
+                            index[channel_id].append(abs_pos)
+                        else:
+                            interleaved = True
+                    prev_channel = channel_id
+
+                search_from = (
+                    (tag_end + 1) if tag_end != -1 else (idx + _PROGRAMME_TAG_LEN)
+                )
+
+            if not chunk:
+                break
+
+            # Keep unprocessed tail for next iteration
+            keep_from = (
+                max(search_from, len(buf) - _MAX_START_TAG) if chunk else len(buf)
+            )
+            del buf[:keep_from]
+            buf_offset += keep_from
+
+    elapsed = time.monotonic() - start
+    logger.info(
+        f'[build_programme_index] Indexed {len(index)} channels in {elapsed:.1f}s for source {source_id}'
+        + (' (interleaved)' if interleaved else '')
+    )
+
+    result = {'channels': index, 'interleaved': interleaved}
+    EPGSource.objects.filter(id=source_id).update(programme_index=result)
+
+
+@shared_task
+def build_programme_index_task(source_id):
+    """Celery wrapper so build_programme_index can be dispatched async."""
+    build_programme_index(source_id)
+
+
+def find_current_program_for_tvg_id(epg_or_id):
+    """
+    Look up the currently-airing program for an EPGData instance (or id) using
+    the byte-offset index. Falls back to sequential scan if no index exists.
+
+    Returns dict, None, or "timeout".
+    """
+    from core.utils import RedisClient
+
+    if isinstance(epg_or_id, EPGData):
+        epg = epg_or_id
+    else:
+        try:
+            epg = EPGData.objects.select_related('epg_source').get(id=epg_or_id)
+        except EPGData.DoesNotExist:
+            return None
+
+    source = epg.epg_source
+    if not source or source.source_type in ('dummy', 'schedules_direct'):
+        return None
+
+    tvg_id = epg.tvg_id
+    if not tvg_id:
+        return None
+
+    file_path = _resolve_source_file(source)
+    if not file_path or not os.path.exists(file_path):
+        return None
+
+    now = timezone.now()
+    # Force a fresh read of the DB-backed index to avoid using stale related-object
+    # state when an EPG refresh invalidates/rebuilds the index concurrently.
+    source.refresh_from_db(fields=['programme_index'])
+    index = source.programme_index
+
+    if index is not None:
+        channels = index.get('channels', {})
+        if tvg_id not in channels:
+            # Channel has no programmes in the file
+            return None
+        offsets = channels[tvg_id]
+        if index.get('interleaved'):
+            # Check all stored offsets first (cheap: one seek + one element parse each)
+            result = _read_programs_at_offsets(file_path, tvg_id, offsets, now)
+            if result is not None:
+                return result
+            # Current programme is beyond the stored offsets; scan forward from the
+            # last known position to avoid re-reading the already-checked portion
+            result = _scan_from_offset_for_tvg_id(file_path, tvg_id, offsets[-1], now)
+            if result == 'timeout':
+                logger.warning(
+                    f'[find_current_program_for_tvg_id] Interleaved scan timed out for '
+                    f'tvg_id={tvg_id} source={source.id}; index has {len(offsets)} offsets'
+                )
+                return None
+            return result
+        return _read_programs_at_offsets(file_path, tvg_id, offsets, now)
+
+    # No index yet, fall back to sequential scan
+    result = _sequential_scan_for_tvg_id(file_path, tvg_id, now, timeout_sec=10)
+    if result == 'timeout':
+        # Trigger background index build (Redis lock prevents duplicates)
+        redis_client = RedisClient.get_client()
+        lock_key = f'building_programme_index_{source.id}'
+        if redis_client.set(lock_key, '1', nx=True, ex=300):
+            build_programme_index_task.delay(source.id)
+    return result
+
+
+def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
+    """
+    Seek to each offset, extract <programme> elements for *tvg_id*, return the
+    first one currently airing. Chunk-based so it works on minified XML.
+    """
+    PROG_CLOSE = b'</programme>'
+    CLOSE_LEN = len(PROG_CLOSE)
+    READ_SIZE = 2 * 1024 * 1024  # 2MB per read
+
+    with open(file_path, 'rb') as f:
+        for offset in offsets:
+            f.seek(offset)
+            buf = bytearray()
+            done = False
+
+            while not done:
+                chunk = f.read(READ_SIZE)
+                if not chunk and not buf:
+                    break
+                buf.extend(chunk)
+                search_from = 0
+
+                while True:
+                    tag_start, tag_end = _find_programme_tag(buf, search_from)
+                    if tag_start == -1:
+                        break
+                    if tag_end == -1 and chunk:
+                        break  # incomplete tag, need more data
+
+                    # Check channel before searching for close tag
+                    m = _CHANNEL_ATTR_RE.search(
+                        buf,
+                        tag_start,
+                        tag_end + 1 if tag_end != -1 else tag_start + _MAX_START_TAG,
+                    )
+                    if not m:
+                        search_from = (
+                            (tag_end + 1)
+                            if tag_end != -1
+                            else (tag_start + _PROGRAMME_TAG_LEN)
+                        )
+                        continue
+
+                    ch = (m.group(1) or m.group(2)).decode('utf-8', errors='replace')
+                    if ch != tvg_id:
+                        done = True  # different channel, end of block
+                        break
+
+                    # Find the closing </programme> tag
+                    close_pos = buf.find(
+                        PROG_CLOSE, tag_end + 1 if tag_end != -1 else m.end()
+                    )
+                    if close_pos == -1:
+                        if not chunk:
+                            done = True  # EOF with no close tag
+                        break  # need more data
+                    close_end = close_pos + CLOSE_LEN
+
+                    element_bytes = bytes(buf[tag_start:close_end])
+                    search_from = close_end
+
+                    try:
+                        prog = etree.fromstring(element_bytes)
+                    except etree.XMLSyntaxError:
+                        continue
+
+                    start_str = prog.get('start')
+                    stop_str = prog.get('stop')
+                    if not start_str or not stop_str:
+                        continue
+                    start_time = parse_xmltv_time(start_str)
+                    end_time = parse_xmltv_time(stop_str)
+                    if start_time is None or end_time is None:
+                        continue
+                    if start_time <= now < end_time:
+                        return _programme_to_dict(prog, start_time, end_time)
+
+                # Trim processed bytes
+                if search_from > 0:
+                    del buf[:search_from]
+                    search_from = 0
+
+                if not chunk:
+                    break
+
+    return None
+
+
+def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_sec=10):
+    """
+    Scan forward from start_offset for tvg_id, skipping other channels rather than
+    stopping at a channel boundary. Used for interleaved/time-sorted XMLTV files where
+    the index holds only the first known offset per channel.
+    Returns dict, None, or 'timeout'.
+    """
+    PROG_CLOSE = b'</programme>'
+    CLOSE_LEN = len(PROG_CLOSE)
+    READ_SIZE = 2 * 1024 * 1024
+    deadline = time.monotonic() + timeout_sec
+
+    with open(file_path, 'rb') as f:
+        f.seek(start_offset)
+        buf = bytearray()
+
+        while True:
+            if time.monotonic() > deadline:
+                return 'timeout'
+
+            chunk = f.read(READ_SIZE)
+            if not chunk and not buf:
+                break
+            buf.extend(chunk)
+            search_from = 0
+
+            trim_to = 0
+
+            while True:
+                tag_start, tag_end = _find_programme_tag(buf, search_from)
+                if tag_start == -1:
+                    trim_to = search_from
+                    break
+                if tag_end == -1 and chunk:
+                    trim_to = tag_start  # keep incomplete tag for next read
+                    break
+
+                m = _CHANNEL_ATTR_RE.search(
+                    buf,
+                    tag_start,
+                    tag_end + 1 if tag_end != -1 else tag_start + _MAX_START_TAG,
+                )
+                if not m:
+                    search_from = (
+                        tag_end + 1 if tag_end != -1 else tag_start + _PROGRAMME_TAG_LEN
+                    )
+                    continue
+
+                ch = (m.group(1) or m.group(2)).decode('utf-8', errors='replace')
+                if ch != tvg_id:
+                    search_from = (
+                        tag_end + 1 if tag_end != -1 else tag_start + _PROGRAMME_TAG_LEN
+                    )
+                    continue
+
+                close_pos = buf.find(
+                    PROG_CLOSE, tag_end + 1 if tag_end != -1 else m.end()
+                )
+                if close_pos == -1:
+                    trim_to = tag_start  # keep incomplete element for next read
+                    break
+                close_end = close_pos + CLOSE_LEN
+
+                element_bytes = bytes(buf[tag_start:close_end])
+                search_from = close_end
+
+                try:
+                    prog = etree.fromstring(element_bytes)
+                except etree.XMLSyntaxError:
+                    continue
+
+                start_str = prog.get('start')
+                stop_str = prog.get('stop')
+                if not start_str or not stop_str:
+                    continue
+                start_time = parse_xmltv_time(start_str)
+                end_time = parse_xmltv_time(stop_str)
+                if start_time is None or end_time is None:
+                    continue
+                if start_time <= now < end_time:
+                    return _programme_to_dict(prog, start_time, end_time)
+
+            if trim_to > 0:
+                del buf[:trim_to]
+
+            if not chunk:
+                break
+
+    return None
+
+
+def _sequential_scan_for_tvg_id(file_path, tvg_id, now, timeout_sec=10):
+    """Stream through the file with iterparse for *tvg_id*. Returns dict, None, or "timeout"."""
+    deadline = time.monotonic() + timeout_sec
+
+    try:
+        with open(file_path, 'rb') as f:
+            context = etree.iterparse(f, events=('end',), tag='programme')
+            for _, elem in context:
+                if time.monotonic() > deadline:
+                    return 'timeout'
+
+                if elem.get('channel') != tvg_id:
+                    elem.clear()
+                    continue
+
+                start_str = elem.get('start')
+                stop_str = elem.get('stop')
+                if not start_str or not stop_str:
+                    elem.clear()
+                    continue
+
+                start_time = parse_xmltv_time(start_str)
+                end_time = parse_xmltv_time(stop_str)
+                if start_time is None or end_time is None:
+                    elem.clear()
+                    continue
+
+                if start_time <= now < end_time:
+                    result = _programme_to_dict(elem, start_time, end_time)
+                    elem.clear()
+                    return result
+
+                elem.clear()
+    except Exception as e:
+        logger.error(f'[_sequential_scan_for_tvg_id] Error scanning for {tvg_id}: {e}')
+        return None
+
+    return None
