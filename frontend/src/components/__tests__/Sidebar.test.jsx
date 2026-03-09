@@ -176,6 +176,8 @@ describe('Sidebar', () => {
         isAuthenticated: true,
         user: mockAdminUser,
         logout: vi.fn(),
+        getNavOrder: () => null,
+        getHiddenNav: () => [],
       };
       return selector(state);
     });
@@ -251,6 +253,8 @@ describe('Sidebar', () => {
           isAuthenticated: true,
           user: mockRegularUser,
           logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });
@@ -311,6 +315,8 @@ describe('Sidebar', () => {
           isAuthenticated: true,
           user: { ...mockAdminUser, first_name: null },
           logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });
@@ -350,6 +356,8 @@ describe('Sidebar', () => {
           isAuthenticated: true,
           user: mockAdminUser,
           logout: mockLogout,
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });
@@ -377,6 +385,8 @@ describe('Sidebar', () => {
           isAuthenticated: false,
           user: null,
           logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });
@@ -611,6 +621,8 @@ describe('Sidebar', () => {
           isAuthenticated: false,
           user: null,
           logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });
@@ -628,6 +640,8 @@ describe('Sidebar', () => {
           isAuthenticated: false,
           user: null,
           logout: vi.fn(),
+          getNavOrder: () => null,
+          getHiddenNav: () => [],
         };
         return selector(state);
       });

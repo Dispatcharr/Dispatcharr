@@ -15,9 +15,13 @@ vi.mock('../../images/logo.png', () => ({
 }));
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
-  Play: (props) => <div data-testid="play-icon" {...props} />,
-}));
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    Play: (props) => <div data-testid="play-icon" {...props} />,
+  };
+});
 
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {

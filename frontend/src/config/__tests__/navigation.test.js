@@ -16,8 +16,8 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr).toBeDefined();
       expect(NAV_ITEMS.stats).toBeDefined();
       expect(NAV_ITEMS.plugins).toBeDefined();
-      expect(NAV_ITEMS.users).toBeDefined();
-      expect(NAV_ITEMS.logos).toBeDefined();
+      expect(NAV_ITEMS.integrations).toBeDefined();
+      expect(NAV_ITEMS.system).toBeDefined();
       expect(NAV_ITEMS.settings).toBeDefined();
     });
 
@@ -31,15 +31,19 @@ describe('navigation config', () => {
       expect(NAV_ITEMS.dvr.adminOnly).toBe(true);
       expect(NAV_ITEMS.stats.adminOnly).toBe(true);
       expect(NAV_ITEMS.plugins.adminOnly).toBe(true);
-      expect(NAV_ITEMS.users.adminOnly).toBe(true);
-      expect(NAV_ITEMS.logos.adminOnly).toBe(true);
+      expect(NAV_ITEMS.integrations.adminOnly).toBe(true);
+      expect(NAV_ITEMS.system.adminOnly).toBe(true);
     });
   });
 
   describe('DEFAULT_ADMIN_ORDER', () => {
     it('includes all nav items', () => {
-      expect(DEFAULT_ADMIN_ORDER).toHaveLength(Object.keys(NAV_ITEMS).length);
-      Object.keys(NAV_ITEMS).forEach((id) => {
+      // settings is only for non-admin users; admins access it via the System group
+      const adminItems = Object.keys(NAV_ITEMS).filter(
+        (id) => id !== 'settings'
+      );
+      expect(DEFAULT_ADMIN_ORDER).toHaveLength(adminItems.length);
+      adminItems.forEach((id) => {
         expect(DEFAULT_ADMIN_ORDER).toContain(id);
       });
     });
@@ -79,7 +83,17 @@ describe('navigation config', () => {
     });
 
     it('uses custom order when provided', () => {
-      const customOrder = ['settings', 'channels', 'vods', 'sources', 'guide', 'dvr', 'stats', 'plugins', 'users', 'logos'];
+      const customOrder = [
+        'integrations',
+        'channels',
+        'vods',
+        'sources',
+        'guide',
+        'dvr',
+        'stats',
+        'plugins',
+        'system',
+      ];
       const result = getOrderedNavItems(customOrder, true);
 
       expect(result.map((item) => item.id)).toEqual(customOrder);
@@ -96,16 +110,23 @@ describe('navigation config', () => {
       expect(result[2].id).toBe('sources');
 
       // All items should be present
-      expect(result).toHaveLength(Object.keys(NAV_ITEMS).length);
+      expect(result).toHaveLength(DEFAULT_ADMIN_ORDER.length);
 
       // Missing items should be appended at the end
       const resultIds = result.map((item) => item.id);
       expect(resultIds).toContain('guide');
-      expect(resultIds).toContain('settings');
+      expect(resultIds).toContain('integrations');
     });
 
     it('filters out admin-only items for non-admin users', () => {
-      const customOrder = ['channels', 'vods', 'sources', 'guide', 'dvr', 'settings'];
+      const customOrder = [
+        'channels',
+        'vods',
+        'sources',
+        'guide',
+        'dvr',
+        'settings',
+      ];
       const result = getOrderedNavItems(customOrder, false);
 
       const resultIds = result.map((item) => item.id);
@@ -122,7 +143,13 @@ describe('navigation config', () => {
     });
 
     it('filters out unknown items from saved order', () => {
-      const savedOrder = ['channels', 'unknown_item', 'vods', 'invalid', 'settings'];
+      const savedOrder = [
+        'channels',
+        'unknown_item',
+        'vods',
+        'invalid',
+        'integrations',
+      ];
       const result = getOrderedNavItems(savedOrder, true);
 
       const resultIds = result.map((item) => item.id);
@@ -131,11 +158,11 @@ describe('navigation config', () => {
       expect(resultIds).not.toContain('invalid');
       expect(resultIds).toContain('channels');
       expect(resultIds).toContain('vods');
-      expect(resultIds).toContain('settings');
+      expect(resultIds).toContain('integrations');
     });
 
     it('adds channel badge with correct count', () => {
-      const channels = { 1: {}, 2: {}, 3: {} };
+      const channels = ['1', '2', '3'];
       const result = getOrderedNavItems(null, true, channels);
 
       const channelItem = result.find((item) => item.id === 'channels');
@@ -149,13 +176,25 @@ describe('navigation config', () => {
         expect(item).toHaveProperty('id');
         expect(item).toHaveProperty('label');
         expect(item).toHaveProperty('icon');
-        expect(item).toHaveProperty('path');
+        // Flat items have path; group items have paths array
+        expect(item.path !== undefined || Array.isArray(item.paths)).toBe(true);
       });
     });
 
     it('preserves order when user changes role from admin to non-admin', () => {
       // Admin saved a custom order
-      const adminSavedOrder = ['settings', 'vods', 'channels', 'sources', 'guide', 'dvr', 'stats', 'plugins', 'users', 'logos'];
+      const adminSavedOrder = [
+        'settings',
+        'vods',
+        'channels',
+        'sources',
+        'guide',
+        'dvr',
+        'stats',
+        'plugins',
+        'users',
+        'logos',
+      ];
 
       // When user is demoted to non-admin, only allowed items should show
       const result = getOrderedNavItems(adminSavedOrder, false);
