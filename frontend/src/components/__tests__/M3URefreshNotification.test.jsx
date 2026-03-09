@@ -61,9 +61,7 @@ vi.mock('lucide-react', () => ({
 }));
 
 const renderWithProviders = (component) => {
-  return render(
-    <BrowserRouter>{component}</BrowserRouter>
-  );
+  return render(<BrowserRouter>{component}</BrowserRouter>);
 };
 
 describe('M3URefreshNotification', () => {
@@ -96,7 +94,7 @@ describe('M3URefreshNotification', () => {
 
     mockChannelsStore = {
       fetchChannelGroups: vi.fn(),
-      fetchChannels: vi.fn(),
+      fetchChannelIds: vi.fn(),
     };
 
     mockEPGsStore = {
@@ -107,9 +105,15 @@ describe('M3URefreshNotification', () => {
       fetchCategories: vi.fn(),
     };
 
-    usePlaylistsStore.mockImplementation((selector) => selector(mockPlaylistsStore));
-    useStreamsStore.mockImplementation((selector) => selector(mockStreamsStore));
-    useChannelsStore.mockImplementation((selector) => selector(mockChannelsStore));
+    usePlaylistsStore.mockImplementation((selector) =>
+      selector(mockPlaylistsStore)
+    );
+    useStreamsStore.mockImplementation((selector) =>
+      selector(mockStreamsStore)
+    );
+    useChannelsStore.mockImplementation((selector) =>
+      selector(mockChannelsStore)
+    );
     useEPGsStore.mockImplementation((selector) => selector(mockEPGsStore));
     useVODStore.mockImplementation((selector) => selector(mockVODStore));
   });
@@ -231,7 +235,7 @@ describe('M3URefreshNotification', () => {
         expect(showNotification).toHaveBeenCalled();
         expect(mockStreamsStore.fetchStreams).toHaveBeenCalled();
         expect(API.requeryChannels).toHaveBeenCalled();
-        expect(mockChannelsStore.fetchChannels).toHaveBeenCalled();
+        expect(mockChannelsStore.fetchChannelIds).toHaveBeenCalled();
       });
     });
   });
@@ -483,7 +487,7 @@ describe('M3URefreshNotification', () => {
 
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
 
@@ -569,7 +573,7 @@ describe('M3URefreshNotification', () => {
       // Re-render with same data
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
 
@@ -606,7 +610,7 @@ describe('M3URefreshNotification', () => {
 
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
 
@@ -648,7 +652,7 @@ describe('M3URefreshNotification', () => {
 
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
 
@@ -687,7 +691,7 @@ describe('M3URefreshNotification', () => {
 
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
 
@@ -704,7 +708,7 @@ describe('M3URefreshNotification', () => {
 
       rerender(
         <BrowserRouter>
-            <M3URefreshNotification />
+          <M3URefreshNotification />
         </BrowserRouter>
       );
     });

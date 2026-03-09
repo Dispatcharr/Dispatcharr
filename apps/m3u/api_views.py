@@ -8,6 +8,7 @@ from apps.accounts.permissions import (
 )
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.core.cache import cache
@@ -264,38 +265,50 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
-            for setting in group_settings:
-                group_id = setting.get("channel_group")
-                enabled = setting.get("enabled", True)
-                auto_sync = setting.get("auto_channel_sync", False)
-                sync_start = setting.get("auto_sync_channel_start")
-                custom_properties = setting.get("custom_properties", {})
-
-                if group_id:
-                    ChannelGroupM3UAccount.objects.update_or_create(
-                        channel_group_id=group_id,
+            with transaction.atomic():
+                group_objects = [
+                    ChannelGroupM3UAccount(
+                        channel_group_id=setting["channel_group"],
                         m3u_account=account,
-                        defaults={
-                            "enabled": enabled,
-                            "auto_channel_sync": auto_sync,
-                            "auto_sync_channel_start": sync_start,
-                            "custom_properties": custom_properties,
-                        },
+                        enabled=setting.get("enabled", True),
+                        auto_channel_sync=setting.get("auto_channel_sync", False),
+                        auto_sync_channel_start=setting.get("auto_sync_channel_start"),
+                        custom_properties=setting.get("custom_properties", {}),
+                    )
+                    for setting in group_settings
+                    if setting.get("channel_group")
+                ]
+
+                if group_objects:
+                    ChannelGroupM3UAccount.objects.bulk_create(
+                        group_objects,
+                        update_conflicts=True,
+                        unique_fields=["channel_group", "m3u_account"],
+                        update_fields=[
+                            "enabled",
+                            "auto_channel_sync",
+                            "auto_sync_channel_start",
+                            "custom_properties",
+                        ],
                     )
 
-            for setting in category_settings:
-                category_id = setting.get("id")
-                enabled = setting.get("enabled", True)
-                custom_properties = setting.get("custom_properties", {})
-
-                if category_id:
-                    M3UVODCategoryRelation.objects.update_or_create(
-                        category_id=category_id,
+                category_objects = [
+                    M3UVODCategoryRelation(
+                        category_id=setting["id"],
                         m3u_account=account,
-                        defaults={
-                            "enabled": enabled,
-                            "custom_properties": custom_properties,
-                        },
+                        enabled=setting.get("enabled", True),
+                        custom_properties=setting.get("custom_properties", {}),
+                    )
+                    for setting in category_settings
+                    if setting.get("id")
+                ]
+
+                if category_objects:
+                    M3UVODCategoryRelation.objects.bulk_create(
+                        category_objects,
+                        update_conflicts=True,
+                        unique_fields=["m3u_account", "category"],
+                        update_fields=["enabled", "custom_properties"],
                     )
 
             return Response({"message": "Group settings updated successfully"})

@@ -11,12 +11,12 @@ import { useNavigate } from 'react-router-dom';
 import { CircleCheck } from 'lucide-react';
 import { showNotification } from '../utils/notificationUtils.js';
 
-const M3uSetupSuccess = (data) => {
+const M3uSetupSuccess = ({ data }) => {
   const navigate = useNavigate();
 
   const onClickRefresh = () => {
     API.refreshPlaylist(data.account);
-  }
+  };
 
   const onClickConfigure = () => {
     // Store the ID we want to edit in the store first
@@ -25,7 +25,7 @@ const M3uSetupSuccess = (data) => {
     // Then navigate to the content sources page
     // Using the exact path that matches your app's routing structure
     navigate('/sources');
-  }
+  };
 
   return (
     <Stack>
@@ -41,14 +41,14 @@ const M3uSetupSuccess = (data) => {
       </Group>
     </Stack>
   );
-}
+};
 
 export default function M3URefreshNotification() {
   const playlists = usePlaylistsStore((s) => s.playlists);
   const refreshProgress = usePlaylistsStore((s) => s.refreshProgress);
   const fetchStreams = useStreamsStore((s) => s.fetchStreams);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
-  const fetchChannels = useChannelsStore((s) => s.fetchChannels);
+  const fetchChannelIds = useChannelsStore((s) => s.fetchChannelIds);
   const fetchPlaylists = usePlaylistsStore((s) => s.fetchPlaylists);
   const fetchEPGData = useEPGsStore((s) => s.fetchEPGData);
   const fetchCategories = useVODStore((s) => s.fetchCategories);
@@ -69,7 +69,7 @@ export default function M3URefreshNotification() {
     }
 
     // Update notification status
-    setNotificationStatus(prev => ({
+    setNotificationStatus((prev) => ({
       ...prev,
       [data.account]: data,
     }));
@@ -134,7 +134,7 @@ export default function M3URefreshNotification() {
     if (action == 'parsing') {
       fetchStreams();
       API.requeryChannels();
-      fetchChannels();
+      fetchChannelIds();
     } else if (action == 'processing_groups') {
       fetchStreams();
       fetchChannelGroups();
@@ -148,9 +148,10 @@ export default function M3URefreshNotification() {
 
   const handleProgressNotification = (playlist, data) => {
     const baseMessage = getActionMessage(data.action);
-    const message = data.progress == 0
-      ? `${baseMessage} starting...`
-      : `${baseMessage} complete!`;
+    const message =
+      data.progress == 0
+        ? `${baseMessage} starting...`
+        : `${baseMessage} complete!`;
 
     if (data.progress == 100) {
       triggerPostCompletionFetches(data.action);

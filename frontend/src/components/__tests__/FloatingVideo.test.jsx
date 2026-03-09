@@ -90,32 +90,36 @@ describe('FloatingVideo', () => {
     });
 
     it('should not render when streamUrl is null', () => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: null,
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: null,
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
 
       const { container } = render(<FloatingVideo />);
       expect(container.firstChild).toBeNull();
     });
 
     it('should render when isVisible is true and streamUrl is provided', () => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
 
       render(<FloatingVideo />);
       expect(screen.getByTestId('close-button')).toBeInTheDocument();
@@ -124,16 +128,18 @@ describe('FloatingVideo', () => {
 
   describe('Live Stream Player', () => {
     beforeEach(() => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
     });
 
     it('should initialize mpegts player for live streams', () => {
@@ -198,20 +204,22 @@ describe('FloatingVideo', () => {
 
   describe('VOD Player', () => {
     beforeEach(() => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/video.mp4',
-          contentType: 'vod',
-          metadata: {
-            name: 'Test Movie',
-            year: '2024',
-            logo: { url: 'http://example.com/poster.jpg' },
-          },
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/video.mp4',
+            contentType: 'vod',
+            metadata: {
+              name: 'Test Movie',
+              year: '2024',
+              logo: { url: 'http://example.com/poster.jpg' },
+            },
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
     });
 
     it('should use native video player for VOD', () => {
@@ -234,7 +242,9 @@ describe('FloatingVideo', () => {
       // Simulate video loaded event to clear loading state
       fireEvent.loadedData(video);
 
-      expect(screen.getByText('Test Movie')).toBeInTheDocument();
+      expect(screen.getAllByText('Test Movie').length).toBeGreaterThanOrEqual(
+        1
+      );
       expect(screen.getByText('2024')).toBeInTheDocument();
     });
 
@@ -247,13 +257,15 @@ describe('FloatingVideo', () => {
       fireEvent.loadedData(video);
       fireEvent.canPlay(video);
 
-      expect(screen.getByText('Test Movie')).toBeInTheDocument();
-
+      expect(screen.getAllByText('Test Movie').length).toBeGreaterThanOrEqual(
+        1
+      );
 
       vi.advanceTimersByTime(4000);
 
       waitFor(() => {
-        expect(screen.queryByText('Test Movie')).not.toBeInTheDocument();
+        // After overlay hides, only the header title remains
+        expect(screen.getAllByText('Test Movie').length).toBe(1);
       });
 
       vi.useRealTimers();
@@ -266,11 +278,13 @@ describe('FloatingVideo', () => {
       fireEvent.loadedData(video);
       fireEvent.canPlay(video);
 
-      const videoContainer = screen.getByText('Test Movie').closest('div');
+      const videoContainer = video.parentElement;
 
       fireEvent.mouseEnter(videoContainer);
 
-      expect(screen.getByText('Test Movie')).toBeInTheDocument();
+      expect(screen.getAllByText('Test Movie').length).toBeGreaterThanOrEqual(
+        1
+      );
     });
 
     it('should hide overlay on mouse leave', () => {
@@ -282,7 +296,7 @@ describe('FloatingVideo', () => {
       fireEvent.loadedData(video);
       fireEvent.canPlay(video);
 
-      const videoContainer = screen.getByText('Test Movie').closest('div');
+      const videoContainer = video.parentElement;
 
       fireEvent.mouseEnter(videoContainer);
       fireEvent.mouseLeave(videoContainer);
@@ -290,7 +304,8 @@ describe('FloatingVideo', () => {
       vi.advanceTimersByTime(4000);
 
       waitFor(() => {
-        expect(screen.queryByText('Test Movie')).not.toBeInTheDocument();
+        // After overlay hides, only the header title remains
+        expect(screen.getAllByText('Test Movie').length).toBe(1);
       });
 
       vi.useRealTimers();
@@ -299,16 +314,18 @@ describe('FloatingVideo', () => {
 
   describe('Close functionality', () => {
     beforeEach(() => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
     });
 
     it('should call hideVideo when close button is clicked', () => {
@@ -331,16 +348,18 @@ describe('FloatingVideo', () => {
 
   describe('Error handling', () => {
     beforeEach(() => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/video.mp4',
-          contentType: 'vod',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/video.mp4',
+            contentType: 'vod',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
     });
 
     it('should display video error messages', () => {
@@ -354,9 +373,7 @@ describe('FloatingVideo', () => {
 
       fireEvent.error(video);
 
-      expect(
-        screen.getByText(/MEDIA_ERR_DECODE/i)
-      ).toBeInTheDocument();
+      expect(screen.getByText(/MEDIA_ERR_DECODE/i)).toBeInTheDocument();
     });
 
     it('should handle network errors', () => {
@@ -370,24 +387,24 @@ describe('FloatingVideo', () => {
 
       fireEvent.error(video);
 
-      expect(
-        screen.getByText(/MEDIA_ERR_NETWORK/i)
-      ).toBeInTheDocument();
+      expect(screen.getByText(/MEDIA_ERR_NETWORK/i)).toBeInTheDocument();
     });
   });
 
   describe('Player cleanup', () => {
     it('should cleanup player on unmount', () => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
 
       const { unmount } = render(<FloatingVideo />);
 
@@ -397,29 +414,33 @@ describe('FloatingVideo', () => {
     });
 
     it('should cleanup player when streamUrl changes', () => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream1.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream1.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
 
       const { rerender } = render(<FloatingVideo />);
 
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream2.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream2.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
 
       rerender(<FloatingVideo />);
 
@@ -429,16 +450,18 @@ describe('FloatingVideo', () => {
 
   describe('Resize functionality', () => {
     beforeEach(() => {
-      useVideoStore.mockImplementation((selector) => { {
-        const state = {
-          isVisible: true,
-          streamUrl: 'http://example.com/stream.ts',
-          contentType: 'live',
-          metadata: null,
-          hideVideo: mockHideVideo,
-        };
-        return selector ? selector(state) : state;
-      }});
+      useVideoStore.mockImplementation((selector) => {
+        {
+          const state = {
+            isVisible: true,
+            streamUrl: 'http://example.com/stream.ts',
+            contentType: 'live',
+            metadata: null,
+            hideVideo: mockHideVideo,
+          };
+          return selector ? selector(state) : state;
+        }
+      });
     });
 
     it('should render resize handles', () => {

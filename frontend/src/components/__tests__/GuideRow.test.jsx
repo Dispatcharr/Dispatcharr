@@ -15,9 +15,13 @@ vi.mock('../../images/logo.png', () => ({
 }));
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
-  Play: (props) => <div data-testid="play-icon" {...props} />,
-}));
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    Play: (props) => <div data-testid="play-icon" {...props} />,
+  };
+});
 
 // Mock Mantine components
 vi.mock('@mantine/core', async () => {
@@ -93,9 +97,7 @@ describe('GuideRow', () => {
 
   describe('Rendering', () => {
     it('should render channel row with channel information', () => {
-      render(
-        <GuideRow index={0} style={mockStyle} data={mockData} />
-      );
+      render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
       expect(screen.getByTestId('guide-row')).toBeInTheDocument();
       expect(screen.getByAltText('Test Channel')).toBeInTheDocument();
@@ -139,9 +141,7 @@ describe('GuideRow', () => {
 
   describe('Row Height Calculation', () => {
     it('should use default PROGRAM_HEIGHT when no expanded program', () => {
-      render(
-        <GuideRow index={0} style={mockStyle} data={mockData} />
-      );
+      render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
       const row = screen.getByTestId('guide-row');
       expect(row).toHaveStyle({ height: `${PROGRAM_HEIGHT}px` });
@@ -186,7 +186,11 @@ describe('GuideRow', () => {
       render(<GuideRow index={0} style={mockStyle} data={data} />);
 
       expect(screen.getByTestId('program-program-1')).toBeInTheDocument();
-      expect(mockData.renderProgram).toHaveBeenCalledWith(visibleProgram, undefined, mockChannel);
+      expect(mockData.renderProgram).toHaveBeenCalledWith(
+        visibleProgram,
+        undefined,
+        mockChannel
+      );
     });
 
     it('should render multiple programs', () => {
@@ -241,12 +245,15 @@ describe('GuideRow', () => {
       );
 
       const placeholders = container.querySelectorAll('[pos*="absolute"]');
-      const filteredPlaceholders = Array.from(placeholders).filter(el =>
+      const filteredPlaceholders = Array.from(placeholders).filter((el) =>
         el.textContent.includes('No program data')
       );
 
       filteredPlaceholders.forEach((placeholder, index) => {
-        expect(placeholder).toHaveAttribute('left', `${index * (HOUR_WIDTH * 2)}`);
+        expect(placeholder).toHaveAttribute(
+          'left',
+          `${index * (HOUR_WIDTH * 2)}`
+        );
         expect(placeholder).toHaveAttribute('w', `${HOUR_WIDTH * 2}`);
       });
     });
@@ -254,9 +261,7 @@ describe('GuideRow', () => {
 
   describe('Channel Logo Interactions', () => {
     it('should call handleLogoClick when logo is clicked', () => {
-      render(
-        <GuideRow index={0} style={mockStyle} data={mockData} />
-      );
+      render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
       const logo = screen.getByAltText('Test Channel').closest('.channel-logo');
       fireEvent.click(logo);
@@ -277,9 +282,7 @@ describe('GuideRow', () => {
     });
 
     it('should not show play icon when not hovering', () => {
-      render(
-        <GuideRow index={0} style={mockStyle} data={mockData} />
-      );
+      render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
       expect(screen.queryByTestId('play-icon')).not.toBeInTheDocument();
     });
@@ -328,10 +331,10 @@ describe('GuideRow', () => {
   describe('Horizontal Viewport Culling', () => {
     it('should only render programs visible in viewport', () => {
       const programs = [
-        createProgramAtTime('prog-1', 0, 60),   // Hour 0
-        createProgramAtTime('prog-2', 6, 60),   // Hour 6
-        createProgramAtTime('prog-3', 12, 60),  // Hour 12
-        createProgramAtTime('prog-4', 18, 60),  // Hour 18
+        createProgramAtTime('prog-1', 0, 60), // Hour 0
+        createProgramAtTime('prog-2', 6, 60), // Hour 6
+        createProgramAtTime('prog-3', 12, 60), // Hour 12
+        createProgramAtTime('prog-4', 18, 60), // Hour 18
       ];
 
       const data = {
@@ -369,7 +372,7 @@ describe('GuideRow', () => {
 
       // Programs within H_BUFFER (600px) should be rendered
       const renderedPrograms = mockData.renderProgram.mock.calls.map(
-        call => call[0]
+        (call) => call[0]
       );
 
       expect(renderedPrograms.length).toBeGreaterThan(0);
@@ -393,7 +396,7 @@ describe('GuideRow', () => {
       render(<GuideRow index={0} style={mockStyle} data={data} />);
 
       const renderedPrograms = mockData.renderProgram.mock.calls.map(
-        call => call[0].id
+        (call) => call[0].id
       );
 
       // Only visible program should be rendered
@@ -449,7 +452,9 @@ describe('GuideRow', () => {
       rerender(<GuideRow index={0} style={mockStyle} data={newData} />);
 
       // Different programs should be rendered
-      expect(mockData.renderProgram.mock.calls.length).toBeGreaterThan(initialCalls);
+      expect(mockData.renderProgram.mock.calls.length).toBeGreaterThan(
+        initialCalls
+      );
     });
   });
 
@@ -499,7 +504,9 @@ describe('GuideRow', () => {
     it('should show play icon on mouse enter', () => {
       render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
-      const logoContainer = screen.getByAltText('Test Channel').closest('.channel-logo');
+      const logoContainer = screen
+        .getByAltText('Test Channel')
+        .closest('.channel-logo');
 
       expect(screen.queryByTestId('play-icon')).not.toBeInTheDocument();
 
@@ -511,7 +518,9 @@ describe('GuideRow', () => {
     it('should hide play icon on mouse leave', () => {
       render(<GuideRow index={0} style={mockStyle} data={mockData} />);
 
-      const logoContainer = screen.getByAltText('Test Channel').closest('.channel-logo');
+      const logoContainer = screen
+        .getByAltText('Test Channel')
+        .closest('.channel-logo');
 
       fireEvent.mouseEnter(logoContainer);
       expect(screen.getByTestId('play-icon')).toBeInTheDocument();
@@ -523,7 +532,10 @@ describe('GuideRow', () => {
     it('should maintain hover state independently per row', () => {
       const data = {
         ...mockData,
-        filteredChannels: [mockChannel, { ...mockChannel, id: 'channel-2', name: 'Channel 2' }],
+        filteredChannels: [
+          mockChannel,
+          { ...mockChannel, id: 'channel-2', name: 'Channel 2' },
+        ],
       };
 
       // Render both rows separately
@@ -531,7 +543,11 @@ describe('GuideRow', () => {
         <GuideRow index={0} style={mockStyle} data={data} />
       );
       const { container: container2 } = render(
-        <GuideRow index={1} style={{ ...mockStyle, top: PROGRAM_HEIGHT }} data={data} />
+        <GuideRow
+          index={1}
+          style={{ ...mockStyle, top: PROGRAM_HEIGHT }}
+          data={data}
+        />
       );
 
       // Hover over first row
@@ -539,12 +555,15 @@ describe('GuideRow', () => {
       fireEvent.mouseEnter(logo1);
 
       // First row should show play icon
-      expect(container1.querySelector('[data-testid="play-icon"]')).toBeInTheDocument();
+      expect(
+        container1.querySelector('[data-testid="play-icon"]')
+      ).toBeInTheDocument();
 
       // Second row should not show play icon
-      expect(container2.querySelector('[data-testid="play-icon"]')).not.toBeInTheDocument();
+      expect(
+        container2.querySelector('[data-testid="play-icon"]')
+      ).not.toBeInTheDocument();
     });
-
   });
 
   describe('Program Time Positioning', () => {
@@ -560,10 +579,7 @@ describe('GuideRow', () => {
     };
 
     it('should calculate correct viewport boundaries', () => {
-      const programs = [
-        createTimedProgram(6, 60),
-        createTimedProgram(12, 60),
-      ];
+      const programs = [createTimedProgram(6, 60), createTimedProgram(12, 60)];
 
       const data = {
         ...mockData,
@@ -581,8 +597,8 @@ describe('GuideRow', () => {
 
     it('should handle programs at timeline boundaries', () => {
       const programs = [
-        createTimedProgram(0, 60),      // Start of timeline
-        createTimedProgram(23, 60),     // End of timeline
+        createTimedProgram(0, 60), // Start of timeline
+        createTimedProgram(23, 60), // End of timeline
       ];
 
       const data = {
