@@ -56,6 +56,7 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ✅ **Stream Profiles** — Configure different stream profiles for various clients and bandwidth requirements\
 ✅ **Flexible Streaming Backends** — VLC, FFmpeg, Streamlink, or custom backends for transcoding and streaming\
 ✅ **Multi-User & Access Control** — Granular permissions and network-based access restrictions\
+✅ **SSO / OIDC Login** — Sign in via any OpenID Connect provider (Authentik, Keycloak, Google, etc.) with popup flow and auto-account creation\
 ✅ **Plugin System** — Extend functionality with custom plugins for automation and integrations\
 ✅ **Fully Self-Hosted** — Total control, no third-party dependencies
 

@@ -188,6 +188,84 @@ export default class API {
     }
   }
 
+  // ── OIDC ──────────────────────────────────────
+
+  static async getOIDCProviders() {
+    try {
+      return await request(`${host}/api/accounts/oidc/providers/`, {
+        auth: false,
+        method: 'GET',
+      });
+    } catch (e) {
+      console.error('Failed to fetch OIDC providers:', e);
+      return [];
+    }
+  }
+
+  static async getOIDCAuthorizeUrl(slug, redirectUri) {
+    try {
+      return await request(
+        `${host}/api/accounts/oidc/authorize/${slug}/?redirect_uri=${encodeURIComponent(redirectUri)}`,
+        { auth: false, method: 'GET' }
+      );
+    } catch (e) {
+      errorNotification('Failed to start OIDC login', e);
+    }
+  }
+
+  static async oidcCallback({ code, state, redirect_uri }) {
+    return await request(`${host}/api/accounts/oidc/callback/`, {
+      auth: false,
+      method: 'POST',
+      body: { code, state, redirect_uri },
+    });
+  }
+
+  static async getOIDCManagedProviders() {
+    try {
+      return await request(`${host}/api/accounts/oidc/manage/`, {
+        method: 'GET',
+      });
+    } catch (e) {
+      errorNotification('Failed to fetch OIDC providers', e);
+      return [];
+    }
+  }
+
+  static async createOIDCProvider(data) {
+    try {
+      return await request(`${host}/api/accounts/oidc/manage/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to create OIDC provider', e);
+    }
+  }
+
+  static async updateOIDCProvider(id, data) {
+    try {
+      return await request(`${host}/api/accounts/oidc/manage/${id}/`, {
+        method: 'PATCH',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update OIDC provider', e);
+    }
+  }
+
+  static async deleteOIDCProvider(id) {
+    try {
+      return await request(`${host}/api/accounts/oidc/manage/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete OIDC provider', e);
+    }
+  }
+
+  // ── end OIDC ──────────────────────────────────
+
   static async refreshToken(refresh) {
     try {
       return await request(`${host}/api/accounts/token/refresh/`, {

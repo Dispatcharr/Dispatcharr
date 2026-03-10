@@ -128,6 +128,21 @@ const useAuthStore = create((set, get) => ({
     }
   },
 
+  // Persist tokens received from an OIDC login flow (popup or redirect mode).
+  handleOIDCTokens: async (tokens) => {
+    if (tokens.access) {
+      const expiration = decodeToken(tokens.access);
+      set({
+        accessToken: tokens.access,
+        refreshToken: tokens.refresh,
+        tokenExpiration: expiration,
+      });
+      localStorage.setItem('accessToken', tokens.access);
+      localStorage.setItem('refreshToken', tokens.refresh);
+      localStorage.setItem('tokenExpiration', expiration);
+    }
+  },
+
   // Action to refresh the token
   getRefreshToken: async () => {
     const refreshToken = localStorage.getItem('refreshToken');
@@ -175,6 +190,13 @@ const useAuthStore = create((set, get) => ({
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
     localStorage.removeItem('tokenExpiration');
+    // Remove any OIDC transient keys that may have been left behind by an
+    // incomplete login flow or a previous version that used localStorage polling.
+    localStorage.removeItem('oidc_result');
+    localStorage.removeItem('oidc_state');
+    localStorage.removeItem('oidc_redirect_uri');
+    localStorage.removeItem('oidc_popup');
+    localStorage.removeItem('oidc_opener_origin');
   },
 
   initializeAuth: async () => {
