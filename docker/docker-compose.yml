@@ -15,8 +15,12 @@ services:
     volumes:
       - ./data:/data
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # --- Environment Configuration ---
     environment:
@@ -83,9 +87,12 @@ services:
     container_name: dispatcharr_celery
     restart: unless-stopped
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - ./data:/data
     extra_hosts:
@@ -96,6 +103,10 @@ services:
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+
+      # Internal Service Communication
+      # Must match the web service port for DVR recording and internal API calls
+      - DISPATCHARR_PORT=9191
 
       # PostgreSQL Connection
       - POSTGRES_HOST=db

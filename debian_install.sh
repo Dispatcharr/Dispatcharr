@@ -12,8 +12,19 @@ fi
 trap 'echo -e "\n[ERROR] Line $LINENO failed. Exiting." >&2; exit 1' ERR
 
 ##############################################################################
-# 0) Warning / Disclaimer
+# 0) Locales & Warning / Disclaimer
 ##############################################################################
+
+setup_locales() {
+  echo ">>> Setting up locales..."
+  apt-get update
+  apt-get install -y locales
+  sed -i '/en_US.UTF-8 UTF-8/s/^# //g' /etc/locale.gen
+  locale-gen
+  update-locale LANG=en_US.UTF-8
+  export LANG=en_US.UTF-8
+  export LC_ALL=en_US.UTF-8
+}
 
 show_disclaimer() {
   echo "**************************************************************"
@@ -106,8 +117,8 @@ setup_postgresql() {
 
   db_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$POSTGRES_DB'")
   if [[ "$db_exists" != "1" ]]; then
-    echo ">>> Creating database '${POSTGRES_DB}'..."
-    sudo -u postgres createdb "$POSTGRES_DB"
+    echo ">>> Creating database '${POSTGRES_DB}' with UTF8 encoding..."
+    sudo -u postgres createdb -E UTF8 "$POSTGRES_DB"
   else
     echo ">>> Database '${POSTGRES_DB}' already exists, skipping creation."
   fi
@@ -326,7 +337,7 @@ User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
-Environment="PATH=${APP_DIR}/env/bin"
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -354,7 +365,7 @@ User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
-Environment="PATH=${APP_DIR}/env/bin"
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -382,7 +393,7 @@ User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=/opt/dispatcharr/.env
-Environment="PATH=${APP_DIR}/env/bin"
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -474,6 +485,7 @@ EOF
 ##############################################################################
 
 main() {
+  setup_locales
   show_disclaimer
   configure_variables
   install_packages

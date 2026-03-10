@@ -1645,14 +1645,30 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     orphaned_movie_count = orphaned_movies.count()
     if orphaned_movie_count > 0:
         logger.info(f"Deleting {orphaned_movie_count} orphaned movies with no M3U relations")
-        orphaned_movies.delete()
+        try:
+            orphaned_movies.delete()
+        except IntegrityError:
+            # A concurrent refresh task created a new relation for one of these movies
+            # between our query and the DELETE. Skip and let the next cleanup run handle it.
+            logger.warning(
+                "Skipped some orphaned movie deletions due to concurrent modifications; "
+                "they will be retried on the next cleanup run."
+            )
+            orphaned_movie_count = 0
 
     # Clean up series with no relations (orphaned)
     orphaned_series = Series.objects.filter(m3u_relations__isnull=True)
     orphaned_series_count = orphaned_series.count()
     if orphaned_series_count > 0:
         logger.info(f"Deleting {orphaned_series_count} orphaned series with no M3U relations")
-        orphaned_series.delete()
+        try:
+            orphaned_series.delete()
+        except IntegrityError:
+            logger.warning(
+                "Skipped some orphaned series deletions due to concurrent modifications; "
+                "they will be retried on the next cleanup run."
+            )
+            orphaned_series_count = 0
 
     result = (f"Cleaned up {stale_movie_count} stale movie relations, "
               f"{stale_series_count} stale series relations, "

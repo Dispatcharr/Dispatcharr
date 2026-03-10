@@ -22,7 +22,7 @@ const PageContent = () => {
 
   const [allotmentSizes, setAllotmentSizes] = useLocalStorage(
     'channels-splitter-sizes',
-    [50, 50]
+    [60, 40]
   );
 
   // Only load logos when BOTH tables are ready

@@ -54,7 +54,7 @@ app.conf.update(
 def cleanup_task_memory(**kwargs):
     """Clean up memory and database connections after each task completes"""
     from django.db import connection
-    
+
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
@@ -153,6 +153,9 @@ def setup_celery_logging(**kwargs):
 
 @worker_ready.connect
 def on_worker_ready(**kwargs):
-    """Resume or finalize interrupted DVR recordings after a worker restart."""
+    """Tasks to run once the worker is fully connected and ready."""
     from apps.channels.tasks import recover_recordings_on_startup
     recover_recordings_on_startup.delay()
+
+    from core.tasks import check_for_version_update
+    check_for_version_update.delay()

@@ -462,6 +462,13 @@ def get_case_insensitive_attr(attributes, key, default=""):
     return default
 
 
+def parse_is_adult(value):
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
@@ -482,8 +489,10 @@ def parse_extinf_line(line: str) -> dict:
     attrs = {}
     last_attr_end = 0
 
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+    # Use a single regex that handles both quote types.
+    # Keys must stop at '=' so values like base64-padded URLs ending with '=='
+    # don't get folded into the preceding attribute name.
+    for match in re.finditer(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2', content):
         key = match.group(1)
         value = match.group(3)
         attrs[key] = value
@@ -749,6 +758,14 @@ def collect_xc_streams(account_id, enabled_groups):
             # Filter streams based on enabled categories
             filtered_count = 0
             for stream in all_xc_streams:
+                # Fall back to a generated name if the provider returns null/empty
+                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                if not stream.get("name"):
+                    logger.warning(
+                        f"XC stream has null/empty name; using generated name '{stream_name}' "
+                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                    )
+
                 # Get the category_id for this stream
                 category_id = str(stream.get("category_id", ""))
 
@@ -758,7 +775,7 @@ def collect_xc_streams(account_id, enabled_groups):
 
                     # Convert XC stream to our standard format with all properties preserved
                     stream_data = {
-                        "name": stream["name"],
+                        "name": stream_name,
                         "url": xc_client.get_stream_url(stream["stream_id"]),
                         "attributes": {
                             "tvg-id": stream.get("epg_channel_id", ""),
@@ -842,7 +859,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     )
 
                     for stream in streams:
-                        name = stream["name"]
+                        name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                        if not stream.get("name"):
+                            logger.warning(
+                                f"XC stream has null/empty name in category {group_name}; "
+                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
+                            )
                         raw_stream_id = stream.get("stream_id", "")
                         provider_stream_id = None
                         if raw_stream_id:
@@ -875,7 +897,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
-                            "is_adult": int(stream.get("is_adult", 0)) == 1,
+                            "is_adult": parse_is_adult(stream.get("is_adult", 0)),
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
@@ -1093,7 +1115,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
-                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
+                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,

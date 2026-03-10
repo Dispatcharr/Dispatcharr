@@ -789,6 +789,7 @@ def check_for_version_update():
     try:
         is_dev_build = __timestamp__ is not None
         DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+
         if is_dev_build:
             # Check Docker Hub for newer dev builds
             docker_hub_url = "https://hub.docker.com/v2/repositories/dispatcharr/dispatcharr/tags/dev"
@@ -878,7 +879,21 @@ def check_for_version_update():
                         }
                     )
         else:
-            # Production build - check GitHub for stable releases
+            # Production build - check GitHub for stable releases.
+            # Delete any stale notification for the currently running version upfront;
+            # a "vX is available" notification is meaningless once the user is already on vX.
+            # Notify the frontend immediately so the badge clears without waiting for the API call.
+            deleted_count = SystemNotification.objects.filter(
+                notification_key=f"version-{__version__}",
+                notification_type='version_update',
+            ).delete()[0]
+            if deleted_count > 0:
+                send_websocket_update(
+                    'updates',
+                    'update',
+                    {'success': True, 'type': 'notifications_cleared', 'count': deleted_count}
+                )
+
             github_api_url = "https://api.github.com/repos/Dispatcharr/Dispatcharr/releases/latest"
             headers = {"Accept": "application/vnd.github.v3+json", **DISPATCHARR_HEADERS}
             response = requests.get(

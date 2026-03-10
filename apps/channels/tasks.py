@@ -1642,6 +1642,33 @@ def _build_output_paths(channel, program, start_time, end_time):
     return final_path, temp_ts_path, os.path.basename(final_path)
 
 
+def build_dvr_candidates():
+    """Build ordered list of candidate base URLs for DVR TS streaming.
+
+    Reads environment variables to determine which URLs to try:
+    - DISPATCHARR_INTERNAL_TS_BASE_URL: explicit override (first priority)
+    - DISPATCHARR_PORT: the external port (default 9191)
+    - DISPATCHARR_ENV/DISPATCHARR_DEBUG/REDIS_HOST: dev-mode detection
+    - DISPATCHARR_INTERNAL_API_BASE: override for the docker service URL
+    """
+    explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
+    dispatcharr_port = os.environ.get('DISPATCHARR_PORT', '9191')
+    is_dev = (os.environ.get('DISPATCHARR_ENV', '').lower() == 'dev') or \
+             (os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true') or \
+             (os.environ.get('REDIS_HOST', 'redis') in ('localhost', '127.0.0.1'))
+    candidates = []
+    if explicit:
+        candidates.append(explicit)
+    if is_dev:
+        # Debug container typically exposes API on 5656 (uwsgi internal port)
+        candidates.extend(['http://127.0.0.1:5656', f'http://127.0.0.1:{dispatcharr_port}'])
+    # Docker service name fallback — use DISPATCHARR_PORT so modular mode works with custom ports
+    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', f'http://web:{dispatcharr_port}'))
+    # Last-resort localhost ports
+    candidates.extend(['http://localhost:5656', f'http://localhost:{dispatcharr_port}'])
+    return candidates
+
+
 @shared_task
 def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     """
@@ -1820,22 +1847,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     from requests.exceptions import ReadTimeout, ConnectionError as ReqConnectionError, ChunkedEncodingError
 
-    # Determine internal base URL(s) for TS streaming
-    # Prefer explicit override, then try common ports for debug and docker
-    explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
-    is_dev = (os.environ.get('DISPATCHARR_ENV', '').lower() == 'dev') or \
-             (os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true') or \
-             (os.environ.get('REDIS_HOST', 'redis') in ('localhost', '127.0.0.1'))
-    candidates = []
-    if explicit:
-        candidates.append(explicit)
-    if is_dev:
-        # Debug container typically exposes API on 5656
-        candidates.extend(['http://127.0.0.1:5656', 'http://127.0.0.1:9191'])
-    # Docker service name fallback
-    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', 'http://web:9191'))
-    # Last-resort localhost ports
-    candidates.extend(['http://localhost:5656', 'http://localhost:9191'])
+    candidates = build_dvr_candidates()
 
     chosen_base = None
     last_error = None
