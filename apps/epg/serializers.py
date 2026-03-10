@@ -3,10 +3,35 @@ import re
 from core.utils import validate_flexible_url
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
+from .utils import extract_season_episode
 from apps.channels.models import Channel
 
-# Matches patterns like "S12 E6", "S3E21", "S8 E8 P2/2"
-_ONSCREEN_RE = re.compile(r'S(\d+)\s*E(\d+)', re.IGNORECASE)
+# Live-event inference patterns
+_PPV_RE = re.compile(r'\bPPV\d*\b', re.IGNORECASE)
+_VS_RE = re.compile(r'\bvs\.?\b|\bversus\b', re.IGNORECASE)
+_LIVE_TIME_RE = re.compile(r'\d{1,2}:\d{2}\s*(?:AM|PM)', re.IGNORECASE)
+_SCHEDULED_EVENT_RE = re.compile(r'@\s+\w{3,}\s+\d{1,2}\s+\d{1,2}:\d{2}\s*(?:AM|PM)', re.IGNORECASE)
+
+
+def infer_is_live(title, epg_name=None, dd_progid=None):
+    """Infer LIVE status from title/channel patterns when provider omits <live> flag."""
+    text = title or ''
+    # Rule 1: PPV in title or EPG name
+    if _PPV_RE.search(text) or (epg_name and _PPV_RE.search(epg_name)):
+        return True
+    has_vs = bool(_VS_RE.search(text))
+    has_time = bool(_LIVE_TIME_RE.search(text))
+    # Rule 2: "vs" + embedded time
+    if has_vs and has_time:
+        return True
+    # Rule 3: dd_progid=SP + matchup or time
+    if dd_progid and str(dd_progid)[:2].upper() == 'SP' and (has_vs or has_time):
+        return True
+    # Rule 4: "@ Month Day Time" scheduling notation (e.g. "@ Mar 08 10:00 AM ET")
+    if _SCHEDULED_EVENT_RE.search(text):
+        return True
+    return False
+
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -83,6 +108,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
 class ProgramDataSerializer(serializers.ModelSerializer):
+    """Querysets must use select_related('epg') to avoid N+1 on is_live inference."""
+
     class Meta:
         model = ProgramData
         fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id']
@@ -90,24 +117,76 @@ class ProgramDataSerializer(serializers.ModelSerializer):
     def to_representation(self, obj):
         data = super().to_representation(obj)
         cp = obj.custom_properties or {}
-        season = cp.get('season')
-        episode = cp.get('episode')
-        # Only run the regex if at least one value is still missing
-        if (season is None or episode is None) and cp.get('onscreen_episode'):
-            match = _ONSCREEN_RE.search(cp['onscreen_episode'])
-            if match:
-                if season is None:
-                    season = int(match.group(1))
-                if episode is None:
-                    episode = int(match.group(2))
+        season, episode = extract_season_episode(cp, description=obj.description)
         data['season'] = season
         data['episode'] = episode
         data['is_new'] = bool(cp.get('new'))
-        data['is_live'] = bool(cp.get('live'))
+        data['is_live'] = bool(cp.get('live')) or infer_is_live(
+            obj.title, epg_name=obj.epg.name if obj.epg_id else None,
+            dd_progid=cp.get('dd_progid'))
         data['is_premiere'] = bool(cp.get('premiere'))
         premiere_text = cp.get('premiere_text', '')
         data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
         return data
+
+class ProgramDetailSerializer(ProgramDataSerializer):
+    """Rich serializer for program detail view — extends slim serializer with full custom_properties."""
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        cp = obj.custom_properties or {}
+
+        # Categories
+        data['categories'] = cp.get('categories') or []
+
+        # Content rating
+        data['rating'] = cp.get('rating')
+        data['rating_system'] = cp.get('rating_system')
+
+        # Star ratings
+        data['star_ratings'] = cp.get('star_ratings') or []
+
+        # Credits — flatten from XMLTV structure
+        credits = cp.get('credits') or {}
+        data['credits'] = {
+            'actors': credits.get('actor') or [],
+            'directors': credits.get('director') or [],
+            'writers': credits.get('writer') or [],
+            'producers': credits.get('producer') or [],
+            'presenters': credits.get('presenter') or [],
+        }
+
+        # Video/audio quality
+        video = cp.get('video') or {}
+        data['video_quality'] = video.get('quality')
+        data['aspect_ratio'] = video.get('aspect')
+
+        audio = cp.get('audio') or {}
+        data['stereo'] = audio.get('stereo')
+
+        # Previously shown (rerun)
+        data['is_previously_shown'] = bool(cp.get('previously_shown'))
+
+        # Geographic/language
+        data['country'] = cp.get('country')
+        data['language'] = cp.get('language')
+
+        # Dates
+        data['production_date'] = cp.get('date')
+        previously_shown = cp.get('previously_shown_details') or {}
+        data['original_air_date'] = previously_shown.get('start')
+
+        # External IDs
+        data['imdb_id'] = cp.get('imdb.com_id')
+        data['tmdb_id'] = cp.get('themoviedb.org_id')
+        data['tvdb_id'] = cp.get('thetvdb.com_id')
+
+        # Images
+        data['icon'] = cp.get('icon')
+        data['images'] = cp.get('images') or []
+
+        return data
+
 
 class EPGDataSerializer(serializers.ModelSerializer):
     """

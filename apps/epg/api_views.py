@@ -7,12 +7,14 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serial
 from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 from datetime import timedelta
-from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
+from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
     ProgramDataSerializer,
+    ProgramDetailSerializer,
     EPGSourceSerializer,
     EPGDataSerializer,
-)  # Updated serializer
+    infer_is_live,
+)
 from .tasks import refresh_epg_data
 from apps.accounts.permissions import (
     Authenticated,
@@ -107,7 +109,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
 class ProgramViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for EPG programs"""
 
-    queryset = ProgramData.objects.all()
+    queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
 
     def get_permissions(self):
@@ -115,6 +117,16 @@ class ProgramViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return ProgramDetailSerializer
+        return ProgramDataSerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG programs.")
@@ -300,7 +312,8 @@ class EPGGridAPIView(APIView):
                             "season": None,
                             "episode": None,
                             "is_new": prog_custom.get('new', False),
-                            "is_live": prog_custom.get('live', False),
+                            "is_live": bool(prog_custom.get('live')) or infer_is_live(
+                                program['title'], epg_name=channel.name),
                             "is_premiere": False,
                             "is_finale": False,
                         }
@@ -363,7 +376,7 @@ class EPGGridAPIView(APIView):
                         "season": None,
                         "episode": None,
                         "is_new": False,
-                        "is_live": False,
+                        "is_live": infer_is_live(channel.name),
                         "is_premiere": False,
                         "is_finale": False,
                     }
@@ -503,7 +516,7 @@ class CurrentProgramsAPIView(APIView):
 
         for channel in channels:
             # Query for current program
-            program = ProgramData.objects.filter(
+            program = ProgramData.objects.select_related("epg").filter(
                 epg=channel.epg_data,
                 start_time__lte=now,
                 end_time__gt=now

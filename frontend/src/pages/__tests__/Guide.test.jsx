@@ -196,6 +196,17 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
       </div>
     ) : null,
 }));
+vi.mock('../../components/ProgramDetailModal', () => ({
+  __esModule: true,
+  default: ({ program, channel, opened, onClose, onRecord }) =>
+    opened ? (
+      <div data-testid="program-detail-modal">
+        <div>{program?.title}</div>
+        <button onClick={onClose}>Close</button>
+        <button onClick={() => onRecord?.(program)}>Record</button>
+      </div>
+    ) : null,
+}));
 
 vi.mock('../guideUtils', async () => {
   const actual = await vi.importActual('../guideUtils');

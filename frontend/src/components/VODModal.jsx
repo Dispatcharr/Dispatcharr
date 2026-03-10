@@ -19,11 +19,7 @@ import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
-
-const imdbUrl = (imdb_id) =>
-  imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
-const tmdbUrl = (tmdb_id, type = 'movie') =>
-  tmdb_id ? `https://www.themoviedb.org/${type}/${tmdb_id}` : '';
+import { imdbUrl, tmdbUrl } from '../utils/externalUrls';
 const formatDuration = (seconds) => {
   if (!seconds) return '';
   const hours = Math.floor(seconds / 3600);
@@ -429,7 +425,7 @@ const VODModal = ({ vod, opened, onClose }) => {
                         rel="noopener noreferrer"
                         style={{ cursor: 'pointer' }}
                       >
-                        TMDb
+                        TMDB
                       </Badge>
                     )}
                   </Group>

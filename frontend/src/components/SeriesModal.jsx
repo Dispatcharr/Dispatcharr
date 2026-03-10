@@ -23,11 +23,7 @@ import { copyToClipboard } from '../utils';
 import useVODStore from '../store/useVODStore';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
-
-const imdbUrl = (imdb_id) =>
-  imdb_id ? `https://www.imdb.com/title/${imdb_id}` : '';
-const tmdbUrl = (tmdb_id, type = 'movie') =>
-  tmdb_id ? `https://www.themoviedb.org/${type}/${tmdb_id}` : '';
+import { imdbUrl, tmdbUrl } from '../utils/externalUrls';
 const formatDuration = (seconds) => {
   if (!seconds) return '';
   const hours = Math.floor(seconds / 3600);
@@ -453,7 +449,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                         rel="noopener noreferrer"
                         style={{ cursor: 'pointer' }}
                       >
-                        TMDb
+                        TMDB
                       </Badge>
                     )}
                   </Group>
@@ -734,7 +730,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                             </Badge>
                                           </Box>
                                         )}
-                                        {/* IMDb and TMDb badges for episode */}
+                                        {/* IMDb and TMDB badges for episode */}
                                         {(episode.imdb_id ||
                                           displaySeries.tmdb_id) && (
                                           <Box>
@@ -776,7 +772,7 @@ const SeriesModal = ({ series, opened, onClose }) => {
                                                 rel="noopener noreferrer"
                                                 style={{ cursor: 'pointer' }}
                                               >
-                                                TMDb
+                                                TMDB
                                               </Badge>
                                             )}
                                           </Box>

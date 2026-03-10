@@ -1,7 +1,8 @@
 from django.test import TestCase
 from django.utils import timezone
 from apps.epg.models import EPGData, EPGSource, ProgramData
-from apps.epg.serializers import ProgramDataSerializer
+from apps.epg.serializers import ProgramDataSerializer, ProgramDetailSerializer, infer_is_live
+from apps.epg.utils import extract_season_episode, extract_season_episode_from_description
 
 
 class ProgramDataSerializerTests(TestCase):
@@ -279,3 +280,530 @@ class ProgramDataSerializerTests(TestCase):
         program = self._create_program(custom_properties=None)
         data = ProgramDataSerializer(program).data
         self.assertFalse(data["is_finale"])
+
+
+class ExtractSeasonEpisodeHelperTests(TestCase):
+    """Tests for the shared extract_season_episode helper function."""
+
+    def test_both_present(self):
+        season, episode = extract_season_episode({"season": 3, "episode": 5})
+        self.assertEqual(season, 3)
+        self.assertEqual(episode, 5)
+
+    def test_fallback_to_onscreen(self):
+        season, episode = extract_season_episode({"onscreen_episode": "S12 E6"})
+        self.assertEqual(season, 12)
+        self.assertEqual(episode, 6)
+
+    def test_direct_values_override_onscreen(self):
+        season, episode = extract_season_episode({
+            "season": 1, "episode": 2, "onscreen_episode": "S99 E99"
+        })
+        self.assertEqual(season, 1)
+        self.assertEqual(episode, 2)
+
+    def test_empty_dict(self):
+        season, episode = extract_season_episode({})
+        self.assertIsNone(season)
+        self.assertIsNone(episode)
+
+    def test_partial_with_onscreen_fill(self):
+        """Direct season + onscreen episode fills the gap."""
+        season, episode = extract_season_episode({
+            "season": 5, "onscreen_episode": "S5E10"
+        })
+        self.assertEqual(season, 5)
+        self.assertEqual(episode, 10)
+
+    def test_description_fallback_s_e_format(self):
+        """S01E01 in description should be used as third-tier fallback."""
+        season, episode = extract_season_episode({}, description="S2 E31 The Episode Title")
+        self.assertEqual(season, 2)
+        self.assertEqual(episode, 31)
+
+    def test_description_fallback_season_episode_format(self):
+        season, episode = extract_season_episode({}, description="Season 3 Episode 12 Some Title")
+        self.assertEqual(season, 3)
+        self.assertEqual(episode, 12)
+
+    def test_description_fallback_nxnn_format(self):
+        season, episode = extract_season_episode({}, description="5x03 Episode Name")
+        self.assertEqual(season, 5)
+        self.assertEqual(episode, 3)
+
+    def test_description_not_used_when_cp_has_both(self):
+        """Description fallback should not override existing custom_properties values."""
+        season, episode = extract_season_episode(
+            {"season": 1, "episode": 2}, description="S99 E99 Fake"
+        )
+        self.assertEqual(season, 1)
+        self.assertEqual(episode, 2)
+
+    def test_description_not_used_when_onscreen_provides_both(self):
+        season, episode = extract_season_episode(
+            {"onscreen_episode": "S3E5"}, description="S99 E99 Fake"
+        )
+        self.assertEqual(season, 3)
+        self.assertEqual(episode, 5)
+
+    def test_description_fills_gap_after_partial_onscreen(self):
+        """If onscreen provides only season, description can fill episode."""
+        # onscreen_episode "S5" doesn't match the S/E pattern, so no values from onscreen
+        # description provides both
+        season, episode = extract_season_episode(
+            {"season": 5}, description="S5 E10 Title"
+        )
+        self.assertEqual(season, 5)
+        self.assertEqual(episode, 10)
+
+    def test_description_none_is_safe(self):
+        season, episode = extract_season_episode({}, description=None)
+        self.assertIsNone(season)
+        self.assertIsNone(episode)
+
+    def test_description_empty_string_is_safe(self):
+        season, episode = extract_season_episode({}, description="")
+        self.assertIsNone(season)
+        self.assertIsNone(episode)
+
+
+class ExtractSeasonEpisodeFromDescriptionTests(TestCase):
+    """Tests for extract_season_episode_from_description() in tasks.py."""
+
+    def test_s_e_compact(self):
+        s, e, cleaned = extract_season_episode_from_description("S2E31 The Kevin Episode")
+        self.assertEqual(s, 2)
+        self.assertEqual(e, 31)
+        self.assertEqual(cleaned, "The Kevin Episode")
+
+    def test_s_e_with_space(self):
+        s, e, cleaned = extract_season_episode_from_description("S2 E31 The Kevin Episode")
+        self.assertEqual(s, 2)
+        self.assertEqual(e, 31)
+        self.assertEqual(cleaned, "The Kevin Episode")
+
+    def test_season_episode_words(self):
+        s, e, cleaned = extract_season_episode_from_description("Season 3 Episode 12 Title Here")
+        self.assertEqual(s, 3)
+        self.assertEqual(e, 12)
+        self.assertEqual(cleaned, "Title Here")
+
+    def test_nxnn_format(self):
+        s, e, cleaned = extract_season_episode_from_description("5x03 Episode Name")
+        self.assertEqual(s, 5)
+        self.assertEqual(e, 3)
+        self.assertEqual(cleaned, "Episode Name")
+
+    def test_leading_dash(self):
+        s, e, cleaned = extract_season_episode_from_description("- S1E5 Title")
+        self.assertEqual(s, 1)
+        self.assertEqual(e, 5)
+        self.assertEqual(cleaned, "Title")
+
+    def test_case_insensitive(self):
+        s, e, cleaned = extract_season_episode_from_description("s10e20 Lower Case")
+        self.assertEqual(s, 10)
+        self.assertEqual(e, 20)
+        self.assertEqual(cleaned, "Lower Case")
+
+    def test_no_match_returns_original(self):
+        s, e, cleaned = extract_season_episode_from_description("Just a normal description")
+        self.assertIsNone(s)
+        self.assertIsNone(e)
+        self.assertEqual(cleaned, "Just a normal description")
+
+    def test_none_input(self):
+        s, e, cleaned = extract_season_episode_from_description(None)
+        self.assertIsNone(s)
+        self.assertIsNone(e)
+        self.assertIsNone(cleaned)
+
+    def test_empty_string(self):
+        s, e, cleaned = extract_season_episode_from_description("")
+        self.assertIsNone(s)
+        self.assertIsNone(e)
+        self.assertEqual(cleaned, "")
+
+    def test_mid_string_s_e_not_matched(self):
+        """S/E in middle of description should NOT be matched (anchored to start)."""
+        s, e, cleaned = extract_season_episode_from_description("Some intro text S1E5 title")
+        self.assertIsNone(s)
+        self.assertIsNone(e)
+        self.assertEqual(cleaned, "Some intro text S1E5 title")
+
+
+class ProgramDataSerializerDescriptionFallbackTests(TestCase):
+    """Integration tests: serializer uses description fallback for S/E."""
+
+    def setUp(self):
+        self.epg_source = EPGSource.objects.create(
+            name="Test Source", source_type="xmltv"
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id="test-tvg", name="Test EPG", epg_source=self.epg_source
+        )
+        self.now = timezone.now()
+
+    def _create_program(self, **kwargs):
+        defaults = {
+            "epg": self.epg,
+            "start_time": self.now,
+            "end_time": self.now + timezone.timedelta(hours=1),
+            "title": "Test Program",
+        }
+        defaults.update(kwargs)
+        return ProgramData.objects.create(**defaults)
+
+    def test_se_from_description_when_no_cp(self):
+        program = self._create_program(
+            custom_properties={},
+            description="S2 E5 The Episode Title",
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertEqual(data["season"], 2)
+        self.assertEqual(data["episode"], 5)
+
+    def test_se_from_description_not_used_when_cp_has_values(self):
+        program = self._create_program(
+            custom_properties={"season": 1, "episode": 1},
+            description="S99 E99 Fake",
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertEqual(data["season"], 1)
+        self.assertEqual(data["episode"], 1)
+
+
+class ProgramDetailSerializerTests(TestCase):
+    """Tests for ProgramDetailSerializer — rich field extraction from custom_properties."""
+
+    def setUp(self):
+        self.epg_source = EPGSource.objects.create(
+            name="Test Source", source_type="xmltv"
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id="test-tvg", name="Test EPG", epg_source=self.epg_source
+        )
+        self.now = timezone.now()
+
+    def _create_program(self, **kwargs):
+        defaults = {
+            "epg": self.epg,
+            "start_time": self.now,
+            "end_time": self.now + timezone.timedelta(hours=1),
+            "title": "Test Program",
+        }
+        defaults.update(kwargs)
+        return ProgramData.objects.create(**defaults)
+
+    def test_all_detail_fields_present(self):
+        """Detail serializer should include all expected fields."""
+        program = self._create_program(custom_properties={"season": 1, "episode": 1})
+        data = ProgramDetailSerializer(program).data
+        expected_fields = {
+            "id", "start_time", "end_time", "title", "sub_title", "description", "tvg_id",
+            "season", "episode", "is_new", "is_live", "is_premiere", "is_finale",
+            "categories", "rating", "rating_system", "star_ratings",
+            "credits", "video_quality", "aspect_ratio", "stereo", "is_previously_shown",
+            "country", "language", "production_date", "original_air_date",
+            "imdb_id", "tmdb_id", "tvdb_id", "icon", "images",
+        }
+        self.assertEqual(set(data.keys()), expected_fields)
+
+    def test_categories_extraction(self):
+        program = self._create_program(
+            custom_properties={"categories": ["Drama", "Thriller"]}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["categories"], ["Drama", "Thriller"])
+
+    def test_categories_empty_when_absent(self):
+        program = self._create_program(custom_properties={})
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["categories"], [])
+
+    def test_rating_extraction(self):
+        program = self._create_program(
+            custom_properties={"rating": "TV-14", "rating_system": "VCHIP"}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["rating"], "TV-14")
+        self.assertEqual(data["rating_system"], "VCHIP")
+
+    def test_star_ratings_extraction(self):
+        program = self._create_program(
+            custom_properties={"star_ratings": [{"value": "8.5/10", "system": "IMDB"}]}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(len(data["star_ratings"]), 1)
+        self.assertEqual(data["star_ratings"][0]["value"], "8.5/10")
+
+    def test_credits_extraction(self):
+        program = self._create_program(
+            custom_properties={
+                "credits": {
+                    "actor": [{"name": "Bryan Cranston", "role": "Walter White"}],
+                    "director": ["Rian Johnson"],
+                    "writer": ["Moira Walley-Beckett"],
+                }
+            }
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(len(data["credits"]["actors"]), 1)
+        self.assertEqual(data["credits"]["actors"][0]["name"], "Bryan Cranston")
+        self.assertEqual(data["credits"]["directors"], ["Rian Johnson"])
+        self.assertEqual(data["credits"]["writers"], ["Moira Walley-Beckett"])
+
+    def test_credits_empty_when_absent(self):
+        program = self._create_program(custom_properties={})
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["credits"]["actors"], [])
+        self.assertEqual(data["credits"]["directors"], [])
+
+    def test_video_quality_extraction(self):
+        program = self._create_program(
+            custom_properties={"video": {"quality": "HDTV", "aspect": "16:9"}}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["video_quality"], "HDTV")
+        self.assertEqual(data["aspect_ratio"], "16:9")
+
+    def test_audio_extraction(self):
+        program = self._create_program(
+            custom_properties={"audio": {"stereo": "Dolby Digital"}}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["stereo"], "Dolby Digital")
+
+    def test_geographic_fields(self):
+        program = self._create_program(
+            custom_properties={"country": "US", "language": "en"}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["country"], "US")
+        self.assertEqual(data["language"], "en")
+
+    def test_original_air_date(self):
+        program = self._create_program(
+            custom_properties={
+                "previously_shown_details": {"start": "2013-09-15"}
+            }
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["original_air_date"], "2013-09-15")
+
+    def test_external_ids(self):
+        program = self._create_program(
+            custom_properties={
+                "imdb.com_id": "tt0903747",
+                "themoviedb.org_id": "1396",
+                "thetvdb.com_id": "81189",
+            }
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["imdb_id"], "tt0903747")
+        self.assertEqual(data["tmdb_id"], "1396")
+        self.assertEqual(data["tvdb_id"], "81189")
+
+    def test_images_extraction(self):
+        program = self._create_program(
+            custom_properties={
+                "icon": "https://example.com/icon.png",
+                "images": [{"url": "https://example.com/poster.jpg", "type": "poster"}],
+            }
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["icon"], "https://example.com/icon.png")
+        self.assertEqual(len(data["images"]), 1)
+
+    def test_null_custom_properties_returns_safe_defaults(self):
+        """All enriched fields should be null/empty when custom_properties is None."""
+        program = self._create_program(custom_properties=None)
+        data = ProgramDetailSerializer(program).data
+        self.assertIsNone(data["season"])
+        self.assertIsNone(data["episode"])
+        self.assertEqual(data["categories"], [])
+        self.assertIsNone(data["rating"])
+        self.assertEqual(data["star_ratings"], [])
+        self.assertEqual(data["credits"]["actors"], [])
+        self.assertIsNone(data["video_quality"])
+        self.assertIsNone(data["country"])
+        self.assertIsNone(data["imdb_id"])
+        self.assertEqual(data["images"], [])
+
+    def test_season_episode_uses_shared_helper(self):
+        """Detail serializer should use the same onscreen_episode fallback."""
+        program = self._create_program(
+            custom_properties={"onscreen_episode": "S5E14"}
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertEqual(data["season"], 5)
+        self.assertEqual(data["episode"], 14)
+
+    def test_status_flags_match_slim_serializer(self):
+        """Status flags should produce identical results as ProgramDataSerializer."""
+        program = self._create_program(
+            custom_properties={
+                "new": True, "live": True, "premiere": True,
+                "premiere_text": "Season Finale",
+            }
+        )
+        slim = ProgramDataSerializer(program).data
+        detail = ProgramDetailSerializer(program).data
+        self.assertEqual(slim["is_new"], detail["is_new"])
+        self.assertEqual(slim["is_live"], detail["is_live"])
+        self.assertEqual(slim["is_premiere"], detail["is_premiere"])
+        self.assertEqual(slim["is_finale"], detail["is_finale"])
+
+
+class InferIsLiveTests(TestCase):
+    """Tests for infer_is_live() — LIVE badge inference from title/channel patterns."""
+
+    # --- Rule 1: PPV ---
+
+    def test_ppv_in_title(self):
+        self.assertTrue(infer_is_live("USA PPV05: Toughman Contest (3.6 7:00 PM ET)"))
+
+    def test_ppv_in_epg_name(self):
+        self.assertTrue(infer_is_live("Toughman Contest", epg_name="USA PPV05"))
+
+    def test_ppv_bare_word(self):
+        self.assertTrue(infer_is_live("PPV Event: Main Card"))
+
+    def test_ppv_with_number(self):
+        self.assertTrue(infer_is_live("PPV12: Championship"))
+
+    def test_ppv_case_insensitive(self):
+        self.assertTrue(infer_is_live("ppv: Some Event"))
+
+    # --- Rule 2: vs + time ---
+
+    def test_vs_with_time(self):
+        self.assertTrue(infer_is_live("Celtics vs Cavaliers (03.08 1:00PM ET)"))
+
+    def test_versus_with_time(self):
+        self.assertTrue(infer_is_live("Team A versus Team B @ 7:00 PM"))
+
+    def test_vs_dot_with_time(self):
+        self.assertTrue(infer_is_live("Detroit vs. New Jersey @ Mar 8 7:00 PM"))
+
+    def test_vs_case_insensitive_with_time(self):
+        self.assertTrue(infer_is_live("TEAM A VS TEAM B (9:30 PM EST)"))
+
+    # --- Rule 3: dd_progid=SP + matchup or time ---
+
+    def test_sp_progid_with_vs(self):
+        self.assertTrue(infer_is_live("Lakers vs Heat", dd_progid="SP0012345"))
+
+    def test_sp_progid_with_time(self):
+        self.assertTrue(infer_is_live("Championship Game (8:00 PM ET)", dd_progid="SP0099999"))
+
+    def test_sp_progid_case_insensitive(self):
+        self.assertTrue(infer_is_live("Match vs Opponent", dd_progid="sp001"))
+
+    # --- Rule 4: @ date/time scheduling notation ---
+
+    def test_scheduled_event_tournament(self):
+        self.assertTrue(infer_is_live(
+            "Flo Sports 07: flograppling: 2026 UIJJ BERGAMO BJJ CHALLENGE (Mat 6) @ Mar 08 03:00 AM ET"))
+
+    def test_scheduled_event_baseball(self):
+        self.assertTrue(infer_is_live(
+            "BIG10+ 01: Baseball | S. Dakota St. vs S. Illinois @ Mar 08 10:00 AM ET"))
+
+    def test_scheduled_event_hockey(self):
+        self.assertTrue(infer_is_live(
+            "Flo Sports 110: flohockey: 2026 New Jersey 87's vs Bridgewater Bandits (Home) @ Mar 08 10:00 AM ET"))
+
+    def test_scheduled_event_no_vs(self):
+        """Tournament without 'vs' should still match via @ date/time."""
+        self.assertTrue(infer_is_live(
+            "NCAA Wrestling Championship (Mat 3) @ Apr 12 2:00 PM ET"))
+
+    # --- False positives (should return False) ---
+
+    def test_vs_without_time(self):
+        """'vs' alone should NOT trigger live — could be movie like 'Batman vs Superman'."""
+        self.assertFalse(infer_is_live("Batman vs Superman: Dawn of Justice"))
+
+    def test_versus_without_time(self):
+        self.assertFalse(infer_is_live("Kramer versus Kramer"))
+
+    def test_time_without_vs_or_ppv(self):
+        """Time alone should NOT trigger live — could be news show."""
+        self.assertFalse(infer_is_live("Evening News at 7:00 PM"))
+
+    def test_sp_progid_without_vs_or_time(self):
+        """SP dd_progid alone should NOT trigger — could be sports documentary."""
+        self.assertFalse(infer_is_live("30 for 30: The Last Dance", dd_progid="SP0012345"))
+
+    def test_regular_show_title(self):
+        self.assertFalse(infer_is_live("Breaking Bad"))
+
+    def test_man_vs_food_no_time(self):
+        self.assertFalse(infer_is_live("Man vs Food"))
+
+    def test_empty_title(self):
+        self.assertFalse(infer_is_live(""))
+
+    def test_none_title(self):
+        self.assertFalse(infer_is_live(None))
+
+
+class InferIsLiveSerializerIntegrationTests(TestCase):
+    """Integration tests: serializer uses infer_is_live for is_live badge."""
+
+    def setUp(self):
+        self.epg_source = EPGSource.objects.create(
+            name="Test Source", source_type="xmltv"
+        )
+        self.epg = EPGData.objects.create(
+            tvg_id="test-tvg", name="Test EPG", epg_source=self.epg_source
+        )
+        self.ppv_epg = EPGData.objects.create(
+            tvg_id="ppv-tvg", name="USA PPV05", epg_source=self.epg_source
+        )
+        self.now = timezone.now()
+
+    def _create_program(self, epg=None, **kwargs):
+        defaults = {
+            "epg": epg or self.epg,
+            "start_time": self.now,
+            "end_time": self.now + timezone.timedelta(hours=1),
+            "title": "Test Program",
+        }
+        defaults.update(kwargs)
+        return ProgramData.objects.create(**defaults)
+
+    def test_provider_live_flag_still_works(self):
+        """Provider <live> flag should still set is_live."""
+        program = self._create_program(custom_properties={"live": True})
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_live"])
+
+    def test_ppv_channel_infers_live(self):
+        """Program on PPV channel should get is_live=True."""
+        program = self._create_program(
+            epg=self.ppv_epg, title="Toughman Contest (3.6 7:00 PM ET)"
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_live"])
+
+    def test_vs_with_time_infers_live(self):
+        program = self._create_program(
+            title="Celtics vs Cavaliers (03.08 1:00PM ET)"
+        )
+        data = ProgramDataSerializer(program).data
+        self.assertTrue(data["is_live"])
+
+    def test_regular_show_not_inferred_live(self):
+        program = self._create_program(title="Breaking Bad")
+        data = ProgramDataSerializer(program).data
+        self.assertFalse(data["is_live"])
+
+    def test_detail_serializer_inherits_inference(self):
+        """ProgramDetailSerializer should also infer is_live."""
+        program = self._create_program(
+            epg=self.ppv_epg, title="Main Event"
+        )
+        data = ProgramDetailSerializer(program).data
+        self.assertTrue(data["is_live"])

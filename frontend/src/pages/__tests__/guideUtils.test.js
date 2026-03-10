@@ -303,20 +303,15 @@ describe('guideUtils', () => {
 
   describe('computeRowHeights', () => {
     it('should return empty array when no channels', () => {
-      const result = guideUtils.computeRowHeights([], new Map(), null);
+      const result = guideUtils.computeRowHeights([]);
 
       expect(result).toEqual([]);
     });
 
-    it('should return default height for all channels when none expanded', () => {
+    it('should return default height for all channels', () => {
       const channels = [{ id: 1 }, { id: 2 }];
-      const programsByChannelId = new Map();
 
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        null
-      );
+      const result = guideUtils.computeRowHeights(channels);
 
       expect(result).toEqual([
         guideUtils.PROGRAM_HEIGHT,
@@ -324,40 +319,13 @@ describe('guideUtils', () => {
       ]);
     });
 
-    it('should return expanded height for channel with expanded program', () => {
-      const channels = [{ id: 1 }, { id: 2 }];
-      const programsByChannelId = new Map([
-        [1, [{ id: 'program-1' }]],
-        [2, [{ id: 'program-2' }]],
-      ]);
-
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        'program-1'
-      );
-
-      expect(result).toEqual([
-        guideUtils.EXPANDED_PROGRAM_HEIGHT,
-        guideUtils.PROGRAM_HEIGHT,
-      ]);
-    });
-
-    it('should use custom heights when provided', () => {
+    it('should use custom default height when provided', () => {
       const channels = [{ id: 1 }];
-      const programsByChannelId = new Map([[1, [{ id: 'program-1' }]]]);
       const customDefault = 100;
-      const customExpanded = 200;
 
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        'program-1',
-        customDefault,
-        customExpanded
-      );
+      const result = guideUtils.computeRowHeights(channels, customDefault);
 
-      expect(result).toEqual([customExpanded]);
+      expect(result).toEqual([customDefault]);
     });
   });
 

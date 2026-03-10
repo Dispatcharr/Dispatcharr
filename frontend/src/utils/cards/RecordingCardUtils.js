@@ -1,6 +1,7 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
 import defaultLogo from '../../images/logo.png';
+import { formatSeasonEpisode } from '../../pages/guideUtils.js';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -99,9 +100,8 @@ export const getRecordingUrl = (customProps, env_mode) => {
 };
 
 export const getSeasonLabel = (season, episode, onscreen) => {
-  return season && episode
-    ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-    : onscreen || null;
+  if (season != null && episode != null) return formatSeasonEpisode(season, episode);
+  return onscreen || null;
 };
 
 export const getSeriesInfo = (customProps) => {

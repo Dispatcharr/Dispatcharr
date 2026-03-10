@@ -1566,6 +1566,23 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                     custom_props = extract_custom_properties(elem)
                     custom_properties_json = custom_props if custom_props else None
 
+                    # Fallback: extract S/E from description when episode-num
+                    # elements didn't provide them
+                    if desc:
+                        has_season = (custom_properties_json or {}).get('season') is not None
+                        has_episode = (custom_properties_json or {}).get('episode') is not None
+                        if not has_season or not has_episode:
+                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                            if d_season is not None and d_episode is not None:
+                                if custom_properties_json is None:
+                                    custom_properties_json = {}
+                                if not has_season:
+                                    custom_properties_json['season'] = d_season
+                                if not has_episode:
+                                    custom_properties_json['episode'] = d_episode
+                                custom_properties_json['season_episode_source'] = 'description'
+                                desc = cleaned_desc
+
                     epg_id = tvg_id_to_epg_id[channel_id]
                     all_programs_to_create.append(ProgramData(
                         epg_id=epg_id,
@@ -1855,6 +1872,10 @@ def parse_schedules_direct_time(time_str):
     except Exception as e:
         logger.error(f"Error parsing Schedules Direct time '{time_str}': {e}", exc_info=True)
         raise
+
+
+# Re-export from utils to preserve backward compatibility for any callers
+from apps.epg.utils import extract_season_episode_from_description  # noqa: F401
 
 
 # Helper function to extract custom properties - moved to a separate function to clean up the code

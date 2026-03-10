@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import {
   CHANNEL_WIDTH,
-  EXPANDED_PROGRAM_HEIGHT,
   HOUR_WIDTH,
   MINUTE_BLOCK_WIDTH,
   MINUTE_INCREMENT,
   PROGRAM_HEIGHT,
 } from '../pages/guideUtils.js';
-import { Box, Flex, Text } from '@mantine/core';
+import { Box, Flex, Text, Tooltip } from '@mantine/core';
 import { Play } from 'lucide-react';
 import logo from '../images/logo.png';
 
@@ -15,11 +14,46 @@ import logo from '../images/logo.png';
 // This prevents pop-in when scrolling horizontally.
 const H_BUFFER = 600;
 
+const TOTAL_PLACEHOLDERS = Math.ceil(24 / 2);
+const PLACEHOLDER_BLOCK_WIDTH = HOUR_WIDTH * 2;
+
+const PlaceholderProgram = React.memo(({ channelId, vpLeft, vpRight, rowHeight }) => {
+  return (
+    <>
+      {Array.from({ length: TOTAL_PLACEHOLDERS }).map(
+        (_, placeholderIndex) => {
+          const left = placeholderIndex * PLACEHOLDER_BLOCK_WIDTH;
+          if (left + PLACEHOLDER_BLOCK_WIDTH < vpLeft || left > vpRight) return null;
+          return (
+            <Box
+              key={`placeholder-${channelId}-${placeholderIndex}`}
+              style={{
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              pos="absolute"
+              left={left}
+              top={0}
+              w={PLACEHOLDER_BLOCK_WIDTH}
+              h={rowHeight - 4}
+              bd={'1px dashed #2D3748'}
+              bdrs={4}
+              display={'flex'}
+              c="#4A5568"
+            >
+              <Text size="sm">No program data</Text>
+            </Box>
+          );
+        }
+      )}
+    </>
+  );
+});
+
 const GuideRow = React.memo(({ index, style, data }) => {
   const {
     filteredChannels,
     programsByChannelId,
-    expandedProgramId,
     rowHeights,
     logos,
     renderProgram,
@@ -38,11 +72,7 @@ const GuideRow = React.memo(({ index, style, data }) => {
   }
 
   const channelPrograms = programsByChannelId.get(channel.id) || [];
-  const rowHeight =
-    rowHeights[index] ??
-    (channelPrograms.some((program) => program.id === expandedProgramId)
-      ? EXPANDED_PROGRAM_HEIGHT
-      : PROGRAM_HEIGHT);
+  const rowHeight = rowHeights[index] ?? PROGRAM_HEIGHT;
 
   // Horizontal viewport culling — only render programs whose pixel range
   // overlaps the visible scroll window (plus a buffer to avoid pop-in).
@@ -60,42 +90,6 @@ const GuideRow = React.memo(({ index, style, data }) => {
     return leftPx + widthPx > vpLeft && leftPx < vpRight;
   });
 
-  const PlaceholderProgram = () => {
-    // Only render placeholder blocks that overlap the viewport
-    const totalPlaceholders = Math.ceil(24 / 2);
-    const blockWidth = HOUR_WIDTH * 2;
-    return (
-      <>
-        {Array.from({ length: totalPlaceholders }).map(
-          (_, placeholderIndex) => {
-            const left = placeholderIndex * blockWidth;
-            if (left + blockWidth < vpLeft || left > vpRight) return null;
-            return (
-              <Box
-                key={`placeholder-${channel.id}-${placeholderIndex}`}
-                style={{
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                pos="absolute"
-                left={left}
-                top={0}
-                w={blockWidth}
-                h={rowHeight - 4}
-                bd={'1px dashed #2D3748'}
-                bdrs={4}
-                display={'flex'}
-                c="#4A5568"
-              >
-                <Text size="sm">No program data</Text>
-              </Box>
-            );
-          }
-        )}
-      </>
-    );
-  };
-
   return (
     <div
       data-testid="guide-row"
@@ -111,111 +105,118 @@ const GuideRow = React.memo(({ index, style, data }) => {
         h={'100%'}
         pos="relative"
       >
-        <Box
-          className="channel-logo"
-          style={{
-            flexShrink: 0,
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: '#18181B',
-            borderRight: '1px solid #27272A',
-            borderBottom: '1px solid #27272A',
-            boxShadow: '2px 0 5px rgba(0,0,0,0.2)',
-            zIndex: 30,
-            transition: 'height 0.2s ease',
-            cursor: 'pointer',
-          }}
-          w={CHANNEL_WIDTH}
-          miw={CHANNEL_WIDTH}
-          display={'flex'}
-          left={0}
-          h={'100%'}
-          pos="relative"
-          onClick={(event) => handleLogoClick(channel, event)}
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
+        <Tooltip
+          label={channel.name}
+          position="right"
+          withArrow
+          openDelay={400}
+          events={{ hover: true, focus: false, touch: false }}
         >
-          {hovered && (
+          <Box
+            className="channel-logo"
+            style={{
+              flexShrink: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#18181B',
+              borderRight: '1px solid #27272A',
+              borderBottom: '1px solid #27272A',
+              boxShadow: '2px 0 5px rgba(0,0,0,0.2)',
+              zIndex: 30,
+              transition: 'height 0.2s ease',
+              cursor: 'pointer',
+            }}
+            w={CHANNEL_WIDTH}
+            miw={CHANNEL_WIDTH}
+            display={'flex'}
+            left={0}
+            h={'100%'}
+            pos="relative"
+            onClick={(event) => handleLogoClick(channel, event)}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            {hovered && (
+              <Flex
+                align="center"
+                justify="center"
+                style={{
+                  backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                  zIndex: 10,
+                  animation: 'fadeIn 0.2s',
+                }}
+                pos="absolute"
+                top={0}
+                left={0}
+                right={0}
+                bottom={0}
+                w={'100%'}
+                h={'100%'}
+              >
+                <Play size={32} color="#fff" fill="#fff" />
+              </Flex>
+            )}
+
             <Flex
               align="center"
               justify="center"
               style={{
-                backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                zIndex: 10,
-                animation: 'fadeIn 0.2s',
+                boxSizing: 'border-box',
+                zIndex: 5,
               }}
-              pos="absolute"
-              top={0}
-              left={0}
-              right={0}
-              bottom={0}
               w={'100%'}
               h={'100%'}
-            >
-              <Play size={32} color="#fff" fill="#fff" />
-            </Flex>
-          )}
-
-          <Flex
-            direction="column"
-            align="center"
-            justify="space-between"
-            style={{
-              boxSizing: 'border-box',
-              zIndex: 5,
-            }}
-            w={'100%'}
-            h={'100%'}
-            p={'4px'}
-            pos="relative"
-          >
-            <Box
-              style={{
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-              }}
-              w={'100%'}
-              h={`${rowHeight - 32}px`}
-              display={'flex'}
               p={'4px'}
-              mb={'4px'}
+              pos="relative"
             >
-              <img
-                src={logos[channel.logo_id]?.cache_url || logo}
-                alt={channel.name}
+              <Box
                 style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  overflow: 'hidden',
+                  backgroundColor: 'rgba(255,255,255,0.09)',
+                  borderRadius: 6,
                 }}
-              />
-            </Box>
+                w={'100%'}
+                h={`${rowHeight - 12}px`}
+                display={'flex'}
+                p={'4px 6px 14px 6px'}
+              >
+                <img
+                  src={logos[channel.logo_id]?.cache_url || logo}
+                  alt={channel.name}
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    filter: 'drop-shadow(0 0 3px rgba(255,255,255,0.15))',
+                  }}
+                />
+              </Box>
 
-            <Text
-              size="sm"
-              weight={600}
-              style={{
-                transform: 'translateX(-50%)',
-                backgroundColor: '#18181B',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-              pos="absolute"
-              bottom={4}
-              left={'50%'}
-              p={'2px 8px'}
-              bdrs={4}
-              fz={'0.85em'}
-              bd={'1px solid #27272A'}
-              h={'24px'}
-              display={'flex'}
-              miw={'36px'}
-            >
-              {channel.channel_number || '-'}
-            </Text>
-          </Flex>
-        </Box>
+              <Text
+                size="xs"
+                fw={600}
+                style={{
+                  backgroundColor: '#18181B',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 6,
+                }}
+                pos="absolute"
+                bottom={6}
+                right={6}
+                p={'1px 4px'}
+                bd={'1px solid #27272A'}
+                h={'20px'}
+                display={'flex'}
+                fz={'0.75em'}
+              >
+                {channel.channel_number || '-'}
+              </Text>
+            </Flex>
+          </Box>
+        </Tooltip>
 
         <Box
           style={{
@@ -231,7 +232,12 @@ const GuideRow = React.memo(({ index, style, data }) => {
               renderProgram(program, undefined, channel)
             )
           ) : channelPrograms.length > 0 ? null : (
-            <PlaceholderProgram />
+            <PlaceholderProgram
+              channelId={channel.id}
+              vpLeft={vpLeft}
+              vpRight={vpRight}
+              rowHeight={rowHeight}
+            />
           )}
         </Box>
       </Box>
