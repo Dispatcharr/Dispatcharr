@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import { notifications } from '@mantine/notifications';
+import API from '../../api';
 import {
   Paper,
   Title,
@@ -35,6 +36,9 @@ const LoginForm = () => {
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [oidcProviders, setOidcProviders] = useState([]);
+  const [oidcLoading, setOidcLoading] = useState(null);
+  const closedTimerRef = useRef(null);
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -57,9 +61,98 @@ const LoginForm = () => {
   };
 
   useEffect(() => {
-    // Fetch version info using the settings store (will skip if already loaded)
     fetchVersion();
   }, [fetchVersion]);
+
+  useEffect(() => {
+    return () => {
+      if (closedTimerRef.current) clearInterval(closedTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    API.getOIDCProviders().then((providers) => {
+      if (Array.isArray(providers)) setOidcProviders(providers);
+    });
+  }, []);
+
+  const handleOIDCLogin = async (provider) => {
+    setOidcLoading(provider.slug);
+    try {
+      const redirectUri = `${window.location.origin}/oidc/callback`;
+      const data = await API.getOIDCAuthorizeUrl(provider.slug, redirectUri);
+      if (data?.authorize_url && data?.state) {
+        // Persist the state, redirect URI, and opener origin so OidcPopupHandler
+        // can read them after the IdP redirects back into the popup window.
+        localStorage.setItem('oidc_state', data.state);
+        localStorage.setItem('oidc_redirect_uri', redirectUri);
+        localStorage.setItem('oidc_opener_origin', window.location.origin);
+        localStorage.setItem('oidc_popup', 'true');
+
+        // Open a centered popup for the IdP authorization page.
+        const w = 500;
+        const h = 650;
+        const left = window.screenX + (window.outerWidth - w) / 2;
+        const top = window.screenY + (window.outerHeight - h) / 2;
+        const popup = window.open(
+          data.authorize_url,
+          'oidc_login',
+          `width=${w},height=${h},left=${left},top=${top},popup=yes`
+        );
+
+        if (!popup || popup.closed) {
+          // Popup was blocked by the browser — fall back to a full-page redirect.
+          localStorage.setItem('oidc_popup', 'false');
+          window.location.href = data.authorize_url;
+          return;
+        }
+
+        // Listen for the postMessage sent by OidcPopupHandler once it has
+        // exchanged the authorization code for tokens.
+        const handleMessage = async (event) => {
+          // Reject messages from any origin other than our own app.
+          if (event.origin !== window.location.origin) return;
+          if (event.data?.type !== 'oidc_result') return;
+
+          window.removeEventListener('message', handleMessage);
+          clearInterval(closedTimerRef.current);
+          closedTimerRef.current = null;
+          setOidcLoading(null);
+
+          const { tokens, error } = event.data;
+          if (error) {
+            notifications.show({
+              title: 'OIDC Login Failed',
+              message: error,
+              color: 'red',
+              autoClose: 8000,
+            });
+            return;
+          }
+          if (tokens?.access) {
+            const handleOIDCTokens = useAuthStore.getState().handleOIDCTokens;
+            await handleOIDCTokens(tokens);
+            await initData();
+          }
+        };
+
+        window.addEventListener('message', handleMessage);
+
+        // Safety net: clean up if user closes the popup without completing login.
+        closedTimerRef.current = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(closedTimerRef.current);
+            closedTimerRef.current = null;
+            window.removeEventListener('message', handleMessage);
+            setOidcLoading(null);
+          }
+        }, 500);
+      }
+    } catch (e) {
+      console.error('OIDC login error:', e);
+      setOidcLoading(null);
+    }
+  };
 
   useEffect(() => {
     // Load saved username if it exists
@@ -259,6 +352,28 @@ const LoginForm = () => {
             >
               {isLoading ? 'Logging you in...' : 'Login'}
             </Button>
+
+            {oidcProviders.length > 0 && (
+              <>
+                <Divider label="or sign in with" labelPosition="center" />
+                {oidcProviders.map((provider) => (
+                  <Button
+                    key={provider.slug}
+                    fullWidth
+                    variant="outline"
+                    loading={oidcLoading === provider.slug}
+                    disabled={!!oidcLoading}
+                    onClick={() => handleOIDCLogin(provider)}
+                    style={{
+                      borderColor: provider.button_color || '#4285F4',
+                      color: provider.button_color || '#4285F4',
+                    }}
+                  >
+                    {provider.button_text || `Sign in with ${provider.name}`}
+                  </Button>
+                ))}
+              </>
+            )}
           </Stack>
         </form>
 

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import Group, Permission
-from .models import User
+from .models import User, OIDCProvider
 from apps.channels.models import ChannelProfile
 
 
@@ -29,6 +29,10 @@ class UserSerializer(serializers.ModelSerializer):
         queryset=ChannelProfile.objects.all(), many=True, required=False
     )
     api_key = serializers.CharField(read_only=True, allow_null=True)
+    oidc_provider_name = serializers.SerializerMethodField()
+
+    def get_oidc_provider_name(self, obj):
+        return obj.oidc_provider.name if obj.oidc_provider_id else None
 
     class Meta:
         model = User
@@ -48,6 +52,7 @@ class UserSerializer(serializers.ModelSerializer):
             "date_joined",
             "first_name",
             "last_name",
+            "oidc_provider_name",
         ]
 
     def create(self, validated_data):
@@ -77,3 +82,48 @@ class UserSerializer(serializers.ModelSerializer):
             instance.channel_profiles.set(channel_profiles)
 
         return instance
+
+
+class OIDCProviderPublicSerializer(serializers.ModelSerializer):
+    """Public serializer – only exposes info needed on the login page."""
+
+    class Meta:
+        model = OIDCProvider
+        fields = ["id", "name", "slug", "button_text", "button_color"]
+
+
+class OIDCProviderSerializer(serializers.ModelSerializer):
+    """Admin serializer – full CRUD."""
+
+    class Meta:
+        model = OIDCProvider
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "issuer_url",
+            "client_id",
+            "client_secret",
+            "scopes",
+            "is_enabled",
+            "auto_create_users",
+            "default_user_level",
+            "claim_mapping",
+            "group_claim",
+            "group_to_level_mapping",
+            "button_text",
+            "button_color",
+            "allowed_redirect_uris",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+        extra_kwargs = {
+            "client_secret": {"write_only": True},
+        }
+
+
+class OIDCCallbackSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    state = serializers.CharField()
+    redirect_uri = serializers.URLField()

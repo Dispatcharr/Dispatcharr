@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OIDC/SSO provider support: Administrators can now configure one or more OpenID Connect identity providers (e.g. Authentik, Keycloak, Google) in Settings → SSO Providers. Each provider supports discovery via `.well-known/openid-configuration`, configurable scopes, auto-account creation, group-to-role mapping, and a custom login button with label and color. Login uses a popup flow (with redirect fallback when popups are blocked). Users authenticated via SSO are identified with an SSO badge in the Users table. (Fixes #806)
+
 ## [0.20.2] - 2026-03-03
 
 ### Security

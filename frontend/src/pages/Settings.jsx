@@ -38,6 +38,9 @@ const DvrSettingsForm = React.lazy(
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
 );
+const OidcSettingsForm = React.lazy(
+  () => import('../components/forms/settings/OidcSettingsForm.jsx')
+);
 
 const SettingsPage = () => {
   const authUser = useAuthStore((s) => s.user);
@@ -177,6 +180,19 @@ const SettingsPage = () => {
                   <ErrorBoundary>
                     <Suspense fallback={<Loader />}>
                       <BackupManager active={accordianValue === 'backups'} />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="oidc-settings">
+                <AccordionControl>OIDC / SSO Providers</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <OidcSettingsForm
+                        active={accordianValue === 'oidc-settings'}
+                      />
                     </Suspense>
                   </ErrorBoundary>
                 </AccordionPanel>

@@ -8,12 +8,14 @@ import useWarningsStore from '../../store/warnings';
 import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff } from 'lucide-react';
 import {
   ActionIcon,
+  Badge,
   Box,
   Text,
   Paper,
   Button,
   Flex,
   Group,
+  Tooltip,
   useMantineTheme,
   LoadingOverlay,
   Stack,
@@ -151,16 +153,25 @@ const UsersTable = () => {
         header: 'Username',
         accessorKey: 'username',
         size: 150,
-        cell: ({ getValue }) => (
-          <Box
-            style={{
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {getValue()}
-          </Box>
+        cell: ({ getValue, row }) => (
+          <Group gap={6} wrap="nowrap">
+            <Box
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {getValue()}
+            </Box>
+            {row.original.oidc_provider_name && (
+              <Tooltip label={`SSO: ${row.original.oidc_provider_name}`} withArrow>
+                <Badge size="xs" variant="light" color="blue" style={{ flexShrink: 0 }}>
+                  SSO
+                </Badge>
+              </Tooltip>
+            )}
+          </Group>
         ),
       },
       {
