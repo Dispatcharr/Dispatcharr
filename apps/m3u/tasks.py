@@ -561,13 +561,35 @@ def process_groups(account, groups, scan_start_time=None):
     account_custom_props = account.custom_properties or {}
     auto_enable_new_groups_live = account_custom_props.get("auto_enable_new_groups_live", True)
 
-    # Separate existing groups from groups that need to be created
+    # Build xc_id -> ChannelGroupM3UAccount mapping for this account.
+    # This allows matching groups by their stable provider ID even if
+    # the user has renamed the ChannelGroup in the UI.
+    existing_rels_by_xc_id = {}
+    for rel in ChannelGroupM3UAccount.objects.filter(
+        m3u_account=account
+    ).select_related('channel_group'):
+        xc_id = (rel.custom_properties or {}).get('xc_id')
+        if xc_id:
+            existing_rels_by_xc_id[str(xc_id)] = rel
+
+    # Separate existing groups from groups that need to be created.
+    # Match by xc_id first (handles renamed groups), then fall back to name.
     existing_group_objs = []
     groups_to_create = []
+    # Maps provider group_name -> actual ChannelGroup object (may differ if renamed)
+    provider_to_group = {}
 
     for group_name, custom_props in groups.items():
-        if group_name in existing_groups:
+        xc_id = custom_props.get("xc_id")
+        if xc_id and str(xc_id) in existing_rels_by_xc_id:
+            # Found by xc_id - reuse existing group even if renamed
+            rel = existing_rels_by_xc_id[str(xc_id)]
+            existing_group_objs.append(rel.channel_group)
+            provider_to_group[group_name] = rel.channel_group
+        elif group_name in existing_groups:
+            # Fall back to name-based matching (standard M3U accounts without xc_id)
             existing_group_objs.append(existing_groups[group_name])
+            provider_to_group[group_name] = existing_groups[group_name]
         else:
             groups_to_create.append(ChannelGroup(name=group_name))
 
@@ -577,28 +599,38 @@ def process_groups(account, groups, scan_start_time=None):
         logger.info(f"Creating {len(groups_to_create)} new groups for account {account.id}")
         newly_created_group_objs = list(ChannelGroup.bulk_create_and_fetch(groups_to_create))
         logger.debug(f"Successfully created {len(newly_created_group_objs)} new groups")
+        for g in newly_created_group_objs:
+            provider_to_group[g.name] = g
 
     # Combine all groups
     all_group_objs = existing_group_objs + newly_created_group_objs
 
-    # Get existing relationships for this account
-    existing_relationships = {
-        rel.channel_group.name: rel
-        for rel in ChannelGroupM3UAccount.objects.filter(
-            m3u_account=account,
-            channel_group__name__in=groups.keys()
-        ).select_related('channel_group')
-    }
+    # Build existing relationships indexed by ChannelGroup id for reliable matching
+    # (group names may have been renamed by the user, so we can't match by name)
+    existing_relationships_by_group_id = {}
+    for rel in ChannelGroupM3UAccount.objects.filter(
+        m3u_account=account,
+        channel_group__in=all_group_objs
+    ).select_related('channel_group'):
+        existing_relationships_by_group_id[rel.channel_group_id] = rel
 
     relations_to_create = []
     relations_to_update = []
 
     for group in all_group_objs:
-        custom_props = groups.get(group.name, {})
+        # Look up custom_props by matching provider name to this group.
+        # group.name may be user-renamed, so find which provider name maps here.
+        custom_props = {}
+        for pname, pgroup in provider_to_group.items():
+            if pgroup.id == group.id:
+                custom_props = groups.get(pname, {})
+                break
+        if not custom_props:
+            custom_props = groups.get(group.name, {})
 
-        if group.name in existing_relationships:
+        if group.id in existing_relationships_by_group_id:
             # Update existing relationship if xc_id has changed (preserve other custom properties)
-            existing_rel = existing_relationships[group.name]
+            existing_rel = existing_relationships_by_group_id[group.id]
 
             # Get existing custom properties (now JSONB, no need to parse)
             existing_custom_props = existing_rel.custom_properties or {}
@@ -893,7 +925,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
         existing_streams = {
             s.stream_hash: s
             for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+                'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
             )
         }
 
@@ -909,7 +941,8 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     obj.custom_properties != stream_props["custom_properties"] or
                     obj.is_adult != stream_props["is_adult"] or
                     obj.stream_id != stream_props["stream_id"] or
-                    obj.stream_chno != stream_props["stream_chno"]
+                    obj.stream_chno != stream_props["stream_chno"] or
+                    obj.channel_group_id != stream_props["channel_group_id"]
                 )
 
                 if changed:
@@ -945,7 +978,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     # Simplified bulk update for better performance
                     Stream.objects.bulk_update(
                         streams_to_update,
-                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                        ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                         batch_size=150  # Smaller batch size for XC processing
                     )
 
@@ -1108,7 +1141,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     existing_streams = {
         s.stream_hash: s
         for s in Stream.objects.filter(stream_hash__in=stream_hashes.keys()).select_related('m3u_account').only(
-            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno'
+            'id', 'stream_hash', 'name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'last_seen', 'updated_at', 'm3u_account', 'stream_id', 'stream_chno', 'channel_group_id'
         )
     }
 
@@ -1124,7 +1157,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.custom_properties != stream_props["custom_properties"] or
                 obj.is_adult != stream_props["is_adult"] or
                 obj.stream_id != stream_props["stream_id"] or
-                obj.stream_chno != stream_props["stream_chno"]
+                obj.stream_chno != stream_props["stream_chno"] or
+                obj.channel_group_id != stream_props["channel_group_id"]
             )
 
             # Always update last_seen
@@ -1140,6 +1174,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 obj.is_adult = stream_props["is_adult"]
                 obj.stream_id = stream_props["stream_id"]
                 obj.stream_chno = stream_props["stream_chno"]
+                obj.channel_group_id = stream_props["channel_group_id"]
                 obj.updated_at = timezone.now()
 
             # Always mark as not stale since we saw it in this refresh
@@ -1162,7 +1197,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 # Update all streams in a single bulk operation
                 Stream.objects.bulk_update(
                     streams_to_update,
-                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno'],
+                    ['name', 'url', 'logo_url', 'tvg_id', 'custom_properties', 'is_adult', 'last_seen', 'updated_at', 'is_stale', 'stream_id', 'stream_chno', 'channel_group_id'],
                     batch_size=200
                 )
     except Exception as e:
