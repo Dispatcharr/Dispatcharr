@@ -914,7 +914,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
             h={'100%'}
             pos="relative"
             display={'flex'}
-            p={8}
+            px={8}
+            py={4}
             c={isPast ? '#a0aec0' : '#fff'}
           >
             <Box
