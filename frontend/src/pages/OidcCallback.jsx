@@ -4,11 +4,8 @@ import { Center, Loader, Stack, Text, Paper } from '@mantine/core';
 import useAuthStore from '../store/auth';
 import API from '../api';
 
-// Handles the OIDC authorization code callback in redirect mode.
-// This is the fallback path used when a popup could not be opened (e.g. blocked
-// by the browser). Popup mode is handled by OidcPopupHandler in main.jsx,
-// which runs before the router and never reaches this component.
-const OIDCCallback = () => {
+// Handles /oidc/callback when popup mode is unavailable.
+const OidcCallback = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const handleOIDCTokens = useAuthStore((s) => s.handleOIDCTokens);
@@ -25,10 +22,12 @@ const OIDCCallback = () => {
       const state = searchParams.get('state');
       const storedState = localStorage.getItem('oidc_state');
       const redirectUri = localStorage.getItem('oidc_redirect_uri');
+      const codeVerifier = localStorage.getItem('oidc_code_verifier');
 
       localStorage.removeItem('oidc_state');
       localStorage.removeItem('oidc_redirect_uri');
       localStorage.removeItem('oidc_popup');
+      localStorage.removeItem('oidc_code_verifier');
 
       const idpError = searchParams.get('error');
       if (idpError) {
@@ -40,12 +39,17 @@ const OIDCCallback = () => {
         return;
       }
       if (!storedState || state !== storedState) {
-        setError('State mismatch \u2013 possible CSRF attack. Please try again.');
+        setError('State mismatch - possible CSRF attack. Please try again.');
         return;
       }
 
       try {
-        const tokens = await API.oidcCallback({ code, state, redirect_uri: redirectUri });
+        const tokens = await API.oidcCallback({
+          code,
+          state,
+          redirect_uri: redirectUri,
+          code_verifier: codeVerifier,
+        });
         if (tokens?.access) {
           await handleOIDCTokens(tokens);
           await initData();
@@ -59,8 +63,7 @@ const OIDCCallback = () => {
     };
 
     processCallback();
-    // searchParams and navigate are stable across renders; omitting them from
-    // the dependency array is intentional to prevent double-execution.
+    // Intentionally run once; dependency updates can re-trigger callback flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -101,4 +104,4 @@ const OIDCCallback = () => {
   );
 };
 
-export default OIDCCallback;
+export default OidcCallback;

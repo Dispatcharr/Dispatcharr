@@ -4,25 +4,23 @@ from .models import User, OIDCProvider
 from apps.channels.models import ChannelProfile
 
 
-# 🔹 Fix for Permission serialization
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Permission
         fields = ["id", "name", "codename"]
 
 
-# 🔹 Fix for Group serialization
 class GroupSerializer(serializers.ModelSerializer):
+    # PrimaryKeyRelatedField avoids DRF m2m serialization issues.
     permissions = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Permission.objects.all()
-    )  # ✅ Fixes ManyToManyField `_meta` error
+    )
 
     class Meta:
         model = Group
         fields = ["id", "name", "permissions"]
 
 
-# 🔹 Fix for User serialization
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     channel_profiles = serializers.PrimaryKeyRelatedField(
@@ -85,7 +83,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class OIDCProviderPublicSerializer(serializers.ModelSerializer):
-    """Public serializer – only exposes info needed on the login page."""
+    """Public serializer with login-page fields."""
 
     class Meta:
         model = OIDCProvider
@@ -93,7 +91,7 @@ class OIDCProviderPublicSerializer(serializers.ModelSerializer):
 
 
 class OIDCProviderSerializer(serializers.ModelSerializer):
-    """Admin serializer – full CRUD."""
+    """Admin serializer."""
 
     class Meta:
         model = OIDCProvider
@@ -124,6 +122,9 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
 
 
 class OIDCCallbackSerializer(serializers.Serializer):
+    """Validates the POST body sent to the OIDC callback endpoint."""
     code = serializers.CharField()
     state = serializers.CharField()
     redirect_uri = serializers.URLField()
+    # PKCE verifier is sent only when the provider supports S256.
+    code_verifier = serializers.CharField(required=False, allow_blank=True, allow_null=True)

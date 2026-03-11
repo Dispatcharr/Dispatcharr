@@ -259,9 +259,9 @@ const ProviderForm = ({ provider, onSave, onCancel, onDelete }) => {
         <Divider label="Security" labelPosition="center" />
 
         <TextInput
-          label="Allowed Redirect URIs"
-          description="Comma-separated URIs allowed for OAuth redirects. If empty, only the current application origin is allowed."
-          placeholder="https://app.example.com, https://other.example.com"
+          label="Allowed Redirect Hosts"
+          description="Comma-separated hosts (host:port recommended) or full URLs allowed for OAuth redirects. If empty, same-host+port fallback is used."
+          placeholder="localhost:9191, app.example.com:443, [::1]:9191"
           {...form.getInputProps('allowed_redirect_uris')}
         />
 

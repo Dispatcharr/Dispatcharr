@@ -71,19 +71,6 @@ DATABASE_CONN_MAX_AGE = (
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
 
-# Cache settings - add caching for EPG operations
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "dispatcharr-epg-cache",
-        "TIMEOUT": 3600,  # 1 hour cache timeout
-        "OPTIONS": {
-            "MAX_ENTRIES": 10000,
-            "CULL_FREQUENCY": 3,  # Purge 1/3 of entries when max is reached
-        },
-    }
-}
-
 # Timeouts for external connections
 REQUESTS_TIMEOUT = 30  # Seconds for external API requests
 
@@ -299,6 +286,35 @@ REDIS_SOCKET_KEEPALIVE = True  # Enable socket keepalive
 REDIS_RETRY_ON_TIMEOUT = True  # Retry on timeout
 REDIS_MAX_RETRIES = 10  # Maximum number of retries
 REDIS_RETRY_INTERVAL = 1  # Initial retry interval in seconds
+
+# Shared cache is required for OIDC replay protection and multi-worker safety.
+# Operators can opt back into locmem for local-only development.
+if os.environ.get("DISPATCHARR_CACHE_BACKEND", "").lower() == "locmem":
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "dispatcharr-cache",
+            "TIMEOUT": 3600,  # 1 hour cache timeout
+            "OPTIONS": {
+                "MAX_ENTRIES": 10000,
+                "CULL_FREQUENCY": 3,
+            },
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 3600,  # 1 hour cache timeout
+            "OPTIONS": {
+                "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT,
+                "socket_timeout": REDIS_SOCKET_TIMEOUT,
+                "health_check_interval": REDIS_HEALTH_CHECK_INTERVAL,
+                "retry_on_timeout": REDIS_RETRY_ON_TIMEOUT,
+            },
+        }
+    }
 
 # Proxy Settings
 PROXY_SETTINGS = {

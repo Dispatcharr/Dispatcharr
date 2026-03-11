@@ -7,7 +7,7 @@ import {
 } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Login from './pages/Login';
-import OIDCCallback from './pages/OIDCCallback';
+import OidcCallback from './pages/OidcCallback';
 import Channels from './pages/Channels';
 import ContentSources from './pages/ContentSources';
 import Guide from './pages/Guide';
@@ -170,7 +170,7 @@ const App = () => {
                     )}
                     <Route
                       path="/oidc/callback"
-                      element={<OIDCCallback />}
+                      element={<OidcCallback />}
                     />
                     <Route
                       path="*"

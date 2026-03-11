@@ -80,8 +80,32 @@ const LoginForm = () => {
     setOidcLoading(provider.slug);
     try {
       const redirectUri = `${window.location.origin}/oidc/callback`;
-      const data = await API.getOIDCAuthorizeUrl(provider.slug, redirectUri);
+
+      // Generate PKCE code_verifier (32 random bytes → base64url) and
+      // code_challenge (SHA-256 of verifier → base64url) per RFC 7636.
+      const verifierBytes = new Uint8Array(32);
+      crypto.getRandomValues(verifierBytes);
+      const codeVerifier = btoa(String.fromCharCode(...verifierBytes))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+      const challengeBuffer = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(codeVerifier)
+      );
+      const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(challengeBuffer)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+
+      const data = await API.getOIDCAuthorizeUrl(provider.slug, redirectUri, codeChallenge);
       if (data?.authorize_url && data?.state) {
+        // Only persist the PKCE verifier when the backend confirmed the
+        // provider supports S256 (code_challenge_methods_supported in
+        // discovery). Sending a verifier to a non-PKCE provider causes a 400.
+        if (data.pkce_supported) {
+          localStorage.setItem('oidc_code_verifier', codeVerifier);
+        }
         // Persist the state, redirect URI, and opener origin so OidcPopupHandler
         // can read them after the IdP redirects back into the popup window.
         localStorage.setItem('oidc_state', data.state);
@@ -144,6 +168,12 @@ const LoginForm = () => {
             clearInterval(closedTimerRef.current);
             closedTimerRef.current = null;
             window.removeEventListener('message', handleMessage);
+            // Clean up all OIDC localStorage keys set for this flow.
+            localStorage.removeItem('oidc_state');
+            localStorage.removeItem('oidc_redirect_uri');
+            localStorage.removeItem('oidc_popup');
+            localStorage.removeItem('oidc_opener_origin');
+            localStorage.removeItem('oidc_code_verifier');
             setOidcLoading(null);
           }
         }, 500);

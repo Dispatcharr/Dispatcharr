@@ -1,5 +1,32 @@
+import base64
+import hashlib
+
 from django.db import migrations, models
 import django.db.models.deletion
+
+
+def encrypt_existing_secrets(apps, schema_editor):
+    """Encrypt plaintext client_secret values created before this migration."""
+    try:
+        from cryptography.fernet import Fernet
+        from django.conf import settings
+
+        raw = hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+        f = Fernet(base64.urlsafe_b64encode(raw))
+    except Exception:
+        # cryptography unavailable; values will be encrypted on next save().
+        return
+
+    OIDCProvider = apps.get_model("accounts", "OIDCProvider")
+    for provider in OIDCProvider.objects.all():
+        secret = provider.client_secret
+        if secret and not secret.startswith("enc$"):
+            encrypted = "enc$" + f.encrypt(secret.encode()).decode()
+            OIDCProvider.objects.filter(pk=provider.pk).update(client_secret=encrypted)
+
+
+def noop(apps, schema_editor):
+    pass
 
 
 class Migration(migrations.Migration):
@@ -43,7 +70,8 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("client_id", models.CharField(max_length=512)),
-                ("client_secret", models.CharField(max_length=512)),
+                # Size allows for Fernet overhead.
+                ("client_secret", models.CharField(max_length=1024)),
                 (
                     "scopes",
                     models.CharField(
@@ -136,4 +164,6 @@ class Migration(migrations.Migration):
                 to="accounts.oidcprovider",
             ),
         ),
+        # Encrypt plaintext secrets already present in the DB.
+        migrations.RunPython(encrypt_existing_secrets, noop),
     ]

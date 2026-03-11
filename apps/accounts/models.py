@@ -1,6 +1,6 @@
-# apps/accounts/models.py
 from django.db import models
 from django.contrib.auth.models import AbstractUser, Permission, UserManager
+from .encryption import encrypt_secret, decrypt_secret
 
 
 class CustomUserManager(UserManager):
@@ -62,7 +62,8 @@ class OIDCProvider(models.Model):
     slug = models.SlugField(max_length=255, unique=True, help_text="URL-safe identifier")
     issuer_url = models.URLField(help_text="OIDC Issuer URL (e.g. https://accounts.google.com)")
     client_id = models.CharField(max_length=512)
-    client_secret = models.CharField(max_length=512)
+    # Size allows for Fernet overhead on top of the raw secret.
+    client_secret = models.CharField(max_length=1024)
     scopes = models.CharField(max_length=512, default="openid profile email")
     is_enabled = models.BooleanField(default=True)
     auto_create_users = models.BooleanField(
@@ -107,7 +108,19 @@ class OIDCProvider(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        # Keep client_secret encrypted at rest.
+        if self.client_secret:
+            self.client_secret = encrypt_secret(self.client_secret)
+        super().save(*args, **kwargs)
+
+    @property
+    def decrypted_client_secret(self) -> str:
+        """Return the plaintext client secret, decrypting on access."""
+        return decrypt_secret(self.client_secret or "")
+
     @property
     def discovery_url(self):
+        """OIDC discovery document URL."""
         issuer = self.issuer_url.rstrip("/")
         return f"{issuer}/.well-known/openid-configuration"

@@ -48,6 +48,17 @@ const errorNotification = (message, error) => {
   throw error;
 };
 
+const parseApiErrorMessage = (error) => {
+  const body = error?.body;
+  if (typeof body === 'string') return body;
+  if (body && typeof body === 'object') {
+    if (typeof body.error === 'string') return body.error;
+    if (typeof body.detail === 'string') return body.detail;
+    if (typeof body.message === 'string') return body.message;
+  }
+  return error?.message || 'Unknown error';
+};
+
 const request = async (url, options = {}) => {
   if (
     options.body &&
@@ -202,23 +213,44 @@ export default class API {
     }
   }
 
-  static async getOIDCAuthorizeUrl(slug, redirectUri) {
+  static async getOIDCAuthorizeUrl(slug, redirectUri, codeChallenge) {
     try {
+      const params = new URLSearchParams({ redirect_uri: redirectUri });
+      if (codeChallenge) {
+        params.set('code_challenge', codeChallenge);
+        params.set('code_challenge_method', 'S256');
+      }
       return await request(
-        `${host}/api/accounts/oidc/authorize/${slug}/?redirect_uri=${encodeURIComponent(redirectUri)}`,
+        `${host}/api/accounts/oidc/authorize/${slug}/?${params.toString()}`,
         { auth: false, method: 'GET' }
       );
     } catch (e) {
-      errorNotification('Failed to start OIDC login', e);
+      const parsedMessage = parseApiErrorMessage(e);
+      errorNotification('Failed to start OIDC login', {
+        ...e,
+        body: parsedMessage,
+        message: parsedMessage,
+      });
     }
   }
 
-  static async oidcCallback({ code, state, redirect_uri }) {
-    return await request(`${host}/api/accounts/oidc/callback/`, {
-      auth: false,
-      method: 'POST',
-      body: { code, state, redirect_uri },
-    });
+  static async oidcCallback({ code, state, redirect_uri, code_verifier }) {
+    try {
+      const body = { code, state, redirect_uri };
+      if (code_verifier) body.code_verifier = code_verifier;
+      return await request(`${host}/api/accounts/oidc/callback/`, {
+        auth: false,
+        method: 'POST',
+        body,
+      });
+    } catch (e) {
+      const parsedMessage = parseApiErrorMessage(e);
+      errorNotification('OIDC authentication failed', {
+        ...e,
+        body: parsedMessage,
+        message: parsedMessage,
+      });
+    }
   }
 
   static async getOIDCManagedProviders() {

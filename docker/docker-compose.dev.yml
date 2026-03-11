@@ -46,8 +46,10 @@ services:
   redis-commander:
     image: rediscommander/redis-commander:latest
     restart: unless-stopped
+    depends_on:
+      - dispatcharr
     environment:
-      - REDIS_HOSTS=dispatcharr:dispatcharr:6379:0
+      - REDIS_HOSTS=local:dispatcharr:6379:0
       - TRUST_PROXY=true
       - ADDRESS=0.0.0.0
     ports:
