@@ -123,7 +123,7 @@ Here's how you can join the party:
 
 - Follow our coding style and best practices.
 - Be respectful, helpful, and open-minded.
-- Respect the **CC BY-NC-SA license**.
+- Respect the **GNU AGPL v3.0 license**.
 
 > Whether it's writing docs, squashing bugs, or building new features, your contribution matters! 🙋
 
@@ -152,13 +152,9 @@ A huge thank you to all the incredible open-source projects and libraries that p
 
 ## ⚖️ License
 
-> Dispatcharr is licensed under **CC BY-NC-SA 4.0**:
+> Dispatcharr is licensed under **GNU AGPL v3.0**:
 
-- **BY**: Give credit where credit's due.
-- **NC**: No commercial use.
-- **SA**: Share alike if you remix.
-
-For full license details, see [LICENSE](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+For full license details, see [LICENSE](https://www.gnu.org/licenses/agpl-3.0.html).
 
 ---
 
@@ -170,3 +166,7 @@ Have a question? Want to suggest a feature? Just want to say hi?\
 ---
 
 ### 🚀 _Happy Streaming! The Dispatcharr Team_
+
+Dispatcharr is a trademark of the Dispatcharr project.
+
+Use of the Dispatcharr name or logo requires permission from the maintainers.
