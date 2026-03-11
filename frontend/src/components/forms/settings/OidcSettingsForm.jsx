@@ -100,7 +100,7 @@ const ProviderForm = ({ provider, onSave, onCancel, onDelete }) => {
           groupMapping[row.group.trim()] = parseInt(row.level, 10);
         }
       }
-      const { group_mappings, ...rest } = values;
+      const { group_mappings: _groupMappings, ...rest } = values;
       const payload = {
         ...rest,
         default_user_level: parseInt(values.default_user_level, 10),

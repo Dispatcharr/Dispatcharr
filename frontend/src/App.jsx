@@ -43,7 +43,6 @@ const App = () => {
   const [open, setOpen] = useState(true);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
-  const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);

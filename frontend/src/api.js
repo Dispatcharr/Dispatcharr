@@ -31,7 +31,7 @@ const errorNotification = (message, error) => {
       } else {
         errorMessage = `${error.status} - ${error.body}`;
       }
-    } catch (e) {
+    } catch {
       errorMessage = `${error.status} - ${String(error.body)}`;
     }
   } else {
@@ -88,7 +88,7 @@ const request = async (url, options = {}) => {
 
     try {
       errorBody = JSON.parse(errorBody);
-    } catch (e) {
+    } catch {
       // If parsing fails, leave errorBody as the raw text
     }
 
@@ -102,7 +102,7 @@ const request = async (url, options = {}) => {
   try {
     const retval = await response.json();
     return retval;
-  } catch (e) {
+  } catch {
     return '';
   }
 };
@@ -345,15 +345,12 @@ export default class API {
       const apiCalls = [];
       for (let page = 2; page <= totalPages; page++) {
         apiCalls.push(
-          new Promise(async (resolve) => {
+          (async () => {
             const response = await request(
               `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
             );
-
-            return resolve(
-              Array.isArray(response?.results) ? response.results : []
-            );
-          })
+            return Array.isArray(response?.results) ? response.results : [];
+          })()
         );
       }
 
@@ -1757,7 +1754,7 @@ export default class API {
   }
 
   static async updateM3UFilter(accountId, filterId, values) {
-    const { id, ...payload } = values;
+    const payload = { ...values };
 
     try {
       await request(
@@ -1804,16 +1801,12 @@ export default class API {
   }
 
   static async getBackupStatus(taskId, token = null) {
-    try {
-      let url = `${host}/api/backups/status/${taskId}/`;
-      if (token) {
-        url += `?token=${encodeURIComponent(token)}`;
-      }
-      const response = await request(url, { auth: !token });
-      return response;
-    } catch (e) {
-      throw e;
+    let url = `${host}/api/backups/status/${taskId}/`;
+    if (token) {
+      url += `?token=${encodeURIComponent(token)}`;
     }
+    const response = await request(url, { auth: !token });
+    return response;
   }
 
   static async waitForBackupTask(taskId, onProgress, token = null) {
@@ -1821,20 +1814,16 @@ export default class API {
     const maxAttempts = 300; // Max 10 minutes (300 * 2s)
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        const status = await API.getBackupStatus(taskId, token);
+      const status = await API.getBackupStatus(taskId, token);
 
-        if (onProgress) {
-          onProgress(status);
-        }
+      if (onProgress) {
+        onProgress(status);
+      }
 
-        if (status.state === 'completed') {
-          return status.result;
-        } else if (status.state === 'failed') {
-          throw new Error(status.error || 'Task failed');
-        }
-      } catch (e) {
-        throw e;
+      if (status.state === 'completed') {
+        return status.result;
+      } else if (status.state === 'failed') {
+        throw new Error(status.error || 'Task failed');
       }
 
       // Wait before next poll
@@ -1894,14 +1883,10 @@ export default class API {
 
   static async getDownloadToken(filename) {
     // Get a download token from the server
-    try {
-      const response = await request(
-        `${host}/api/backups/${encodeURIComponent(filename)}/download-token/`
-      );
-      return response.token;
-    } catch (e) {
-      throw e;
-    }
+    const response = await request(
+      `${host}/api/backups/${encodeURIComponent(filename)}/download-token/`
+    );
+    return response.token;
   }
 
   static async downloadBackup(filename) {
@@ -2094,7 +2079,7 @@ export default class API {
   }
 
   static async checkSetting(values) {
-    const { id, ...payload } = values;
+    const payload = { ...values };
 
     try {
       const response = await request(`${host}/api/core/settings/check/`, {
@@ -2139,6 +2124,7 @@ export default class API {
   }
 
   static async getChannelStats(uuid = null) {
+    void uuid;
     try {
       const response = await request(`${host}/proxy/ts/status`);
 
@@ -2342,7 +2328,7 @@ export default class API {
 
         try {
           errorBody = JSON.parse(errorBody);
-        } catch (e) {
+        } catch {
           // If parsing fails, leave errorBody as the raw text
         }
 
@@ -2766,7 +2752,9 @@ export default class API {
       // Optimistically remove locally for instant UI update
       try {
         useChannelsStore.getState().removeRecording(id);
-      } catch {}
+      } catch (e) {
+        void e;
+      }
     } catch (e) {
       errorNotification(`Failed to delete recording ${id}`, e);
     }
@@ -3004,6 +2992,7 @@ export default class API {
           useUsersStore.getState().updateUser(response.user);
         }
       } catch (e) {
+        void e;
         // ignore store update errors
       }
 
@@ -3031,6 +3020,7 @@ export default class API {
           useUsersStore.getState().updateUser(response.user);
         }
       } catch (e) {
+        void e;
         // ignore store update errors
       }
 
