@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Container startup failure when `PUID`/`PGID` is set, caused by `/data/db` ownership conflicts between the `postgres` system user (UID 102) and the configured PUID/PGID. PostgreSQL now runs as the PUID/PGID user in AIO mode, eliminating all `chown`-to-UID-102 operations and unifying `/data` ownership. (Fixes #1078)
+  - Existing installations where PUID/PGID differs from the current `/data/db` owner are migrated automatically on first startup; a sentinel file prevents redundant recursive `chown` on subsequent boots.
+  - PUID/PGID auto-detected from existing data ownership when not explicitly set, avoiding cross-UID `chown` failures on restricted filesystems (NFS `root_squash`, CIFS).
+  - PUID/PGID validated as positive non-zero integers before any user/group operations.
+  - UID collisions with the `postgres` system user (e.g. PUID=102) are now handled gracefully.
 - **Security**: Any authenticated user could self-escalate privileges by sending `user_level`, `is_staff`, or `is_superuser` in a `PATCH /api/accounts/users/me/` request. The `/me/` endpoint now enforces an allowlist (`custom_properties`, `first_name`, `last_name`, `email`, `password`); any other fields return HTTP 400. Privilege-sensitive fields can only be changed via the admin-only `PATCH /api/accounts/users/{id}/` endpoint.
 - Double error notification when saving user preferences: `API.updateMe` was catching errors internally and displaying a notification before re-throwing, causing callers to display a second notification for the same failure.
 - Navigation preference saves from concurrent sessions could overwrite each other due to a double-merge race: the frontend was pre-merging `custom_properties` before sending, then the backend merged again against the DB value, causing the second session's write to silently drop keys set by the first. The frontend now sends only the delta; the backend merges authoritatively against the stored value.
