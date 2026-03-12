@@ -65,11 +65,9 @@ if [ "$(id -u)" = "0" ]; then
         fi
     done
 
-    # Database permissions
-    if [ -d /data/db ] && [ "$(stat -c '%u' /data/db)" != "$(id -u postgres)" ]; then
-        echo "Fixing ownership for /data/db"
-        chown -R postgres:postgres /data/db
-    fi
+    # /data/db ownership is handled by 02-postgres.sh (sentinel-based reconciliation).
+    # No secondary check needed here — duplicating it could chown without updating
+    # the sentinel, creating inconsistent state.
 
     # Fix /data directory ownership (non-recursive)
     if [ -d "/data" ] && [ "$(stat -c '%u:%g' /data)" != "$PUID:$PGID" ]; then

@@ -1,8 +1,58 @@
 #!/bin/bash
 
-# Set up user details
+# NOTE: PUID/PGID values matching internal system UIDs (e.g. 102 for the
+# postgres package user) will cause that OS user/group to be renamed to
+# $POSTGRES_USER inside the container. This is cosmetic and does not affect
+# runtime behavior since all postgres operations run as $POSTGRES_USER
+# rather than the postgres system user.
+
+# Auto-detect PUID/PGID from existing data when not explicitly set.
+# Avoids a cross-UID chown on upgrade, which would fail on restricted
+# filesystems (NFS root_squash, CIFS). UID/GID 0 is excluded — PostgreSQL
+# refuses to run as root. Falls through to default 1000 for new installs.
+if [ -z "${PUID+x}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
+    _data_uid=$(stat -c '%u' "${POSTGRES_DIR}/PG_VERSION")
+    if [ "$_data_uid" -ne 0 ] 2>/dev/null; then
+        export PUID=$_data_uid
+        echo "PUID not set — defaulting to existing data owner UID: $PUID"
+    fi
+fi
+if [ -z "${PGID+x}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
+    _data_gid=$(stat -c '%g' "${POSTGRES_DIR}/PG_VERSION")
+    if [ "$_data_gid" -ne 0 ] 2>/dev/null; then
+        export PGID=$_data_gid
+        echo "PGID not set — defaulting to existing data owner GID: $PGID"
+    fi
+fi
 export PUID=${PUID:-1000}
 export PGID=${PGID:-1000}
+
+# Validate PUID/PGID are positive integers before any user/group operations.
+# Non-numeric values would cause useradd/groupadd to fail with confusing errors.
+if ! [[ "$PUID" =~ ^[0-9]+$ ]] || ! [[ "$PGID" =~ ^[0-9]+$ ]]; then
+    echo ""
+    echo "================================================================"
+    echo "ERROR: PUID and PGID must be positive integers."
+    echo "  PUID=$PUID  PGID=$PGID"
+    echo "  Please set valid numeric values (default: 1000)."
+    echo "================================================================"
+    echo ""
+    exit 1
+fi
+
+# PostgreSQL refuses to run as root (UID 0). Block early — before any
+# user/group manipulation — to prevent renaming the root user/group,
+# which would break the container.
+if [ "$PUID" = "0" ] || [ "$PGID" = "0" ]; then
+    echo ""
+    echo "================================================================"
+    echo "ERROR: PUID=0 or PGID=0 is not supported."
+    echo "  PostgreSQL cannot run as root (UID 0)."
+    echo "  Please set PUID and PGID to a non-zero value (default: 1000)."
+    echo "================================================================"
+    echo ""
+    exit 1
+fi
 
 # Check if group with PGID exists
 if getent group "$PGID" >/dev/null 2>&1; then

@@ -156,15 +156,20 @@ echo "Starting init process..."
 # Start PostgreSQL if NOT in modular mode (using external database)
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     echo "Starting Postgres..."
-    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    su - $POSTGRES_USER -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    until su - $POSTGRES_USER -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
-    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    postgres_pid=$(su - $POSTGRES_USER -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
     echo "✅ Postgres started with PID $postgres_pid"
     pids+=("$postgres_pid")
+
+    # Unconditional startup guarantees — run on every AIO startup.
+    # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
+    promote_app_role
+    ensure_app_database
 else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
