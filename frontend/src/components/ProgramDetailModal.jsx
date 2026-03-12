@@ -146,7 +146,7 @@ export default function ProgramDetailModal({
     <Modal
       opened={opened}
       onClose={onClose}
-      title={program.title}
+      title={null}
       size="lg"
       centered
       overlayProps={overlayProps}
