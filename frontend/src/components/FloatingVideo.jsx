@@ -10,6 +10,8 @@ import {
   getClientCoordinates,
   getLivePlayerErrorMessage,
   getVODPlayerErrorMessage,
+  getPlayerPrefs,
+  savePlayerPrefs,
 } from '../utils/components/FloatingVideoUtils.js';
 
 const ResizeHandles = ({ startResize }) => {
@@ -107,7 +109,7 @@ const ResizeHandles = ({ startResize }) => {
       ))}
     </>
   );
-}
+};
 
 export default function FloatingVideo() {
   const isVisible = useVideoStore((s) => s.isVisible);
@@ -129,7 +131,12 @@ export default function FloatingVideo() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
-  const [videoSize, setVideoSize] = useState({ width: 320, height: 180 });
+  const [videoSize, setVideoSize] = useState(() => {
+    const prefs = getPlayerPrefs();
+    if (prefs.size?.width >= 220 && prefs.size?.height >= 124)
+      return prefs.size;
+    return { width: 320, height: 180 };
+  });
   const [isResizing, setIsResizing] = useState(false);
   const [dragPosition, setDragPosition] = useState(null);
 
@@ -208,7 +215,10 @@ export default function FloatingVideo() {
     video.preload = 'metadata';
     video.crossOrigin = 'anonymous';
 
-    // Set up event listeners
+    // Restore saved volume
+    const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
+    if (typeof savedVolume === 'number') video.volume = savedVolume;
+    if (typeof savedMuted === 'boolean') video.muted = savedMuted;
     const handleLoadStart = () => setIsLoading(true);
     const handleLoadedData = () => setIsLoading(false);
     const handleCanPlay = () => {
@@ -299,6 +309,12 @@ export default function FloatingVideo() {
 
       player.attachMediaElement(videoRef.current);
 
+      // Restore saved volume
+      const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
+      if (typeof savedVolume === 'number')
+        videoRef.current.volume = savedVolume;
+      if (typeof savedMuted === 'boolean') videoRef.current.muted = savedMuted;
+
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
         setIsLoading(false);
       });
@@ -366,8 +382,14 @@ export default function FloatingVideo() {
       initializeLivePlayer();
     }
 
-    // Cleanup when component unmounts or streamUrl changes
+    // Attach volume-change listener now that the video element is in the DOM
+    const video = videoRef.current;
+    const handleVolumeChange = () =>
+      savePlayerPrefs({ volume: video.volume, muted: video.muted });
+    video?.addEventListener('volumechange', handleVolumeChange);
+
     return () => {
+      video?.removeEventListener('volumechange', handleVolumeChange);
       safeDestroyPlayer();
     };
   }, [isVisible, streamUrl, contentType]);
@@ -478,7 +500,13 @@ export default function FloatingVideo() {
     [MIN_HEIGHT, MIN_WIDTH, VISIBLE_MARGIN, clampToVisibleWithSize]
   );
 
-  const updatePositionIfNeeded = (handle, startPos, startWidth, startHeight, newSize) => {
+  const updatePositionIfNeeded = (
+    handle,
+    startPos,
+    startWidth,
+    startHeight,
+    newSize
+  ) => {
     if (!handle.isLeft && !handle.isTop) return;
 
     const posX = startPos?.x ?? 0;
@@ -486,7 +514,12 @@ export default function FloatingVideo() {
     let nextX = handle.isLeft ? posX + (startWidth - newSize.width) : posX;
     let nextY = handle.isTop ? posY + (startHeight - newSize.height) : posY;
 
-    const clamped = clampToVisibleWithSize(nextX, nextY, newSize.width, newSize.height);
+    const clamped = clampToVisibleWithSize(
+      nextX,
+      nextY,
+      newSize.width,
+      newSize.height
+    );
     const nextPos = {
       x: handle.isLeft ? clamped.x : nextX,
       y: handle.isTop ? clamped.y : nextY,
@@ -547,9 +580,31 @@ export default function FloatingVideo() {
     dragPositionRef.current = dragPosition;
   }, [dragPosition]);
 
+  // Persist size whenever it changes
+  useEffect(() => {
+    savePlayerPrefs({ size: videoSize });
+  }, [videoSize]);
+
+  // Persist position when a resize ends
+  useEffect(() => {
+    if (!isResizing && dragPositionRef.current) {
+      savePlayerPrefs({ position: dragPositionRef.current });
+    }
+  }, [isResizing]);
+
   // Initialize the floating window near bottom-right once
   useEffect(() => {
     if (initialPositionRef.current || typeof window === 'undefined') return;
+
+    // Try to restore the last saved position
+    const savedPos = getPlayerPrefs().position;
+    if (savedPos) {
+      const clamped = clampToVisible(savedPos.x, savedPos.y);
+      initialPositionRef.current = clamped;
+      setDragPosition(clamped);
+      dragPositionRef.current = clamped;
+      return;
+    }
 
     const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
     const initialX = Math.max(10, window.innerWidth - videoSize.width - 20);
@@ -609,6 +664,7 @@ export default function FloatingVideo() {
       const clamped = clampToVisible(data?.x ?? 0, data?.y ?? 0);
       setDragPosition(clamped);
       dragPositionRef.current = clamped;
+      savePlayerPrefs({ position: clamped });
     },
     [clampToVisible]
   );
@@ -801,7 +857,7 @@ export default function FloatingVideo() {
           </Box>
         )}
 
-        <ResizeHandles startResize={startResize}/>
+        <ResizeHandles startResize={startResize} />
       </div>
     </Draggable>
   );

@@ -1,3 +1,22 @@
+export const PLAYER_PREFS_KEY = 'dispatcharr-player-prefs';
+
+export const getPlayerPrefs = () => {
+  try {
+    return JSON.parse(localStorage.getItem(PLAYER_PREFS_KEY) || '{}');
+  } catch {
+    return {};
+  }
+};
+
+export const savePlayerPrefs = (updates) => {
+  try {
+    localStorage.setItem(
+      PLAYER_PREFS_KEY,
+      JSON.stringify({ ...getPlayerPrefs(), ...updates })
+    );
+  } catch {}
+};
+
 export const getLivePlayerErrorMessage = (errorType, errorDetail) => {
   if (errorType !== 'MediaError') {
     return errorDetail
