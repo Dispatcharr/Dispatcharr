@@ -27,8 +27,19 @@ export const removeRecording = (id) => {
  */
 export const getChannelLogoUrl = (channel) => {
   if (!channel) return null;
-  if (channel.logo_id) return `/api/channels/logos/${channel.logo_id}/cache/`;
-  return channel.logo?.cache_url || null;
+  let url = channel.logo_id
+    ? `/api/channels/logos/${channel.logo_id}/cache/`
+    : channel.logo?.cache_url || null;
+  if (
+    url &&
+    url.startsWith('/') &&
+    typeof import.meta !== 'undefined' &&
+    import.meta.env &&
+    import.meta.env.DEV
+  ) {
+    url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
+  }
+  return url;
 };
 
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
