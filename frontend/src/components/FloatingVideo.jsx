@@ -452,6 +452,17 @@ export default function FloatingVideo() {
     (event) => {
       if (!resizeStateRef.current) return;
 
+      // If the mouse button was released outside the window, stop resizing.
+      // Remove the move listeners immediately; the mouseup/touchend listener
+      // (endResize) will clean itself up the next time the user clicks.
+      if (event.type === 'mousemove' && event.buttons === 0) {
+        resizeStateRef.current = null;
+        setIsResizing(false);
+        window.removeEventListener('mousemove', handleResizeMove);
+        window.removeEventListener('touchmove', handleResizeMove);
+        return;
+      }
+
       const { clientX, clientY } = getClientCoordinates(event);
       const {
         startX,
