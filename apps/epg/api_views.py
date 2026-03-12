@@ -13,7 +13,6 @@ from .serializers import (
     ProgramDetailSerializer,
     EPGSourceSerializer,
     EPGDataSerializer,
-    infer_is_live,
 )
 from .tasks import refresh_epg_data
 from apps.accounts.permissions import (
@@ -312,8 +311,7 @@ class EPGGridAPIView(APIView):
                             "season": None,
                             "episode": None,
                             "is_new": prog_custom.get('new', False),
-                            "is_live": bool(prog_custom.get('live')) or infer_is_live(
-                                program['title'], epg_name=channel.name),
+                            "is_live": bool(prog_custom.get('live')),
                             "is_premiere": False,
                             "is_finale": False,
                         }
@@ -376,7 +374,7 @@ class EPGGridAPIView(APIView):
                         "season": None,
                         "episode": None,
                         "is_new": False,
-                        "is_live": infer_is_live(channel.name),
+                        "is_live": False,
                         "is_premiere": False,
                         "is_finale": False,
                     }

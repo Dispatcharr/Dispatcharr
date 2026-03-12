@@ -1,37 +1,8 @@
-import re
-
 from core.utils import validate_flexible_url
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
 from .utils import extract_season_episode
 from apps.channels.models import Channel
-
-# Live-event inference patterns
-_PPV_RE = re.compile(r'\bPPV\d*\b', re.IGNORECASE)
-_VS_RE = re.compile(r'\bvs\.?\b|\bversus\b', re.IGNORECASE)
-_LIVE_TIME_RE = re.compile(r'\d{1,2}:\d{2}\s*(?:AM|PM)', re.IGNORECASE)
-_SCHEDULED_EVENT_RE = re.compile(r'@\s+\w{3,}\s+\d{1,2}\s+\d{1,2}:\d{2}\s*(?:AM|PM)', re.IGNORECASE)
-
-
-def infer_is_live(title, epg_name=None, dd_progid=None):
-    """Infer LIVE status from title/channel patterns when provider omits <live> flag."""
-    text = title or ''
-    # Rule 1: PPV in title or EPG name
-    if _PPV_RE.search(text) or (epg_name and _PPV_RE.search(epg_name)):
-        return True
-    has_vs = bool(_VS_RE.search(text))
-    has_time = bool(_LIVE_TIME_RE.search(text))
-    # Rule 2: "vs" + embedded time
-    if has_vs and has_time:
-        return True
-    # Rule 3: dd_progid=SP + matchup or time
-    if dd_progid and str(dd_progid)[:2].upper() == 'SP' and (has_vs or has_time):
-        return True
-    # Rule 4: "@ Month Day Time" scheduling notation (e.g. "@ Mar 08 10:00 AM ET")
-    if _SCHEDULED_EVENT_RE.search(text):
-        return True
-    return False
-
 
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
@@ -108,7 +79,6 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
 class ProgramDataSerializer(serializers.ModelSerializer):
-    """Querysets must use select_related('epg') to avoid N+1 on is_live inference."""
 
     class Meta:
         model = ProgramData
@@ -121,9 +91,7 @@ class ProgramDataSerializer(serializers.ModelSerializer):
         data['season'] = season
         data['episode'] = episode
         data['is_new'] = bool(cp.get('new'))
-        data['is_live'] = bool(cp.get('live')) or infer_is_live(
-            obj.title, epg_name=obj.epg.name if obj.epg_id else None,
-            dd_progid=cp.get('dd_progid'))
+        data['is_live'] = bool(cp.get('live'))
         data['is_premiere'] = bool(cp.get('premiere'))
         premiere_text = cp.get('premiere_text', '')
         data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
