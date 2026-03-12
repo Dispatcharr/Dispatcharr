@@ -127,14 +127,32 @@ export default function FloatingVideo() {
   const dragPositionRef = useRef(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const initialPositionRef = useRef(null);
+  // Ref kept in sync with videoSize state for use inside event handlers
+  // where closures over state would be stale.
+  const videoSizeRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [videoSize, setVideoSize] = useState(() => {
     const prefs = getPlayerPrefs();
-    if (prefs.size?.width >= 220 && prefs.size?.height >= 124)
-      return prefs.size;
+    const saved = prefs.size;
+    if (saved?.width >= 220 && saved?.height >= 124) {
+      if (typeof window !== 'undefined') {
+        // Cap to viewport minus a margin so the header is always reachable on
+        // first render even if the saved size was set on a larger display.
+        const maxW = window.innerWidth - 48; // VISIBLE_MARGIN
+        const maxH = window.innerHeight - 83; // HEADER_HEIGHT(38) + VISIBLE_MARGIN(48) - 1 extra row
+        if (saved.width > maxW || saved.height > maxH) {
+          const scale = Math.min(maxW / saved.width, maxH / saved.height);
+          return {
+            width: Math.max(220, Math.round(saved.width * scale)),
+            height: Math.max(124, Math.round(saved.height * scale)),
+          };
+        }
+      }
+      return saved;
+    }
     return { width: 320, height: 180 };
   });
   const [isResizing, setIsResizing] = useState(false);
@@ -411,23 +429,19 @@ export default function FloatingVideo() {
       if (typeof window === 'undefined') return { x, y };
 
       const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
-      const minX = -(videoSize.width - VISIBLE_MARGIN);
-      const minY = -(totalHeight - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - videoSize.width;
-      const maxY = window.innerHeight - totalHeight;
+      const minX = 0;
+      // minY = 0 ensures the header row is always within the viewport so the
+      // user can always grab and reposition the window.
+      const minY = 0;
+      const maxX = Math.max(0, window.innerWidth - videoSize.width);
+      const maxY = Math.max(0, window.innerHeight - totalHeight);
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [
-      VISIBLE_MARGIN,
-      HEADER_HEIGHT,
-      ERROR_HEIGHT,
-      videoSize.height,
-      videoSize.width,
-    ]
+    [HEADER_HEIGHT, ERROR_HEIGHT, videoSize.height, videoSize.width]
   );
 
   const clampToVisibleWithSize = useCallback(
@@ -435,17 +449,17 @@ export default function FloatingVideo() {
       if (typeof window === 'undefined') return { x, y };
 
       const totalHeight = height + HEADER_HEIGHT + ERROR_HEIGHT;
-      const minX = -(width - VISIBLE_MARGIN);
-      const minY = -(totalHeight - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - width;
-      const maxY = window.innerHeight - totalHeight;
+      const minX = 0; // left edge must stay in viewport
+      const minY = 0; // header must always be reachable
+      const maxX = Math.max(0, window.innerWidth - width);
+      const maxY = Math.max(0, window.innerHeight - totalHeight);
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [VISIBLE_MARGIN, HEADER_HEIGHT, ERROR_HEIGHT]
+    [HEADER_HEIGHT, ERROR_HEIGHT]
   );
 
   const handleResizeMove = useCallback(
@@ -591,10 +605,63 @@ export default function FloatingVideo() {
     dragPositionRef.current = dragPosition;
   }, [dragPosition]);
 
-  // Persist size whenever it changes
+  // Keep videoSizeRef current so the window-resize handler never closes over
+  // a stale videoSize value.
   useEffect(() => {
-    savePlayerPrefs({ size: videoSize });
+    videoSizeRef.current = videoSize;
   }, [videoSize]);
+
+  // Re-clamp size and position when the browser viewport changes
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const maxW = window.innerWidth - VISIBLE_MARGIN;
+      const maxH = window.innerHeight - VISIBLE_MARGIN;
+      const { width: curW, height: curH } = videoSizeRef.current ?? {
+        width: 320,
+        height: 180,
+      };
+
+      let newW = curW;
+      let newH = curH;
+      if (curW > maxW || curH > maxH) {
+        const scale = Math.min(maxW / curW, maxH / curH);
+        newW = Math.max(MIN_WIDTH, Math.round(curW * scale));
+        newH = Math.max(MIN_HEIGHT, Math.round(curH * scale));
+        setVideoSize({ width: newW, height: newH });
+      }
+
+      if (dragPositionRef.current) {
+        const totalH = newH + HEADER_HEIGHT + ERROR_HEIGHT;
+        const clamped = {
+          x: Math.min(
+            Math.max(dragPositionRef.current.x, 0),
+            Math.max(0, window.innerWidth - newW)
+          ),
+          y: Math.min(
+            Math.max(dragPositionRef.current.y, 0),
+            Math.max(0, window.innerHeight - totalH)
+          ),
+        };
+        if (
+          clamped.x !== dragPositionRef.current.x ||
+          clamped.y !== dragPositionRef.current.y
+        ) {
+          setDragPosition(clamped);
+          dragPositionRef.current = clamped;
+        }
+      }
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [MIN_WIDTH, MIN_HEIGHT, VISIBLE_MARGIN, HEADER_HEIGHT, ERROR_HEIGHT]);
+
+  // Persist size whenever it changes, but skip high-frequency writes during
+  // an active resize drag — the final value is captured when isResizing clears.
+  useEffect(() => {
+    if (!isResizing) {
+      savePlayerPrefs({ size: videoSize });
+    }
+  }, [videoSize, isResizing]);
 
   // Persist position when a resize ends
   useEffect(() => {
@@ -657,6 +724,13 @@ export default function FloatingVideo() {
 
   const handleDrag = useCallback(
     (event) => {
+      // If the mouse button was released outside the browser window the
+      // mouseup event is never delivered to react-draggable. Detect this on
+      // the next mousemove and fire a synthetic mouseup so it stops dragging.
+      if (event.type === 'mousemove' && event.buttons === 0) {
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        return;
+      }
       const clientX = event.touches?.[0]?.clientX ?? event.clientX;
       const clientY = event.touches?.[0]?.clientY ?? event.clientY;
       if (clientX == null || clientY == null) return;
@@ -717,6 +791,8 @@ export default function FloatingVideo() {
           style={{
             padding: '3px 3px 3px 8px',
             minHeight: '38px',
+            cursor: 'grab',
+            userSelect: 'none',
           }}
         >
           {metadata?.name ? (

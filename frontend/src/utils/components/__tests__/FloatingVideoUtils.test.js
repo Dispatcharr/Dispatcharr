@@ -284,6 +284,53 @@ describe('FloatingVideoUtils', () => {
       expect(result.width).toBeCloseTo(maxHeight * ratio, 1);
     });
 
+    it('should cap maximum width at viewport width when position is negative', () => {
+      // Use a tall viewport so only the width constraint is the binding factor
+      window.innerHeight = 3000;
+      const handle = { isLeft: false, isTop: false };
+      const startPos = { x: -200, y: 0 };
+      const result = applyConstraints(
+        2000,
+        1125,
+        ratio,
+        startPos,
+        handle,
+        minWidth,
+        minHeight,
+        visibleMargin
+      );
+      // Without the fix: maxWidth would be 1920 - (-200) - 50 = 2070 (exceeds viewport)
+      // With the fix: capped at window.innerWidth - visibleMargin = 1870
+      const expectedWidth = 1920 - 50;
+      expect(result.width).toBe(expectedWidth);
+      expect(result.height).toBeCloseTo(expectedWidth / ratio, 1);
+    });
+
+    it('should cap maximum height at viewport height when position is negative', () => {
+      // Use a wide viewport so only the height constraint is the binding factor.
+      // Input height (1100) is above the absolute cap (1080-50=1030) but below the
+      // uncapped formula (1080-(-100)-50=1130), proving the absolute cap is enforced.
+      window.innerWidth = 4000;
+      const handle = { isLeft: false, isTop: false };
+      const startPos = { x: 0, y: -100 };
+      const inputHeight = 1100;
+      const result = applyConstraints(
+        inputHeight * ratio,
+        inputHeight,
+        ratio,
+        startPos,
+        handle,
+        minWidth,
+        minHeight,
+        visibleMargin
+      );
+      // Without the fix: maxHeight would be 1080 - (-100) - 50 = 1130, so 1100 < 1130 → no cap
+      // With the fix: capped at window.innerHeight - visibleMargin = 1030
+      const expectedHeight = 1080 - 50;
+      expect(result.height).toBe(expectedHeight);
+      expect(result.width).toBeCloseTo(expectedHeight * ratio, 1);
+    });
+
     it('should not apply max width constraint for left handle', () => {
       const handle = { isLeft: true, isTop: false };
       const startPos = { x: 1800, y: 100 };

@@ -117,11 +117,19 @@ export const applyConstraints = (
   // Apply viewport constraints
   const posX = startPos?.x ?? 0;
   const posY = startPos?.y ?? 0;
+  // Absolute caps ensure the player can never exceed the viewport even when
+  // its position is negative (partially off-screen on the opposite edge).
   const maxWidth = !handle.isLeft
-    ? Math.max(minWidth, window.innerWidth - posX - visibleMargin)
+    ? Math.min(
+        window.innerWidth - visibleMargin,
+        Math.max(minWidth, window.innerWidth - posX - visibleMargin)
+      )
     : null;
   const maxHeight = !handle.isTop
-    ? Math.max(minHeight, window.innerHeight - posY - visibleMargin)
+    ? Math.min(
+        window.innerHeight - visibleMargin,
+        Math.max(minHeight, window.innerHeight - posY - visibleMargin)
+      )
     : null;
 
   if (maxWidth && width > maxWidth) {
