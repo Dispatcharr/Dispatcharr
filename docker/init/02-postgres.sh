@@ -300,8 +300,8 @@ promote_app_role() {
     # initialization from a crashed previous container).
     # Single query per candidate: if connection fails, output is empty;
     # if connected but not superuser, output is 'f'. Only 't' passes.
-    CONNECT_ROLE=""
-    CONNECT_DB=""
+    local CONNECT_ROLE=""
+    local CONNECT_DB=""
     for try_db in "postgres" "template1"; do
         for try_role in "postgres" "$POSTGRES_USER"; do
             local _super
