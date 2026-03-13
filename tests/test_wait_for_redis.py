@@ -40,9 +40,8 @@ class WaitForRedisTests(SimpleTestCase):
         self.assertTrue(result)
         mock_client.flushdb.assert_called_once()
 
-    @patch('wait_for_redis._flush_non_celery_keys')
     @patch('wait_for_redis.redis.Redis')
-    def test_modular_mode_does_not_call_flushdb(self, mock_redis_cls, mock_selective):
+    def test_modular_mode_does_not_call_flushdb(self, mock_redis_cls):
         """In modular mode, flushdb must NOT be called — selective flush instead."""
         mock_client = MagicMock()
         mock_client.ping.return_value = True
@@ -50,7 +49,9 @@ class WaitForRedisTests(SimpleTestCase):
 
         with patch.dict(os.environ, {'DISPATCHARR_ENV': 'modular'}):
             wait_for_redis = _import_wait_for_redis()
-            result = wait_for_redis(max_retries=1, retry_interval=0)
+            # Patch after reload so the mock isn't overwritten by module re-execution
+            with patch('wait_for_redis._flush_non_celery_keys') as mock_selective:
+                result = wait_for_redis(max_retries=1, retry_interval=0)
 
         self.assertTrue(result)
         mock_client.flushdb.assert_not_called()

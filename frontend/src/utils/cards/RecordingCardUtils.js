@@ -1,6 +1,7 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
 import defaultLogo from '../../images/logo.png';
+import { formatSeasonEpisode } from '../../pages/guideUtils.js';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -26,8 +27,19 @@ export const removeRecording = (id) => {
  */
 export const getChannelLogoUrl = (channel) => {
   if (!channel) return null;
-  if (channel.logo_id) return `/api/channels/logos/${channel.logo_id}/cache/`;
-  return channel.logo?.cache_url || null;
+  let url = channel.logo_id
+    ? `/api/channels/logos/${channel.logo_id}/cache/`
+    : channel.logo?.cache_url || null;
+  if (
+    url &&
+    url.startsWith('/') &&
+    typeof import.meta !== 'undefined' &&
+    import.meta.env &&
+    import.meta.env.DEV
+  ) {
+    url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
+  }
+  return url;
 };
 
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
@@ -99,9 +111,8 @@ export const getRecordingUrl = (customProps, env_mode) => {
 };
 
 export const getSeasonLabel = (season, episode, onscreen) => {
-  return season && episode
-    ? `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-    : onscreen || null;
+  if (season != null && episode != null) return formatSeasonEpisode(season, episode);
+  return onscreen || null;
 };
 
 export const getSeriesInfo = (customProps) => {

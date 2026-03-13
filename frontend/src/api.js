@@ -1545,6 +1545,16 @@ export default class API {
     }
   }
 
+  static async getProgramDetail(programId) {
+    try {
+      const response = await request(`${host}/api/epg/programs/${programId}/`);
+      return response;
+    } catch (e) {
+      console.warn('Failed to retrieve program detail', e);
+      return null;
+    }
+  }
+
   static async addM3UProfile(accountId, values) {
     try {
       const response = await request(
