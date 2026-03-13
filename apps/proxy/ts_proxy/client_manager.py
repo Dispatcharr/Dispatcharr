@@ -21,7 +21,7 @@ class ClientManager:
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.clients = set()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.last_active_time = time.time()
         self.worker_id = worker_id  # Store worker ID as instance variable
         self._heartbeat_running = True  # Flag to control heartbeat thread
@@ -41,14 +41,20 @@ class ClientManager:
         self._registered_clients = set()  # Track already registered client IDs
 
     def _trigger_stats_update(self):
-        """Trigger a channel stats update via WebSocket"""
+        """Trigger a channel stats update via WebSocket in a background thread.
+
+        Offloaded so the caller is not blocked. send_websocket_update is
+        gevent-safe (offloads async_to_sync to a native OS thread).
+        """
+        threading.Thread(target=self._do_stats_update, daemon=True).start()
+
+    def _do_stats_update(self):
+        """Perform the stats update in the background."""
         try:
-            # Import here to avoid potential import issues
             from apps.proxy.ts_proxy.channel_status import ChannelStatus
             import redis
             from django.conf import settings
 
-            # Get all channels from Redis using settings
             redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
             redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
             all_channels = []
@@ -57,7 +63,6 @@ class ClientManager:
             while True:
                 cursor, keys = redis_client.scan(cursor, match="ts_proxy:channel:*:clients", count=100)
                 for key in keys:
-                    # Extract channel ID from key
                     parts = key.split(':')
                     if len(parts) >= 4:
                         ch_id = parts[2]
@@ -68,7 +73,6 @@ class ClientManager:
                 if cursor == 0:
                     break
 
-            # Send WebSocket update using existing infrastructure
             send_websocket_update(
                 "updates",
                 "update",

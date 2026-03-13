@@ -109,28 +109,22 @@ const StatsPage = () => {
   const [channels, setChannels] = useState({}); // id -> channel
   const [channelsByUUID, setChannelsByUUID] = useState({}); // uuid -> id
 
-  // Use refs to hold latest values without triggering effects
-  const channelHistoryRef = useRef(channelHistory);
-  const channelsByUUIDRef = useRef(channelsByUUID);
-
-  // Update refs when values change
-  useEffect(() => {
-    channelHistoryRef.current = channelHistory;
-  }, [channelHistory]);
-
-  useEffect(() => {
-    channelsByUUIDRef.current = channelsByUUID;
-  }, [channelsByUUID]);
-
-  // Compute needed channel UUIDs from the current active channels
+  // Compute needed channel UUIDs from the current active channels.
+  // Stream previews use a non-UUID hash as channel_id — filter those out.
+  const UUID_REGEX =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const neededUUIDs = useMemo(
-    () => Object.keys(channelHistory || {}),
+    () => Object.keys(channelHistory || {}).filter((id) => UUID_REGEX.test(id)),
     [channelHistory]
   );
 
-  console.log(channelHistory);
+  // Keep a ref so the programs poller always has the latest valid UUIDs
+  const neededUUIDsRef = useRef(neededUUIDs);
+  useEffect(() => {
+    neededUUIDsRef.current = neededUUIDs;
+  }, [neededUUIDs]);
 
-  // Fetch any missing channels by UUID when the needed set changes
+  // Fetch any missing channels by UUID when the needed set changes (for card name/logo)
   useEffect(() => {
     if (!neededUUIDs || neededUUIDs.length === 0) return;
     const missing = neededUUIDs.filter((u) => channelsByUUID[u] === undefined);
@@ -160,7 +154,7 @@ const StatsPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [neededUUIDs.join(','), channelsByUUID]);
+  }, [neededUUIDs.join(',')]);
 
   // Use localStorage for stats refresh interval (in seconds)
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useLocalStorage(
@@ -301,11 +295,7 @@ const StatsPage = () => {
     let timer = null;
 
     const fetchPrograms = async () => {
-      // Use refs to get latest values without adding dependencies
-      const programs = await getCurrentPrograms(
-        channelHistoryRef.current,
-        channelsByUUIDRef.current
-      );
+      const programs = await getCurrentPrograms(neededUUIDsRef.current);
       setCurrentPrograms(programs);
 
       // Schedule next fetch based on nearest program end time
@@ -341,7 +331,7 @@ const StatsPage = () => {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [activeChannelIds]); // Only depend on activeChannelIds
+  }, [activeChannelIds]); // Only re-run when active channel set changes
 
   // Combine active streams and VOD connections into a single mixed list
   const combinedConnections = useMemo(() => {

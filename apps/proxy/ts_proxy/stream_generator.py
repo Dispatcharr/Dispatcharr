@@ -8,7 +8,7 @@ import logging
 import threading
 import gevent  # Add this import at the top of your file
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel
+from apps.channels.models import Channel, Stream
 from core.utils import log_system_event
 from .server import ProxyServer
 from .utils import create_ts_packet, get_logger
@@ -57,6 +57,19 @@ class StreamGenerator:
         # TTL refresh tracking
         self.last_ttl_refresh = time.time()
         self.ttl_refresh_interval = 3  # Refresh TTL every 3 seconds of active streaming
+
+        # Cached proxy server reference
+        self.proxy_server = None
+
+        # Non-owner health check throttle: avoid Redis GET on every loop iteration
+        self._last_health_check_time = 0.0
+        self._last_health_check_result = False
+        self._health_check_interval = 2.0  # seconds
+
+        # Resource check throttle: Redis stop/state checks are expensive; throttle
+        # them while allowing cheap in-memory checks to run every iteration.
+        self._last_resource_check_time = 0.0
+        self._resource_check_interval = 1.0  # seconds
 
     def generate(self):
         """
@@ -186,12 +199,50 @@ class StreamGenerator:
             logger.error(f"[{self.client_id}] No buffer found for channel {self.channel_id}")
             return False
 
-        # Client state tracking - use config for initial position
-        initial_behind = ConfigHelper.initial_behind_chunks()
+        # Client state tracking — determine start position
+        # When behind_seconds > 0, use time-based positioning to start
+        # the client that many seconds behind live.
+        # When behind_seconds == 0, start at live (buffer head).
+        behind_seconds = ConfigHelper.new_client_behind_seconds()
         current_buffer_index = buffer.index
-        self.local_index = max(0, current_buffer_index - initial_behind)
+
+        if behind_seconds > 0:
+            time_index = buffer.find_chunk_index_by_time(behind_seconds)
+            if time_index is not None:
+                self.local_index = max(0, time_index)
+                logger.info(
+                    f"[{self.client_id}] Time-based positioning: "
+                    f"{behind_seconds}s behind -> index {self.local_index} "
+                    f"(buffer head at {current_buffer_index})"
+                )
+            else:
+                # Not enough buffer for the requested time — start as far
+                # back as possible (oldest available chunk).
+                oldest = buffer.find_oldest_available_chunk(0)
+                if oldest is not None:
+                    self.local_index = max(0, oldest)
+                    logger.info(
+                        f"[{self.client_id}] Buffer shorter than {behind_seconds}s, "
+                        f"starting at oldest available chunk {self.local_index} "
+                        f"(buffer head at {current_buffer_index})"
+                    )
+                else:
+                    # No timestamp data at all — start at live
+                    self.local_index = current_buffer_index
+                    logger.info(
+                        f"[{self.client_id}] No timestamp data, starting at live: "
+                        f"index {self.local_index} (buffer head at {current_buffer_index})"
+                    )
+        else:
+            # 0 = start at live (buffer head)
+            self.local_index = current_buffer_index
+            logger.info(
+                f"[{self.client_id}] Starting at live (behind_seconds=0): "
+                f"index {self.local_index} (buffer head at {current_buffer_index})"
+            )
 
         # Store important objects as instance variables
+        self.proxy_server = proxy_server
         self.buffer = buffer
         self.stream_manager = stream_manager
         self.last_yield_time = time.time()
@@ -224,17 +275,35 @@ class StreamGenerator:
                 self.empty_reads += 1
                 self.consecutive_empty += 1
 
-                # Check if we're too far behind (chunks expired from Redis)
+                # We got no data despite being behind the buffer head.
+                # The read itself is the authoritative signal — no separate
+                # existence check needed, avoiding TOCTOU races with Redis TTL.
                 chunks_behind = self.buffer.index - self.local_index
-                if chunks_behind > 50:  # If more than 50 chunks behind, jump forward
-                    # Calculate new position: stay a few chunks behind current buffer
-                    initial_behind = ConfigHelper.initial_behind_chunks()
-                    new_index = max(self.local_index, self.buffer.index - initial_behind)
+                if chunks_behind > 0:
+                    # Next chunk has expired — find the oldest chunk still in Redis
+                    new_index = self.buffer.find_oldest_available_chunk(self.local_index)
 
-                    logger.warning(f"[{self.client_id}] Client too far behind ({chunks_behind} chunks), jumping from {self.local_index} to {new_index}")
-                    self.local_index = new_index
-                    self.consecutive_empty = 0  # Reset since we're repositioning
-                    continue  # Try again immediately with new position
+                    if new_index is not None:
+                        skipped = new_index - self.local_index
+                        logger.warning(
+                            f"[{self.client_id}] Next chunk expired (index {self.local_index + 1}), "
+                            f"jumping to oldest available: {new_index + 1} "
+                            f"(skipped {skipped} chunks, buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+                    else:
+                        # No chunks available at all — jump to near the buffer head
+                        initial_behind = ConfigHelper.initial_behind_chunks()
+                        new_index = max(self.local_index, self.buffer.index - initial_behind)
+                        logger.warning(
+                            f"[{self.client_id}] No chunks available in buffer, "
+                            f"jumping to near buffer head: {new_index} "
+                            f"(buffer head at {self.buffer.index})"
+                        )
+                        self.local_index = new_index
+
+                    self.consecutive_empty = 0
+                    continue  # Retry immediately with the new position
 
                 if self._should_send_keepalive(self.local_index):
                     keepalive_packet = create_ts_packet('keepalive')
@@ -265,9 +334,7 @@ class StreamGenerator:
 
     def _check_resources(self):
         """Check if required resources still exist."""
-        proxy_server = ProxyServer.get_instance()
-
-        # Enhanced resource checks
+        proxy_server = self.proxy_server or ProxyServer.get_instance()
         if self.channel_id not in proxy_server.stream_buffers:
             logger.info(f"[{self.client_id}] Channel buffer no longer exists, terminating stream")
             return False
@@ -276,35 +343,43 @@ class StreamGenerator:
             logger.info(f"[{self.client_id}] Client manager no longer exists, terminating stream")
             return False
 
-        # Check if this specific client has been stopped (Redis keys, etc.)
-        if proxy_server.redis_client:
-            # Channel stop check - with extended key set
-            stop_key = RedisKeys.channel_stopping(self.channel_id)
-            if proxy_server.redis_client.exists(stop_key):
-                logger.info(f"[{self.client_id}] Detected channel stop signal, terminating stream")
+        client_manager = proxy_server.client_managers[self.channel_id]
+        if self.client_id not in client_manager.clients:
+            logger.info(f"[{self.client_id}] Client no longer in client manager, terminating stream")
+            return False
+
+        # --- Redis checks: throttled to _resource_check_interval (default 1s) ---
+        # 3 Redis round-trips on every iteration is expensive at stream rates;
+        # stop/state signals change infrequently so a 1-second poll is sufficient.
+        if not proxy_server.redis_client:
+            return True
+
+        now = time.time()
+        if now - self._last_resource_check_time < self._resource_check_interval:
+            return True
+
+        self._last_resource_check_time = now
+
+        # Channel stop check
+        stop_key = RedisKeys.channel_stopping(self.channel_id)
+        if proxy_server.redis_client.exists(stop_key):
+            logger.info(f"[{self.client_id}] Detected channel stop signal, terminating stream")
+            return False
+
+        # Channel state in metadata
+        metadata_key = RedisKeys.channel_metadata(self.channel_id)
+        metadata = proxy_server.redis_client.hgetall(metadata_key)
+        if metadata and 'state' in metadata:
+            state = metadata['state']
+            if state in ['error', 'stopped', 'stopping']:
+                logger.info(f"[{self.client_id}] Channel in {state} state, terminating stream")
                 return False
 
-            # Also check channel state in metadata
-            metadata_key = RedisKeys.channel_metadata(self.channel_id)
-            metadata = proxy_server.redis_client.hgetall(metadata_key)
-            if metadata and 'state' in metadata:
-                state = metadata['state']
-                if state in ['error', 'stopped', 'stopping']:
-                    logger.info(f"[{self.client_id}] Channel in {state} state, terminating stream")
-                    return False
-
-            # Client stop check
-            client_stop_key = RedisKeys.client_stop(self.channel_id, self.client_id)
-            if proxy_server.redis_client.exists(client_stop_key):
-                logger.info(f"[{self.client_id}] Detected client stop signal, terminating stream")
-                return False
-
-            # Also check if client has been removed from client_manager
-            if self.channel_id in proxy_server.client_managers:
-                client_manager = proxy_server.client_managers[self.channel_id]
-                if self.client_id not in client_manager.clients:
-                    logger.info(f"[{self.client_id}] Client no longer in client manager, terminating stream")
-                    return False
+        # Client stop check
+        client_stop_key = RedisKeys.client_stop(self.channel_id, self.client_id)
+        if proxy_server.redis_client.exists(client_stop_key):
+            logger.info(f"[{self.client_id}] Detected client stop signal, terminating stream")
+            return False
 
         return True
 
@@ -313,7 +388,7 @@ class StreamGenerator:
         # Process and send chunks
         total_size = sum(len(c) for c in chunks)
         logger.debug(f"[{self.client_id}] Retrieved {len(chunks)} chunks ({total_size} bytes) from index {self.local_index+1} to {next_index}")
-        proxy_server = ProxyServer.get_instance()
+        proxy_server = self.proxy_server or ProxyServer.get_instance()
 
         # Send the chunks to the client
         for chunk in chunks:
@@ -381,10 +456,38 @@ class StreamGenerator:
         """Determine if a keepalive packet should be sent."""
         # Check if we're caught up to buffer head
         at_buffer_head = local_index >= self.buffer.index
+        if not at_buffer_head or self.consecutive_empty < 5:
+            return False
 
-        # If we're at buffer head and no data is coming, send keepalive
-        stream_healthy = self.stream_manager.healthy if self.stream_manager else True
-        return at_buffer_head and not stream_healthy and self.consecutive_empty >= 5
+        if self.stream_manager is not None:
+            # Owner worker: use the in-memory health flag directly.
+            return not self.stream_manager.healthy
+        else:
+            # Non-owner worker: stream_manager only exists in the owner process.
+            # Approximate health from the Redis last_data timestamp; if stale
+            # beyond CONNECTION_TIMEOUT, send keepalives to prevent DVR timeout.
+            # Throttled: only re-query Redis every _health_check_interval seconds
+            # to avoid a Redis GET on every loop iteration during sustained waits.
+            now = time.time()
+            if now - self._last_health_check_time < self._health_check_interval:
+                return self._last_health_check_result
+            try:
+                proxy_server = self.proxy_server or ProxyServer.get_instance()
+                if proxy_server.redis_client:
+                    raw = proxy_server.redis_client.get(RedisKeys.last_data(self.channel_id))
+                    if raw:
+                        age = now - float(raw)
+                        timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
+                        result = age >= timeout_threshold
+                    else:
+                        # No timestamp in Redis → key missing or expired → unhealthy
+                        result = True
+                    self._last_health_check_time = now
+                    self._last_health_check_result = result
+                    return result
+            except Exception:
+                pass
+            return False
 
     def _is_ghost_client(self, local_index):
         """Check if this appears to be a ghost client (stuck but buffer advancing)."""
@@ -435,13 +538,17 @@ class StreamGenerator:
                             client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
                             # Only the last client or owner should release the stream
                             if client_count <= 1 and proxy_server.am_i_owner(self.channel_id):
-                                from apps.channels.models import Channel
                                 try:
-                                    # Get the channel by UUID
-                                    channel = Channel.objects.get(uuid=self.channel_id)
-                                    channel.release_stream()
-                                    stream_released = True
-                                    logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                                    # Try Channel first (normal flow), fall back to Stream (preview flow)
+                                    try:
+                                        obj = Channel.objects.get(uuid=self.channel_id)
+                                    except (Channel.DoesNotExist, Exception):
+                                        obj = Stream.objects.get(stream_hash=self.channel_id)
+                                    stream_released = obj.release_stream()
+                                    if stream_released:
+                                        logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
+                                    else:
+                                        logger.warning(f"[{self.client_id}] release_stream found no keys for channel {self.channel_id}")
                                 except Exception as e:
                                     logger.error(f"[{self.client_id}] Error releasing stream for channel {self.channel_id}: {e}")
             except Exception as e:
@@ -470,8 +577,7 @@ class StreamGenerator:
                 logger.error(f"Could not log client disconnect event: {e}")
 
             # Schedule channel shutdown if no clients left
-            if not stream_released:  # Only if we haven't already released the stream
-                self._schedule_channel_shutdown_if_needed(local_clients)
+            self._schedule_channel_shutdown_if_needed(local_clients)
 
     def _schedule_channel_shutdown_if_needed(self, local_clients):
         """

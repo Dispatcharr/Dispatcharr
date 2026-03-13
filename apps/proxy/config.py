@@ -43,6 +43,7 @@ class BaseConfig:
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+                "new_client_behind_seconds": 5,
             }
 
         finally:
@@ -81,6 +82,7 @@ class TSConfig(BaseConfig):
     # Buffer settings
     INITIAL_BEHIND_CHUNKS = 4  # How many chunks behind to start a client (4 chunks = ~1MB)
     CHUNK_BATCH_SIZE = 5       # How many chunks to fetch in one batch
+    NEW_CLIENT_BEHIND_SECONDS = 5  # Start new clients this many seconds behind live (0 = start at live)
     KEEPALIVE_INTERVAL = 0.5   # Seconds between keepalive packets when at buffer head
     # Chunk read timeout
     CHUNK_TIMEOUT = 5        # Seconds to wait for each chunk read

@@ -204,14 +204,19 @@ check_external_postgres_version() {
     MIN_REQUIRED_VERSION=$PG_VERSION
 
     # Query external PostgreSQL version
-    EXTERNAL_VERSION=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "postgres" -tAc "SHOW server_version;" 2>/dev/null | grep -oE '^[0-9]+')
+    # Use $POSTGRES_DB — restricted users may not have access to the default 'postgres' database
+    PG_VERSION_ERR=$(mktemp)
+    EXTERNAL_VERSION=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SHOW server_version;" 2>"$PG_VERSION_ERR" | grep -oE '^[0-9]+')
 
     if [ -z "$EXTERNAL_VERSION" ]; then
         echo "❌ ERROR: Unable to determine external PostgreSQL version"
-        echo "   Could not connect to database at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+        echo "   Could not connect to database '$POSTGRES_DB' at ${POSTGRES_HOST}:${POSTGRES_PORT} as user '$POSTGRES_USER'"
+        echo "   Error: $(cat "$PG_VERSION_ERR")"
         echo "   Please verify your database connection settings."
+        rm -f "$PG_VERSION_ERR"
         return 1
     fi
+    rm -f "$PG_VERSION_ERR"
 
     # Compare versions
     if [[ "$EXTERNAL_VERSION" -lt "$MIN_REQUIRED_VERSION" ]]; then

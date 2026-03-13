@@ -39,84 +39,44 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
         # Handle direct stream preview (custom streams)
         if isinstance(channel_or_stream, Stream):
-            from core.utils import RedisClient
-
             stream = channel_or_stream
             logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
 
-            # For custom streams, we need to get the M3U account and profile
-            m3u_account = stream.m3u_account
-            if not m3u_account:
+            if not stream.m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
                 return None, None, False, None
 
-            # Get active profiles for this M3U account
-            m3u_profiles = m3u_account.profiles.filter(is_active=True)
-            default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
-
-            if not default_profile:
-                logger.error(f"No default active profile found for M3U account {m3u_account.id}")
+            # Use get_stream() to atomically reserve a slot and write the
+            # channel_stream / stream_profile Redis keys, matching the channel
+            # path so stream_name and stream_stats work correctly.
+            stream_id, profile_id, error_reason = stream.get_stream()
+            if not stream_id or not profile_id:
+                logger.error(f"No profile available for stream {stream.id}: {error_reason}")
                 return None, None, False, None
 
-            # Check profiles in order: default first, then others
-            profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
+            try:
+                profile = M3UAccountProfile.objects.get(id=profile_id)
+                m3u_account = stream.m3u_account
 
-            # Try to find an available profile with connection capacity
-            redis_client = RedisClient.get_client()
-            selected_profile = None
+                stream_user_agent = m3u_account.get_user_agent().user_agent
+                if stream_user_agent is None:
+                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                    logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            for profile in profiles:
-                logger.info(profile)
+                stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
 
-                # Check connection availability
-                if redis_client:
-                    profile_connections_key = f"profile_connections:{profile.id}"
-                    current_connections = int(redis_client.get(profile_connections_key) or 0)
+                stream_profile = stream.get_stream_profile()
+                logger.debug(f"Using stream profile: {stream_profile.name}")
 
-                    # Check if profile has available slots (or unlimited connections)
-                    if profile.max_streams == 0 or current_connections < profile.max_streams:
-                        selected_profile = profile
-                        logger.debug(f"Selected profile {profile.id} with {current_connections}/{profile.max_streams} connections for stream preview")
-                        break
-                    else:
-                        logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
-                else:
-                    # No Redis available, use first active profile
-                    selected_profile = profile
-                    break
+                transcode = not stream_profile.is_proxy()
+                stream_profile_id = stream_profile.id
 
-            if not selected_profile:
-                logger.error(f"No profiles available with connection capacity for M3U account {m3u_account.id}")
+                return stream_url, stream_user_agent, transcode, stream_profile_id
+            except Exception as e:
+                logger.error(f"Error generating stream URL for stream {stream.id}: {e}")
+                stream.release_stream()
                 return None, None, False, None
 
-            # Get the appropriate user agent
-            stream_user_agent = m3u_account.get_user_agent().user_agent
-            if stream_user_agent is None:
-                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
-
-            # Get stream URL with the selected profile's URL transformation
-            stream_url = transform_url(stream.url, selected_profile.search_pattern, selected_profile.replace_pattern)
-
-            # Check if the stream has its own stream_profile set, otherwise use default
-            if stream.stream_profile:
-                stream_profile = stream.stream_profile
-                logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
-            else:
-                stream_profile = StreamProfile.objects.get(
-                    id=CoreSettings.get_default_stream_profile_id()
-                )
-                logger.debug(f"Using default stream profile: {stream_profile.name}")
-
-            # Check if transcoding is needed
-            if stream_profile.is_proxy() or stream_profile is None:
-                transcode = False
-            else:
-                transcode = True
-
-            stream_profile_id = stream_profile.id
-
-            return stream_url, stream_user_agent, transcode, stream_profile_id
 
         # Handle channel preview (existing logic)
         channel = channel_or_stream
@@ -129,39 +89,42 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
             return None, None, False, None
 
-        # Look up the Stream and Profile objects
+        # get_stream() allocated a connection slot - ensure it's released on any error
         try:
+            # Look up the Stream and Profile objects
             stream = Stream.objects.get(id=stream_id)
             profile = M3UAccountProfile.objects.get(id=profile_id)
-        except (Stream.DoesNotExist, M3UAccountProfile.DoesNotExist) as e:
-            logger.error(f"Error getting stream or profile: {e}")
+
+            # Get the M3U account profile for URL pattern
+            m3u_profile = profile
+
+            # Get the appropriate user agent
+            m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
+            stream_user_agent = m3u_account.get_user_agent().user_agent
+
+            if stream_user_agent is None:
+                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+
+            # Generate stream URL based on the selected profile
+            input_url = stream.url
+            stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
+
+            # Check if transcoding is needed
+            stream_profile = channel.get_stream_profile()
+            if stream_profile.is_proxy() or stream_profile is None:
+                transcode = False
+            else:
+                transcode = True
+
+            stream_profile_id = stream_profile.id
+
+            return stream_url, stream_user_agent, transcode, stream_profile_id
+        except Exception as e:
+            logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
+            if not channel.release_stream():
+                logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
             return None, None, False, None
-
-        # Get the M3U account profile for URL pattern
-        m3u_profile = profile
-
-        # Get the appropriate user agent
-        m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
-        stream_user_agent = m3u_account.get_user_agent().user_agent
-
-        if stream_user_agent is None:
-            stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-            logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
-
-        # Generate stream URL based on the selected profile
-        input_url = stream.url
-        stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
-
-        # Check if transcoding is needed
-        stream_profile = channel.get_stream_profile()
-        if stream_profile.is_proxy() or stream_profile is None:
-            transcode = False
-        else:
-            transcode = True
-
-        stream_profile_id = stream_profile.id
-
-        return stream_url, stream_user_agent, transcode, stream_profile_id
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
         return None, None, False, None

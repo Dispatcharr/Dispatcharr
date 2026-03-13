@@ -175,7 +175,6 @@ class RedisClient:
 
                     # Validate connection with ping
                     client.ping()
-                    client.flushdb()
 
                     # Disable persistence on first connection - improves performance
                     # Only try to disable if not in a read-only environment
@@ -397,30 +396,34 @@ def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Standardized function to send WebSocket updates with proper memory management.
 
-    Args:
-        group_name: The WebSocket group to send to (e.g. 'updates')
-        event_type: The type of message (e.g. 'update')
-        data: The data to send
-        collect_garbage: Whether to force garbage collection after sending
+    In uWSGI + gevent deployments, async_to_sync creates an asyncio event loop
+    whose native EpollSelector blocks the entire OS thread, freezing all gevent
+    greenlets in the worker.  To avoid this, the actual send is offloaded to a
+    real OS thread from gevent's native threadpool when monkey-patching is active.
     """
     channel_layer = get_channel_layer()
-    try:
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                'type': event_type,
-                'data': data
-            }
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send WebSocket update: {e}")
-    finally:
-        # Explicitly release references to help garbage collection
-        channel_layer = None
+    message = {'type': event_type, 'data': data}
 
-        # Force garbage collection if requested
-        if collect_garbage:
-            gc.collect()
+    def _do_send():
+        try:
+            async_to_sync(channel_layer.group_send)(group_name, message)
+        except Exception as e:
+            logger.warning(f"Failed to send WebSocket update: {e}")
+
+    try:
+        import gevent.monkey
+        if gevent.monkey.is_module_patched('threading'):
+            from gevent import get_hub
+            get_hub().threadpool.spawn(_do_send)
+            return
+    except Exception:
+        pass
+
+    # Not in a gevent-patched environment — call directly
+    _do_send()
+
+    if collect_garbage:
+        gc.collect()
 
 def send_websocket_event(event, success, data):
     """Acquire a lock to prevent concurrent task execution."""
