@@ -1,7 +1,6 @@
 from core.utils import validate_flexible_url
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
-from .utils import extract_season_episode
 from apps.channels.models import Channel
 
 class EPGSourceSerializer(serializers.ModelSerializer):
@@ -87,9 +86,8 @@ class ProgramDataSerializer(serializers.ModelSerializer):
     def to_representation(self, obj):
         data = super().to_representation(obj)
         cp = obj.custom_properties or {}
-        season, episode = extract_season_episode(cp, description=obj.description)
-        data['season'] = season
-        data['episode'] = episode
+        data['season'] = cp.get('season')
+        data['episode'] = cp.get('episode')
         data['is_new'] = bool(cp.get('new'))
         data['is_live'] = bool(cp.get('live'))
         data['is_premiere'] = bool(cp.get('premiere'))

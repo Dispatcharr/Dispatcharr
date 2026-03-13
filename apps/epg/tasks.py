@@ -1305,6 +1305,23 @@ def parse_programs_for_tvg_id(epg_id):
                             logger.trace(f"Number of custom properties: {len(custom_props)}")
                             custom_properties_json = custom_props
 
+                        # Fallback: extract S/E from description when episode-num
+                        # elements didn't provide them
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
+
                         programs_to_create.append(ProgramData(
                             epg=epg,
                             start_time=start_time,
@@ -1875,7 +1892,7 @@ def parse_schedules_direct_time(time_str):
 
 
 # Re-export from utils to preserve backward compatibility for any callers
-from apps.epg.utils import extract_season_episode_from_description  # noqa: F401
+from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: F401
 
 
 # Helper function to extract custom properties - moved to a separate function to clean up the code
@@ -1913,8 +1930,16 @@ def extract_custom_properties(prog):
                     except ValueError:
                         pass
         elif system == 'onscreen' and ep_num.text:
-            # Just store the raw onscreen format
-            custom_props['onscreen_episode'] = ep_num.text.strip()
+            onscreen_text = ep_num.text.strip()
+            custom_props['onscreen_episode'] = onscreen_text
+            # Extract season/episode from onscreen format if not already set by xmltv_ns
+            if 'season' not in custom_props or 'episode' not in custom_props:
+                match = _ONSCREEN_RE.search(onscreen_text)
+                if match:
+                    if 'season' not in custom_props:
+                        custom_props['season'] = int(match.group(1))
+                    if 'episode' not in custom_props:
+                        custom_props['episode'] = int(match.group(2))
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()
