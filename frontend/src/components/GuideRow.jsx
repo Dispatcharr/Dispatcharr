@@ -17,38 +17,41 @@ const H_BUFFER = 600;
 const TOTAL_PLACEHOLDERS = Math.ceil(24 / 2);
 const PLACEHOLDER_BLOCK_WIDTH = HOUR_WIDTH * 2;
 
-const PlaceholderProgram = React.memo(({ channelId, vpLeft, vpRight, rowHeight }) => {
-  return (
-    <>
-      {Array.from({ length: TOTAL_PLACEHOLDERS }).map(
-        (_, placeholderIndex) => {
-          const left = placeholderIndex * PLACEHOLDER_BLOCK_WIDTH;
-          if (left + PLACEHOLDER_BLOCK_WIDTH < vpLeft || left > vpRight) return null;
-          return (
-            <Box
-              key={`placeholder-${channelId}-${placeholderIndex}`}
-              style={{
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-              pos="absolute"
-              left={left}
-              top={0}
-              w={PLACEHOLDER_BLOCK_WIDTH}
-              h={rowHeight - 4}
-              bd={'1px dashed #2D3748'}
-              bdrs={4}
-              display={'flex'}
-              c="#4A5568"
-            >
-              <Text size="sm">No program data</Text>
-            </Box>
-          );
-        }
-      )}
-    </>
-  );
-});
+const PlaceholderProgram = React.memo(
+  ({ channelId, vpLeft, vpRight, rowHeight }) => {
+    return (
+      <>
+        {Array.from({ length: TOTAL_PLACEHOLDERS }).map(
+          (_, placeholderIndex) => {
+            const left = placeholderIndex * PLACEHOLDER_BLOCK_WIDTH;
+            if (left + PLACEHOLDER_BLOCK_WIDTH < vpLeft || left > vpRight)
+              return null;
+            return (
+              <Box
+                key={`placeholder-${channelId}-${placeholderIndex}`}
+                style={{
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                pos="absolute"
+                left={left}
+                top={0}
+                w={PLACEHOLDER_BLOCK_WIDTH}
+                h={rowHeight - 4}
+                bd={'1px dashed #2D3748'}
+                bdrs={4}
+                display={'flex'}
+                c="#4A5568"
+              >
+                <Text size="sm">No program data</Text>
+              </Box>
+            );
+          }
+        )}
+      </>
+    );
+  }
+);
 
 const GuideRow = React.memo(({ index, style, data }) => {
   const {
@@ -189,7 +192,6 @@ const GuideRow = React.memo(({ index, style, data }) => {
                     maxWidth: '100%',
                     maxHeight: '100%',
                     objectFit: 'contain',
-                    filter: 'drop-shadow(0 0 3px rgba(255,255,255,0.15))',
                   }}
                 />
               </Box>
