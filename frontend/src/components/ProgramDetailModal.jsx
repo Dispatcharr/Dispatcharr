@@ -15,16 +15,10 @@ import { Calendar, Video } from 'lucide-react';
 import API from '../api';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
-import { getShowVideoUrl, getChannelLogoUrl } from '../utils/cards/RecordingCardUtils';
+import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils';
 import { formatSeasonEpisode } from '../pages/guideUtils';
 import { format, initializeTime, diff, useDateTimeFormat } from '../utils/dateTimeUtils';
 import { imdbUrl, tmdbUrl } from '../utils/externalUrls';
-
-const modalStyles = {
-  content: { backgroundColor: '#18181B', color: 'white' },
-  header: { backgroundColor: '#18181B', color: 'white' },
-  title: { color: 'white' },
-};
 
 const overlayProps = { color: '#000', backgroundOpacity: 0.55, blur: 0 };
 
@@ -136,7 +130,6 @@ export default function ProgramDetailModal({
   const starRatings = d.star_ratings || [];
   const description = d.description || program.description;
   const subtitle = d.sub_title ?? program.sub_title;
-  const channelLogoUrl = getChannelLogoUrl(channel);
   const posterUrl = resolveImageUrl(d);
   const duration = formatDurationMinutes(program.start_time, program.end_time);
   const programStart = initializeTime(program.start_time || program.startMs);
@@ -146,11 +139,17 @@ export default function ProgramDetailModal({
     <Modal
       opened={opened}
       onClose={onClose}
-      title={null}
+      title={
+        channel ? (
+          <Text size="sm" fw={600} c="white">
+            {channel.channel_number ? `${channel.channel_number} - ` : ''}
+            {channel.name}
+          </Text>
+        ) : null
+      }
       size="lg"
       centered
       overlayProps={overlayProps}
-      styles={modalStyles}
       zIndex={9999}
     >
       <Stack gap="md">
@@ -225,15 +224,6 @@ export default function ProgramDetailModal({
                     </Badge>
                   )}
                 </Group>
-              )}
-
-              {channel && (
-                <Text size="sm" c="dimmed" fw={600}>
-                  {channel.channel_number
-                    ? `${channel.channel_number} - `
-                    : ''}
-                  {channel.name}
-                </Text>
               )}
 
               <Group gap="xs" wrap="wrap">
@@ -400,23 +390,6 @@ export default function ProgramDetailModal({
                 TMDB ↗
               </Badge>
             )}
-          </Group>
-        )}
-        {channelLogoUrl && (
-          <Group justify="flex-end">
-            <Image
-              src={channelLogoUrl}
-              w="auto"
-              h="auto"
-              style={{
-                maxWidth: 120,
-                maxHeight: 40,
-                backgroundColor: 'rgba(255,255,255,0.09)',
-                borderRadius: 6,
-                padding: '4px 6px',
-                filter: 'drop-shadow(0 0 3px rgba(255,255,255,0.15))',
-              }}
-            />
           </Group>
         )}
       </Stack>

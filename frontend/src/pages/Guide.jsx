@@ -775,11 +775,10 @@ export default function TVChannelGuide({ startDate, endDate }) {
   );
 
   const handleProgramClick = useCallback(
-    (program, event) => {
+    (program, channel, event) => {
       event.stopPropagation();
-      const matched = findChannelByTvgId(program.tvg_id);
       setSelectedProgram(program);
-      setSelectedChannel(matched);
+      setSelectedChannel(channel || findChannelByTvgId(program.tvg_id));
       setRecordingForProgram(recordingsByProgramId.get(program.id) || null);
     },
     [findChannelByTvgId, recordingsByProgramId]
@@ -895,7 +894,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
           top={0}
           w={widthPx}
           h={PROGRAM_HEIGHT - 4}
-          onClick={(event) => handleProgramClick(program, event)}
+          onClick={(event) => handleProgramClick(program, channel, event)}
         >
           <Paper
             elevation={2}
