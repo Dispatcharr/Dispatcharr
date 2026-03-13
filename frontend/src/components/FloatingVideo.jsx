@@ -10,6 +10,8 @@ import {
   getClientCoordinates,
   getLivePlayerErrorMessage,
   getVODPlayerErrorMessage,
+  getPlayerPrefs,
+  savePlayerPrefs,
 } from '../utils/components/FloatingVideoUtils.js';
 
 const ResizeHandles = ({ startResize }) => {
@@ -107,7 +109,7 @@ const ResizeHandles = ({ startResize }) => {
       ))}
     </>
   );
-}
+};
 
 export default function FloatingVideo() {
   const isVisible = useVideoStore((s) => s.isVisible);
@@ -125,11 +127,34 @@ export default function FloatingVideo() {
   const dragPositionRef = useRef(null);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const initialPositionRef = useRef(null);
+  // Ref kept in sync with videoSize state for use inside event handlers
+  // where closures over state would be stale.
+  const videoSizeRef = useRef(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [showOverlay, setShowOverlay] = useState(true);
-  const [videoSize, setVideoSize] = useState({ width: 320, height: 180 });
+  const [videoSize, setVideoSize] = useState(() => {
+    const prefs = getPlayerPrefs();
+    const saved = prefs.size;
+    if (saved?.width >= 220 && saved?.height >= 124) {
+      if (typeof window !== 'undefined') {
+        // Cap to viewport minus a margin so the header is always reachable on
+        // first render even if the saved size was set on a larger display.
+        const maxW = window.innerWidth - 48; // VISIBLE_MARGIN
+        const maxH = window.innerHeight - 83; // HEADER_HEIGHT(38) + VISIBLE_MARGIN(48) - 1 extra row
+        if (saved.width > maxW || saved.height > maxH) {
+          const scale = Math.min(maxW / saved.width, maxH / saved.height);
+          return {
+            width: Math.max(220, Math.round(saved.width * scale)),
+            height: Math.max(124, Math.round(saved.height * scale)),
+          };
+        }
+      }
+      return saved;
+    }
+    return { width: 320, height: 180 };
+  });
   const [isResizing, setIsResizing] = useState(false);
   const [dragPosition, setDragPosition] = useState(null);
 
@@ -208,7 +233,10 @@ export default function FloatingVideo() {
     video.preload = 'metadata';
     video.crossOrigin = 'anonymous';
 
-    // Set up event listeners
+    // Restore saved volume
+    const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
+    if (typeof savedVolume === 'number') video.volume = savedVolume;
+    if (typeof savedMuted === 'boolean') video.muted = savedMuted;
     const handleLoadStart = () => setIsLoading(true);
     const handleLoadedData = () => setIsLoading(false);
     const handleCanPlay = () => {
@@ -299,6 +327,12 @@ export default function FloatingVideo() {
 
       player.attachMediaElement(videoRef.current);
 
+      // Restore saved volume
+      const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
+      if (typeof savedVolume === 'number')
+        videoRef.current.volume = savedVolume;
+      if (typeof savedMuted === 'boolean') videoRef.current.muted = savedMuted;
+
       player.on(mpegts.Events.LOADING_COMPLETE, () => {
         setIsLoading(false);
       });
@@ -366,8 +400,14 @@ export default function FloatingVideo() {
       initializeLivePlayer();
     }
 
-    // Cleanup when component unmounts or streamUrl changes
+    // Attach volume-change listener now that the video element is in the DOM
+    const video = videoRef.current;
+    const handleVolumeChange = () =>
+      savePlayerPrefs({ volume: video.volume, muted: video.muted });
+    video?.addEventListener('volumechange', handleVolumeChange);
+
     return () => {
+      video?.removeEventListener('volumechange', handleVolumeChange);
       safeDestroyPlayer();
     };
   }, [isVisible, streamUrl, contentType]);
@@ -389,23 +429,19 @@ export default function FloatingVideo() {
       if (typeof window === 'undefined') return { x, y };
 
       const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
-      const minX = -(videoSize.width - VISIBLE_MARGIN);
-      const minY = -(totalHeight - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - videoSize.width;
-      const maxY = window.innerHeight - totalHeight;
+      const minX = 0;
+      // minY = 0 ensures the header row is always within the viewport so the
+      // user can always grab and reposition the window.
+      const minY = 0;
+      const maxX = Math.max(0, window.innerWidth - videoSize.width);
+      const maxY = Math.max(0, window.innerHeight - totalHeight);
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [
-      VISIBLE_MARGIN,
-      HEADER_HEIGHT,
-      ERROR_HEIGHT,
-      videoSize.height,
-      videoSize.width,
-    ]
+    [HEADER_HEIGHT, ERROR_HEIGHT, videoSize.height, videoSize.width]
   );
 
   const clampToVisibleWithSize = useCallback(
@@ -413,22 +449,33 @@ export default function FloatingVideo() {
       if (typeof window === 'undefined') return { x, y };
 
       const totalHeight = height + HEADER_HEIGHT + ERROR_HEIGHT;
-      const minX = -(width - VISIBLE_MARGIN);
-      const minY = -(totalHeight - VISIBLE_MARGIN);
-      const maxX = window.innerWidth - width;
-      const maxY = window.innerHeight - totalHeight;
+      const minX = 0; // left edge must stay in viewport
+      const minY = 0; // header must always be reachable
+      const maxX = Math.max(0, window.innerWidth - width);
+      const maxY = Math.max(0, window.innerHeight - totalHeight);
 
       return {
         x: Math.min(Math.max(x, minX), maxX),
         y: Math.min(Math.max(y, minY), maxY),
       };
     },
-    [VISIBLE_MARGIN, HEADER_HEIGHT, ERROR_HEIGHT]
+    [HEADER_HEIGHT, ERROR_HEIGHT]
   );
 
   const handleResizeMove = useCallback(
     (event) => {
       if (!resizeStateRef.current) return;
+
+      // If the mouse button was released outside the window, stop resizing.
+      // Remove the move listeners immediately; the mouseup/touchend listener
+      // (endResize) will clean itself up the next time the user clicks.
+      if (event.type === 'mousemove' && event.buttons === 0) {
+        resizeStateRef.current = null;
+        setIsResizing(false);
+        window.removeEventListener('mousemove', handleResizeMove);
+        window.removeEventListener('touchmove', handleResizeMove);
+        return;
+      }
 
       const { clientX, clientY } = getClientCoordinates(event);
       const {
@@ -478,7 +525,13 @@ export default function FloatingVideo() {
     [MIN_HEIGHT, MIN_WIDTH, VISIBLE_MARGIN, clampToVisibleWithSize]
   );
 
-  const updatePositionIfNeeded = (handle, startPos, startWidth, startHeight, newSize) => {
+  const updatePositionIfNeeded = (
+    handle,
+    startPos,
+    startWidth,
+    startHeight,
+    newSize
+  ) => {
     if (!handle.isLeft && !handle.isTop) return;
 
     const posX = startPos?.x ?? 0;
@@ -486,7 +539,12 @@ export default function FloatingVideo() {
     let nextX = handle.isLeft ? posX + (startWidth - newSize.width) : posX;
     let nextY = handle.isTop ? posY + (startHeight - newSize.height) : posY;
 
-    const clamped = clampToVisibleWithSize(nextX, nextY, newSize.width, newSize.height);
+    const clamped = clampToVisibleWithSize(
+      nextX,
+      nextY,
+      newSize.width,
+      newSize.height
+    );
     const nextPos = {
       x: handle.isLeft ? clamped.x : nextX,
       y: handle.isTop ? clamped.y : nextY,
@@ -547,9 +605,84 @@ export default function FloatingVideo() {
     dragPositionRef.current = dragPosition;
   }, [dragPosition]);
 
+  // Keep videoSizeRef current so the window-resize handler never closes over
+  // a stale videoSize value.
+  useEffect(() => {
+    videoSizeRef.current = videoSize;
+  }, [videoSize]);
+
+  // Re-clamp size and position when the browser viewport changes
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const maxW = window.innerWidth - VISIBLE_MARGIN;
+      const maxH = window.innerHeight - VISIBLE_MARGIN;
+      const { width: curW, height: curH } = videoSizeRef.current ?? {
+        width: 320,
+        height: 180,
+      };
+
+      let newW = curW;
+      let newH = curH;
+      if (curW > maxW || curH > maxH) {
+        const scale = Math.min(maxW / curW, maxH / curH);
+        newW = Math.max(MIN_WIDTH, Math.round(curW * scale));
+        newH = Math.max(MIN_HEIGHT, Math.round(curH * scale));
+        setVideoSize({ width: newW, height: newH });
+      }
+
+      if (dragPositionRef.current) {
+        const totalH = newH + HEADER_HEIGHT + ERROR_HEIGHT;
+        const clamped = {
+          x: Math.min(
+            Math.max(dragPositionRef.current.x, 0),
+            Math.max(0, window.innerWidth - newW)
+          ),
+          y: Math.min(
+            Math.max(dragPositionRef.current.y, 0),
+            Math.max(0, window.innerHeight - totalH)
+          ),
+        };
+        if (
+          clamped.x !== dragPositionRef.current.x ||
+          clamped.y !== dragPositionRef.current.y
+        ) {
+          setDragPosition(clamped);
+          dragPositionRef.current = clamped;
+        }
+      }
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [MIN_WIDTH, MIN_HEIGHT, VISIBLE_MARGIN, HEADER_HEIGHT, ERROR_HEIGHT]);
+
+  // Persist size whenever it changes, but skip high-frequency writes during
+  // an active resize drag — the final value is captured when isResizing clears.
+  useEffect(() => {
+    if (!isResizing) {
+      savePlayerPrefs({ size: videoSize });
+    }
+  }, [videoSize, isResizing]);
+
+  // Persist position when a resize ends
+  useEffect(() => {
+    if (!isResizing && dragPositionRef.current) {
+      savePlayerPrefs({ position: dragPositionRef.current });
+    }
+  }, [isResizing]);
+
   // Initialize the floating window near bottom-right once
   useEffect(() => {
     if (initialPositionRef.current || typeof window === 'undefined') return;
+
+    // Try to restore the last saved position
+    const savedPos = getPlayerPrefs().position;
+    if (savedPos) {
+      const clamped = clampToVisible(savedPos.x, savedPos.y);
+      initialPositionRef.current = clamped;
+      setDragPosition(clamped);
+      dragPositionRef.current = clamped;
+      return;
+    }
 
     const totalHeight = videoSize.height + HEADER_HEIGHT + ERROR_HEIGHT;
     const initialX = Math.max(10, window.innerWidth - videoSize.width - 20);
@@ -591,6 +724,13 @@ export default function FloatingVideo() {
 
   const handleDrag = useCallback(
     (event) => {
+      // If the mouse button was released outside the browser window the
+      // mouseup event is never delivered to react-draggable. Detect this on
+      // the next mousemove and fire a synthetic mouseup so it stops dragging.
+      if (event.type === 'mousemove' && event.buttons === 0) {
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        return;
+      }
       const clientX = event.touches?.[0]?.clientX ?? event.clientX;
       const clientY = event.touches?.[0]?.clientY ?? event.clientY;
       if (clientX == null || clientY == null) return;
@@ -609,6 +749,7 @@ export default function FloatingVideo() {
       const clamped = clampToVisible(data?.x ?? 0, data?.y ?? 0);
       setDragPosition(clamped);
       dragPositionRef.current = clamped;
+      savePlayerPrefs({ position: clamped });
     },
     [clampToVisible]
   );
@@ -650,6 +791,8 @@ export default function FloatingVideo() {
           style={{
             padding: '3px 3px 3px 8px',
             minHeight: '38px',
+            cursor: 'grab',
+            userSelect: 'none',
           }}
         >
           {metadata?.name ? (
@@ -801,7 +944,7 @@ export default function FloatingVideo() {
           </Box>
         )}
 
-        <ResizeHandles startResize={startResize}/>
+        <ResizeHandles startResize={startResize} />
       </div>
     </Draggable>
   );
