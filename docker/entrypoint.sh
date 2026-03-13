@@ -156,15 +156,20 @@ echo "Starting init process..."
 # Start PostgreSQL if NOT in modular mode (using external database)
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     echo "Starting Postgres..."
-    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
-    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    postgres_pid=$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
     echo "✅ Postgres started with PID $postgres_pid"
     pids+=("$postgres_pid")
+
+    # Unconditional startup guarantees — run on every AIO startup.
+    # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
+    promote_app_role
+    ensure_app_database
 else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
     # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
@@ -198,7 +203,7 @@ ensure_utf8_encoding
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh
     echo "Starting frontend dev environment"
-    su - $POSTGRES_USER -c "cd /app/frontend && npm run dev &"
+    su - "$POSTGRES_USER" -c "cd /app/frontend && npm run dev &"
     npm_pid=$(pgrep vite | sort | head -n1)
     echo "✅ vite started with PID $npm_pid"
     pids+=("$npm_pid")
@@ -214,9 +219,9 @@ fi
 # --- NumPy version switching for legacy hardware ---
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     # Check if NumPy was compiled with baseline support
-    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
+    if "$VIRTUAL_ENV/bin/python" -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
         echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
-        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
+        uv pip install --python "$VIRTUAL_ENV/bin/python" --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
         echo_with_timestamp "✅ Legacy NumPy installed"
     else
         echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
@@ -224,8 +229,8 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
 fi
 
 # Run Django commands as non-root user to prevent permission issues
-su - $POSTGRES_USER -c "cd /app && python manage.py migrate --noinput"
-su - $POSTGRES_USER -c "cd /app && python manage.py collectstatic --noinput"
+su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
+su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
@@ -254,18 +259,18 @@ fi
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 
 # sed -i 's/protected-mode yes/protected-mode no/g' /etc/redis/redis.conf
-# su - $POSTGRES_USER -c "redis-server --protected-mode no &"
+# su - "$POSTGRES_USER" -c "redis-server --protected-mode no &"
 # redis_pid=$(pgrep redis)
 # echo "✅ redis started with PID $redis_pid"
 # pids+=("$redis_pid")
 
 # echo "🚀 Starting gunicorn..."
-# su - $POSTGRES_USER -c "cd /app && gunicorn dispatcharr.asgi:application \
+# su - "$POSTGRES_USER" -c "cd /app && gunicorn dispatcharr.asgi:application \
 #   --bind 0.0.0.0:5656 \
 #   --worker-class uvicorn.workers.UvicornWorker \
 #   --workers 2 \
@@ -279,12 +284,12 @@ pids+=("$uwsgi_pid")
 # pids+=("$gunicorn_pid")
 
 # echo "Starting celery and beat..."
-# su - $POSTGRES_USER -c "cd /app && celery -A dispatcharr worker -l info --autoscale=8,2 &"
+# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr worker -l info --autoscale=8,2 &"
 # celery_pid=$(pgrep celery | sort | head -n1)
 # echo "✅ celery started with PID $celery_pid"
 # pids+=("$celery_pid")
 
-# su - $POSTGRES_USER -c "cd /app && celery -A dispatcharr beat -l info &"
+# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr beat -l info &"
 # beat_pid=$(pgrep beat | sort | head -n1)
 # echo "✅ celery beat started with PID $beat_pid"
 # pids+=("$beat_pid")
