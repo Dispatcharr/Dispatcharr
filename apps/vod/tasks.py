@@ -540,57 +540,114 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         category = data['category']
         movie_data = data['movie_data']
         logo_url = data.get('logo_url')
+        incoming_name = movie_props['name']
 
-        if movie_key in existing_movies:
-            # Update existing movie
-            movie = existing_movies[movie_key]
-            updated = False
-
-            for field, value in movie_props.items():
-                if field == 'custom_properties':
-                    if value != movie.custom_properties:
-                        movie.custom_properties = value
-                        updated = True
-                elif getattr(movie, field) != value:
-                    setattr(movie, field, value)
+        # Determine which movie record to use.
+        # Priority 1: existing relation whose name matches incoming data — preserves stable
+        #   movie IDs so external references (STRM files, XC-compatible URLs) keep working.
+        # Priority 2: key-based lookup (TMDB/IMDB/name+year).
+        # Priority 3: create new movie.
+        has_trusted_relation = False
+        if stream_id in existing_relations:
+            existing_rel = existing_relations[stream_id]
+            if _names_are_similar(incoming_name, existing_rel.movie.name):
+                has_trusted_relation = True
+                movie = existing_rel.movie
+                # Fill in any external IDs the provider now supplies; never overwrite existing
+                updated = False
+                if movie_props.get('tmdb_id') and not movie.tmdb_id:
+                    movie.tmdb_id = movie_props['tmdb_id']
                     updated = True
-
-            # Handle logo assignment for existing movies
-            logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if movie.logo_id != new_logo.id:
-                        movie._logo_to_update = new_logo
+                if movie_props.get('imdb_id') and not movie.imdb_id:
+                    movie.imdb_id = movie_props['imdb_id']
+                    updated = True
+                for field, value in movie_props.items():
+                    if field in ('tmdb_id', 'imdb_id'):
+                        continue  # Already handled above (fill-only)
+                    if field == 'custom_properties':
+                        if value != movie.custom_properties:
+                            movie.custom_properties = value
+                            updated = True
+                    elif getattr(movie, field) != value:
+                        setattr(movie, field, value)
+                        updated = True
+                logo_updated = False
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if movie.logo_id != new_logo.id:
+                            movie._logo_to_update = new_logo
+                            logo_updated = True
+                    elif movie.logo_id:
+                        logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                        movie._logo_to_update = None
                         logo_updated = True
-                elif movie.logo_id:
-                    # Logo URL exists but logo creation failed or logo not found
-                    # Clear the orphaned logo reference
-                    logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
                     movie._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
-                # Clear logo if no logo URL provided or URL is too long
-                movie._logo_to_update = None
-                logo_updated = True
+                if updated or logo_updated:
+                    movies_to_update.append(movie)
+            else:
+                logger.warning(
+                    f"Stream ID {stream_id} name mismatch: existing='{existing_rel.movie.name}' "
+                    f"incoming='{incoming_name}' — treating as new stream (provider likely recycled ID)"
+                )
 
-            if updated or logo_updated:
-                movies_to_update.append(movie)
-        else:
-            # Create new movie
-            movie = Movie(**movie_props)
+        if not has_trusted_relation:
+            if movie_key in existing_movies:
+                # Update existing movie found by key lookup
+                movie = existing_movies[movie_key]
+                updated = False
 
-            # Assign logo if available
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                movie.logo = existing_logos[logo_url]
+                for field, value in movie_props.items():
+                    if field == 'custom_properties':
+                        if value != movie.custom_properties:
+                            movie.custom_properties = value
+                            updated = True
+                    elif getattr(movie, field) != value:
+                        setattr(movie, field, value)
+                        updated = True
 
-            movies_to_create.append(movie)
+                # Handle logo assignment for existing movies
+                logo_updated = False
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if movie.logo_id != new_logo.id:
+                            movie._logo_to_update = new_logo
+                            logo_updated = True
+                    elif movie.logo_id:
+                        # Logo URL exists but logo creation failed or logo not found
+                        # Clear the orphaned logo reference
+                        logger.warning(f"Logo URL provided but logo not found in database for movie '{movie.name}', clearing logo reference")
+                        movie._logo_to_update = None
+                        logo_updated = True
+                elif (not logo_url or len(logo_url) > 500) and movie.logo_id:
+                    # Clear logo if no logo URL provided or URL is too long
+                    movie._logo_to_update = None
+                    logo_updated = True
+
+                if updated or logo_updated:
+                    movies_to_update.append(movie)
+            else:
+                # Create new movie
+                movie = Movie(**movie_props)
+
+                # Assign logo if available
+                if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
+                    movie.logo = existing_logos[logo_url]
+
+                movies_to_create.append(movie)
 
         # Handle relation
         if stream_id in existing_relations:
             # Update existing relation
             relation = existing_relations[stream_id]
-            relation.movie = movie
+            if not has_trusted_relation:
+                # Name mismatch or first-time key lookup: update the movie reference
+                relation.movie = movie
+            # When has_trusted_relation: do NOT reassign relation.movie —
+            # preserving the existing FK keeps external references stable
             relation.category = category
             relation.container_extension = movie_data.get('container_extension', 'mp4')
             relation.custom_properties = {
@@ -897,57 +954,114 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         category = data['category']
         series_data = data['series_data']
         logo_url = data.get('logo_url')
+        incoming_name = series_props['name']
 
-        if series_key in existing_series:
-            # Update existing series
-            series = existing_series[series_key]
-            updated = False
-
-            for field, value in series_props.items():
-                if field == 'custom_properties':
-                    if value != series.custom_properties:
-                        series.custom_properties = value
-                        updated = True
-                elif getattr(series, field) != value:
-                    setattr(series, field, value)
+        # Determine which series record to use.
+        # Priority 1: existing relation whose name matches incoming data — preserves stable
+        #   series IDs so external references keep working across M3U refreshes.
+        # Priority 2: key-based lookup (TMDB/IMDB/name+year).
+        # Priority 3: create new series.
+        has_trusted_relation = False
+        if series_id in existing_relations:
+            existing_rel = existing_relations[series_id]
+            if _names_are_similar(incoming_name, existing_rel.series.name):
+                has_trusted_relation = True
+                series = existing_rel.series
+                # Fill in any external IDs the provider now supplies; never overwrite existing
+                updated = False
+                if series_props.get('tmdb_id') and not series.tmdb_id:
+                    series.tmdb_id = series_props['tmdb_id']
                     updated = True
-
-            # Handle logo assignment for existing series
-            logo_updated = False
-            if logo_url and len(logo_url) <= 500:
-                if logo_url in existing_logos:
-                    new_logo = existing_logos[logo_url]
-                    if series.logo_id != new_logo.id:
-                        series._logo_to_update = new_logo
+                if series_props.get('imdb_id') and not series.imdb_id:
+                    series.imdb_id = series_props['imdb_id']
+                    updated = True
+                for field, value in series_props.items():
+                    if field in ('tmdb_id', 'imdb_id'):
+                        continue  # Already handled above (fill-only)
+                    if field == 'custom_properties':
+                        if value != series.custom_properties:
+                            series.custom_properties = value
+                            updated = True
+                    elif getattr(series, field) != value:
+                        setattr(series, field, value)
+                        updated = True
+                logo_updated = False
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if series.logo_id != new_logo.id:
+                            series._logo_to_update = new_logo
+                            logo_updated = True
+                    elif series.logo_id:
+                        logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                        series._logo_to_update = None
                         logo_updated = True
-                elif series.logo_id:
-                    # Logo URL exists but logo creation failed or logo not found
-                    # Clear the orphaned logo reference
-                    logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                elif (not logo_url or len(logo_url) > 500) and series.logo_id:
                     series._logo_to_update = None
                     logo_updated = True
-            elif (not logo_url or len(logo_url) > 500) and series.logo_id:
-                # Clear logo if no logo URL provided or URL is too long
-                series._logo_to_update = None
-                logo_updated = True
+                if updated or logo_updated:
+                    series_to_update.append(series)
+            else:
+                logger.warning(
+                    f"Series ID {series_id} name mismatch: existing='{existing_rel.series.name}' "
+                    f"incoming='{incoming_name}' — treating as new series (provider likely recycled ID)"
+                )
 
-            if updated or logo_updated:
-                series_to_update.append(series)
-        else:
-            # Create new series
-            series = Series(**series_props)
+        if not has_trusted_relation:
+            if series_key in existing_series:
+                # Update existing series found by key lookup
+                series = existing_series[series_key]
+                updated = False
 
-            # Assign logo if available
-            if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
-                series.logo = existing_logos[logo_url]
+                for field, value in series_props.items():
+                    if field == 'custom_properties':
+                        if value != series.custom_properties:
+                            series.custom_properties = value
+                            updated = True
+                    elif getattr(series, field) != value:
+                        setattr(series, field, value)
+                        updated = True
 
-            series_to_create.append(series)
+                # Handle logo assignment for existing series
+                logo_updated = False
+                if logo_url and len(logo_url) <= 500:
+                    if logo_url in existing_logos:
+                        new_logo = existing_logos[logo_url]
+                        if series.logo_id != new_logo.id:
+                            series._logo_to_update = new_logo
+                            logo_updated = True
+                    elif series.logo_id:
+                        # Logo URL exists but logo creation failed or logo not found
+                        # Clear the orphaned logo reference
+                        logger.warning(f"Logo URL provided but logo not found in database for series '{series.name}', clearing logo reference")
+                        series._logo_to_update = None
+                        logo_updated = True
+                elif (not logo_url or len(logo_url) > 500) and series.logo_id:
+                    # Clear logo if no logo URL provided or URL is too long
+                    series._logo_to_update = None
+                    logo_updated = True
+
+                if updated or logo_updated:
+                    series_to_update.append(series)
+            else:
+                # Create new series
+                series = Series(**series_props)
+
+                # Assign logo if available
+                if logo_url and len(logo_url) <= 500 and logo_url in existing_logos:
+                    series.logo = existing_logos[logo_url]
+
+                series_to_create.append(series)
 
         # Handle relation
         if series_id in existing_relations:
             # Update existing relation
             relation = existing_relations[series_id]
-            relation.series = series
+            if not has_trusted_relation:
+                # Name mismatch or first-time key lookup: update the series reference
+                relation.series = series
+            # When has_trusted_relation: do NOT reassign relation.series —
+            # preserving the existing FK keeps external references stable
             relation.category = category
             relation.custom_properties = {
                 'basic_data': series_data,
@@ -1213,6 +1327,36 @@ def parse_date(date_string):
             return datetime.strptime(date_string, '%Y-%m-%d')
         except ValueError:
             return None  # Return None if parsing fails
+
+
+def _names_are_similar(name_a, name_b, threshold=0.85):
+    """Check if two content titles are similar enough to trust a stream ID link.
+
+    Guards against provider stream ID recycling: if names differ substantially,
+    the provider may have reassigned the stream_id to completely different content.
+    """
+    from difflib import SequenceMatcher
+
+    def _normalize(name):
+        name = name.lower()
+        name = re.sub(r'[^\w\s]', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()
+        return name
+
+    a = _normalize(name_a)
+    b = _normalize(name_b)
+
+    if not a or not b:
+        return True  # Cannot compare empty names; give benefit of the doubt
+
+    if a == b:
+        return True
+
+    # One title contains the other (handles year suffixes, subtitle additions, etc.)
+    if a in b or b in a:
+        return True
+
+    return SequenceMatcher(None, a, b).ratio() >= threshold
 
 
 # Episode processing and other advanced features

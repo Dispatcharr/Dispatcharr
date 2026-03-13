@@ -21,3 +21,5 @@ package-lock.json
 models
 .idea
 uv.lock
+match_logos.py
+*.local.md
