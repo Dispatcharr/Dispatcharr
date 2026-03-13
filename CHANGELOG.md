@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- EPG programme parsing crash when an XMLTV source contains programme titles exceeding 255 characters. Previously, a single oversized title would cause the entire `bulk_create` batch to fail with a database truncation error, silently dropping all programmes in that batch. Titles are now truncated to 255 characters before being saved. (Fixes #1039)
 - Container startup failure when `PUID`/`PGID` is set, caused by `/data/db` ownership conflicts between the `postgres` system user (UID 102) and the configured PUID/PGID. PostgreSQL now runs as the PUID/PGID user in AIO mode, eliminating all `chown`-to-UID-102 operations and unifying `/data` ownership. (Fixes #1078) — Thanks [@CodeBormen](https://github.com/CodeBormen)
   - Existing installations where PUID/PGID differs from the current `/data/db` owner are migrated automatically on first startup; a sentinel file prevents redundant recursive `chown` on subsequent boots.
   - PUID/PGID auto-detected from existing data ownership when not explicitly set, avoiding cross-UID `chown` failures on restricted filesystems (NFS `root_squash`, CIFS).
