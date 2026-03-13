@@ -27,9 +27,9 @@ export DJANGO_SECRET_KEY="$(tr -d '\r\n' < /data/jwt)"
 # --- NumPy version switching for legacy hardware ---
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     # Check if NumPy was compiled with baseline support
-    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
+    if "$VIRTUAL_ENV/bin/python" -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
         echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
-        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
+        uv pip install --python "$VIRTUAL_ENV/bin/python" --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
         echo_with_timestamp "✅ Legacy NumPy installed"
     else
         echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"

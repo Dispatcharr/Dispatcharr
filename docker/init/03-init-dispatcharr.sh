@@ -28,7 +28,7 @@ done
 if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
     if [ "$(stat -c '%u:%g' /app)" != "$PUID:$PGID" ]; then
         echo "Fixing ownership for /app (non-recursive)"
-        chown $PUID:$PGID /app
+        chown "$PUID:$PGID" /app
     fi
 fi
 # Configure nginx port
@@ -53,7 +53,7 @@ if [ "$(id -u)" = "0" ]; then
     for dir in "${DATA_DIRS[@]}"; do
         if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir")" != "$PUID:$PGID" ]; then
             echo "Fixing ownership for $dir"
-            chown $PUID:$PGID "$dir"
+            chown "$PUID:$PGID" "$dir"
         fi
     done
 
@@ -61,7 +61,7 @@ if [ "$(id -u)" = "0" ]; then
     for dir in "${APP_DIRS[@]}"; do
         if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir")" != "$PUID:$PGID" ]; then
             echo "Fixing ownership for $dir (recursive)"
-            chown -R $PUID:$PGID "$dir"
+            chown -R "$PUID:$PGID" "$dir"
         fi
     done
 
@@ -72,7 +72,7 @@ if [ "$(id -u)" = "0" ]; then
     # Fix /data directory ownership (non-recursive)
     if [ -d "/data" ] && [ "$(stat -c '%u:%g' /data)" != "$PUID:$PGID" ]; then
         echo "Fixing ownership for /data (non-recursive)"
-        chown $PUID:$PGID /data
+        chown "$PUID:$PGID" /data
     fi
 
     chmod +x /data

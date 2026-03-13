@@ -7,7 +7,7 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     # The package installs this owned by the postgres system user, but PostgreSQL
     # runs as $POSTGRES_USER (PUID:PGID) in AIO mode.
     if [ -d /var/run/postgresql ]; then
-        chown $PUID:$PGID /var/run/postgresql
+        chown "$PUID:$PGID" /var/run/postgresql
     fi
 
     # Record PUID:PGID in a sentinel file so subsequent startups can skip
@@ -48,17 +48,17 @@ HBAEOF
         mv /data/* /tmp/postgres_migration/
 
         # Create the target directory
-        mkdir -p $POSTGRES_DIR
+        mkdir -p "$POSTGRES_DIR"
 
         # Move the files from temporary directory to the final location
-        mv /tmp/postgres_migration/* $POSTGRES_DIR/
+        mv /tmp/postgres_migration/* "$POSTGRES_DIR/"
 
         # Clean up the temporary directory
         rmdir /tmp/postgres_migration
 
         # Set proper ownership and permissions for PostgreSQL data directory
-        chown -R $PUID:$PGID $POSTGRES_DIR
-        chmod 700 $POSTGRES_DIR
+        chown -R "$PUID:$PGID" "$POSTGRES_DIR"
+        chmod 700 "$POSTGRES_DIR"
 
         echo "Migration completed successfully."
     fi
@@ -169,13 +169,12 @@ HBAEOF
         #    requires -U to match this role exactly.
         # The old cluster's install user is "postgres" (pre-PUID images)
         # or $POSTGRES_USER (post-PUID images, future upgrades).
-        _pg_tmp_port=5499
         echo "Preparing old cluster for upgrade..."
-        su - "$POSTGRES_USER" -c "$OLD_BINDIR/pg_ctl -D $POSTGRES_DIR start -w -o '-c port=$_pg_tmp_port'"
+        su - "$POSTGRES_USER" -c "$OLD_BINDIR/pg_ctl -D $POSTGRES_DIR start -w -o '-c port=${POSTGRES_PORT}'"
         _promoted=false
         for _role in "postgres" "$POSTGRES_USER"; do
-            if su - "$POSTGRES_USER" -c "psql -U $_role -d template1 -p $_pg_tmp_port -tAc 'SELECT 1;'" 2>/dev/null | grep -q 1; then
-                if su - "$POSTGRES_USER" -c "psql -U $_role -d template1 -p $_pg_tmp_port -v ON_ERROR_STOP=1" <<UPGEOF
+            if su - "$POSTGRES_USER" -c "psql -U $_role -d template1 -p ${POSTGRES_PORT} -tAc 'SELECT 1;'" 2>/dev/null | grep -q 1; then
+                if su - "$POSTGRES_USER" -c "psql -U $_role -d template1 -p ${POSTGRES_PORT} -v ON_ERROR_STOP=1" <<UPGEOF
 DO \$\$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$POSTGRES_USER') THEN
@@ -194,7 +193,7 @@ UPGEOF
         done
 
         # Detect the bootstrap superuser (OID 10 = the role that ran initdb).
-        _install_user=$(su - "$POSTGRES_USER" -c "psql -d template1 -p $_pg_tmp_port -tAc \
+        _install_user=$(su - "$POSTGRES_USER" -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
             \"SELECT rolname FROM pg_authid WHERE oid = 10;\"" 2>/dev/null | tr -d '[:space:]')
         if [ -z "$_install_user" ]; then
             _install_user="postgres"
@@ -218,7 +217,7 @@ UPGEOF
         fi
 
         mkdir -p "$NEW_POSTGRES_DIR"
-        chown -R $PUID:$PGID "$NEW_POSTGRES_DIR"
+        chown -R "$PUID:$PGID" "$NEW_POSTGRES_DIR"
         chmod 700 "$NEW_POSTGRES_DIR"
 
         # Initialize new data directory with the same install user as the old
@@ -305,7 +304,7 @@ promote_app_role() {
     for try_db in "postgres" "template1"; do
         for try_role in "postgres" "$POSTGRES_USER"; do
             local _super
-            _super=$(su - $POSTGRES_USER -c "psql -U $try_role -d $try_db -p ${POSTGRES_PORT} -tAc \
+            _super=$(su - "$POSTGRES_USER" -c "psql -U $try_role -d $try_db -p ${POSTGRES_PORT} -tAc \
                 \"SELECT rolsuper FROM pg_roles WHERE rolname='$try_role';\"" 2>/dev/null | tr -d '[:space:]')
             if [ "$_super" = "t" ]; then
                 CONNECT_ROLE="$try_role"
@@ -318,7 +317,7 @@ promote_app_role() {
     if [ -z "$CONNECT_ROLE" ]; then
         echo "❌ Role setup failed: no connectable superuser role found."
         echo "   To recover manually:"
-        echo "     su - $POSTGRES_USER -c \"psql -d template1 -p $POSTGRES_PORT\""
+        echo "     su - "$POSTGRES_USER" -c \"psql -d template1 -p $POSTGRES_PORT\""
         echo "     CREATE ROLE $POSTGRES_USER WITH SUPERUSER LOGIN PASSWORD '<your_password>';"
         exit 1
     fi
@@ -326,7 +325,7 @@ promote_app_role() {
     # Escape single quotes for safe SQL interpolation
     local _sql_pw="${POSTGRES_PASSWORD//\'/\'\'}"
 
-    if ! su - $POSTGRES_USER -c "psql -U $CONNECT_ROLE -d $CONNECT_DB -p ${POSTGRES_PORT} -v ON_ERROR_STOP=1" <<EOSQL
+    if ! su - "$POSTGRES_USER" -c "psql -U $CONNECT_ROLE -d $CONNECT_DB -p ${POSTGRES_PORT} -v ON_ERROR_STOP=1" <<EOSQL
 DO \$\$
 BEGIN
     -- Ensure the application role exists with superuser and login.
@@ -357,7 +356,7 @@ EOSQL
         echo "❌ Role setup failed. The application may not be able to connect."
         echo "   Check PostgreSQL logs for details."
         echo "   To recover manually:"
-        echo "     su - $POSTGRES_USER -c \"psql -d template1 -p $POSTGRES_PORT\""
+        echo "     su - "$POSTGRES_USER" -c \"psql -d template1 -p $POSTGRES_PORT\""
         echo "     ALTER ROLE $POSTGRES_USER WITH SUPERUSER LOGIN PASSWORD '<your_password>';"
         exit 1
     fi
@@ -378,15 +377,15 @@ ensure_app_database() {
     fi
 
     # Connect to template1 (always exists) to check pg_database catalog.
-    if su - $POSTGRES_USER -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
+    if su - "$POSTGRES_USER" -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
         \"SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB';\"" 2>/dev/null | grep -q 1; then
         return 0
     fi
 
     echo "Application database '$POSTGRES_DB' not found — creating..."
-    if ! su - $POSTGRES_USER -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}" 2>/dev/null; then
+    if ! su - "$POSTGRES_USER" -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}" 2>/dev/null; then
         # Might already exist if the check failed for a transient reason.
-        if su - $POSTGRES_USER -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
+        if su - "$POSTGRES_USER" -c "psql -d template1 -p ${POSTGRES_PORT} -tAc \
             \"SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB';\"" 2>/dev/null | grep -q 1; then
             return 0
         fi
@@ -406,7 +405,7 @@ ensure_utf8_encoding() {
         CURRENT_ENCODING=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -w -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();" 2>/dev/null | tr -d ' ')
     else
         # Internal database: use Unix socket as application user
-        CURRENT_ENCODING=$(su - $POSTGRES_USER -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB} -tAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();\"" | tr -d ' ')
+        CURRENT_ENCODING=$(su - "$POSTGRES_USER" -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB} -tAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database();\"" | tr -d ' ')
     fi
 
     if [ "$CURRENT_ENCODING" != "UTF8" ]; then
@@ -426,13 +425,13 @@ ensure_utf8_encoding() {
         else
             # Internal database: use Unix socket as application user
             # Dump database (include permissions and ownership)
-            su - $POSTGRES_USER -c "pg_dump -p ${POSTGRES_PORT} ${POSTGRES_DB}" > "$DUMP_FILE" || { echo "Dump failed"; return 1; }
+            su - "$POSTGRES_USER" -c "pg_dump -p ${POSTGRES_PORT} ${POSTGRES_DB}" > "$DUMP_FILE" || { echo "Dump failed"; return 1; }
             # Drop and recreate database with UTF8 encoding using template0
-            su - $POSTGRES_USER -c "dropdb -p ${POSTGRES_PORT} ${POSTGRES_DB}" || { echo "Drop failed"; return 1; }
+            su - "$POSTGRES_USER" -c "dropdb -p ${POSTGRES_PORT} ${POSTGRES_DB}" || { echo "Drop failed"; return 1; }
             # Recreate database with UTF8 encoding and correct owner
-            su - $POSTGRES_USER -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 --template=template0 --owner=${POSTGRES_USER} ${POSTGRES_DB}" || { echo "Create failed"; return 1; }
+            su - "$POSTGRES_USER" -c "createdb -p ${POSTGRES_PORT} --encoding=UTF8 --template=template0 --owner=${POSTGRES_USER} ${POSTGRES_DB}" || { echo "Create failed"; return 1; }
             # Restore data
-            cat "$DUMP_FILE" | su - $POSTGRES_USER -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB}" || { echo "Restore failed"; return 1; }
+            cat "$DUMP_FILE" | su - "$POSTGRES_USER" -c "psql -p ${POSTGRES_PORT} -d ${POSTGRES_DB}" || { echo "Restore failed"; return 1; }
         fi
 
         rm -f "$DUMP_FILE"
