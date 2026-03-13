@@ -56,13 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - PUID/PGID auto-detected from existing data ownership when not explicitly set, avoiding cross-UID `chown` failures on restricted filesystems (NFS `root_squash`, CIFS).
   - PUID/PGID validated as positive non-zero integers before any user/group operations.
   - UID collisions with the `postgres` system user (e.g. PUID=102) are now handled gracefully.
+  - Ensured proper variable quoting in the /docker/ directory to guard from inappropriate input
+
 =======
 - Floating video player bug fixes
   - **Resize stuck after releasing mouse outside window**: The `mouseup` event is not delivered when the pointer leaves the viewport, leaving the `mousemove` listener active indefinitely. Fixed by checking `event.buttons === 0` at the top of `handleResizeMove`; when no button is held the resize session is torn down immediately.
   - **Drag stuck after releasing mouse outside window**: Same root cause as the resize bug. Fixed by detecting `event.buttons === 0` in the `onDrag` handler and dispatching a synthetic `mouseup` event so react-draggable cleanly ends the drag session.
   - **Player draggable off screen**: The player could be dragged off any edge, making the header (and drag handle) unreachable. The player is now fully bounded: left and top edges are clamped to `x ≥ 0` / `y ≥ 0` so the header is always reachable, and right/bottom edges are clamped to the viewport. Size and position are also re-clamped automatically when the browser window is resized, with proportional scale-down if the saved size exceeds the new viewport.
 >>>>>>> dev
-  - Ensured proper variable quoting in the /docker/ directory to guard from inappropriate input
 - **Security**: Any authenticated user could self-escalate privileges by sending `user_level`, `is_staff`, or `is_superuser` in a `PATCH /api/accounts/users/me/` request. The `/me/` endpoint now enforces an allowlist (`custom_properties`, `first_name`, `last_name`, `email`, `password`); any other fields return HTTP 400. Privilege-sensitive fields can only be changed via the admin-only `PATCH /api/accounts/users/{id}/` endpoint.
 - Double error notification when saving user preferences: `API.updateMe` was catching errors internally and displaying a notification before re-throwing, causing callers to display a second notification for the same failure.
 - Navigation preference saves from concurrent sessions could overwrite each other due to a double-merge race: the frontend was pre-merging `custom_properties` before sending, then the backend merged again against the DB value, causing the second session's write to silently drop keys set by the first. The frontend now sends only the delta; the backend merges authoritatively against the stored value.
