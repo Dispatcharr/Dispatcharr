@@ -17,7 +17,12 @@ import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils';
 import { formatSeasonEpisode } from '../pages/guideUtils';
-import { format, initializeTime, diff, useDateTimeFormat } from '../utils/dateTimeUtils';
+import {
+  format,
+  initializeTime,
+  diff,
+  useDateTimeFormat,
+} from '../utils/dateTimeUtils';
 import { imdbUrl, tmdbUrl } from '../utils/externalUrls';
 
 const overlayProps = { color: '#000', backgroundOpacity: 0.55, blur: 0 };
@@ -130,7 +135,8 @@ export default function ProgramDetailModal({
   const starRatings = d.star_ratings || [];
   const description = d.description || program.description;
   const subtitle = d.sub_title ?? program.sub_title;
-  const posterUrl = resolveImageUrl(d);
+  const posterUrl =
+    resolveImageUrl(d) || program?.custom_properties?.icon || null;
   const duration = formatDurationMinutes(program.start_time, program.end_time);
   const programStart = initializeTime(program.start_time || program.startMs);
   const programEnd = initializeTime(program.end_time || program.endMs);
@@ -161,7 +167,9 @@ export default function ProgramDetailModal({
               fit="contain"
               radius="sm"
               style={{ flexShrink: 0 }}
-              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
             />
           )}
 
@@ -322,7 +330,10 @@ export default function ProgramDetailModal({
           </>
         )}
 
-        {(d.country || d.language || d.original_air_date || starRatings.length > 0) && (
+        {(d.country ||
+          d.language ||
+          d.original_air_date ||
+          starRatings.length > 0) && (
           <>
             <Divider color="#333" />
             <Group gap="md" wrap="wrap">
