@@ -3,18 +3,23 @@
 # Skip internal PostgreSQL setup in modular mode (using external database)
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
 
-    # Ensure the PostgreSQL socket directory is writable by the application user.
-    # The package installs this owned by the postgres system user, but PostgreSQL
-    # runs as $POSTGRES_USER (PUID:PGID) in AIO mode.
-    if [ -d /var/run/postgresql ]; then
-        chown "$PUID:$PGID" /var/run/postgresql
-    fi
-
     # Record PUID:PGID in a sentinel file so subsequent startups can skip
     # the expensive recursive chown when ownership is already correct.
     write_ownership_sentinel() {
         echo "$PUID:$PGID" > "${POSTGRES_DIR}/.owner_puid"
         chown "$PUID:$PGID" "${POSTGRES_DIR}/.owner_puid"
+    }
+
+    # Ensure the PostgreSQL socket directory exists, is owned by PUID:PGID,
+    # and has no stale lock/socket files from an unclean previous shutdown.
+    # Called immediately before every pg_ctl start so it runs after any apt
+    # post-remove scripts that might reset the directory's ownership.
+    prepare_pg_socket_dir() {
+        mkdir -p /var/run/postgresql
+        chown "$PUID:$PGID" /var/run/postgresql
+        chmod 755 /var/run/postgresql
+        rm -f "/var/run/postgresql/.s.PGSQL.${POSTGRES_PORT}" \
+              "/var/run/postgresql/.s.PGSQL.${POSTGRES_PORT}.lock" 2>/dev/null || true
     }
 
     # Write standard pg_hba.conf and enable network listening.
@@ -170,6 +175,7 @@ HBAEOF
         # The old cluster's install user is "postgres" (pre-PUID images)
         # or $POSTGRES_USER (post-PUID images, future upgrades).
         echo "Preparing old cluster for upgrade..."
+        prepare_pg_socket_dir
         su - "$POSTGRES_USER" -c "$OLD_BINDIR/pg_ctl -D $POSTGRES_DIR start -w -o '-c port=${POSTGRES_PORT}'"
         _promoted=false
         for _role in "postgres" "$POSTGRES_USER"; do

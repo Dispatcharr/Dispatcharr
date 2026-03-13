@@ -156,6 +156,7 @@ echo "Starting init process..."
 # Start PostgreSQL if NOT in modular mode (using external database)
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     echo "Starting Postgres..."
+    prepare_pg_socket_dir
     su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
     until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
