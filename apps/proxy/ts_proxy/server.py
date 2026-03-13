@@ -459,10 +459,6 @@ class ProxyServer:
             lock_key = RedisKeys.channel_owner(channel_id)
             current = self.redis_client.get(lock_key)
 
-<<<<<<< HEAD
-            # Only extend if we're still the owner
-            if current and current == self.worker_id:
-=======
             if current is None:
                 # Key expired — re-acquire if we have the stream_manager
                 if channel_id in self.stream_managers:
@@ -476,8 +472,7 @@ class ProxyServer:
                         return False
                 return False
 
-            if current.decode('utf-8') == self.worker_id:
->>>>>>> origin/dev
+            if current == self.worker_id:
                 self.redis_client.expire(lock_key, ttl)
                 return True
 

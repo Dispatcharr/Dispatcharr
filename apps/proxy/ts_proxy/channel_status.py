@@ -265,22 +265,64 @@ class ChannelStatus:
             }
 
         # Add FFmpeg stream information
-        info['video_codec'] = metadata.get(ChannelMetadataField.VIDEO_CODEC)
-        info['resolution'] = metadata.get(ChannelMetadataField.RESOLUTION)
-        info['source_fps'] = metadata.get(ChannelMetadataField.SOURCE_FPS)
-        info['pixel_format'] = metadata.get(ChannelMetadataField.PIXEL_FORMAT)
-        info['source_bitrate'] = metadata.get(ChannelMetadataField.SOURCE_BITRATE)
-        info['audio_codec'] = metadata.get(ChannelMetadataField.AUDIO_CODEC)
-        info['sample_rate'] = metadata.get(ChannelMetadataField.SAMPLE_RATE)
-        info['audio_channels'] = metadata.get(ChannelMetadataField.AUDIO_CHANNELS)
-        info['audio_bitrate'] = metadata.get(ChannelMetadataField.AUDIO_BITRATE)
+        video_codec = metadata.get(ChannelMetadataField.VIDEO_CODEC)
+        if video_codec:
+            info['video_codec'] = video_codec
+
+        resolution = metadata.get(ChannelMetadataField.RESOLUTION)
+        if resolution:
+            info['resolution'] = resolution
+
+        source_fps = metadata.get(ChannelMetadataField.SOURCE_FPS)
+        if source_fps:
+            info['source_fps'] = source_fps
+
+        pixel_format = metadata.get(ChannelMetadataField.PIXEL_FORMAT)
+        if pixel_format:
+            info['pixel_format'] = pixel_format
+
+        source_bitrate = metadata.get(ChannelMetadataField.SOURCE_BITRATE)
+        if source_bitrate:
+            info['source_bitrate'] = source_bitrate
+
+        audio_codec = metadata.get(ChannelMetadataField.AUDIO_CODEC)
+        if audio_codec:
+            info['audio_codec'] = audio_codec
+
+        sample_rate = metadata.get(ChannelMetadataField.SAMPLE_RATE)
+        if sample_rate:
+            info['sample_rate'] = sample_rate
+
+        audio_channels = metadata.get(ChannelMetadataField.AUDIO_CHANNELS)
+        if audio_channels:
+            info['audio_channels'] = audio_channels
+
+        audio_bitrate = metadata.get(ChannelMetadataField.AUDIO_BITRATE)
+        if audio_bitrate:
+            info['audio_bitrate'] = audio_bitrate
+
 
         # Add FFmpeg performance stats
-        info['ffmpeg_speed'] = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
-        info['ffmpeg_fps'] = metadata.get(ChannelMetadataField.FFMPEG_FPS)
-        info['actual_fps'] = metadata.get(ChannelMetadataField.ACTUAL_FPS)
-        info['ffmpeg_bitrate'] = metadata.get(ChannelMetadataField.FFMPEG_BITRATE)
-        info['stream_type'] = metadata.get(ChannelMetadataField.STREAM_TYPE)
+        ffmpeg_speed = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
+        if ffmpeg_speed:
+            info['ffmpeg_speed'] = ffmpeg_speed
+
+        ffmpeg_fps = metadata.get(ChannelMetadataField.FFMPEG_FPS)
+        if ffmpeg_fps:
+            info['ffmpeg_fps'] = ffmpeg_fps
+
+        actual_fps = metadata.get(ChannelMetadataField.ACTUAL_FPS)
+        if actual_fps:
+            info['actual_fps'] = actual_fps
+
+        ffmpeg_bitrate = metadata.get(ChannelMetadataField.FFMPEG_BITRATE)
+        if ffmpeg_bitrate:
+            info['ffmpeg_bitrate'] = ffmpeg_bitrate
+
+        stream_type = metadata.get(ChannelMetadataField.STREAM_TYPE)
+        if stream_type:
+            info['stream_type'] = stream_type
+
 
         return info
 
