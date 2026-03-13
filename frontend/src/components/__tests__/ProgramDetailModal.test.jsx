@@ -10,7 +10,6 @@ vi.mock('../../store/useVideoStore');
 vi.mock('../../store/settings');
 vi.mock('../../utils/cards/RecordingCardUtils.js', () => ({
   getShowVideoUrl: vi.fn(() => 'http://video.test'),
-  getChannelLogoUrl: vi.fn(() => 'http://logo.test/cached.png'),
 }));
 
 vi.mock('../../images/logo.png', () => ({ default: 'default-logo.png' }));
@@ -129,7 +128,8 @@ describe('ProgramDetailModal', () => {
     );
 
     expect(screen.getByTestId('modal')).toBeInTheDocument();
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Breaking Bad');
+    expect(screen.getByTestId('modal-title')).toHaveTextContent('4 - AMC');
+    expect(screen.getByText('Breaking Bad')).toBeInTheDocument();
   });
 
   it('displays subtitle when present', async () => {
@@ -345,7 +345,8 @@ describe('ProgramDetailModal', () => {
       />
     );
 
-    expect(screen.getByTestId('modal-title')).toHaveTextContent('Sports Event');
+    expect(screen.getByTestId('modal-title')).toHaveTextContent('4 - AMC');
+    expect(screen.getByText('Sports Event')).toBeInTheDocument();
   });
 
   it('displays enriched detail data after fetch', async () => {
