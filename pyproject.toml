@@ -2,7 +2,7 @@
 name = "dispatcharr"
 description = "Dispatcharr - Stream dispatching and management"
 readme = "README.md"
-license = "CC-BY-NC-SA-4.0"
+license = "AGPL-3.0-only"
 requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
