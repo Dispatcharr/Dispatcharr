@@ -14,6 +14,7 @@ Thank you for your interest in contributing. Dispatcharr is a complex, productio
 - [Submitting a Pull Request](#submitting-a-pull-request)
 - [On AI-Assisted Code](#on-ai-assisted-code)
 - [What We Will Decline](#what-we-will-decline)
+- [Contributor License Agreement](#contributor-license-agreement)
 
 ---
 
@@ -222,6 +223,20 @@ To save your time and ours, the following types of PRs will be closed without ex
 - **Cosmetic/style-only changes.** Reformatting files, renaming variables for preference, or reorganizing imports with no functional change.
 - **Duplicate work.** Check open PRs and issues before starting. If someone is already working on it, coordinate with them.
 - **Code the author cannot explain.** See [On AI-Assisted Code](#on-ai-assisted-code).
+
+---
+
+## Contributor License Agreement
+
+By submitting a pull request to this repository, you agree to the following terms:
+
+- You authored the contribution and have the right to submit it.
+- You grant the Dispatcharr project a perpetual, worldwide, irrevocable, royalty-free license to use, reproduce, modify, distribute, sublicense, and relicense your contribution as part of this project, under any license the project maintainers choose, now or in the future.
+- You retain your own copyright in your contribution — this is a license grant, not a transfer of ownership.
+
+This ensures you always retain the right to use your own contribution elsewhere, while the project isn't blocked from making licensing decisions by the need to track down every past contributor.
+
+By checking the CLA checkbox in the pull request checklist, you confirm that you have read and agree to these terms.
 
 ---
 

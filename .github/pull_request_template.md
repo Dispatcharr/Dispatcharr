@@ -17,6 +17,7 @@ Closes #
 Please check every item before marking this PR as ready for review. Unchecked items will be flagged during review.
 
 - [ ] I have read the [CONTRIBUTING.md](../blob/dev/CONTRIBUTING.md) in full
+- [ ] I agree to the [Contributor License Agreement](../blob/dev/CONTRIBUTING.md#contributor-license-agreement)
 - [ ] I understand — line by line — every change in this PR and can explain it if asked
 - [ ] This PR targets the `dev` branch
 - [ ] Backend: migrations are included if any models were changed
