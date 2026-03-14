@@ -35,16 +35,16 @@ vi.mock('@mantine/form', () => ({ useForm: vi.fn() }));
 // ── ConfirmationDialog mock ────────────────────────────────────────────────────
 vi.mock('../../../ConfirmationDialog.jsx', () => ({
   default: ({
-              opened,
-              onClose,
-              onConfirm,
-              title,
-              message,
-              confirmLabel,
-              cancelLabel,
-              actionKey,
-              onSuppressChange,
-            }) =>
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    message,
+    confirmLabel,
+    cancelLabel,
+    actionKey,
+    onSuppressChange,
+  }) =>
     opened ? (
       <div data-testid="confirmation-dialog">
         <div data-testid="confirm-title">{title}</div>
@@ -98,7 +98,9 @@ vi.mock('@mantine/core', () => ({
         aria-label={label}
         multiple
         onChange={(e) => {
-          const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+          const selected = Array.from(e.target.selectedOptions).map(
+            (o) => o.value
+          );
           rest.onChange?.(selected);
         }}
         value={rest.value ?? []}
@@ -212,12 +214,12 @@ const makeStreamProfiles = () => [
 ];
 
 const setupMocks = ({
-                      settings = makeSettings(),
-                      formOverrides = {},
-                      warningSuppressed = false,
-                      userAgents = makeUserAgents(),
-                      streamProfiles = makeStreamProfiles(),
-                    } = {}) => {
+  settings = makeSettings(),
+  formOverrides = {},
+  warningSuppressed = false,
+  userAgents = makeUserAgents(),
+  streamProfiles = makeStreamProfiles(),
+} = {}) => {
   const formMock = makeFormMock(formOverrides);
 
   vi.mocked(useForm).mockReturnValue(formMock);
@@ -290,7 +292,9 @@ describe('StreamSettingsForm', () => {
 
     it('renders the Auto-Import Mapped Files switch', () => {
       render(<StreamSettingsForm active={true} />);
-      expect(screen.getByTestId('auto_import_mapped_files')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('auto_import_mapped_files')
+      ).toBeInTheDocument();
     });
 
     it('renders the M3U Hash Key multiselect', () => {
@@ -323,7 +327,9 @@ describe('StreamSettingsForm', () => {
 
     it('does not show confirmation dialog on initial render', () => {
       render(<StreamSettingsForm active={true} />);
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -429,13 +435,19 @@ describe('StreamSettingsForm', () => {
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
         expect(screen.getByTestId('alert')).toBeInTheDocument();
-        expect(screen.getByTestId('alert-title')).toHaveTextContent('Saved Successfully');
+        expect(screen.getByTestId('alert-title')).toHaveTextContent(
+          'Saved Successfully'
+        );
       });
     });
 
     it('does not show success alert when saveChangedSettings throws', async () => {
-      vi.mocked(saveChangedSettings).mockRejectedValue(new Error('save failed'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(saveChangedSettings).mockRejectedValue(
+        new Error('save failed')
+      );
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       render(<StreamSettingsForm active={true} />);
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
@@ -449,12 +461,17 @@ describe('StreamSettingsForm', () => {
     it('logs error when saveChangedSettings throws', async () => {
       const error = new Error('save failed');
       vi.mocked(saveChangedSettings).mockRejectedValue(error);
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       render(<StreamSettingsForm active={true} />);
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
-        expect(consoleSpy).toHaveBeenCalledWith('Error saving settings:', error);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Error saving settings:',
+          error
+        );
       });
       consoleSpy.mockRestore();
     });
@@ -466,7 +483,9 @@ describe('StreamSettingsForm', () => {
       await waitFor(() => {
         expect(saveChangedSettings).toHaveBeenCalled();
       });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -501,7 +520,9 @@ describe('StreamSettingsForm', () => {
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
       await waitFor(() => {
-        expect(screen.getByTestId('confirm-ok')).toHaveTextContent('Save and Rehash');
+        expect(screen.getByTestId('confirm-ok')).toHaveTextContent(
+          'Save and Rehash'
+        );
       });
     });
 
@@ -526,9 +547,7 @@ describe('StreamSettingsForm', () => {
       render(<StreamSettingsForm active={true} />);
 
       fireEvent.submit(screen.getByText('Save').closest('form'));
-      await waitFor(() =>
-        screen.getByTestId('confirmation-dialog')
-      );
+      await waitFor(() => screen.getByTestId('confirmation-dialog'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
@@ -546,7 +565,9 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('alert-title')).toHaveTextContent('Saved Successfully');
+        expect(screen.getByTestId('alert-title')).toHaveTextContent(
+          'Saved Successfully'
+        );
       });
     });
 
@@ -560,7 +581,9 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -574,7 +597,9 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByTestId('confirm-cancel'));
 
       await waitFor(() => {
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument();
       });
       expect(saveChangedSettings).not.toHaveBeenCalled();
     });
@@ -590,7 +615,9 @@ describe('StreamSettingsForm', () => {
       await waitFor(() => {
         expect(saveChangedSettings).toHaveBeenCalled();
       });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -613,7 +640,9 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByText('Rehash Streams'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('confirm-ok')).toHaveTextContent('Start Rehash');
+        expect(screen.getByTestId('confirm-ok')).toHaveTextContent(
+          'Start Rehash'
+        );
       });
     });
 
@@ -636,7 +665,9 @@ describe('StreamSettingsForm', () => {
       await waitFor(() => {
         expect(rehashStreams).toHaveBeenCalled();
       });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('shows rehash success alert after rehash completes', async () => {
@@ -654,7 +685,9 @@ describe('StreamSettingsForm', () => {
     it('does not show rehash success alert when rehashStreams throws', async () => {
       setupMocks({ warningSuppressed: true });
       vi.mocked(rehashStreams).mockRejectedValue(new Error('fail'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       render(<StreamSettingsForm active={true} />);
       fireEvent.click(screen.getByText('Rehash Streams'));
 
@@ -669,12 +702,17 @@ describe('StreamSettingsForm', () => {
       setupMocks({ warningSuppressed: true });
       const error = new Error('network error');
       vi.mocked(rehashStreams).mockRejectedValue(error);
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       render(<StreamSettingsForm active={true} />);
       fireEvent.click(screen.getByText('Rehash Streams'));
 
       await waitFor(() => {
-        expect(consoleSpy).toHaveBeenCalledWith('Error rehashing streams:', error);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Error rehashing streams:',
+          error
+        );
       });
       consoleSpy.mockRestore();
     });
@@ -686,7 +724,9 @@ describe('StreamSettingsForm', () => {
       fireEvent.click(screen.getByTestId('confirm-cancel'));
 
       await waitFor(() => {
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument();
       });
       expect(rehashStreams).not.toHaveBeenCalled();
     });
@@ -710,7 +750,9 @@ describe('StreamSettingsForm', () => {
     it('Rehash Streams button is disabled while rehashing', async () => {
       let resolveRehash;
       vi.mocked(rehashStreams).mockReturnValue(
-        new Promise((res) => { resolveRehash = res; })
+        new Promise((res) => {
+          resolveRehash = res;
+        })
       );
       setupMocks({ warningSuppressed: true });
       render(<StreamSettingsForm active={true} />);
@@ -736,7 +778,9 @@ describe('StreamSettingsForm', () => {
 
     it('calls getInputProps for default_stream_profile', () => {
       render(<StreamSettingsForm active={true} />);
-      expect(formMock.getInputProps).toHaveBeenCalledWith('default_stream_profile');
+      expect(formMock.getInputProps).toHaveBeenCalledWith(
+        'default_stream_profile'
+      );
     });
 
     it('calls getInputProps for preferred_region', () => {

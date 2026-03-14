@@ -36,8 +36,12 @@ vi.mock('../../../ConfirmationDialog.jsx', () => ({
       <div data-testid="confirmation-dialog">
         <div data-testid="confirm-title">{title}</div>
         <div data-testid="confirm-message">{message}</div>
-        <button data-testid="confirm-ok" onClick={onConfirm}>Confirm</button>
-        <button data-testid="confirm-cancel" onClick={onClose}>Cancel</button>
+        <button data-testid="confirm-ok" onClick={onConfirm}>
+          Confirm
+        </button>
+        <button data-testid="confirm-cancel" onClick={onClose}>
+          Cancel
+        </button>
       </div>
     ) : null,
 }));
@@ -85,7 +89,10 @@ vi.mock('@mantine/core', () => ({
 // ──────────────────────────────────────────────────────────────────────────────
 import useSettingsStore from '../../../../store/settings.jsx';
 import { useForm } from '@mantine/form';
-import { checkSetting, updateSetting } from '../../../../utils/pages/SettingsUtils.js';
+import {
+  checkSetting,
+  updateSetting,
+} from '../../../../utils/pages/SettingsUtils.js';
 import {
   getNetworkAccessFormInitialValues,
   getNetworkAccessFormValidation,
@@ -139,10 +146,15 @@ const setupMocks = ({ settings = makeSettings(), formOverrides = {} } = {}) => {
   const formMock = makeFormMock(formOverrides);
 
   vi.mocked(useForm).mockReturnValue(formMock);
-  vi.mocked(getNetworkAccessFormInitialValues).mockReturnValue(mockInitialValues);
+  vi.mocked(getNetworkAccessFormInitialValues).mockReturnValue(
+    mockInitialValues
+  );
   vi.mocked(getNetworkAccessFormValidation).mockReturnValue({});
   vi.mocked(getNetworkAccessDefaults).mockReturnValue(mockInitialValues);
-  vi.mocked(checkSetting).mockResolvedValue({ client_ip: '192.168.1.1', UI: ['192.168.0.0/16'] });
+  vi.mocked(checkSetting).mockResolvedValue({
+    client_ip: '192.168.1.1',
+    UI: ['192.168.0.0/16'],
+  });
   vi.mocked(updateSetting).mockResolvedValue(undefined);
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
@@ -180,7 +192,9 @@ describe('NetworkAccessForm', () => {
 
     it('does not show confirmation dialog on initial render', () => {
       render(<NetworkAccessForm active={true} />);
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('does not show error alert on initial render', () => {
@@ -238,7 +252,10 @@ describe('NetworkAccessForm', () => {
       vi.mocked(updateSetting).mockResolvedValue(undefined);
       const { rerender } = render(<NetworkAccessForm active={true} />);
 
-      fireEvent.submit(screen.getByText('Save').closest('form') ?? screen.getByText('Save').closest('div'));
+      fireEvent.submit(
+        screen.getByText('Save').closest('form') ??
+          screen.getByText('Save').closest('div')
+      );
 
       await waitFor(() => {
         expect(screen.queryByTestId('confirmation-dialog')).not.toBeNull();
@@ -270,7 +287,9 @@ describe('NetworkAccessForm', () => {
       fireEvent.click(screen.getByTestId('confirm-cancel'));
 
       await waitFor(() => {
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -295,7 +314,9 @@ describe('NetworkAccessForm', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('alert')).toBeInTheDocument();
-        expect(screen.getByTestId('alert-title')).toHaveTextContent('Saved Successfully');
+        expect(screen.getByTestId('alert-title')).toHaveTextContent(
+          'Saved Successfully'
+        );
       });
     });
 
@@ -312,8 +333,9 @@ describe('NetworkAccessForm', () => {
     });
 
     it('does not show success alert when updateSetting throws', async () => {
-      vi.mocked(updateSetting).mockRejectedValue(
-        { body: { value: { m3u_custom_cidrs: 'Invalid CIDR' } } });
+      vi.mocked(updateSetting).mockRejectedValue({
+        body: { value: { m3u_custom_cidrs: 'Invalid CIDR' } },
+      });
       render(<NetworkAccessForm active={true} />);
       fireEvent.click(screen.getByText('Save'));
 
@@ -344,7 +366,9 @@ describe('NetworkAccessForm', () => {
       vi.mocked(checkSetting).mockResolvedValue(null);
       render(<NetworkAccessForm active={true} />);
       await waitFor(() => {
-        expect(screen.queryByText(/\d+\.\d+\.\d+\.\d+/)).not.toBeInTheDocument();
+        expect(
+          screen.queryByText(/\d+\.\d+\.\d+\.\d+/)
+        ).not.toBeInTheDocument();
       });
     });
   });
@@ -352,9 +376,11 @@ describe('NetworkAccessForm', () => {
   // ── Network access error ───────────────────────────────────────────────────
   describe('network access error state', () => {
     it('clears error state after successful save', async () => {
-      vi.mocked(checkSetting).mockResolvedValue(
-        { error: true, message: 'Invalid CIDR', data: 'Error details' }
-      );
+      vi.mocked(checkSetting).mockResolvedValue({
+        error: true,
+        message: 'Invalid CIDR',
+        data: 'Error details',
+      });
 
       render(<NetworkAccessForm active={true} />);
 
@@ -362,8 +388,10 @@ describe('NetworkAccessForm', () => {
       fireEvent.click(screen.getByText('Save'));
       await waitFor(() => screen.getByTestId('alert'));
 
-      vi.mocked(checkSetting).mockResolvedValue(
-        { client_ip: '192.168.1.1', UI: ['192.168.0.0/16'] });
+      vi.mocked(checkSetting).mockResolvedValue({
+        client_ip: '192.168.1.1',
+        UI: ['192.168.0.0/16'],
+      });
 
       // Second save — succeeds
       fireEvent.click(screen.getByText('Save'));
@@ -371,7 +399,9 @@ describe('NetworkAccessForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('alert-title')).toHaveTextContent('Saved Successfully');
+        expect(screen.getByTestId('alert-title')).toHaveTextContent(
+          'Saved Successfully'
+        );
       });
     });
   });

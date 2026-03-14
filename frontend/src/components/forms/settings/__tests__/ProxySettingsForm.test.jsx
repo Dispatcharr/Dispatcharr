@@ -5,8 +5,14 @@ import ProxySettingsForm from '../ProxySettingsForm';
 // ── Constants mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../../constants.js', () => ({
   PROXY_SETTINGS_OPTIONS: {
-    buffering_timeout: { label: 'Buffering Timeout', description: 'Timeout in seconds' },
-    buffering_speed: { label: 'Buffering Speed', description: 'Speed multiplier' },
+    buffering_timeout: {
+      label: 'Buffering Timeout',
+      description: 'Timeout in seconds',
+    },
+    buffering_speed: {
+      label: 'Buffering Speed',
+      description: 'Speed multiplier',
+    },
     redis_url: { label: 'Redis URL', description: 'Redis connection URL' },
   },
 }));
@@ -133,7 +139,9 @@ const setupMocks = ({ settings = makeSettings(), formOverrides = {} } = {}) => {
   const formMock = makeFormMock(formOverrides);
 
   vi.mocked(useForm).mockReturnValue(formMock);
-  vi.mocked(getProxySettingsFormInitialValues).mockReturnValue(mockInitialValues);
+  vi.mocked(getProxySettingsFormInitialValues).mockReturnValue(
+    mockInitialValues
+  );
   vi.mocked(getProxySettingDefaults).mockReturnValue(mockDefaults);
   vi.mocked(updateSetting).mockResolvedValue({ success: true });
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
@@ -161,12 +169,16 @@ describe('ProxySettingsForm', () => {
 
     it('renders NumberInput for buffering_timeout', () => {
       render(<ProxySettingsForm active={true} />);
-      expect(screen.getByTestId('number-input-Buffering Timeout')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('number-input-Buffering Timeout')
+      ).toBeInTheDocument();
     });
 
     it('renders NumberInput for buffering_speed', () => {
       render(<ProxySettingsForm active={true} />);
-      expect(screen.getByTestId('number-input-Buffering Speed')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('number-input-Buffering Speed')
+      ).toBeInTheDocument();
     });
 
     it('renders TextInput for redis_url', () => {
@@ -216,7 +228,9 @@ describe('ProxySettingsForm', () => {
     });
 
     it('handles null settings gracefully', () => {
-      vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings: null }));
+      vi.mocked(useSettingsStore).mockImplementation((sel) =>
+        sel({ settings: null })
+      );
       expect(() => render(<ProxySettingsForm active={true} />)).not.toThrow();
     });
   });
@@ -261,7 +275,9 @@ describe('ProxySettingsForm', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('alert')).toBeInTheDocument();
-        expect(screen.getByTestId('alert-title')).toHaveTextContent('Saved Successfully');
+        expect(screen.getByTestId('alert-title')).toHaveTextContent(
+          'Saved Successfully'
+        );
       });
     });
 

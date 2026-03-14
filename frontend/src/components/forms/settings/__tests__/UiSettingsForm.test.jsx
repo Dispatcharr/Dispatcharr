@@ -7,7 +7,9 @@ vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
 
 // ── Hook mocks ─────────────────────────────────────────────────────────────────
 vi.mock('../../../../hooks/useLocalStorage.jsx', () => ({ default: vi.fn() }));
-vi.mock('../../../../hooks/useTablePreferences.jsx', () => ({ default: vi.fn() }));
+vi.mock('../../../../hooks/useTablePreferences.jsx', () => ({
+  default: vi.fn(),
+}));
 
 // ── Utility mocks ──────────────────────────────────────────────────────────────
 vi.mock('../../../../utils/dateTimeUtils.js', () => ({
@@ -62,7 +64,10 @@ vi.mock('@mantine/core', () => ({
 import useSettingsStore from '../../../../store/settings.jsx';
 import useLocalStorage from '../../../../hooks/useLocalStorage.jsx';
 import useTablePreferences from '../../../../hooks/useTablePreferences.jsx';
-import { buildTimeZoneOptions, getDefaultTimeZone } from '../../../../utils/dateTimeUtils.js';
+import {
+  buildTimeZoneOptions,
+  getDefaultTimeZone,
+} from '../../../../utils/dateTimeUtils.js';
 import { showNotification } from '../../../../utils/notificationUtils.js';
 import { saveTimeZoneSetting } from '../../../../utils/forms/settings/UiSettingsFormUtils.js';
 
@@ -83,13 +88,13 @@ const TZ_OPTIONS = [
 ];
 
 const setupMocks = ({
-                      settings = makeSettings(),
-                      timeFormat = '12h',
-                      dateFormat = 'mdy',
-                      timeZone = DEFAULT_TZ,
-                      headerPinned = false,
-                      tableSize = 'default',
-                    } = {}) => {
+  settings = makeSettings(),
+  timeFormat = '12h',
+  dateFormat = 'mdy',
+  timeZone = DEFAULT_TZ,
+  headerPinned = false,
+  tableSize = 'default',
+} = {}) => {
   const setTimeFormat = vi.fn();
   const setDateFormat = vi.fn();
   const setTimeZone = vi.fn();
@@ -102,13 +107,12 @@ const setupMocks = ({
 
   vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
 
-  vi.mocked(useLocalStorage)
-    .mockImplementation((key, defaultVal) => {
-      if (key === 'time-format') return [timeFormat, setTimeFormat];
-      if (key === 'date-format') return [dateFormat, setDateFormat];
-      if (key === 'time-zone') return [timeZone, setTimeZone];
-      return [defaultVal, vi.fn()];
-    });
+  vi.mocked(useLocalStorage).mockImplementation((key, defaultVal) => {
+    if (key === 'time-format') return [timeFormat, setTimeFormat];
+    if (key === 'date-format') return [dateFormat, setDateFormat];
+    if (key === 'time-zone') return [timeZone, setTimeZone];
+    return [defaultVal, vi.fn()];
+  });
 
   vi.mocked(useTablePreferences).mockReturnValue({
     headerPinned,
@@ -117,7 +121,13 @@ const setupMocks = ({
     setTableSize,
   });
 
-  return { setTimeFormat, setDateFormat, setTimeZone, setHeaderPinned, setTableSize };
+  return {
+    setTimeFormat,
+    setDateFormat,
+    setTimeZone,
+    setHeaderPinned,
+    setTableSize,
+  };
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -164,7 +174,9 @@ describe('UiSettingsForm', () => {
     it('renders the switch description', () => {
       setupMocks();
       render(<UiSettingsForm />);
-      expect(screen.getByText('Keep table headers visible when scrolling')).toBeInTheDocument();
+      expect(
+        screen.getByText('Keep table headers visible when scrolling')
+      ).toBeInTheDocument();
     });
 
     it('renders Table Size select with initial value', () => {
@@ -331,7 +343,10 @@ describe('UiSettingsForm', () => {
       });
       render(<UiSettingsForm />);
       await waitFor(() => {
-        expect(saveTimeZoneSetting).toHaveBeenCalledWith(DEFAULT_TZ, makeSettings({ timeZone: null }));
+        expect(saveTimeZoneSetting).toHaveBeenCalledWith(
+          DEFAULT_TZ,
+          makeSettings({ timeZone: null })
+        );
       });
     });
 
@@ -359,9 +374,13 @@ describe('UiSettingsForm', () => {
 
   describe('error handling', () => {
     it('shows error notification when saveTimeZoneSetting throws on tz change', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       setupMocks({ settings: makeSettings({ timeZone: null }), timeZone: '' });
-      vi.mocked(saveTimeZoneSetting).mockRejectedValue(new Error('network error'));
+      vi.mocked(saveTimeZoneSetting).mockRejectedValue(
+        new Error('network error')
+      );
 
       render(<UiSettingsForm />);
       fireEvent.change(screen.getByTestId('select-time-zone'), {
@@ -370,7 +389,10 @@ describe('UiSettingsForm', () => {
 
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ color: 'red', title: 'Failed to update time zone' })
+          expect.objectContaining({
+            color: 'red',
+            title: 'Failed to update time zone',
+          })
         );
       });
       consoleSpy.mockRestore();
@@ -378,7 +400,9 @@ describe('UiSettingsForm', () => {
 
     it('logs error when saveTimeZoneSetting throws on tz change', async () => {
       const error = new Error('network error');
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       setupMocks({ settings: makeSettings({ timeZone: null }), timeZone: '' });
       vi.mocked(saveTimeZoneSetting).mockRejectedValue(error);
 
@@ -397,15 +421,25 @@ describe('UiSettingsForm', () => {
     });
 
     it('shows error notification when saveTimeZoneSetting throws during initial sync', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      setupMocks({ settings: makeSettings({ timeZone: null }), timeZone: DEFAULT_TZ });
-      vi.mocked(saveTimeZoneSetting).mockRejectedValue(new Error('sync failed'));
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      setupMocks({
+        settings: makeSettings({ timeZone: null }),
+        timeZone: DEFAULT_TZ,
+      });
+      vi.mocked(saveTimeZoneSetting).mockRejectedValue(
+        new Error('sync failed')
+      );
 
       render(<UiSettingsForm />);
 
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ color: 'red', title: 'Failed to update time zone' })
+          expect.objectContaining({
+            color: 'red',
+            title: 'Failed to update time zone',
+          })
         );
       });
       consoleSpy.mockRestore();

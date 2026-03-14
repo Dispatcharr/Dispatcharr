@@ -125,13 +125,17 @@ const mockFormValues = {
 
 const makeFormMock = (overrides = {}) => ({
   getInputProps: vi.fn((field, opts) => {
-    if (opts?.type === 'checkbox') return { checked: mockFormValues[field] ?? false, onChange: vi.fn() };
+    if (opts?.type === 'checkbox')
+      return { checked: mockFormValues[field] ?? false, onChange: vi.fn() };
     return { value: mockFormValues[field] ?? '', onChange: vi.fn() };
   }),
   setValues: vi.fn(),
   setFieldValue: vi.fn(),
   getValues: vi.fn(() => mockFormValues),
-  onSubmit: vi.fn((handler) => (e) => { e?.preventDefault?.(); return handler(); }),
+  onSubmit: vi.fn((handler) => (e) => {
+    e?.preventDefault?.();
+    return handler();
+  }),
   ...overrides,
 });
 
@@ -229,7 +233,9 @@ describe('DvrSettingsForm', () => {
         expect(screen.getByTestId('tv_template')).toBeInTheDocument();
         expect(screen.getByTestId('tv_fallback_template')).toBeInTheDocument();
         expect(screen.getByTestId('movie_template')).toBeInTheDocument();
-        expect(screen.getByTestId('movie_fallback_template')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('movie_fallback_template')
+        ).toBeInTheDocument();
       });
     });
 
@@ -250,7 +256,9 @@ describe('DvrSettingsForm', () => {
     it('shows "No custom comskip.ini uploaded." when no config exists', async () => {
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
-        expect(screen.getByText('No custom comskip.ini uploaded.')).toBeInTheDocument();
+        expect(
+          screen.getByText('No custom comskip.ini uploaded.')
+        ).toBeInTheDocument();
       });
     });
 
@@ -261,7 +269,9 @@ describe('DvrSettingsForm', () => {
       });
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
-        expect(screen.getByText('Using /app/docker/comskip.ini')).toBeInTheDocument();
+        expect(
+          screen.getByText('Using /app/docker/comskip.ini')
+        ).toBeInTheDocument();
       });
     });
   });
@@ -306,7 +316,9 @@ describe('DvrSettingsForm', () => {
 
     it('handles getComskipConfig error gracefully', async () => {
       vi.mocked(getComskipConfig).mockRejectedValue(new Error('network error'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       render(<DvrSettingsForm active={true} />);
       await waitFor(() => {
         expect(consoleSpy).toHaveBeenCalledWith(
@@ -357,8 +369,13 @@ describe('DvrSettingsForm', () => {
       fireEvent.submit(screen.getByText('Save').closest('form'));
 
       await waitFor(() => {
-        expect(getChangedSettings).toHaveBeenCalledWith(mockFormValues, makeSettings());
-        expect(saveChangedSettings).toHaveBeenCalledWith(makeSettings(), { pre_offset_minutes: 5 });
+        expect(getChangedSettings).toHaveBeenCalledWith(
+          mockFormValues,
+          makeSettings()
+        );
+        expect(saveChangedSettings).toHaveBeenCalledWith(makeSettings(), {
+          pre_offset_minutes: 5,
+        });
       });
     });
 
@@ -373,8 +390,12 @@ describe('DvrSettingsForm', () => {
     });
 
     it('does not show success alert when saveChangedSettings throws', async () => {
-      vi.mocked(saveChangedSettings).mockRejectedValue(new Error('save failed'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(saveChangedSettings).mockRejectedValue(
+        new Error('save failed')
+      );
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
 
       render(<DvrSettingsForm active={true} />);
       fireEvent.submit(screen.getByText('Save').closest('form'));
@@ -400,11 +421,17 @@ describe('DvrSettingsForm', () => {
     });
 
     it('calls uploadComskipIni with the selected file', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
-      vi.mocked(uploadComskipIni).mockResolvedValue({ path: '/uploaded/comskip.ini' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
+      vi.mocked(uploadComskipIni).mockResolvedValue({
+        path: '/uploaded/comskip.ini',
+      });
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), { target: { files: [mockFile] } });
+      fireEvent.change(screen.getByTestId('file-input'), {
+        target: { files: [mockFile] },
+      });
 
       await waitFor(() => {
         fireEvent.click(screen.getByText('Upload comskip.ini'));
@@ -416,11 +443,17 @@ describe('DvrSettingsForm', () => {
     });
 
     it('shows success notification after successful upload', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
-      vi.mocked(uploadComskipIni).mockResolvedValue({ path: '/uploaded/comskip.ini' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
+      vi.mocked(uploadComskipIni).mockResolvedValue({
+        path: '/uploaded/comskip.ini',
+      });
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), { target: { files: [mockFile] } });
+      fireEvent.change(screen.getByTestId('file-input'), {
+        target: { files: [mockFile] },
+      });
 
       await waitFor(() => {
         fireEvent.click(screen.getByText('Upload comskip.ini'));
@@ -428,17 +461,26 @@ describe('DvrSettingsForm', () => {
 
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'comskip.ini uploaded', color: 'green' })
+          expect.objectContaining({
+            title: 'comskip.ini uploaded',
+            color: 'green',
+          })
         );
       });
     });
 
     it('sets comskip_custom_path form field after successful upload', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
-      vi.mocked(uploadComskipIni).mockResolvedValue({ path: '/uploaded/comskip.ini' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
+      vi.mocked(uploadComskipIni).mockResolvedValue({
+        path: '/uploaded/comskip.ini',
+      });
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), { target: { files: [mockFile] } });
+      fireEvent.change(screen.getByTestId('file-input'), {
+        target: { files: [mockFile] },
+      });
 
       await waitFor(() => {
         fireEvent.click(screen.getByText('Upload comskip.ini'));
@@ -453,12 +495,18 @@ describe('DvrSettingsForm', () => {
     });
 
     it('handles upload error gracefully', async () => {
-      const mockFile = new File(['content'], 'comskip.ini', { type: 'text/plain' });
+      const mockFile = new File(['content'], 'comskip.ini', {
+        type: 'text/plain',
+      });
       vi.mocked(uploadComskipIni).mockRejectedValue(new Error('upload failed'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
 
       render(<DvrSettingsForm active={true} />);
-      fireEvent.change(screen.getByTestId('file-input'), { target: { files: [mockFile] } });
+      fireEvent.change(screen.getByTestId('file-input'), {
+        target: { files: [mockFile] },
+      });
 
       await waitFor(() => {
         fireEvent.click(screen.getByText('Upload comskip.ini'));
