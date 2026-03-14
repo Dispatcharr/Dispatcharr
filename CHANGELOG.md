@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dependency updates:
+  - `Django` 5.2.11 → 6.0.3 (security patch + major version upgrade; see Security section)
+  - `django-celery-beat` ≥2.8.1 → ≥2.9.0 (adds explicit Django 6.0 support)
 - When selecting an EPG source for a channel, the EPG source dropdown now only lists enabled (active) EPGs, sorted alphabetically.
 - Channels page default splitter ratio changed from 50/50 to 60/40 (channels/streams) so all channel action buttons are visible without scrolling on 1080p displays.
 - Frontend component refactoring and cleanup — Thanks [@nick4810](https://github.com/nick4810)
@@ -60,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated frontend npm dependencies to resolve 1 high-severity vulnerability:
   - Updated `flatted` to 3.4.1, resolving **high** unbounded recursion DoS in the `parse()` revive phase ([GHSA-25h7-pfq9-p65f](https://github.com/advisories/GHSA-25h7-pfq9-p65f))
+- Updated `Django` to 6.0.3 and `django-celery-beat` to 2.9.0, resolving new security vulnerabilities:
+  - [CVE-2026-25673](https://www.cve.org/CVERecord?id=CVE-2026-25673): Potential denial-of-service vulnerability in URLField via Unicode normalization on Windows (March 3, 2026)
+  - [CVE-2026-25674](https://www.cve.org/CVERecord?id=CVE-2026-25674): Potential incorrect permissions on newly created file system objects (March 3, 2026)
 
 ### Fixed
 
