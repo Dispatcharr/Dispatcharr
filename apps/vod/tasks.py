@@ -407,6 +407,19 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
                         logger.debug("Skipping disabled 'Uncategorized' category")
                         continue
 
+            # Apply name regex sanitization from category custom_properties
+            relation = relations.get(category.id, None) if category else None
+            if relation and relation.custom_properties:
+                cat_regex_pattern = relation.custom_properties.get("name_regex_pattern")
+                cat_replace_pattern = relation.custom_properties.get("name_replace_pattern")
+                if cat_regex_pattern:
+                    replace = cat_replace_pattern if cat_replace_pattern is not None else ""
+                    try:
+                        safe_replace = re.sub(r'\$(\d+)', r'\\\1', replace)
+                        name = re.sub(cat_regex_pattern, safe_replace, name)
+                    except re.error as e:
+                        logger.warning(f"Regex error for VOD movie category '{category.name}': {e}. Using original name.")
+
             # Extract metadata
             year = extract_year_from_data(movie_data, 'name')
             tmdb_id = movie_data.get('tmdb_id') or movie_data.get('tmdb')
@@ -743,6 +756,19 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                     if relation and not relation.enabled:
                         logger.debug("Skipping disabled 'Uncategorized' category")
                         continue
+
+            # Apply name regex sanitization from category custom_properties
+            relation = relations.get(category.id, None) if category else None
+            if relation and relation.custom_properties:
+                cat_regex_pattern = relation.custom_properties.get("name_regex_pattern")
+                cat_replace_pattern = relation.custom_properties.get("name_replace_pattern")
+                if cat_regex_pattern:
+                    replace = cat_replace_pattern if cat_replace_pattern is not None else ""
+                    try:
+                        safe_replace = re.sub(r'\$(\d+)', r'\\\1', replace)
+                        name = re.sub(cat_regex_pattern, safe_replace, name)
+                    except re.error as e:
+                        logger.warning(f"Regex error for VOD series category '{category.name}': {e}. Using original name.")
 
             # Extract metadata
             year = extract_year(series_data.get('releaseDate', ''))
