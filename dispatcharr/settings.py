@@ -267,6 +267,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "core.tasks.check_for_version_update",
         "schedule": 86400.0,  # Once every 24 hours
     },
+    # Check for XC account expirations daily
+    "check-xc-account-expirations": {
+        "task": "apps.m3u.tasks.check_xc_account_expirations",
+        "schedule": 86400.0,  # Once every 24 hours
+    },
 }
 
 MEDIA_ROOT = BASE_DIR / "media"

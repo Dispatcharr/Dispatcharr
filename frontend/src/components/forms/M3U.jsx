@@ -29,6 +29,7 @@ import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import M3UFilters from './M3UFilters';
 import ScheduleInput from './ScheduleInput';
+import { DateTimePicker } from '@mantine/dates';
 
 const M3U = ({
   m3uAccount = null,
@@ -69,6 +70,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      exp_date: null,
     },
 
     validate: {
@@ -101,6 +103,7 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        exp_date: m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null,
       });
 
       // Determine schedule type from existing data
@@ -130,6 +133,16 @@ const M3U = ({
 
   const onSubmit = async () => {
     const { create_epg, ...values } = form.getValues();
+
+    // Convert exp_date Date object to ISO string for the API
+    if (values.account_type === 'XC') {
+      // XC accounts have exp_date auto-managed server-side; don't send it
+      delete values.exp_date;
+    } else if (values.exp_date instanceof Date) {
+      values.exp_date = values.exp_date.toISOString();
+    } else if (!values.exp_date) {
+      values.exp_date = null;
+    }
 
     // Determine which schedule type is active based on field values
     const hasCronExpression =
@@ -359,13 +372,25 @@ const M3U = ({
               )}
 
               {form.getValues().account_type != 'XC' && (
-                <FileInput
-                  id="file"
-                  label="Upload files"
-                  placeholder="Upload files"
-                  description="Upload a local M3U file instead of using URL"
-                  onChange={setFile}
-                />
+                <>
+                  <FileInput
+                    id="file"
+                    label="Upload files"
+                    placeholder="Upload files"
+                    description="Upload a local M3U file instead of using URL"
+                    onChange={setFile}
+                  />
+
+                  <DateTimePicker
+                    label="Expiration Date"
+                    description="Set an expiration date to receive a warning notification"
+                    placeholder="No expiration"
+                    clearable
+                    valueFormat="MMM D, YYYY h:mm A"
+                    {...form.getInputProps('exp_date')}
+                    key={form.key('exp_date')}
+                  />
+                </>
               )}
             </Stack>
 

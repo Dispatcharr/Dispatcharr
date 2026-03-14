@@ -52,12 +52,14 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
             "search_pattern",
             "replace_pattern",
             "custom_properties",
+            "exp_date",
             "account",
         ]
         read_only_fields = ["id", "account"]
         extra_kwargs = {
             'search_pattern': {'required': False, 'allow_blank': True},
             'replace_pattern': {'required': False, 'allow_blank': True},
+            'exp_date': {'required': False, 'allow_null': True},
         }
 
     def create(self, validated_data):
@@ -90,14 +92,14 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         if instance.is_default:
-            # For default profiles, only allow updating name and custom_properties (for notes)
-            allowed_fields = {'name', 'custom_properties'}
+            # For default profiles, only allow updating name, custom_properties, and exp_date
+            allowed_fields = {'name', 'custom_properties', 'exp_date'}
 
             # Remove any fields that aren't allowed for default profiles
             disallowed_fields = set(validated_data.keys()) - allowed_fields
             if disallowed_fields:
                 raise serializers.ValidationError(
-                    f"Default profiles can only modify name and notes. "
+                    f"Default profiles can only modify name, notes, and expiration. "
                     f"Cannot modify: {', '.join(disallowed_fields)}"
                 )
 
@@ -117,6 +119,12 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     """Serializer for M3U Account"""
 
     filters = serializers.SerializerMethodField()
+    earliest_expiration = serializers.SerializerMethodField()
+    all_expirations = serializers.SerializerMethodField()
+    exp_date = serializers.DateTimeField(
+        required=False, allow_null=True, write_only=True,
+        help_text="Expiration date for the default profile (write-through)",
+    )
     # Include user_agent as a mandatory field using its primary key.
     user_agent = serializers.PrimaryKeyRelatedField(
         queryset=UserAgent.objects.all(),
@@ -172,6 +180,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "auto_enable_new_groups_live",
             "auto_enable_new_groups_vod",
             "auto_enable_new_groups_series",
+            "earliest_expiration",
+            "all_expirations",
+            "exp_date",
         ]
         extra_kwargs = {
             "password": {
@@ -200,9 +211,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             ct = instance.refresh_task.crontab
             cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         data["cron_expression"] = cron_expr
+
+        # Surface default profile's exp_date for the form
+        default_profile = instance.profiles.filter(is_default=True).first()
+        data["exp_date"] = (
+            default_profile.exp_date.isoformat() if default_profile and default_profile.exp_date else None
+        )
+
         return data
 
     def update(self, instance, validated_data):
+        # Pop exp_date — it's written to the default profile, not the account
+        exp_date = validated_data.pop("exp_date", "__NOT_SET__")
+
         # Pop cron_expression before it reaches model fields
         # If not present (partial update), preserve the existing cron from the PeriodicTask
         if "cron_expression" in validated_data:
@@ -264,9 +285,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 memberships_to_update, ["enabled"]
             )
 
+        # Write exp_date through to the default profile
+        if exp_date != "__NOT_SET__":
+            default_profile = instance.profiles.filter(is_default=True).first()
+            if default_profile:
+                default_profile.exp_date = exp_date
+                default_profile.save()
+
         return instance
 
     def create(self, validated_data):
+        # Pop exp_date — it's written to the default profile after creation
+        exp_date = validated_data.pop("exp_date", None)
+
         # Pop cron_expression — it's not a model field
         cron_expr = validated_data.pop("cron_expression", "")
 
@@ -290,11 +321,40 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         instance = M3UAccount(**validated_data)
         instance._cron_expression = cron_expr
         instance.save()
+
+        # Write exp_date through to the default profile created by post_save signal
+        if exp_date is not None:
+            default_profile = instance.profiles.filter(is_default=True).first()
+            if default_profile:
+                default_profile.exp_date = exp_date
+                default_profile.save()
+
         return instance
 
     def get_filters(self, obj):
         filters = obj.filters.order_by("order")
         return M3UFilterSerializer(filters, many=True).data
+
+    def get_earliest_expiration(self, obj):
+        """Return the soonest exp_date across all active profiles for this account."""
+        profiles_with_exp = obj.profiles.filter(
+            is_active=True, exp_date__isnull=False
+        ).order_by("exp_date")
+        first = profiles_with_exp.first()
+        return first.exp_date.isoformat() if first else None
+
+    def get_all_expirations(self, obj):
+        """Return exp_date info for every profile that has one (for tooltip)."""
+        profiles = obj.profiles.filter(exp_date__isnull=False).order_by("exp_date")
+        return [
+            {
+                "profile_id": p.id,
+                "profile_name": p.name,
+                "exp_date": p.exp_date.isoformat(),
+                "is_active": p.is_active,
+            }
+            for p in profiles
+        ]
 
 
 class ServerGroupSerializer(serializers.ModelSerializer):

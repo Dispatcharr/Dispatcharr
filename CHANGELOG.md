@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Search and filter controls**: Added search and filter controls to the recordings list.
   - **Stream generator throttling**: Cached the `ProxyServer` singleton reference per client and throttled Redis resource checks (1 s) and non-owner health checks (2 s), eliminating 3+ Redis round-trips per stream loop iteration.
   - **Automatic crash recovery on worker restart**: A `worker_ready` Celery signal now fires `recover_recordings_on_startup` automatically when the worker starts, so recordings stuck in "recording" status are recovered without manual intervention.
+- Account expiration tracking and notifications for M3U profiles
+  - A new `exp_date` field on `M3UAccountProfile` stores the account expiration date as a proper `DateTimeField`. For Xtream Codes accounts the field is auto-synced from `custom_properties.user_info.exp_date` on every save (supports both Unix timestamps and ISO date strings). For non-XC M3U accounts the date can be entered manually via the account or profile form.
+  - The M3U accounts table now shows an **Expiration** column displaying the earliest expiration date across all profiles for that account (color-coded: red = expired, orange = expiring soon, green = OK). Hovering the cell shows a tooltip with per-profile expiration details including inactive-profile labels.
+  - A daily Celery Beat task (`check_xc_account_expirations`) checks all active profiles with an expiration date and manages system notifications: a normal-priority warning is raised for profiles expiring within 7 days; a high-priority alert is raised once the profile has already expired. Warning and expired notifications use separate keys so dismissing the 7-day warning does not suppress the expiration alert.
+  - Notifications are also updated immediately when a profile is saved: if the expiration date is cleared or pushed beyond the 7-day window, any existing warning/expired notifications are deleted; if the date falls within the window or is already past, the matching notification is updated in place.
+  - Non-XC accounts expose a `DateTimePicker` on both the M3U account form and the profile form.
 
 ### Changed
 
