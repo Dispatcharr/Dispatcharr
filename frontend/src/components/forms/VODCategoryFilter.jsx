@@ -1,4 +1,3 @@
-// Modal.js
 import React, { useState, useEffect } from 'react';
 import {
   TextInput,
@@ -8,9 +7,9 @@ import {
   Group,
   SimpleGrid,
   Text,
-  Divider,
   Box,
   Checkbox,
+  Tooltip,
 } from '@mantine/core';
 import { CircleCheck, CircleX } from 'lucide-react';
 import useVODStore from '../../store/useVODStore';
@@ -31,8 +30,6 @@ const VODCategoryFilter = ({
       return;
     }
 
-    console.log(categories);
-
     setCategoryStates(
       Object.values(categories)
         .filter(
@@ -45,10 +42,13 @@ const VODCategoryFilter = ({
             (acc) => acc.m3u_account == playlist.id
           );
           if (match) {
+            const customProps = match.custom_properties || {};
             return {
               ...cat,
-              enabled: match.enabled || false, // Keep user's previous choice, default to false for new categories
+              enabled: match.enabled || false,
               original_enabled: match.enabled,
+              custom_properties: { ...customProps },
+              original_custom_properties: { ...customProps },
             };
           }
         })
@@ -61,6 +61,41 @@ const VODCategoryFilter = ({
         ...state,
         enabled: state.id == id ? !state.enabled : state.enabled,
       }))
+    );
+  };
+
+  const toggleRegex = (id) => {
+    setCategoryStates(
+      categoryStates.map((state) => {
+        if (state.id != id) return state;
+        const hasRegex =
+          state.custom_properties?.name_regex_pattern !== undefined;
+        const newProps = { ...(state.custom_properties || {}) };
+        if (hasRegex) {
+          delete newProps.name_regex_pattern;
+          delete newProps.name_replace_pattern;
+        } else {
+          newProps.name_regex_pattern = '';
+          newProps.name_replace_pattern = '';
+        }
+        return { ...state, custom_properties: newProps };
+      })
+    );
+  };
+
+  const updateCustomProp = (id, key, value) => {
+    setCategoryStates(
+      categoryStates.map((state) =>
+        state.id == id
+          ? {
+              ...state,
+              custom_properties: {
+                ...state.custom_properties,
+                [key]: value,
+              },
+            }
+          : state
+      )
     );
   };
 
@@ -138,7 +173,6 @@ const VODCategoryFilter = ({
                   alignItems: 'stretch',
                 }}
               >
-                {/* Group Enable/Disable Button */}
                 <Button
                   color={category.enabled ? 'green' : 'gray'}
                   variant="filled"
@@ -158,6 +192,68 @@ const VODCategoryFilter = ({
                     {category.name}
                   </Text>
                 </Button>
+
+                {category.enabled && (
+                  <Stack spacing="xs" style={{ '--stack-gap': '4px' }}>
+                    <Checkbox
+                      label="Name Find & Replace (Regex)"
+                      checked={
+                        category.custom_properties?.name_regex_pattern !==
+                        undefined
+                      }
+                      onChange={() => toggleRegex(category.id)}
+                      size="xs"
+                    />
+
+                    {category.custom_properties?.name_regex_pattern !==
+                      undefined && (
+                      <>
+                        <Tooltip
+                          label="Regex pattern to find in the movie/series name. Example: ^.*? - (.+)$"
+                          withArrow
+                        >
+                          <TextInput
+                            label="Name Find (Regex)"
+                            placeholder="e.g. ^.*? - (.+)$"
+                            value={
+                              category.custom_properties?.name_regex_pattern ||
+                              ''
+                            }
+                            onChange={(e) =>
+                              updateCustomProp(
+                                category.id,
+                                'name_regex_pattern',
+                                e.currentTarget.value
+                              )
+                            }
+                            size="xs"
+                          />
+                        </Tooltip>
+                        <Tooltip
+                          label="Replacement pattern for the name. Use $1, $2 for capture groups. Example: $1"
+                          withArrow
+                        >
+                          <TextInput
+                            label="Name Replace"
+                            placeholder="e.g. $1"
+                            value={
+                              category.custom_properties
+                                ?.name_replace_pattern || ''
+                            }
+                            onChange={(e) =>
+                              updateCustomProp(
+                                category.id,
+                                'name_replace_pattern',
+                                e.currentTarget.value
+                              )
+                            }
+                            size="xs"
+                          />
+                        </Tooltip>
+                      </>
+                    )}
+                  </Stack>
+                )}
               </Group>
             ))}
         </SimpleGrid>

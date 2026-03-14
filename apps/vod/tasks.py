@@ -16,6 +16,57 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def apply_vod_name_regex(name, regex_pattern, replace_pattern):
+    """Apply regex find/replace to a VOD name.
+
+    Returns the sanitized name, or the original if the regex is invalid.
+    """
+    if not regex_pattern:
+        return name
+    replace = replace_pattern if replace_pattern is not None else ""
+    try:
+        safe_replace = re.sub(r'\$(\d+)', r'\\\1', replace)
+        return re.sub(regex_pattern, safe_replace, name)
+    except re.error:
+        return name
+
+
+def sanitize_vod_name(name, year, relation, existing_no_id_name_years, has_external_id):
+    """Sanitize a VOD name using category regex, with collision protection.
+
+    Args:
+        name: Original provider name.
+        year: Content year (int or None).
+        relation: M3UVODCategoryRelation with custom_properties, or None.
+        existing_no_id_name_years: Mutable set of (name, year) tuples for entries
+            without external IDs. Updated in-place when a no-ID entry is processed.
+        has_external_id: True if the entry has a TMDB or IMDB ID.
+
+    Returns:
+        The sanitized name (may equal original if no regex or collision detected).
+    """
+    sanitized = name
+    if relation and relation.custom_properties:
+        regex_pattern = relation.custom_properties.get("name_regex_pattern")
+        replace_pattern = relation.custom_properties.get("name_replace_pattern")
+        if regex_pattern:
+            sanitized = apply_vod_name_regex(name, regex_pattern, replace_pattern)
+
+    if not has_external_id and sanitized != name:
+        if (sanitized, year) in existing_no_id_name_years:
+            logger.warning(
+                "Regex sanitization would create duplicate "
+                "(name=%r, year=%s), keeping original name for %r.",
+                sanitized, year, name,
+            )
+            sanitized = name
+
+    if not has_external_id:
+        existing_no_id_name_years.add((sanitized, year))
+
+    return sanitized
+
+
 @shared_task
 def refresh_vod_content(account_id):
     """Refresh VOD content for an M3U account with batch processing for improved performance"""
@@ -372,6 +423,14 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
     relations_to_update = []
     movie_keys = {}  # For deduplication like M3U stream_hashes
 
+    # Pre-load existing no-ID movie (name, year) pairs to guard against unique
+    # constraint collisions when regex sanitization changes a name
+    existing_no_id_name_years = set(
+        Movie.objects.filter(
+            tmdb_id__isnull=True, imdb_id__isnull=True
+        ).values_list('name', 'year')
+    )
+
     # Process each movie in the batch
     for movie_data in batch:
         try:
@@ -418,7 +477,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this movie (priority: TMDB > IMDB > name+year)
+            # Create a unique key using the ORIGINAL provider name for matching
             if tmdb_id:
                 movie_key = f"tmdb_{tmdb_id}"
             elif imdb_id:
@@ -430,6 +489,13 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if movie_key in movie_keys:
                 continue
 
+            # Apply name regex sanitization (after key building so matching uses original name)
+            relation = relations.get(category.id, None) if category else None
+            sanitized_name = sanitize_vod_name(
+                name, year, relation, existing_no_id_name_years,
+                has_external_id=bool(tmdb_id or imdb_id),
+            )
+
             # Prepare movie properties
             description = movie_data.get('description') or movie_data.get('plot') or ''
             rating = normalize_rating(movie_data.get('rating') or movie_data.get('vote_average'))
@@ -440,7 +506,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             logo_url = movie_data.get('stream_icon') or ''
 
             movie_props = {
-                'name': name,
+                'name': sanitized_name,
                 'year': year,
                 'tmdb_id': tmdb_id,
                 'imdb_id': imdb_id,
@@ -540,6 +606,10 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
         category = data['category']
         movie_data = data['movie_data']
         logo_url = data.get('logo_url')
+
+        # Use stream_id relation as fallback for matching when name was sanitized
+        if movie_key not in existing_movies and stream_id in existing_relations:
+            existing_movies[movie_key] = existing_relations[stream_id].movie
 
         if movie_key in existing_movies:
             # Update existing movie
@@ -663,7 +733,7 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             if movies_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
                 Movie.objects.bulk_update(movies_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
+                    'name', 'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
                     'duration_secs', 'custom_properties'
                 ])
 
@@ -709,6 +779,14 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
     relations_to_create = []
     relations_to_update = []
     series_keys = {}  # For deduplication like M3U stream_hashes
+
+    # Pre-load existing no-ID series (name, year) pairs to guard against unique
+    # constraint collisions when regex sanitization changes a name
+    existing_no_id_name_years = set(
+        Series.objects.filter(
+            tmdb_id__isnull=True, imdb_id__isnull=True
+        ).values_list('name', 'year')
+    )
 
     # Process each series in the batch
     for series_data in batch:
@@ -758,7 +836,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if imdb_id == '' or imdb_id == 0 or imdb_id == '0':
                 imdb_id = None
 
-            # Create a unique key for this series (priority: TMDB > IMDB > name+year)
+            # Create a unique key using the ORIGINAL provider name for matching
             if tmdb_id:
                 series_key = f"tmdb_{tmdb_id}"
             elif imdb_id:
@@ -769,6 +847,13 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             # Skip duplicates in this batch
             if series_key in series_keys:
                 continue
+
+            # Apply name regex sanitization (after key building so matching uses original name)
+            relation = relations.get(category.id, None) if category else None
+            sanitized_name = sanitize_vod_name(
+                name, year, relation, existing_no_id_name_years,
+                has_external_id=bool(tmdb_id or imdb_id),
+            )
 
             # Prepare series properties
             description = series_data.get('plot', '')
@@ -798,7 +883,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
                             additional_metadata[key] = value
 
             series_props = {
-                'name': name,
+                'name': sanitized_name,
                 'year': year,
                 'tmdb_id': tmdb_id,
                 'imdb_id': imdb_id,
@@ -897,6 +982,10 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
         category = data['category']
         series_data = data['series_data']
         logo_url = data.get('logo_url')
+
+        # Use series_id relation as fallback for matching when name was sanitized
+        if series_key not in existing_series and series_id in existing_relations:
+            existing_series[series_key] = existing_relations[series_id].series
 
         if series_key in existing_series:
             # Update existing series
@@ -1020,7 +1109,7 @@ def process_series_batch(account, batch, categories, relations, scan_start_time=
             if series_to_update:
                 # First, update all fields except logo to avoid unsaved related object issues
                 Series.objects.bulk_update(series_to_update, [
-                    'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
+                    'name', 'description', 'rating', 'genre', 'year', 'tmdb_id', 'imdb_id',
                     'custom_properties'
                 ])
 

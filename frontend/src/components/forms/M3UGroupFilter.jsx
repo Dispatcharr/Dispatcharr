@@ -87,7 +87,7 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
                 typeof group.custom_properties === 'string'
                   ? JSON.parse(group.custom_properties)
                   : group.custom_properties;
-            } catch (e) {
+            } catch {
               customProps = {};
             }
           }
@@ -130,7 +130,12 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
           ...state,
           custom_properties: state.custom_properties || undefined,
         }))
-        .filter((state) => state.enabled !== state.original_enabled);
+        .filter(
+          (state) =>
+            state.enabled !== state.original_enabled ||
+            JSON.stringify(state.custom_properties || {}) !==
+              JSON.stringify(state.original_custom_properties || {})
+        );
 
       // Update account-level settings via the proper account endpoint
       await API.updatePlaylist({
