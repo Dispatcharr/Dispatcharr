@@ -1,6 +1,8 @@
 # dispatcharr/utils.py
+import asyncio
 import json
 import ipaddress
+from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
 from core.models import CoreSettings, NETWORK_ACCESS_KEY
@@ -38,11 +40,20 @@ def get_client_ip(request):
     return ip
 
 
+def _fetch_network_access_settings():
+    try:
+        return CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
+    except CoreSettings.DoesNotExist:
+        return {}
+
+
 def network_access_allowed(request, settings_key):
     try:
-        network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
-    except CoreSettings.DoesNotExist:
-        network_access = {}
+        _ = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            network_access = pool.submit(_fetch_network_access_settings).result()
+    except RuntimeError:
+        network_access = _fetch_network_access_settings()
     local_cidrs = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
     # Set defaults based on endpoint type
     if settings_key == "M3U_EPG":
