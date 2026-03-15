@@ -312,6 +312,11 @@ class StreamGenerator:
                     self.bytes_sent += len(keepalive_packet)
                     self.last_yield_time = time.time()
                     self.consecutive_empty = 0  # Reset consecutive counter but keep total empty_reads
+                    # Update last_active so clients waiting during failover aren't flagged as ghosts
+                    proxy_server = ProxyServer.get_instance()
+                    if proxy_server and proxy_server.redis_client:
+                        client_key = RedisKeys.client_metadata(self.channel_id, self.client_id)
+                        proxy_server.redis_client.hset(client_key, "last_active", str(time.time()))
                     gevent.sleep(Config.KEEPALIVE_INTERVAL)  # Replace time.sleep
                 else:
                     # Standard wait with backoff
