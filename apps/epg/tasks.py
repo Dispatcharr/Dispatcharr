@@ -84,8 +84,10 @@ def _resolve_html_entities(file_path):
 
     Processes line-by-line to keep memory usage low, writes to a temp file,
     then atomically replaces the original.  Honors the encoding declared
-    in the XML declaration.  If the file cannot be decoded cleanly it is
-    left untouched for lxml to handle with its own recovery mode.
+    in the XML declaration.
+
+    This function is strictly additive — on any error the original file is
+    left untouched so lxml can handle it as it always did.
     """
     # Read the first 200 bytes to detect encoding from the XML declaration
     with open(file_path, 'rb') as f:
@@ -102,10 +104,12 @@ def _resolve_html_entities(file_path):
         os.replace(temp_path, file_path)
         success = True
         logger.debug(f"Resolved HTML entities in {file_path} (encoding: {encoding})")
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        # Leave the file untouched for lxml to handle with its own
-        # encoding detection and recovery mode.
-        logger.debug(f"Skipping entity resolution for {file_path}: encoding error with {encoding}")
+    except Exception as e:
+        # On any error, leave the original file untouched for lxml to
+        # handle with its own encoding detection and recovery mode.
+        # This ensures the preprocessing step never breaks a previously
+        # working EPG refresh.
+        logger.debug(f"Skipping entity resolution for {file_path}: {e}")
     finally:
         if not success and os.path.exists(temp_path):
             os.unlink(temp_path)
