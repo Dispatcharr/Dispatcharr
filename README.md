@@ -118,9 +118,9 @@ If you are running a Debian-based OS, use the `debian_install.sh` script. For ot
 
 ## 🤝 Want to Contribute?
 
-We welcome **PRs, issues, ideas, and suggestions**!\
+We welcome **PRs, issues, ideas, and suggestions**!
 
-Prior to contributing, please read the [CONTRIBUTING.md](https://github.com/Dispatcharr/Dispatcharr/blob/main/CONTRIBUTING.md)
+- Prior to contributing, please read the [CONTRIBUTING.md](https://github.com/Dispatcharr/Dispatcharr/blob/main/CONTRIBUTING.md)
 
 > Whether it's writing docs, squashing bugs, or building new features, your contribution matters! 🙋
 
@@ -137,7 +137,6 @@ Prior to contributing, please read the [CONTRIBUTING.md](https://github.com/Disp
 - 👥 **Enhanced User Management** — Customizable XC API output per user account
 - 🔄 **Output Stream Profiles** — Different clients with different stream profiles (bandwidth control, quality tiers)
 - 🔌 **Fallback Videos** — Automatic fallback content when channels are unavailable
-- 📡 **Webhooks** — Event-driven integrations and automations
 
 ---
 
