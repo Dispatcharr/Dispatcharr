@@ -76,27 +76,28 @@ class StreamBuffer:
             if not hasattr(self, '_partial_packet'):
                 self._partial_packet = bytearray()
 
-            # Combine with any previous partial packet
-            combined_data = bytearray(self._partial_packet) + bytearray(chunk)
-
-            # Calculate complete packets
-            complete_packets_size = (len(combined_data) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
-
-            if complete_packets_size == 0:
-                # Not enough data for a complete packet
-                self._partial_packet = combined_data
-                return True
-
-            # Split into complete packets and remainder
-            complete_packets = combined_data[:complete_packets_size]
-            self._partial_packet = combined_data[complete_packets_size:]
-
-            # Add completed packets to write buffer
-            self._write_buffer.extend(complete_packets)
-
-            # Only write to Redis when we have enough data for an optimized chunk
+            # Lock the full operation to prevent race with reset_buffer_position
             writes_done = 0
             with self.lock:
+                # Combine with any previous partial packet
+                combined_data = bytearray(self._partial_packet) + bytearray(chunk)
+
+                # Calculate complete packets
+                complete_packets_size = (len(combined_data) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
+
+                if complete_packets_size == 0:
+                    # Not enough data for a complete packet
+                    self._partial_packet = combined_data
+                    return True
+
+                # Split into complete packets and remainder
+                complete_packets = combined_data[:complete_packets_size]
+                self._partial_packet = combined_data[complete_packets_size:]
+
+                # Add completed packets to write buffer
+                self._write_buffer.extend(complete_packets)
+
+                # Only write to Redis when we have enough data for an optimized chunk
                 while len(self._write_buffer) >= self.target_chunk_size:
                     # Extract a full chunk
                     chunk_data = self._write_buffer[:self.target_chunk_size]
