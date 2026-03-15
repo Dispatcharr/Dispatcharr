@@ -1080,7 +1080,7 @@ class ProxyServer:
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
                             # If in connecting or waiting_for_clients state, check grace period
-                            if channel_state in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
+                            if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -1389,8 +1389,30 @@ class ProxyServer:
                             # Just clean up Redis keys for remote channels
                             self._clean_redis_keys(channel_id)
                     elif not owner_alive and client_count > 0:
-                        # Owner is gone but clients remain - just log for now
-                        logger.warning(f"Found orphaned channel {channel_id} with {client_count} clients but no owner - may need ownership takeover")
+                        # SCARD may include ghost entries from a dead worker's
+                        # expired metadata hashes. Validate before deciding.
+                        stale_ids = ClientManager.remove_ghost_clients(
+                            self.redis_client, channel_id
+                        )
+                        real_count = max(0, client_count - len(stale_ids))
+                        if real_count <= 0:
+                            # No real clients remain — safe to clean up.
+                            state = metadata.get(b'state', b'unknown').decode('utf-8') if b'state' in metadata else 'unknown'
+                            logger.warning(
+                                f"Orphaned channel {channel_id} (state: {state}, "
+                                f"owner: {owner}) had {client_count} ghost client(s) "
+                                f"- cleaning up"
+                            )
+                            if channel_id in self.stream_managers or channel_id in self.client_managers:
+                                self.stop_channel(channel_id)
+                            else:
+                                self._clean_redis_keys(channel_id)
+                        else:
+                            logger.warning(
+                                f"Orphaned channel {channel_id} still has "
+                                f"{real_count} live client(s) after ghost removal "
+                                f"- may need ownership takeover"
+                            )
 
                 except Exception as e:
                     logger.error(f"Error processing metadata key {key}: {e}", exc_info=True)

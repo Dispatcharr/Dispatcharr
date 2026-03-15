@@ -20,6 +20,10 @@ class ChannelState:
     STOPPED = "stopped"
     BUFFERING = "buffering"
 
+    # States before a channel is fully active. Used by the stream manager
+    # finally block to decide whether a failed stream can write ERROR.
+    PRE_ACTIVE = [INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS]
+
 # Event types
 class EventType:
     STREAM_SWITCH = "stream_switch"
