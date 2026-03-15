@@ -428,7 +428,8 @@ class StreamGenerator:
                             ChannelMetadataField.BYTES_SENT: str(self.bytes_sent),
                             ChannelMetadataField.AVG_RATE_KBPS: str(round(avg_rate, 1)),
                             ChannelMetadataField.CURRENT_RATE_KBPS: str(round(self.current_rate, 1)),
-                            ChannelMetadataField.STATS_UPDATED_AT: str(current_time)
+                            ChannelMetadataField.STATS_UPDATED_AT: str(current_time),
+                            "last_active": str(current_time)
                         }
                         proxy_server.redis_client.hset(client_key, mapping=stats)
 
