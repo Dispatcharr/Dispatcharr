@@ -88,6 +88,7 @@ CACHES = {
 REQUESTS_TIMEOUT = 30  # Seconds for external API requests
 
 MIDDLEWARE = [
+    "dispatcharr.middleware.EnsureSyncMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
