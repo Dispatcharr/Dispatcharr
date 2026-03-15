@@ -3,7 +3,7 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, NETWORK_ACCESS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -62,6 +62,19 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                         "message": "Invalid CIDRs",
                         "value": invalid,
                     }
+                )
+
+        # Sanitize series_rules when DVR settings are saved through the
+        # generic settings API (e.g. Settings page round-trip) to prevent
+        # corrupted non-dict entries from persisting.
+        if instance.key == DVR_SETTINGS_KEY:
+            value = validated_data.get("value")
+            if isinstance(value, dict) and "series_rules" in value:
+                rules = value["series_rules"]
+                value["series_rules"] = (
+                    [r for r in rules if isinstance(r, dict)]
+                    if isinstance(rules, list)
+                    else []
                 )
 
         result = super().update(instance, validated_data)
