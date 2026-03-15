@@ -7,6 +7,7 @@ from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
 from apps.channels.serializers import (
     ChannelGroupM3UAccountSerializer,
 )
+from datetime import timezone as dt_tz
 import logging
 import json
 
@@ -214,10 +215,14 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
         # Surface default profile's exp_date for the form.
         # Use prefetch cache (obj.profiles.all()) to avoid an extra query per account.
+        # Always emit a Z-suffix UTC string so JS new Date() never misinterprets it as local.
         default_profile = next((p for p in instance.profiles.all() if p.is_default), None)
-        data["exp_date"] = (
-            default_profile.exp_date.isoformat() if default_profile and default_profile.exp_date else None
-        )
+        exp = default_profile.exp_date if default_profile else None
+        if exp:
+            exp_utc = exp.astimezone(dt_tz.utc) if exp.tzinfo else exp.replace(tzinfo=dt_tz.utc)
+            data["exp_date"] = exp_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            data["exp_date"] = None
 
         return data
 
@@ -286,12 +291,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 memberships_to_update, ["enabled"]
             )
 
-        # Write exp_date through to the default profile
+        # Write exp_date through to the default profile.
+        # Use a fresh DB query (not the prefetch cache) so we get the profile
+        # object AFTER the post_save signal (create_profile_for_m3u_account)
+        # has already updated max_streams, avoiding a stale-value overwrite.
         if exp_date != "__NOT_SET__":
             default_profile = instance.profiles.filter(is_default=True).first()
             if default_profile:
                 default_profile.exp_date = exp_date
-                default_profile.save()
+                default_profile.save(update_fields=['exp_date'])
+            # Invalidate the profiles prefetch cache so to_representation
+            # sees the updated exp_date rather than the pre-request snapshot.
+            if '_prefetched_objects_cache' in instance.__dict__:
+                instance._prefetched_objects_cache.pop('profiles', None)
 
         return instance
 
@@ -342,7 +354,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         expiring = [p.exp_date for p in obj.profiles.all() if p.is_active and p.exp_date]
         if not expiring:
             return None
-        return min(expiring).isoformat()
+        exp = min(expiring)
+        exp_utc = exp.astimezone(dt_tz.utc) if exp.tzinfo else exp.replace(tzinfo=dt_tz.utc)
+        return exp_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     def get_all_expirations(self, obj):
         """Return exp_date info for every profile that has one (for tooltip)."""
@@ -355,7 +369,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             {
                 "profile_id": p.id,
                 "profile_name": p.name,
-                "exp_date": p.exp_date.isoformat(),
+                "exp_date": (p.exp_date.astimezone(dt_tz.utc) if p.exp_date.tzinfo else p.exp_date.replace(tzinfo=dt_tz.utc)).strftime('%Y-%m-%dT%H:%M:%SZ'),
                 "is_active": p.is_active,
             }
             for p in profiles

@@ -46,6 +46,7 @@ const M3U = ({
 
   const [playlist, setPlaylist] = useState(null);
   const [file, setFile] = useState(null);
+  const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
@@ -70,7 +71,6 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
-      exp_date: null,
     },
 
     validate: {
@@ -103,8 +103,8 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
-        exp_date: m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null,
       });
+      setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
       // Determine schedule type from existing data
       setScheduleType(
@@ -122,6 +122,7 @@ const M3U = ({
       setPlaylist(null);
       form.reset();
       setScheduleType('interval');
+      setExpDate(null);
     }
   }, [m3uAccount]);
 
@@ -134,13 +135,13 @@ const M3U = ({
   const onSubmit = async () => {
     const { create_epg, ...values } = form.getValues();
 
-    // Convert exp_date Date object to ISO string for the API
+    // Convert exp_date (from controlled state) to ISO string for the API
     if (values.account_type === 'XC') {
       // XC accounts have exp_date auto-managed server-side; don't send it
       delete values.exp_date;
-    } else if (values.exp_date instanceof Date) {
-      values.exp_date = values.exp_date.toISOString();
-    } else if (!values.exp_date) {
+    } else if (expDate instanceof Date) {
+      values.exp_date = expDate.toISOString();
+    } else {
       values.exp_date = null;
     }
 
@@ -387,8 +388,8 @@ const M3U = ({
                     placeholder="No expiration"
                     clearable
                     valueFormat="MMM D, YYYY h:mm A"
-                    {...form.getInputProps('exp_date')}
-                    key={form.key('exp_date')}
+                    value={expDate}
+                    onChange={(v) => setExpDate(v ? new Date(v) : null)}
                   />
                 </>
               )}
