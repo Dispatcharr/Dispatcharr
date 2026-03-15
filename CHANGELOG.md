@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Order and visibility are saved per-user with optimistic updates and automatic rollback on failure. Changes appear in the sidebar immediately without a page reload.
   - Admin users see a grouped navigation: flat items (`Channels`, `VODs`, `M3U & EPG Manager`, `TV Guide`, `DVR`, `Stats`, `Plugins`) plus collapsible `Integrations` (Connections, Logs) and `System` (Users, Logo Manager, Settings) groups. The `System` group cannot be hidden.
   - Non-admin users see `Channels`, `TV Guide`, and `Settings`, with the `Settings` item not hideable.
-- Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components. — Thanks [@nick4810](https://github.com/nick4810)
+- Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components, and for settings form components `DvrSettingsForm`, `NetworkAccessForm`, `ProxySettingsForm`, `StreamSettingsForm`, `SystemSettingsForm`, `UiSettingsForm`. — Thanks [@nick4810](https://github.com/nick4810)
 - Unit tests for DVR port resolution (`build_dvr_candidates`) and selective Redis flush behavior in modular mode. — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Floating video player improvements
   - **Title display**: The channel, stream, or VOD title is now shown in the player header bar. Title is passed through from all preview entry points: channel table, stream table, stream connection card, guide, DVR, recording cards, recording details modal, VOD modal, and series modal.
