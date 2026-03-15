@@ -3237,7 +3237,7 @@ def evaluate_profile_expiration_notification(profile):
                     "exp_date": exp.isoformat(),
                 },
                 "is_active": True,
-                "admin_only": False,
+                "admin_only": True,
             },
         )
         send_websocket_notification(notification)
@@ -3280,7 +3280,7 @@ def evaluate_profile_expiration_notification(profile):
                     "exp_date": exp.isoformat(),
                 },
                 "is_active": True,
-                "admin_only": False,
+                "admin_only": True,
             },
         )
         send_websocket_notification(notification)
