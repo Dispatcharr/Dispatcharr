@@ -119,11 +119,8 @@ If you are running a Debian-based OS, use the `debian_install.sh` script. For ot
 ## 🤝 Want to Contribute?
 
 We welcome **PRs, issues, ideas, and suggestions**!\
-Here's how you can join the party:
 
-- Follow our coding style and best practices.
-- Be respectful, helpful, and open-minded.
-- Respect the **GNU AGPL v3.0 license**.
+Prior to contributing, please read the [CONTRIBUTING.md](https://github.com/Dispatcharr/Dispatcharr/blob/main/CONTRIBUTING.md)
 
 > Whether it's writing docs, squashing bugs, or building new features, your contribution matters! 🙋
 
