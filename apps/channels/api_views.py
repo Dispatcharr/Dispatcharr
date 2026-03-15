@@ -24,6 +24,7 @@ from apps.accounts.permissions import (
 
 from core.models import UserAgent, CoreSettings
 from core.utils import RedisClient
+from dispatcharr.utils import ensure_sync
 
 from .models import (
     Stream,
@@ -172,7 +173,7 @@ class StreamViewSet(viewsets.ModelViewSet):
         ids = request.query_params.get("ids", None)
         if ids:
             ids = ids.split(",")
-            streams = get_list_or_404(Stream, id__in=ids)
+            streams = ensure_sync(get_list_or_404, Stream, id__in=ids)
             serializer = self.get_serializer(streams, many=True)
             return Response(serializer.data)
 
@@ -190,7 +191,7 @@ class StreamViewSet(viewsets.ModelViewSet):
         stream_ids = queryset.values_list("id", flat=True)
 
         # Return the response with the list of IDs
-        return Response(list(stream_ids))
+        return Response(ensure_sync(list, stream_ids))
 
     @action(detail=False, methods=["get"], url_path="groups")
     def get_groups(self, request, *args, **kwargs):
@@ -203,7 +204,7 @@ class StreamViewSet(viewsets.ModelViewSet):
         )
 
         # Return the response with the list of unique group names
-        return Response(list(group_names))
+        return Response(ensure_sync(list, group_names))
 
     @action(detail=False, methods=["get"], url_path="filter-options")
     def get_filter_options(self, request, *args, **kwargs):
@@ -934,13 +935,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_ids = queryset.values_list("id", flat=True)
 
         # Return the response with the list of IDs
-        return Response(list(channel_ids))
+        return Response(ensure_sync(list, channel_ids))
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request, *args, **kwargs):
         """Return a lightweight list of channels with only the fields needed by the TV Guide."""
         queryset = self.filter_queryset(self.get_queryset())
-        data = list(
+        data = ensure_sync(
+            list,
             queryset.values(
                 "id",
                 "name",
@@ -949,7 +951,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "uuid",
                 "epg_data_id",
                 "channel_group_id",
-            )
+            ),
         )
         return Response(data)
 
@@ -2083,9 +2085,11 @@ class GetChannelStreamsAPIView(APIView):
             return [Authenticated()]
 
     def get(self, request, channel_id):
-        channel = get_object_or_404(Channel, id=channel_id)
+        channel = ensure_sync(get_object_or_404, Channel, id=channel_id)
         # Order the streams by channelstream__order to match the order in the channel view
-        streams = channel.streams.all().order_by("channelstream__order")
+        streams = ensure_sync(
+            lambda: list(channel.streams.all().order_by("channelstream__order"))
+        )
         serializer = StreamSerializer(streams, many=True)
         return Response(serializer.data)
 
