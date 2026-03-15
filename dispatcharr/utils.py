@@ -55,7 +55,7 @@ def ensure_sync(func, *args, **kwargs):
         except BaseException as e:
             exception[0] = e
 
-    t = threading.Thread(target=_worker, daemon=True)
+    t = threading.Thread(target=_worker)
     t.start()
     t.join()
 

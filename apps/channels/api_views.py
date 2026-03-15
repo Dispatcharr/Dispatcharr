@@ -2087,9 +2087,8 @@ class GetChannelStreamsAPIView(APIView):
     def get(self, request, channel_id):
         channel = ensure_sync(get_object_or_404, Channel, id=channel_id)
         # Order the streams by channelstream__order to match the order in the channel view
-        streams = ensure_sync(
-            lambda: list(channel.streams.all().order_by("channelstream__order"))
-        )
+        streams_qs = channel.streams.all().order_by("channelstream__order")
+        streams = ensure_sync(list, streams_qs)
         serializer = StreamSerializer(streams, many=True)
         return Response(serializer.data)
 

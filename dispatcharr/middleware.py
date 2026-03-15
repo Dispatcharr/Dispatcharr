@@ -5,8 +5,14 @@ Provides middleware that ensures Django ORM calls can be made safely from
 within an async event-loop context (Daphne/ASGI or gevent-patched asyncio).
 """
 import os
+import threading
 
 from dispatcharr.utils import _is_async_context
+
+# Lock that serialises the one-time env-var write; the flag lets us skip
+# the lock on every subsequent request with a simple boolean read.
+_lock = threading.Lock()
+_async_env_set = False
 
 
 class EnsureSyncMiddleware:
@@ -31,6 +37,12 @@ class EnsureSyncMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if not os.environ.get("DJANGO_ALLOW_ASYNC_UNSAFE") and _is_async_context():
-            os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+        global _async_env_set
+        if not _async_env_set:
+            with _lock:
+                if not _async_env_set:
+                    if _is_async_context():
+                        os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+                    # Mark as checked regardless so we never enter the lock again.
+                    _async_env_set = True
         return self.get_response(request)
