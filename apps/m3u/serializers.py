@@ -212,8 +212,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
         data["cron_expression"] = cron_expr
 
-        # Surface default profile's exp_date for the form
-        default_profile = instance.profiles.filter(is_default=True).first()
+        # Surface default profile's exp_date for the form.
+        # Use prefetch cache (obj.profiles.all()) to avoid an extra query per account.
+        default_profile = next((p for p in instance.profiles.all() if p.is_default), None)
         data["exp_date"] = (
             default_profile.exp_date.isoformat() if default_profile and default_profile.exp_date else None
         )
@@ -337,15 +338,19 @@ class M3UAccountSerializer(serializers.ModelSerializer):
 
     def get_earliest_expiration(self, obj):
         """Return the soonest exp_date across all active profiles for this account."""
-        profiles_with_exp = obj.profiles.filter(
-            is_active=True, exp_date__isnull=False
-        ).order_by("exp_date")
-        first = profiles_with_exp.first()
-        return first.exp_date.isoformat() if first else None
+        # Filter in Python over the prefetch cache to avoid an extra query per account.
+        expiring = [p.exp_date for p in obj.profiles.all() if p.is_active and p.exp_date]
+        if not expiring:
+            return None
+        return min(expiring).isoformat()
 
     def get_all_expirations(self, obj):
         """Return exp_date info for every profile that has one (for tooltip)."""
-        profiles = obj.profiles.filter(exp_date__isnull=False).order_by("exp_date")
+        # Filter in Python over the prefetch cache to avoid an extra query per account.
+        profiles = sorted(
+            (p for p in obj.profiles.all() if p.exp_date),
+            key=lambda p: p.exp_date,
+        )
         return [
             {
                 "profile_id": p.id,

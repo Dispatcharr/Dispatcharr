@@ -40,7 +40,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
     queryset = M3UAccount.objects.select_related(
         "refresh_task__crontab", "refresh_task__interval"
-    ).prefetch_related("channel_group")
+    ).prefetch_related("channel_group", "profiles")
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):

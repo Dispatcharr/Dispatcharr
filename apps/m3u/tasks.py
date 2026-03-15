@@ -3199,9 +3199,12 @@ def evaluate_profile_expiration_notification(profile):
     from core.models import SystemNotification
     from core.utils import send_websocket_notification, send_notification_dismissed
 
+    exp = profile.exp_date
+    if not exp:
+        return None
+
     now = timezone.now()
     warning_threshold = now + timezone.timedelta(days=7)
-    exp = profile.exp_date
     warning_key = f"xc-exp-warning-{profile.id}"
     expired_key = f"xc-exp-expired-{profile.id}"
 
@@ -3299,7 +3302,7 @@ def evaluate_profile_expiration_notification(profile):
 
 
 @shared_task
-def check_xc_account_expirations():
+def check_account_expirations():
     """
     Daily task: check all account profiles for upcoming expirations.
     Creates/updates SystemNotifications for profiles expiring within 7 days.
