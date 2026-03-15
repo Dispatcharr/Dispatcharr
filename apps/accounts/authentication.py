@@ -1,5 +1,6 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import os
+import threading
 
 from rest_framework import authentication
 from rest_framework import exceptions
@@ -10,18 +11,19 @@ from django.conf import settings
 from .models import User
 
 
-_sync_executor = ThreadPoolExecutor(max_workers=4)
-
-
 def _ensure_sync(func, *args, **kwargs):
     """
     Ensure a function with database access runs in a synchronous context.
 
-    When running under an ASGI server (e.g. Daphne), Django may detect that
-    the current thread has a running event loop, causing ORM calls to raise
-    SynchronousOnlyOperation.  This helper detects that situation and
-    re-executes the callable in a plain worker thread where no event loop
-    is present.
+    When running under an ASGI server (e.g. Daphne) or a gevent-based WSGI
+    server, Django may detect that the current thread has a running event
+    loop, causing ORM calls to raise ``SynchronousOnlyOperation``.
+
+    This helper detects that situation and re-executes the callable in a
+    dedicated worker thread.  ``DJANGO_ALLOW_ASYNC_UNSAFE`` is set inside
+    the worker so that Django's ``@async_unsafe`` guard on the database
+    cursor is bypassed – the call is genuinely synchronous and isolated
+    from the event loop.
     """
     try:
         asyncio.get_running_loop()
@@ -29,8 +31,24 @@ def _ensure_sync(func, *args, **kwargs):
         # No running event loop – safe to call directly.
         return func(*args, **kwargs)
 
-    # Running inside an async context – execute in a separate thread.
-    return _sync_executor.submit(func, *args, **kwargs).result()
+    # Running inside an async context – execute in an isolated thread.
+    result = [None]
+    exception = [None]
+
+    def _worker():
+        os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+        try:
+            result[0] = func(*args, **kwargs)
+        except BaseException as e:
+            exception[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join()
+
+    if exception[0] is not None:
+        raise exception[0]
+    return result[0]
 
 
 class JWTAuthentication(BaseJWTAuthentication):
