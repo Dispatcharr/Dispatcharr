@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- uWSGI segfaults caused by mixing threading and gevent concurrency models. The dev and debug uWSGI configs had `threads` and `enable-threads = true` set alongside gevent, which triggers segmentation faults particularly on ARM64/Python 3.13. Removed those options to match the already-correct production config. — Thanks [@jcasimir](https://github.com/jcasimir)
 - `Stream.last_seen` and `ChannelGroupM3UAccount.last_seen` model defaults now use `django.utils.timezone.now` instead of `datetime.datetime.now`, eliminating spurious `RuntimeWarning: DateTimeField received a naive datetime` warnings emitted during test database creation and on new record creation when `USE_TZ=True`.
 - EPG programme parsing crash when an XMLTV source contains programme titles exceeding 255 characters. Previously, a single oversized title would cause the entire `bulk_create` batch to fail with a database truncation error, silently dropping all programmes in that batch. Titles are now truncated to 255 characters before being saved. (Fixes #1039)
 - Container startup failure when `PUID`/`PGID` is set, caused by `/data/db` ownership conflicts between the `postgres` system user (UID 102) and the configured PUID/PGID. PostgreSQL now runs as the PUID/PGID user in AIO mode, eliminating all `chown`-to-UID-102 operations and unifying `/data` ownership. (Fixes #1078) — Thanks [@CodeBormen](https://github.com/CodeBormen)
