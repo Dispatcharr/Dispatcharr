@@ -8,7 +8,7 @@
 
 ## 📖 What is Dispatcharr?
 
-Dispatcharr is an **open-source powerhouse** for managing IPTV streams, EPG data, and VOD content with elegance and control.\
+Dispatcharr (pronounced like "dispatcher") is an **open-source powerhouse** for managing IPTV streams, EPG data, and VOD content with elegance and control.\
 Born from necessity and built with passion, it started as a personal project by **[OkinawaBoss](https://github.com/OkinawaBoss)** and evolved with contributions from legends like **[dekzter](https://github.com/dekzter)**, **[SergeantPanda](https://github.com/SergeantPanda)** and **Bucatini**.
 
 > Think of Dispatcharr as the \*arr family's IPTV cousin — simple, smart, and designed for streamers who want reliability and flexibility.
