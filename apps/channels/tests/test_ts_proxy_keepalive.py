@@ -86,11 +86,12 @@ class NonOwnerWorkerKeepaliveTests(TestCase):
         gen.stream_manager = None  # non-owner worker
         gen.consecutive_empty = consecutive_empty
 
-        # Throttle attributes added by a later PR; required by _should_send_keepalive.
+        # Attributes added by health-check throttling (set in __init__)
         gen._last_health_check_time = 0.0
         gen._last_health_check_result = False
         gen._health_check_interval = 2.0
         gen.proxy_server = None
+
         return gen
 
     def _mock_proxy_server(self, last_data_value):
