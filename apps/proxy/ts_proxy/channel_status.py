@@ -445,8 +445,9 @@ class ChannelStatus:
             client_ids = proxy_server.redis_client.smembers(client_set_key)
 
             # Remove ghost SET entries before building the client list.
+            # Pass the already-fetched client_ids to avoid a redundant SMEMBERS.
             stale_client_ids = ClientManager.remove_ghost_clients(
-                proxy_server.redis_client, channel_id
+                proxy_server.redis_client, channel_id, client_ids=client_ids
             )
             if stale_client_ids:
                 client_count = max(0, client_count - len(stale_client_ids))

@@ -415,14 +415,20 @@ class ClientManager:
             logger.error(f"Error refreshing client TTL: {e}")
 
     @staticmethod
-    def remove_ghost_clients(redis_client, channel_id):
+    def remove_ghost_clients(redis_client, channel_id, client_ids=None):
         """Remove client SET entries whose metadata hash has expired.
 
         Returns the list of removed (stale) client IDs, or an empty list
         if none were found. Uses a pipelined EXISTS check for efficiency.
+
+        Args:
+            client_ids: Optional pre-fetched result of SMEMBERS for this
+                        channel. Pass this to avoid a redundant SMEMBERS
+                        call when the caller has already fetched it.
         """
         client_set_key = RedisKeys.clients(channel_id)
-        client_ids = redis_client.smembers(client_set_key)
+        if client_ids is None:
+            client_ids = redis_client.smembers(client_set_key)
         if not client_ids:
             return []
 

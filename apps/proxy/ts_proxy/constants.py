@@ -22,7 +22,7 @@ class ChannelState:
 
     # States before a channel is fully active. Used by the stream manager
     # finally block to decide whether a failed stream can write ERROR.
-    PRE_ACTIVE = [INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS]
+    PRE_ACTIVE = frozenset([INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS])
 
 # Event types
 class EventType:
