@@ -75,6 +75,7 @@ class ChannelMetadataField:
     FFMPEG_FPS = "ffmpeg_fps"
     ACTUAL_FPS = "actual_fps"
     FFMPEG_OUTPUT_BITRATE = "ffmpeg_output_bitrate"
+    FFMPEG_BITRATE = "ffmpeg_bitrate"
     FFMPEG_STATS_UPDATED = "ffmpeg_stats_updated"
 
     # Video stream info
@@ -85,6 +86,7 @@ class ChannelMetadataField:
     SOURCE_FPS = "source_fps"
     PIXEL_FORMAT = "pixel_format"
     VIDEO_BITRATE = "video_bitrate"
+    SOURCE_BITRATE = "source_bitrate"
 
     # Audio stream info
     AUDIO_CODEC = "audio_codec"
