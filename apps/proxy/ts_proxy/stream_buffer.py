@@ -76,27 +76,28 @@ class StreamBuffer:
             if not hasattr(self, '_partial_packet'):
                 self._partial_packet = bytearray()
 
-            # Combine with any previous partial packet
-            combined_data = bytearray(self._partial_packet) + bytearray(chunk)
-
-            # Calculate complete packets
-            complete_packets_size = (len(combined_data) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
-
-            if complete_packets_size == 0:
-                # Not enough data for a complete packet
-                self._partial_packet = combined_data
-                return True
-
-            # Split into complete packets and remainder
-            complete_packets = combined_data[:complete_packets_size]
-            self._partial_packet = combined_data[complete_packets_size:]
-
-            # Add completed packets to write buffer
-            self._write_buffer.extend(complete_packets)
-
-            # Only write to Redis when we have enough data for an optimized chunk
+            # Lock the full operation to prevent race with reset_buffer_position
             writes_done = 0
             with self.lock:
+                # Combine with any previous partial packet
+                combined_data = bytearray(self._partial_packet) + bytearray(chunk)
+
+                # Calculate complete packets
+                complete_packets_size = (len(combined_data) // self.TS_PACKET_SIZE) * self.TS_PACKET_SIZE
+
+                if complete_packets_size == 0:
+                    # Not enough data for a complete packet
+                    self._partial_packet = combined_data
+                    return True
+
+                # Split into complete packets and remainder
+                complete_packets = combined_data[:complete_packets_size]
+                self._partial_packet = combined_data[complete_packets_size:]
+
+                # Add completed packets to write buffer
+                self._write_buffer.extend(complete_packets)
+
+                # Only write to Redis when we have enough data for an optimized chunk
                 while len(self._write_buffer) >= self.target_chunk_size:
                     # Extract a full chunk
                     chunk_data = self._write_buffer[:self.target_chunk_size]
@@ -131,6 +132,40 @@ class StreamBuffer:
         except Exception as e:
             logger.error(f"Error adding chunk to buffer: {e}")
             return False
+
+    def reset_buffer_position(self):
+        """
+        Reset internal buffers for a clean stream transition (failover).
+
+        Called by stream_manager.update_url() when switching between FFmpeg
+        processes. Without this, _partial_packet from the old FFmpeg gets
+        concatenated with the first bytes from the new FFmpeg, creating
+        corrupted TS packets that break audio decoder sync in the client.
+        """
+        try:
+            with self.lock:
+                old_write_size = len(self._write_buffer)
+                old_partial_size = len(getattr(self, '_partial_packet', b''))
+
+                self._write_buffer = bytearray()
+                if hasattr(self, '_partial_packet'):
+                    self._partial_packet = bytearray()
+
+                if old_write_size > 0 or old_partial_size > 0:
+                    logger.info(
+                        f"Reset buffer position for channel {self.channel_id}: "
+                        f"cleared {old_write_size} bytes from write buffer, "
+                        f"{old_partial_size} bytes from partial packet"
+                    )
+                else:
+                    logger.debug(
+                        f"Reset buffer position for channel {self.channel_id}: "
+                        f"buffers were already clean"
+                    )
+        except Exception as e:
+            logger.error(
+                f"Error resetting buffer position for channel {self.channel_id}: {e}"
+            )
 
     def get_chunks(self, start_index=None):
         """Get chunks from the buffer with detailed logging"""

@@ -158,9 +158,8 @@ class ClientManager:
                                 if time_since_heartbeat < self.heartbeat_interval * 0.5:  # Only heartbeat at half interval minimum
                                     continue
 
-                            # Only update clients that remain
+                            # Only refresh TTL - do NOT update last_active
                             client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
-                            pipe.hset(client_key, "last_active", str(current_time))
                             pipe.expire(client_key, self.client_ttl)
 
                             # Keep client in the set with TTL
