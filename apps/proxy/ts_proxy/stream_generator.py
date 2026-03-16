@@ -255,6 +255,10 @@ class StreamGenerator:
 
     def _stream_data_generator(self):
         """Generate stream data chunks based on buffer contents."""
+        # Keepalive packets refresh last_yield_time, so _is_timeout() never fires
+        # during sustained stream failure. This timer enforces a wall-clock cap.
+        keepalive_start_time = None
+
         # Main streaming loop
         while True:
             # Check if resources still exist
@@ -265,6 +269,7 @@ class StreamGenerator:
             chunks, next_index = self.buffer.get_optimized_client_data(self.local_index)
 
             if chunks:
+                keepalive_start_time = None  # Each recovery restarts the cap independently.
                 yield from self._process_chunks(chunks, next_index)
                 self.local_index = next_index
                 self.last_yield_time = time.time()
@@ -306,12 +311,28 @@ class StreamGenerator:
                     continue  # Retry immediately with the new position
 
                 if self._should_send_keepalive(self.local_index):
+                    if keepalive_start_time is None:
+                        keepalive_start_time = time.time()
+
+                    max_keepalive = getattr(Config, 'MAX_KEEPALIVE_DURATION', 300)
+                    if time.time() - keepalive_start_time > max_keepalive:
+                        logger.warning(
+                            f"[{self.client_id}] Keepalive duration exceeded {max_keepalive}s "
+                            f"with no stream recovery, disconnecting"
+                        )
+                        break
+
                     keepalive_packet = create_ts_packet('keepalive')
                     logger.debug(f"[{self.client_id}] Sending keepalive packet while waiting at buffer head")
                     yield keepalive_packet
                     self.bytes_sent += len(keepalive_packet)
                     self.last_yield_time = time.time()
                     self.consecutive_empty = 0  # Reset consecutive counter but keep total empty_reads
+                    # Update last_active so clients waiting during failover aren't flagged as ghosts
+                    proxy_server = ProxyServer.get_instance()
+                    if proxy_server and proxy_server.redis_client:
+                        client_key = RedisKeys.client_metadata(self.channel_id, self.client_id)
+                        proxy_server.redis_client.hset(client_key, "last_active", str(time.time()))
                     gevent.sleep(Config.KEEPALIVE_INTERVAL)  # Replace time.sleep
                 else:
                     # Standard wait with backoff
@@ -428,7 +449,8 @@ class StreamGenerator:
                             ChannelMetadataField.BYTES_SENT: str(self.bytes_sent),
                             ChannelMetadataField.AVG_RATE_KBPS: str(round(avg_rate, 1)),
                             ChannelMetadataField.CURRENT_RATE_KBPS: str(round(self.current_rate, 1)),
-                            ChannelMetadataField.STATS_UPDATED_AT: str(current_time)
+                            ChannelMetadataField.STATS_UPDATED_AT: str(current_time),
+                            "last_active": str(current_time)
                         }
                         proxy_server.redis_client.hset(client_key, mapping=stats)
 

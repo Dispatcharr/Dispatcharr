@@ -64,7 +64,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 // Mock Mantine components
 vi.mock('@mantine/core', () => ({
   Box: ({ children, ...props }) => <div {...props}>{children}</div>,
-  Button: ({ children, onClick, disabled, ...props }) => (
+  Button: ({ children, onClick, disabled }) => (
     <button onClick={onClick} disabled={disabled} data-testid="reset-button">
       {children}
     </button>

@@ -1286,6 +1286,7 @@ export default class API {
 
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {

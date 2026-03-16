@@ -32,7 +32,12 @@ import {
   SquarePlus,
 } from 'lucide-react';
 import useLocalStorage from '../../hooks/useLocalStorage';
-import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
+import {
+  useDateTimeFormat,
+  format,
+  diff,
+  getNow,
+} from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -159,7 +164,7 @@ const M3UTable = () => {
 
   const theme = useMantineTheme();
   const [tableSize] = useLocalStorage('table-size', 'default');
-  const { fullDateTimeFormat } = useDateTimeFormat();
+  const { fullDateFormat, fullDateTimeFormat } = useDateTimeFormat();
 
   const generateStatusString = (data) => {
     if (data.progress == 100) {
@@ -585,6 +590,64 @@ const M3UTable = () => {
         size: 125,
       },
       {
+        header: 'Expiration',
+        accessorKey: 'earliest_expiration',
+        sortable: true,
+        size: 110,
+        cell: ({ cell, row }) => {
+          const data = row.original;
+
+          const earliest = cell.getValue();
+          if (!earliest) {
+            return null;
+          }
+
+          const now = getNow();
+          const daysLeft = diff(earliest, now, 'day');
+          let color;
+          let label;
+          if (daysLeft < 0) {
+            color = 'red.7';
+            label = 'Expired';
+          } else if (daysLeft === 0) {
+            color = 'red.5';
+            label = 'Expires today';
+          } else if (daysLeft <= 7) {
+            color = 'orange.5';
+            label = `${daysLeft}d left`;
+          } else if (daysLeft <= 30) {
+            color = 'yellow.5';
+            label = `${daysLeft}d left`;
+          } else {
+            label = format(earliest, fullDateFormat);
+          }
+
+          const allExpirations = data.all_expirations || [];
+          const tooltipContent =
+            allExpirations.length > 0
+              ? allExpirations
+                  .map(
+                    (e) =>
+                      `${e.profile_name}: ${format(e.exp_date, fullDateTimeFormat)}${!e.is_active ? ' (inactive)' : ''}`
+                  )
+                  .join('\n')
+              : label;
+
+          return (
+            <Tooltip
+              label={tooltipContent}
+              multiline
+              width={300}
+              style={{ whiteSpace: 'pre-line' }}
+            >
+              <Text size="xs" c={color} fw={daysLeft <= 7 ? 600 : 400}>
+                {label}
+              </Text>
+            </Tooltip>
+          );
+        },
+      },
+      {
         header: 'Updated',
         accessorKey: 'updated_at',
         size: 175,
@@ -624,6 +687,7 @@ const M3UTable = () => {
       editPlaylist,
       deletePlaylist,
       toggleActive,
+      fullDateFormat,
       fullDateTimeFormat,
     ]
   );
@@ -696,13 +760,22 @@ const M3UTable = () => {
         playlists
           .filter((playlist) => playlist.locked === false)
           .sort((a, b) => {
-            console.log(a);
-            console.log(newSorting[0].id);
-            if (a[compareColumn] !== b[compareColumn]) {
-              return compareDesc ? 1 : -1;
+            const aVal = a[compareColumn];
+            const bVal = b[compareColumn];
+
+            // Always sort nulls/undefined to the end regardless of direction
+            if (aVal == null && bVal == null) return 0;
+            if (aVal == null) return 1;
+            if (bVal == null) return -1;
+
+            let comparison;
+            if (typeof aVal === 'string') {
+              comparison = aVal.localeCompare(bVal);
+            } else {
+              comparison = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
             }
 
-            return 0;
+            return compareDesc ? -comparison : comparison;
           })
       );
     }
@@ -778,6 +851,7 @@ const M3UTable = () => {
       status: renderHeaderCell,
       last_message: renderHeaderCell,
       updated_at: renderHeaderCell,
+      earliest_expiration: renderHeaderCell,
       is_active: renderHeaderCell,
       actions: renderHeaderCell,
     },
