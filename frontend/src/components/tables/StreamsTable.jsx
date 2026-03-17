@@ -56,6 +56,7 @@ import {
   LoadingOverlay,
   Pill,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
 import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
@@ -207,14 +208,14 @@ const StreamsTable = ({ onReady }) => {
   // Channel creation modal state (bulk)
   const [channelNumberingModalOpen, setChannelNumberingModalOpen] =
     useState(false);
-  const [numberingMode, setNumberingMode] = useState('provider'); // 'provider', 'auto', or 'custom'
+  const [numberingMode, setNumberingMode] = useState('provider'); // 'provider', 'auto', 'highest', or 'custom'
   const [customStartNumber, setCustomStartNumber] = useState(1);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [bulkSelectedProfileIds, setBulkSelectedProfileIds] = useState([]);
 
   // Channel creation modal state (single)
   const [singleChannelModalOpen, setSingleChannelModalOpen] = useState(false);
-  const [singleChannelMode, setSingleChannelMode] = useState('provider'); // 'provider', 'auto', or 'specific'
+  const [singleChannelMode, setSingleChannelMode] = useState('provider'); // 'provider', 'auto', 'highest', or 'specific'
   const [specificChannelNumber, setSpecificChannelNumber] = useState(1);
   const [rememberSingleChoice, setRememberSingleChoice] = useState(false);
   const [currentStreamForChannel, setCurrentStreamForChannel] = useState(null);
@@ -717,21 +718,59 @@ const StreamsTable = ({ onReady }) => {
       const savedStartNumber =
         localStorage.getItem('channel-numbering-start') || '1';
 
-      const startingChannelNumberValue =
-        savedMode === 'provider'
-          ? null
-          : savedMode === 'auto'
-            ? 0
-            : Number(savedStartNumber);
+      let startingChannelNumberValue;
+      if (savedMode === 'provider') {
+        startingChannelNumberValue = null;
+      } else if (savedMode === 'auto') {
+        startingChannelNumberValue = 0;
+      } else if (savedMode === 'highest') {
+        startingChannelNumberValue = -1;
+      } else {
+        startingChannelNumberValue = Number(savedStartNumber);
+      }
 
       await executeChannelCreation(
         startingChannelNumberValue,
         defaultProfileIds
       );
     } else {
-      // Show the modal to let user choose
       setChannelNumberingModalOpen(true);
     }
+  };
+
+  const resolveSelectedStream = async (streamId) => {
+    const streamFromCurrentPage = data.find(
+      (candidate) => Number(candidate.id) === Number(streamId)
+    );
+    if (streamFromCurrentPage) {
+      return streamFromCurrentPage;
+    }
+
+    const response = await API.getStreams([streamId]);
+    return (
+      response?.find(
+        (candidate) => Number(candidate.id) === Number(streamId)
+      ) ?? null
+    );
+  };
+
+  const createChannelsFromSelection = async () => {
+    if (selectedStreamIds.length === 1) {
+      const selectedStream = await resolveSelectedStream(selectedStreamIds[0]);
+      if (selectedStream) {
+        await createChannelFromStream(selectedStream);
+      } else {
+        notifications.show({
+          color: 'red',
+          title: 'Stream not found',
+          message:
+            'The selected stream could not be resolved. Please refresh and try again.',
+        });
+      }
+      return;
+    }
+
+    await createChannelsFromStreams();
   };
 
   // Separate function to actually execute the channel creation
@@ -798,13 +837,19 @@ const StreamsTable = ({ onReady }) => {
         ? null
         : numberingMode === 'auto'
           ? 0
-          : Number(customStartNumber);
+          : numberingMode === 'highest'
+            ? -1
+            : Number(customStartNumber);
 
     setChannelNumberingModalOpen(false);
     await executeChannelCreation(
       startingChannelNumberValue,
       bulkSelectedProfileIds
     );
+  };
+
+  const handleBulkNumberingModeChange = (nextMode) => {
+    setNumberingMode(nextMode);
   };
 
   const editStream = async (stream = null) => {
@@ -895,12 +940,16 @@ const StreamsTable = ({ onReady }) => {
       const savedChannelNumber =
         localStorage.getItem('single-channel-numbering-specific') || '1';
 
-      const channelNumberValue =
-        savedMode === 'provider'
-          ? null
-          : savedMode === 'auto'
-            ? 0
-            : Number(savedChannelNumber);
+      let channelNumberValue;
+      if (savedMode === 'provider') {
+        channelNumberValue = null;
+      } else if (savedMode === 'auto') {
+        channelNumberValue = 0;
+      } else if (savedMode === 'highest') {
+        channelNumberValue = -1;
+      } else {
+        channelNumberValue = Number(savedChannelNumber);
+      }
 
       await executeSingleChannelCreation(
         stream,
@@ -966,7 +1015,9 @@ const StreamsTable = ({ onReady }) => {
         ? null
         : singleChannelMode === 'auto'
           ? 0
-          : Number(specificChannelNumber);
+          : singleChannelMode === 'highest'
+            ? -1
+            : Number(specificChannelNumber);
 
     setSingleChannelModalOpen(false);
     await executeSingleChannelCreation(
@@ -974,6 +1025,10 @@ const StreamsTable = ({ onReady }) => {
       channelNumberValue,
       singleSelectedProfileIds
     );
+  };
+
+  const handleSingleNumberingModeChange = (nextMode) => {
+    setSingleChannelMode(nextMode);
   };
 
   const addStreamsToChannel = async () => {
@@ -1456,11 +1511,13 @@ const StreamsTable = ({ onReady }) => {
                 leftSection={<SquarePlus size={18} />}
                 variant="default"
                 size="xs"
-                onClick={createChannelsFromStreams}
+                onClick={createChannelsFromSelection}
                 p={5}
                 disabled={selectedStreamIds.length == 0}
               >
-                {`Create Channels (${selectedStreamIds.length})`}
+                {selectedStreamIds.length <= 1
+                  ? `Create Channel (${selectedStreamIds.length})`
+                  : `Create Channels (${selectedStreamIds.length})`}
               </Button>
             </Tooltip>
           </Flex>
@@ -1739,7 +1796,7 @@ const StreamsTable = ({ onReady }) => {
         opened={channelNumberingModalOpen}
         onClose={() => setChannelNumberingModalOpen(false)}
         mode={numberingMode}
-        onModeChange={setNumberingMode}
+        onModeChange={handleBulkNumberingModeChange}
         numberValue={customStartNumber}
         onNumberValueChange={setCustomStartNumber}
         rememberChoice={rememberChoice}
@@ -1757,7 +1814,7 @@ const StreamsTable = ({ onReady }) => {
         opened={singleChannelModalOpen}
         onClose={() => setSingleChannelModalOpen(false)}
         mode={singleChannelMode}
-        onModeChange={setSingleChannelMode}
+        onModeChange={handleSingleNumberingModeChange}
         numberValue={specificChannelNumber}
         onNumberValueChange={setSpecificChannelNumber}
         rememberChoice={rememberSingleChoice}

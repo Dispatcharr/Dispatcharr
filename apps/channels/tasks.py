@@ -3338,6 +3338,10 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
         elif starting_channel_number == 0:
             # Mode 2: Start from lowest available number
             next_number = 1
+        elif starting_channel_number == -1:
+            # Mode 4: Start after the current highest channel number
+            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            next_number = (int(highest) + 1) if highest is not None else 1
         else:
             # Mode 3: Start from specified number
             next_number = starting_channel_number

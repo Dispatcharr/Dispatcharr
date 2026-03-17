@@ -1078,6 +1078,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         elif channel_number == 0:
             # Special case: 0 means ignore provider numbers and auto-assign
             channel_number = None
+        elif channel_number == -1:
+            # Special case: -1 means assign the number after the current highest
+            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            channel_number = (int(highest) + 1) if highest is not None else 1
 
         if channel_number is None:
             # Still None, auto-assign the next available channel number
