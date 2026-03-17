@@ -2,6 +2,7 @@
 
 # Define directories that need to exist and be owned by PUID:PGID
 DATA_DIRS=(
+    "/data/backups"
     "/data/logos"
     "/data/recordings"
     "/data/uploads/m3us"
