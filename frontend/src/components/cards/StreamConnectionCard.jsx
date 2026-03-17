@@ -1,6 +1,5 @@
 import { useLocation } from 'react-router-dom';
 import React, { useEffect, useMemo, useState } from 'react';
-import useLocalStorage from '../../hooks/useLocalStorage.jsx';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
 import {
@@ -9,7 +8,6 @@ import {
   Box,
   Card,
   Center,
-  Flex,
   Group,
   Progress,
   Select,
@@ -55,6 +53,51 @@ import {
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
+
+const formatProgramTime = (seconds) => {
+  const absSeconds = Math.abs(seconds);
+  const hours = Math.floor(absSeconds / 3600);
+  const minutes = Math.floor((absSeconds % 3600) / 60);
+  const secs = Math.floor(absSeconds % 60);
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
+
+const ProgramProgress = ({ currentProgram }) => {
+  const now = new Date();
+  const startTime = new Date(currentProgram.start_time);
+  const endTime = new Date(currentProgram.end_time);
+  const totalDuration = (endTime - startTime) / 1000; // in seconds
+  const elapsed = (now - startTime) / 1000; // in seconds
+  const remaining = (endTime - now) / 1000; // in seconds
+  const percentage = Math.min(
+    100,
+    Math.max(0, (elapsed / totalDuration) * 100)
+  );
+
+  return (
+    <Stack gap="xs" mt={4}>
+      <Group justify="space-between" align="center">
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(elapsed)} elapsed
+        </Text>
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(remaining)} remaining
+        </Text>
+      </Group>
+      <Progress
+        value={percentage}
+        size="sm"
+        color="#3BA882"
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        }}
+      />
+    </Stack>
+  );
+};
 
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
@@ -431,7 +474,7 @@ const StreamConnectionCard = ({
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
     }
 
-    showVideo(url);
+    showVideo(url, 'live', { name: actualChannel.name });
   };
 
   if (location.pathname !== '/stats') {
@@ -568,50 +611,7 @@ const StreamConnectionCard = ({
           isProgramDescExpanded &&
           currentProgram.start_time &&
           currentProgram.end_time &&
-          (() => {
-            const now = new Date();
-            const startTime = new Date(currentProgram.start_time);
-            const endTime = new Date(currentProgram.end_time);
-            const totalDuration = (endTime - startTime) / 1000; // in seconds
-            const elapsed = (now - startTime) / 1000; // in seconds
-            const remaining = (endTime - now) / 1000; // in seconds
-            const percentage = Math.min(
-              100,
-              Math.max(0, (elapsed / totalDuration) * 100)
-            );
-
-            const formatProgramTime = (seconds) => {
-              const absSeconds = Math.abs(seconds);
-              const hours = Math.floor(absSeconds / 3600);
-              const minutes = Math.floor((absSeconds % 3600) / 60);
-              const secs = Math.floor(absSeconds % 60);
-              if (hours > 0) {
-                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-              }
-              return `${minutes}:${secs.toString().padStart(2, '0')}`;
-            };
-
-            return (
-              <Stack gap="xs" mt={4}>
-                <Group justify="space-between" align="center">
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(elapsed)} elapsed
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(remaining)} remaining
-                  </Text>
-                </Group>
-                <Progress
-                  value={percentage}
-                  size="sm"
-                  color="#3BA882"
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                  }}
-                />
-              </Stack>
-            );
-          })()}
+          <ProgramProgress currentProgram={currentProgram} />}
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (

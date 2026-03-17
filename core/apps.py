@@ -31,7 +31,6 @@ class CoreConfig(AppConfig):
             return
 
         self._sync_developer_notifications()
-        self._check_version_update()
 
     def _sync_developer_notifications(self):
         """Sync developer notifications from JSON file to database."""
@@ -47,14 +46,3 @@ class CoreConfig(AppConfig):
         except Exception as e:
             logger.warning(f"Failed to sync developer notifications on startup: {e}")
 
-    def _check_version_update(self):
-        """Check for version updates on startup."""
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        try:
-            from core.tasks import check_for_version_update
-            check_for_version_update.delay()
-        except Exception as e:
-            logger.warning(f"Failed to check for version updates on startup: {e}")

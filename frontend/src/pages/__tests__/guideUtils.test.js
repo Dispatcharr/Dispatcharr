@@ -303,20 +303,15 @@ describe('guideUtils', () => {
 
   describe('computeRowHeights', () => {
     it('should return empty array when no channels', () => {
-      const result = guideUtils.computeRowHeights([], new Map(), null);
+      const result = guideUtils.computeRowHeights([]);
 
       expect(result).toEqual([]);
     });
 
-    it('should return default height for all channels when none expanded', () => {
+    it('should return default height for all channels', () => {
       const channels = [{ id: 1 }, { id: 2 }];
-      const programsByChannelId = new Map();
 
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        null
-      );
+      const result = guideUtils.computeRowHeights(channels);
 
       expect(result).toEqual([
         guideUtils.PROGRAM_HEIGHT,
@@ -324,40 +319,13 @@ describe('guideUtils', () => {
       ]);
     });
 
-    it('should return expanded height for channel with expanded program', () => {
-      const channels = [{ id: 1 }, { id: 2 }];
-      const programsByChannelId = new Map([
-        [1, [{ id: 'program-1' }]],
-        [2, [{ id: 'program-2' }]],
-      ]);
-
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        'program-1'
-      );
-
-      expect(result).toEqual([
-        guideUtils.EXPANDED_PROGRAM_HEIGHT,
-        guideUtils.PROGRAM_HEIGHT,
-      ]);
-    });
-
-    it('should use custom heights when provided', () => {
+    it('should use custom default height when provided', () => {
       const channels = [{ id: 1 }];
-      const programsByChannelId = new Map([[1, [{ id: 'program-1' }]]]);
       const customDefault = 100;
-      const customExpanded = 200;
 
-      const result = guideUtils.computeRowHeights(
-        channels,
-        programsByChannelId,
-        'program-1',
-        customDefault,
-        customExpanded
-      );
+      const result = guideUtils.computeRowHeights(channels, customDefault);
 
-      expect(result).toEqual([customExpanded]);
+      expect(result).toEqual([customDefault]);
     });
   });
 
@@ -704,6 +672,23 @@ describe('guideUtils', () => {
       const result = guideUtils.mapRecordingsByProgramId(recordings);
 
       expect(result.size).toBe(0);
+    });
+
+    it('should exclude terminal status recordings', () => {
+      const recordings = [
+        { id: 1, custom_properties: { program: { id: 'p1' }, status: 'completed' } },
+        { id: 2, custom_properties: { program: { id: 'p2' }, status: 'stopped' } },
+        { id: 3, custom_properties: { program: { id: 'p3' }, status: 'interrupted' } },
+        { id: 4, custom_properties: { program: { id: 'p4' }, status: 'failed' } },
+        { id: 5, custom_properties: { program: { id: 'p5' }, status: 'recording' } },
+        { id: 6, custom_properties: { program: { id: 'p6' } } },
+      ];
+
+      const result = guideUtils.mapRecordingsByProgramId(recordings);
+
+      expect(result.size).toBe(2);
+      expect(result.get('p5').id).toBe(5);
+      expect(result.get('p6').id).toBe(6);
     });
   });
 
@@ -1228,6 +1213,56 @@ describe('guideUtils', () => {
       expect(result).toHaveLength(3);
       expect(result[1].label).toBe('Profile 1');
       expect(result[2].label).toBe('Profile 2');
+    });
+  });
+
+  describe('formatSeasonEpisode', () => {
+    it('should format both season and episode', () => {
+      expect(guideUtils.formatSeasonEpisode(1, 3)).toBe('S01E03');
+    });
+
+    it('should pad numbers to 2 digits', () => {
+      expect(guideUtils.formatSeasonEpisode(1, 1)).toBe('S01E01');
+    });
+
+    it('should handle large numbers without truncation', () => {
+      expect(guideUtils.formatSeasonEpisode(12, 24)).toBe('S12E24');
+    });
+
+    it('should handle numbers greater than 99', () => {
+      expect(guideUtils.formatSeasonEpisode(100, 200)).toBe('S100E200');
+    });
+
+    it('should return season only when episode is null', () => {
+      expect(guideUtils.formatSeasonEpisode(5, null)).toBe('S05');
+    });
+
+    it('should return season only when episode is undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(5, undefined)).toBe('S05');
+    });
+
+    it('should return episode only when season is null', () => {
+      expect(guideUtils.formatSeasonEpisode(null, 7)).toBe('E07');
+    });
+
+    it('should return episode only when season is undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(undefined, 7)).toBe('E07');
+    });
+
+    it('should return null when both are null', () => {
+      expect(guideUtils.formatSeasonEpisode(null, null)).toBeNull();
+    });
+
+    it('should return null when both are undefined', () => {
+      expect(guideUtils.formatSeasonEpisode(undefined, undefined)).toBeNull();
+    });
+
+    it('should handle zero values as valid', () => {
+      expect(guideUtils.formatSeasonEpisode(0, 0)).toBe('S00E00');
+    });
+
+    it('should handle season zero with episode', () => {
+      expect(guideUtils.formatSeasonEpisode(0, 5)).toBe('S00E05');
     });
   });
 

@@ -20,15 +20,148 @@ from apps.channels.models import Channel
 from apps.epg.models import EPGData
 from core.models import CoreSettings
 
+from django.db import OperationalError, close_old_connections
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 import tempfile
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+_url_validation_cache = {}
+_URL_CACHE_TTL = 300  # seconds
+
+
+def _validate_url(url, timeout=4):
+    """Validate that an HTTP(S) URL is reachable via HEAD request.
+    Returns True for non-HTTP URLs (skip validation) or 2xx/3xx responses.
+    Results are cached per-worker for 5 minutes to avoid redundant requests
+    when multiple recordings reference the same dead URL.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    if not url.startswith(("http://", "https://")):
+        return True
+
+    now = time.monotonic()
+    cached = _url_validation_cache.get(url)
+    if cached is not None and (now - cached[1]) < _URL_CACHE_TTL:
+        return cached[0]
+
+    try:
+        resp = requests.head(url, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 405:
+            # Server doesn't support HEAD; fall back to ranged GET
+            resp = requests.get(
+                url, timeout=timeout, allow_redirects=True,
+                headers={"Range": "bytes=0-0"}, stream=True,
+            )
+            resp.close()
+        result = resp.status_code < 400
+    except Exception:
+        result = False
+
+    _url_validation_cache[url] = (result, now)
+
+    # Evict expired entries when cache grows large
+    if len(_url_validation_cache) > 512:
+        cutoff = now - _URL_CACHE_TTL
+        expired = [k for k, v in _url_validation_cache.items() if v[1] < cutoff]
+        for k in expired:
+            del _url_validation_cache[k]
+
+    return result
+
+
+def _pick_best_image_from_epg_props(epg_props):
+    """Select the highest-quality poster/cover image from EPG custom_properties."""
+    try:
+        images = epg_props.get("images") or []
+        if not isinstance(images, list):
+            return None
+        size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
+        def score(img):
+            t = (img.get("type") or "").lower()
+            size = (img.get("size") or "").lower()
+            return (2 if t in ("poster", "cover") else 1, size_order.get(size, 0))
+        best = None
+        for im in images:
+            if not isinstance(im, dict):
+                continue
+            url = im.get("url")
+            if not url:
+                continue
+            if best is None or score(im) > score(best):
+                best = im
+        return best.get("url") if best else None
+    except Exception:
+        return None
+
+
+def _match_epg_program_by_timeslot(channel_epg_data, rec_start, rec_end):
+    """Find an EPG program that covers at least 80% of the recording window.
+
+    Queries all programs overlapping the recording, calculates overlap for
+    each, and returns the best match only if it covers >= 80% of the
+    recording duration.  Recordings spanning multiple programs with no
+    dominant show return None (displayed as "Custom Recording").
+    Returns a dict with id, title, sub_title, and description, or None.
+    """
+    if not channel_epg_data or not rec_start or not rec_end:
+        return None
+    try:
+        candidates = channel_epg_data.programs.filter(
+            start_time__lt=rec_end,
+            end_time__gt=rec_start,
+        ).only("id", "title", "sub_title", "description", "start_time", "end_time")
+
+        rec_duration = (rec_end - rec_start).total_seconds()
+        if rec_duration <= 0:
+            return None
+
+        best = None
+        best_overlap = 0
+        for prog in candidates:
+            overlap_start = max(rec_start, prog.start_time)
+            overlap_end = min(rec_end, prog.end_time)
+            overlap = (overlap_end - overlap_start).total_seconds()
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best = prog
+
+        if best and (best_overlap / rec_duration) >= 0.8:
+            return {
+                "id": best.id,
+                "title": best.title or "",
+                "sub_title": best.sub_title or "",
+                "description": best.description or "",
+            }
+    except Exception:
+        pass
+    return None
+
+
+def _db_retry(fn, max_retries=3, base_interval=1, label="DB operation"):
+    """Execute fn() with exponential backoff retry on transient DB errors.
+
+    Follows the same backoff pattern as RedisClient.get_client().
+    Resets stale connections between attempts so the ORM reconnects.
+    """
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except OperationalError:
+            if attempt + 1 >= max_retries:
+                raise
+            wait = base_interval * (2 ** attempt)
+            logger.warning(
+                f"{label}: failed, retrying in {wait}s "
+                f"({attempt + 1}/{max_retries})..."
+            )
+            close_old_connections()
+            time.sleep(wait)
+
 
 # PostgreSQL btree index has a limit of ~2704 bytes (1/3 of 8KB page size)
 # We use 2000 as a safe maximum to account for multibyte characters
@@ -983,7 +1116,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
 
         programs_qs = ProgramData.objects.filter(
                 epg=epg,
-                start_time__gte=now,
+                end_time__gt=now,
                 start_time__lte=horizon,
             )
         if series_title:
@@ -993,7 +1126,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
         if series_title and not programs:
             all_progs = ProgramData.objects.filter(
                 epg=epg,
-                start_time__gte=now,
+                end_time__gt=now,
                 start_time__lte=horizon,
             ).only("id", "title", "start_time", "end_time", "custom_properties", "tvg_id")
             programs = [p for p in all_progs if normalize_name(p.title) == norm_series]
@@ -1271,14 +1404,15 @@ def sync_recurring_rule_impl(rule_id: int, drop_existing: bool = True, horizon_d
     except Exception:
         logger.warning("Invalid or unsupported time zone '%s'; falling back to Server default", tz_name)
         tz = timezone.get_current_timezone()
-    start_limit = rule.start_date or now.date()
+    local_today = now.astimezone(tz).date()
+    start_limit = rule.start_date or local_today
     end_limit = rule.end_date
     horizon = now + timedelta(days=horizon_days)
-    start_window = max(start_limit, now.date())
+    start_window = max(start_limit, local_today)
     if drop_existing and end_limit:
         end_window = end_limit
     else:
-        end_window = horizon.date()
+        end_window = horizon.astimezone(tz).date()
         if end_limit and end_limit < end_window:
             end_window = end_limit
     if end_window < start_window:
@@ -1477,6 +1611,28 @@ def _build_output_paths(channel, program, start_time, end_time):
         rel_path = rel_path[2:]
     final_path = rel_path if rel_path.startswith('/') else os.path.join(library_root, rel_path)
     final_path = os.path.normpath(final_path)
+
+    # Avoid overwriting an existing file from a different recording.
+    # Check BOTH .mkv and .ts — a pre-restart TS segment may exist at
+    # the same base name even when the MKV is a 0-byte placeholder.
+    base, ext = os.path.splitext(final_path)
+    counter = 1
+    while True:
+        candidate_base = final_path[:-len(ext)]  # strip extension
+        ts_candidate = candidate_base + '.ts'
+        try:
+            mkv_occupied = os.stat(final_path).st_size > 0
+        except OSError:
+            mkv_occupied = False
+        try:
+            ts_occupied = os.stat(ts_candidate).st_size > 0
+        except OSError:
+            ts_occupied = False
+        if not mkv_occupied and not ts_occupied:
+            break
+        counter += 1
+        final_path = f"{base}_{counter}{ext}"
+
     # Ensure directory exists
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
@@ -1484,6 +1640,33 @@ def _build_output_paths(channel, program, start_time, end_time):
     base_no_ext = os.path.splitext(os.path.basename(final_path))[0]
     temp_ts_path = os.path.join(os.path.dirname(final_path), f"{base_no_ext}.ts")
     return final_path, temp_ts_path, os.path.basename(final_path)
+
+
+def build_dvr_candidates():
+    """Build ordered list of candidate base URLs for DVR TS streaming.
+
+    Reads environment variables to determine which URLs to try:
+    - DISPATCHARR_INTERNAL_TS_BASE_URL: explicit override (first priority)
+    - DISPATCHARR_PORT: the external port (default 9191)
+    - DISPATCHARR_ENV/DISPATCHARR_DEBUG/REDIS_HOST: dev-mode detection
+    - DISPATCHARR_INTERNAL_API_BASE: override for the docker service URL
+    """
+    explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
+    dispatcharr_port = os.environ.get('DISPATCHARR_PORT', '9191')
+    is_dev = (os.environ.get('DISPATCHARR_ENV', '').lower() == 'dev') or \
+             (os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true') or \
+             (os.environ.get('REDIS_HOST', 'redis') in ('localhost', '127.0.0.1'))
+    candidates = []
+    if explicit:
+        candidates.append(explicit)
+    if is_dev:
+        # Debug container typically exposes API on 5656 (uwsgi internal port)
+        candidates.extend(['http://127.0.0.1:5656', f'http://127.0.0.1:{dispatcharr_port}'])
+    # Docker service name fallback — use DISPATCHARR_PORT so modular mode works with custom ports
+    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', f'http://web:{dispatcharr_port}'))
+    # Last-resort localhost ports
+    candidates.extend(['http://localhost:5656', f'http://localhost:{dispatcharr_port}'])
+    return candidates
 
 
 @shared_task
@@ -1497,14 +1680,46 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     - Attempts to capture stream stats from TS proxy (codec, resolution, fps, etc.)
     - Attempts to capture a poster (via program.custom_properties) and store a Logo reference
     """
+    from .models import Recording, Logo
+
+    # --- Idempotency guard (prevents duplicate recordings from task redelivery) ---
+    # Fail closed: if the DB is unreachable, abort rather than risk a duplicate
+    # task overwriting a valid recording.
+    try:
+        rec_check = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+        if not rec_check:
+            logger.info(
+                f"run_recording called for recording {recording_id} but it no longer exists — skipping."
+            )
+            return
+        status = (rec_check.custom_properties or {}).get("status", "")
+        if status in ("recording", "completed", "stopped"):
+            logger.warning(
+                f"run_recording called for recording {recording_id} but status "
+                f"is already '{status}' - skipping duplicate execution."
+            )
+            return
+    except Exception as e:
+        logger.error(
+            f"Idempotency guard DB check failed for recording {recording_id} "
+            f"({type(e).__name__}: {e}) — aborting to prevent potential duplicate."
+        )
+        return
+
+    # --- Clean up the one-off PeriodicTask that dispatched this task ---
+    try:
+        from apps.channels.signals import revoke_task, _dvr_task_name
+        revoke_task(_dvr_task_name(recording_id))
+    except Exception as e:
+        logger.debug(f"PeriodicTask cleanup failed (non-fatal): {e}")
+
     channel = Channel.objects.get(id=channel_id)
 
     start_time = datetime.fromisoformat(start_time_str)
     end_time = datetime.fromisoformat(end_time_str)
 
     duration_seconds = int((end_time - start_time).total_seconds())
-    # Build output paths from templates
-    # We need program info; will refine after we load Recording cp below
+    # Build output paths from templates (refined after loading Recording cp below)
     filename = None
     final_path = None
     temp_ts_path = None
@@ -1536,8 +1751,17 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     # Try to resolve the Recording row up front
     recording_obj = None
     try:
-        from .models import Recording, Logo
         recording_obj = Recording.objects.get(id=recording_id)
+        # If the stop endpoint already wrote "stopped" before the task started,
+        # honor it instead of overwriting with "recording".
+        _pre_cp = recording_obj.custom_properties or {}
+        if _pre_cp.get("status") == "stopped":
+            logger.info(
+                f"run_recording {recording_id}: 'stopped' found in DB before stream started "
+                f"— task exits without connecting."
+            )
+            return
+
         # Prime custom_properties with file info/status
         cp = recording_obj.custom_properties or {}
         cp.update({
@@ -1550,223 +1774,26 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         # Determine program info (may include id for deeper details)
         program = cp.get("program") or {}
+
+        # Enrich empty program dicts (manual recordings) from EPG time-slot data.
+        if isinstance(program, dict) and not program.get("user_edited") and not program.get("id") and not program.get("title"):
+            epg_match = _match_epg_program_by_timeslot(
+                channel.epg_data, recording_obj.start_time, recording_obj.end_time,
+            )
+            if epg_match:
+                program.update(epg_match)
+                cp["program"] = program
+
         final_path, temp_ts_path, filename = _build_output_paths(channel, program, start_time, end_time)
         cp["file_name"] = filename
         cp["file_path"] = final_path
         cp["_temp_file_path"] = temp_ts_path
 
-        # Resolve poster the same way VODs do:
-        # 1) Prefer image(s) from EPG Program custom_properties (images/icon)
-        # 2) Otherwise reuse an existing VOD logo matching title (Movie/Series)
-        # 3) Otherwise save any direct poster URL from provided program fields
-        program = (cp.get("program") or {}) if isinstance(cp, dict) else {}
-
-        def pick_best_image_from_epg_props(epg_props):
-            try:
-                images = epg_props.get("images") or []
-                if not isinstance(images, list):
-                    return None
-                # Prefer poster/cover and larger sizes
-                size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
-                def score(img):
-                    t = (img.get("type") or "").lower()
-                    size = (img.get("size") or "").lower()
-                    return (
-                        2 if t in ("poster", "cover") else 1,
-                        size_order.get(size, 0)
-                    )
-                best = None
-                for im in images:
-                    if not isinstance(im, dict):
-                        continue
-                    url = im.get("url")
-                    if not url:
-                        continue
-                    if best is None or score(im) > score(best):
-                        best = im
-                return best.get("url") if best else None
-            except Exception:
-                return None
-
-        poster_logo_id = None
-        poster_url = None
-
-        # Try EPG Program custom_properties by ID
-        try:
-            from apps.epg.models import ProgramData
-            prog_id = program.get("id")
-            if prog_id:
-                epg_program = ProgramData.objects.filter(id=prog_id).only("custom_properties").first()
-                if epg_program and epg_program.custom_properties:
-                    epg_props = epg_program.custom_properties or {}
-                    poster_url = pick_best_image_from_epg_props(epg_props)
-                    if not poster_url:
-                        icon = epg_props.get("icon")
-                        if isinstance(icon, str) and icon:
-                            poster_url = icon
-        except Exception as e:
-            logger.debug(f"EPG image lookup failed: {e}")
-
-        # Fallback: reuse VOD Logo by matching title
-        if not poster_url and not poster_logo_id:
-            try:
-                from apps.vod.models import Movie, Series
-                title = program.get("title") or channel.name
-                vod_logo = None
-                movie = Movie.objects.filter(name__iexact=title).select_related("logo").first()
-                if movie and movie.logo:
-                    vod_logo = movie.logo
-                if not vod_logo:
-                    series = Series.objects.filter(name__iexact=title).select_related("logo").first()
-                    if series and series.logo:
-                        vod_logo = series.logo
-                if vod_logo:
-                    poster_logo_id = vod_logo.id
-            except Exception as e:
-                logger.debug(f"VOD logo fallback failed: {e}")
-
-        # External metadata lookups (TMDB/OMDb) when EPG/VOD didn't provide an image
-        if not poster_url and not poster_logo_id:
-            try:
-                tmdb_key = os.environ.get('TMDB_API_KEY')
-                omdb_key = os.environ.get('OMDB_API_KEY')
-                title = (program.get('title') or channel.name or '').strip()
-                year = None
-                imdb_id = None
-
-                # Try to derive year and imdb from EPG program custom_properties
-                try:
-                    from apps.epg.models import ProgramData
-                    prog_id = program.get('id')
-                    epg_program = ProgramData.objects.filter(id=prog_id).only('custom_properties').first() if prog_id else None
-                    if epg_program and epg_program.custom_properties:
-                        d = epg_program.custom_properties.get('date')
-                        if d and len(str(d)) >= 4:
-                            year = str(d)[:4]
-                        imdb_id = epg_program.custom_properties.get('imdb.com_id') or imdb_id
-                except Exception:
-                    pass
-
-                # TMDB: by IMDb ID
-                if not poster_url and tmdb_key and imdb_id:
-                    try:
-                        url = f"https://api.themoviedb.org/3/find/{quote(imdb_id)}?api_key={tmdb_key}&external_source=imdb_id"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            picks = []
-                            for k in ('movie_results', 'tv_results', 'tv_episode_results', 'tv_season_results'):
-                                lst = data.get(k) or []
-                                picks.extend(lst)
-                            poster_path = None
-                            for item in picks:
-                                if item.get('poster_path'):
-                                    poster_path = item['poster_path']
-                                    break
-                            if poster_path:
-                                poster_url = f"https://image.tmdb.org/t/p/w780{poster_path}"
-                    except Exception:
-                        pass
-
-                # TMDB: by title (and year if available)
-                if not poster_url and tmdb_key and title:
-                    try:
-                        q = quote(title)
-                        extra = f"&year={year}" if year else ""
-                        url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={q}{extra}"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            results = data.get('results') or []
-                            results.sort(key=lambda x: float(x.get('popularity') or 0), reverse=True)
-                            for item in results:
-                                if item.get('poster_path'):
-                                    poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
-                                    break
-                    except Exception:
-                        pass
-
-                # OMDb fallback
-                if not poster_url and omdb_key:
-                    try:
-                        if imdb_id:
-                            url = f"https://www.omdbapi.com/?apikey={omdb_key}&i={quote(imdb_id)}"
-                        elif title:
-                            yy = f"&y={year}" if year else ""
-                            url = f"https://www.omdbapi.com/?apikey={omdb_key}&t={quote(title)}{yy}"
-                        else:
-                            url = None
-                        if url:
-                            resp = requests.get(url, timeout=5)
-                            if resp.ok:
-                                data = resp.json() or {}
-                                p = data.get('Poster')
-                                if p and p != 'N/A':
-                                    poster_url = p
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.debug(f"External poster lookup failed: {e}")
-
-        # Keyless fallback providers (no API keys required)
-        if not poster_url and not poster_logo_id:
-            try:
-                title = (program.get('title') or channel.name or '').strip()
-                if title:
-                    # 1) TVMaze (TV shows) - singlesearch by title
-                    try:
-                        url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
-                        resp = requests.get(url, timeout=5)
-                        if resp.ok:
-                            data = resp.json() or {}
-                            img = (data.get('image') or {})
-                            p = img.get('original') or img.get('medium')
-                            if p:
-                                poster_url = p
-                    except Exception:
-                        pass
-
-                    # 2) iTunes Search API (movies or tv shows)
-                    if not poster_url:
-                        try:
-                            for media in ('movie', 'tvShow'):
-                                url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
-                                resp = requests.get(url, timeout=5)
-                                if resp.ok:
-                                    data = resp.json() or {}
-                                    results = data.get('results') or []
-                                    if results:
-                                        art = results[0].get('artworkUrl100')
-                                        if art:
-                                            # Scale up to 600x600 by convention
-                                            poster_url = art.replace('100x100', '600x600')
-                                            break
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.debug(f"Keyless poster lookup failed: {e}")
-
-        # Last: check direct fields on provided program object
-        if not poster_url and not poster_logo_id:
-            for key in ("poster", "cover", "cover_big", "image", "icon"):
-                val = program.get(key)
-                if isinstance(val, dict):
-                    candidate = val.get("url")
-                    if candidate:
-                        poster_url = candidate
-                        break
-                elif isinstance(val, str) and val:
-                    poster_url = val
-                    break
-
-        # Create or assign Logo
-        if not poster_logo_id and poster_url and len(poster_url) <= 1000:
-            try:
-                logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": program.get("title") or channel.name})
-                poster_logo_id = logo.id
-            except Exception as e:
-                logger.debug(f"Unable to persist poster to Logo: {e}")
-
+        # Resolve poster art via the shared pipeline (EPG → VOD → TMDB/OMDb →
+        # TVMaze/iTunes → direct program fields → Logo table → channel logo).
+        poster_logo_id, poster_url = _resolve_poster_for_program(
+            channel.name, program, channel_logo_id=channel.logo_id,
+        )
         if poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id
         if poster_url and "poster_url" not in cp:
@@ -1780,8 +1807,38 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         except Exception:
             pass
 
-        recording_obj.custom_properties = cp
+        # Re-read from DB to preserve concurrent changes (e.g., artwork
+        # prefetch may have saved poster/rating info while resolving).
+        recording_obj.refresh_from_db()
+        fresh_cp = recording_obj.custom_properties or {}
+
+        # If the stop endpoint set "stopped" while resolving, honor it.
+        if fresh_cp.get("status") == "stopped":
+            logger.info(
+                f"run_recording {recording_id}: 'stopped' found after metadata "
+                f"prep — task exits without streaming."
+            )
+            return
+
+        # Merge only the keys explicitly set into the fresh copy
+        for key in ("status", "started_at", "file_url", "output_file_url",
+                     "file_name", "file_path", "_temp_file_path",
+                     "program", "poster_logo_id", "poster_url"):
+            if key in cp:
+                fresh_cp[key] = cp[key]
+        recording_obj.custom_properties = fresh_cp
         recording_obj.save(update_fields=["custom_properties"])
+
+        # Notify frontends so the tile picks up poster/metadata immediately
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_updated",
+                "recording_id": recording_id,
+            })
+        except Exception:
+            pass
     except Exception as e:
         logger.debug(f"Unable to prime Recording metadata: {e}")
     interrupted = False
@@ -1790,22 +1847,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     from requests.exceptions import ReadTimeout, ConnectionError as ReqConnectionError, ChunkedEncodingError
 
-    # Determine internal base URL(s) for TS streaming
-    # Prefer explicit override, then try common ports for debug and docker
-    explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
-    is_dev = (os.environ.get('DISPATCHARR_ENV', '').lower() == 'dev') or \
-             (os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true') or \
-             (os.environ.get('REDIS_HOST', 'redis') in ('localhost', '127.0.0.1'))
-    candidates = []
-    if explicit:
-        candidates.append(explicit)
-    if is_dev:
-        # Debug container typically exposes API on 5656
-        candidates.extend(['http://127.0.0.1:5656', 'http://127.0.0.1:9191'])
-    # Docker service name fallback
-    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', 'http://web:9191'))
-    # Last-resort localhost ports
-    candidates.extend(['http://localhost:5656', 'http://localhost:9191'])
+    candidates = build_dvr_candidates()
 
     chosen_base = None
     last_error = None
@@ -1813,118 +1855,287 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     interrupted = False
     interrupted_reason = None
 
-    # We'll attempt each base until we receive some data
-    for base in candidates:
+    def _check_recording_cancelled(rid):
+        """Check if a recording was stopped by user or deleted.
+
+        Returns (should_exit, is_interrupted, reason) where should_exit
+        indicates the stream loop must terminate.
+        """
         try:
-            test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
-            logger.info(f"DVR: trying TS base {base} -> {test_url}")
+            rec = Recording.objects.filter(id=rid).only("custom_properties").first()
+            if rec is None:
+                return True, True, "recording_deleted"
+            if (rec.custom_properties or {}).get("status") == "stopped":
+                return True, False, "stopped_by_user"
+        except Exception:
+            pass
+        return False, False, None
 
-            with requests.get(
-                test_url,
-                headers={
-                    'User-Agent': 'Dispatcharr-DVR',
-                },
-                stream=True,
-                timeout=(10, 15),
-            ) as response:
-                response.raise_for_status()
+    # --- Retry / reconnection constants ---
+    # Stream reconnection: retry the same TS proxy base on transient
+    # connectivity loss.  Counter resets when data resumes.
+    _dvr_max_reconnects = 5
+    _dvr_reconnect_delay = 2.0  # seconds
+    # DB save retry: exponential backoff (1s, 2s, 4s) for transient errors.
+    _dvr_db_max_retries = 3
+    _dvr_db_retry_interval = 1  # seconds (base for exponential backoff)
+    # FFmpeg remux retry: covers transient I/O errors.
+    _dvr_remux_max_retries = 2
+    _dvr_remux_retry_interval = 2  # seconds (base for exponential backoff)
 
-                # Open the file and start copying; if we get any data within a short window, accept this base
-                got_any_data = False
-                test_window = 3.0  # seconds to detect first bytes
-                window_start = time.time()
+    for base in candidates:
+        test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
+        logger.info(f"DVR recording {recording_id}: trying TS base {base}")
 
-                with open(temp_ts_path, 'wb') as file:
-                    started_at = time.time()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if not chunk:
-                            # keep-alives may be empty; continue
-                            if not got_any_data and (time.time() - window_start) > test_window:
-                                break
-                            continue
-                        # We have data
-                        got_any_data = True
-                        chosen_base = base
-                        # Fall through to full recording loop using this same response/connection
-                        file.write(chunk)
-                        bytes_written += len(chunk)
-                        elapsed = time.time() - started_at
-                        if elapsed > duration_seconds:
-                            break
-                        # Continue draining the stream
-                        for chunk2 in response.iter_content(chunk_size=8192):
-                            if not chunk2:
+        _reconnects = 0
+        _file_mode = 'wb'
+        _stream_started_at = None
+        _done = False
+
+        while True:  # Reconnection loop for this base
+            try:
+                with requests.get(
+                    test_url,
+                    headers={
+                        'User-Agent': f'Dispatcharr-DVR/recording-{recording_id}',
+                    },
+                    stream=True,
+                    timeout=(10, 15),
+                ) as response:
+                    response.raise_for_status()
+
+                    _test_window = 3.0
+                    _window_start = time.time()
+                    _stop_poll_interval = 2.0
+                    _last_stop_poll = time.time()
+
+                    with open(temp_ts_path, _file_mode) as file:
+                        if _stream_started_at is None:
+                            _stream_started_at = time.time()
+
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if not chunk:
+                                if not chosen_base and (time.time() - _window_start) > _test_window:
+                                    break
                                 continue
-                            file.write(chunk2)
-                            bytes_written += len(chunk2)
-                            elapsed = time.time() - started_at
+
+                            if not chosen_base:
+                                chosen_base = base
+
+                            # Data received after reconnect — connection restored
+                            if _reconnects > 0:
+                                logger.info(
+                                    f"DVR recording {recording_id}: "
+                                    f"stream resumed after reconnect"
+                                )
+                                _reconnects = 0
+
+                            file.write(chunk)
+                            bytes_written += len(chunk)
+
+                            elapsed = time.time() - _stream_started_at
                             if elapsed > duration_seconds:
                                 break
-                        break  # exit outer for-loop once we switched to full drain
 
-                # If we wrote any bytes, treat as success and stop trying candidates
+                            # Periodic DB poll: stop, delete, end_time extension
+                            _now = time.time()
+                            if _now - _last_stop_poll >= _stop_poll_interval:
+                                _last_stop_poll = _now
+                                try:
+                                    _sc = Recording.objects.filter(
+                                        id=recording_id
+                                    ).only("custom_properties", "end_time").first()
+                                    if _sc is None:
+                                        logger.info(
+                                            f"DVR recording {recording_id}: "
+                                            f"deleted — exiting stream loop"
+                                        )
+                                        interrupted = False
+                                        break
+                                    if (_sc.custom_properties or {}).get("status") == "stopped":
+                                        logger.info(
+                                            f"DVR recording {recording_id}: "
+                                            f"stop requested — exiting stream loop"
+                                        )
+                                        break
+                                    try:
+                                        new_end = _sc.end_time
+                                        if new_end is not None:
+                                            from django.utils import timezone as _tz
+                                            if _tz.is_naive(new_end):
+                                                new_end = _tz.make_aware(new_end)
+                                            _ref = start_time
+                                            if _tz.is_naive(_ref):
+                                                _ref = _tz.make_aware(_ref)
+                                            new_duration = int(
+                                                (new_end - _ref).total_seconds()
+                                            )
+                                            if new_duration > duration_seconds:
+                                                logger.info(
+                                                    f"DVR recording {recording_id}: "
+                                                    f"end_time extended to {new_end}, "
+                                                    f"new duration {new_duration}s"
+                                                )
+                                                duration_seconds = new_duration
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+
+                    # iter_content exhausted or loop exited normally
+                    if bytes_written > 0:
+                        logger.info(
+                            f"DVR recording {recording_id}: "
+                            f"stream complete, {bytes_written} bytes written"
+                        )
+                        _done = True
+                    else:
+                        last_error = f"no_data_from_{base}"
+                        logger.warning(
+                            f"DVR recording {recording_id}: no data from "
+                            f"{base} within {_test_window}s, trying next base"
+                        )
+                        try:
+                            if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
+                                os.remove(temp_ts_path)
+                        except FileNotFoundError:
+                            pass
+                    break  # Exit reconnection loop
+
+            except (ReadTimeout, ReqConnectionError, ChunkedEncodingError) as e:
                 if bytes_written > 0:
-                    logger.info(f"DVR: selected TS base {base}; wrote initial {bytes_written} bytes")
+                    # Active stream lost — check cancellation before reconnecting
+                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                    if should_exit:
+                        interrupted = is_int
+                        interrupted_reason = reason
+                        if reason == "stopped_by_user":
+                            logger.info(
+                                f"DVR recording {recording_id}: "
+                                f"stopped by user — ending stream"
+                            )
+                        _done = True
+                        break
+
+                    _reconnects += 1
+                    if _reconnects <= _dvr_max_reconnects:
+                        logger.warning(
+                            f"DVR recording {recording_id}: connection lost "
+                            f"({type(e).__name__}), reconnecting "
+                            f"({_reconnects}/{_dvr_max_reconnects}) "
+                            f"in {_dvr_reconnect_delay}s..."
+                        )
+                        time.sleep(_dvr_reconnect_delay)
+                        _file_mode = 'ab'
+                        continue
+
+                    logger.error(
+                        f"DVR recording {recording_id}: max reconnects "
+                        f"({_dvr_max_reconnects}) exceeded — ending recording"
+                    )
+                    interrupted = True
+                    interrupted_reason = (
+                        f"stream_interrupted: max reconnects exceeded ({e})"
+                    )
+                    _done = True
                     break
-                else:
-                    last_error = f"no_data_from_{base}"
-                    logger.warning(f"DVR: no data received from {base} within {test_window}s, trying next base")
-                    # Clean up empty temp file
-                    try:
-                        if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
-                            os.remove(temp_ts_path)
-                    except Exception:
-                        pass
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"DVR: attempt failed for base {base}: {e}")
+
+                # No data received yet — retry same base before moving on
+                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                if should_exit:
+                    interrupted = is_int
+                    interrupted_reason = reason
+                    _done = True
+                    break
+                _reconnects += 1
+                if _reconnects <= _dvr_max_reconnects:
+                    logger.warning(
+                        f"DVR recording {recording_id}: initial connection "
+                        f"to {base} failed ({type(e).__name__}), retrying "
+                        f"({_reconnects}/{_dvr_max_reconnects}) "
+                        f"in {_dvr_reconnect_delay}s..."
+                    )
+                    time.sleep(_dvr_reconnect_delay)
+                    continue
+                last_error = str(e)
+                logger.warning(
+                    f"DVR recording {recording_id}: base {base} exhausted "
+                    f"retries ({_dvr_max_reconnects}): {e}"
+                )
+                break
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"DVR recording {recording_id}: base {base} failed: {e}")
+                if bytes_written > 0:
+                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                    if should_exit and reason == "stopped_by_user":
+                        interrupted = False
+                        logger.info(
+                            f"DVR recording {recording_id}: "
+                            f"stopped by user — ending stream"
+                        )
+                    else:
+                        interrupted = True
+                        interrupted_reason = f"stream_interrupted: {e}"
+                    _done = True
+                    break
+                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
+                if should_exit:
+                    interrupted = is_int
+                    interrupted_reason = reason
+                    _done = True
+                break
+
+        if _done:
+            break
 
     if chosen_base is None and bytes_written == 0:
         interrupted = True
         interrupted_reason = f"no_stream_data: {last_error or 'all_bases_failed'}"
-    else:
-        # If we ended before reaching planned duration, record reason
-        actual_elapsed = 0
+
+    # If no bytes were written at all, check whether this was a deliberate stop or a
+    # genuine failure.  The exception handler above already sets interrupted=False when
+    # it detects "stopped" status, but do not override that decision here.
+    if bytes_written == 0 and not interrupted:
+        _deliberately_stopped = False
         try:
-            actual_elapsed = os.path.getsize(temp_ts_path) and (duration_seconds)  # Best effort; we streamed until duration or disconnect above
+            _rc = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+            if _rc and (_rc.custom_properties or {}).get("status") == "stopped":
+                _deliberately_stopped = True
         except Exception:
             pass
-        # We cannot compute accurate elapsed here; fine to leave as is
-        pass
 
-    # If no bytes were written at all, mark detail
-    if bytes_written == 0 and not interrupted:
-        interrupted = True
-        interrupted_reason = f"no_stream_data: {last_error or 'unknown'}"
+        if not _deliberately_stopped:
+            interrupted = True
+            interrupted_reason = f"no_stream_data: {last_error or 'unknown'}"
 
-        # Update DB status immediately so the UI reflects the change on the event below
-        try:
-            if recording_obj is None:
-                from .models import Recording
-                recording_obj = Recording.objects.get(id=recording_id)
-            cp_now = recording_obj.custom_properties or {}
-            cp_now.update({
-                "status": "interrupted" if interrupted else "completed",
-                "ended_at": str(datetime.now()),
-                "file_name": filename or cp_now.get("file_name"),
-                "file_path": final_path or cp_now.get("file_path"),
-            })
-            if interrupted and interrupted_reason:
-                cp_now["interrupted_reason"] = interrupted_reason
-            recording_obj.custom_properties = cp_now
-            recording_obj.save(update_fields=["custom_properties"])
-        except Exception as e:
-            logger.debug(f"Failed to update immediate recording status: {e}")
+            # Update DB status immediately so the UI reflects the change on the event below
+            try:
+                if recording_obj is None:
+                    recording_obj = Recording.objects.get(id=recording_id)
+                cp_now = recording_obj.custom_properties or {}
+                cp_now.update({
+                    "status": "interrupted",
+                    "ended_at": str(datetime.now()),
+                    "file_name": filename or cp_now.get("file_name"),
+                    "file_path": final_path or cp_now.get("file_path"),
+                    "interrupted_reason": interrupted_reason,
+                })
+                recording_obj.custom_properties = cp_now
+                recording_obj.save(update_fields=["custom_properties"])
+            except Exception as e:
+                logger.debug(f"Failed to update immediate recording status: {e}")
 
-        async_to_sync(channel_layer.group_send)(
-            "updates",
-            {
-                "type": "update",
-                "data": {"success": True, "type": "recording_ended", "channel": channel.name}
-            },
-        )
-        # After the loop, the file and response are closed automatically.
-        logger.info(f"Finished recording for channel {channel.name}")
+            async_to_sync(channel_layer.group_send)(
+                "updates",
+                {
+                    "type": "update",
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name}
+                },
+            )
+            # After the loop, the file and response are closed automatically.
+            logger.info(f"Finished recording for channel {channel.name}")
 
         # Log system event for recording end
         try:
@@ -1940,118 +2151,293 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         except Exception as e:
             logger.error(f"Could not log recording end event: {e}")
 
-    # Remux TS to MKV container
-    remux_success = False
+    # If the Recording was deleted (cancelled by user), skip post-processing
+    recording_cancelled = not Recording.objects.filter(id=recording_id).exists()
+    if recording_cancelled:
+        logger.info(f"Recording {recording_id} was cancelled — skipping remux and metadata.")
+        # Clean up all artifacts for the cancelled recording,
+        # including any pre-restart .ts segments from server recovery.
+        # Use the in-memory recording_obj since the DB row is already deleted.
+        _cancel_cleanup = [temp_ts_path, final_path]
+        _cancel_cp = (recording_obj.custom_properties or {}) if recording_obj else {}
+        _cancel_cleanup.extend(_cancel_cp.get("_pre_restart_ts_paths", []))
+        for _cleanup_path in _cancel_cleanup:
+            if not _cleanup_path:
+                continue
+            try:
+                os.remove(_cleanup_path)
+                logger.info(f"Cleaned up cancelled recording artifact: {_cleanup_path}")
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+        return
+
+    # Concatenate pre-restart .ts segments with the current segment.
+    # Instead of creating an intermediate combined.ts and then remuxing to
+    # MKV (which loses timestamp boundary info and causes playback freezes
+    # at the splice point), go directly from the concat list → MKV.
+    # This lets ffmpeg's MKV muxer see each segment boundary and write
+    # correct cue points / clusters for seamless seeking.
+    _concat_did_remux = False
     try:
-        if temp_ts_path and os.path.exists(temp_ts_path):
-            # First attempt: Direct TS to MKV remux
-            result = subprocess.run([
-                "ffmpeg", "-y",
-                "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
-                "-err_detect", "ignore_err",   # Ignore minor stream errors
-                "-i", temp_ts_path,
-                "-map", "0", # Map all streams
-                "-c", "copy",
-                final_path
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _rec_obj_for_concat = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+        _concat_cp = (_rec_obj_for_concat.custom_properties or {}) if _rec_obj_for_concat else {}
+        pre_restart_segments = _concat_cp.get("_pre_restart_ts_paths", [])
+        # Filter to segments that still exist on disk and have data
+        def _has_data(p):
+            try:
+                return os.stat(p).st_size > 0
+            except OSError:
+                return False
+        pre_restart_segments = [p for p in pre_restart_segments if p and _has_data(p)]
+        if pre_restart_segments and temp_ts_path and os.path.exists(temp_ts_path):
+            all_segments = pre_restart_segments + [temp_ts_path]
+            concat_list_path = temp_ts_path + ".concat.txt"
+            try:
+                with open(concat_list_path, "w") as cl:
+                    for seg in all_segments:
+                        cl.write(f"file '{seg}'\n")
 
-            # Check if FFmpeg succeeded (return code 0) and output file is valid
-            if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                remux_success = True
-                logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
-            else:
-                # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
-                logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
-
-                # Clean up partial/failed MKV
-                try:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                except Exception:
-                    pass
-
-                # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
-                temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
-                result_mp4 = subprocess.run([
-                    "ffmpeg", "-y",
-                    "-fflags", "+genpts+igndts+discardcorrupt",
-                    "-err_detect", "ignore_err",
-                    "-i", temp_ts_path,
-                    "-map", "0",
-                    "-c", "copy",
-                    temp_mp4_path
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
-                    logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
-
-                    # Step 2: MP4 → MKV (clean timestamps from MP4)
-                    result_mkv = subprocess.run([
+                # Direct concat → MKV in a single pass.
+                # -reset_timestamps 1 tells the concat demuxer to reset
+                # timestamps at each segment boundary, eliminating the
+                # discontinuity that causes playback to freeze at the
+                # splice point.
+                concat_result = subprocess.run(
+                    [
                         "ffmpeg", "-y",
-                        "-i", temp_mp4_path,
+                        "-fflags", "+genpts+igndts+discardcorrupt",
+                        "-err_detect", "ignore_err",
+                        "-f", "concat", "-safe", "0",
+                        "-segment_time_metadata", "1",
+                        "-i", concat_list_path,
+                        "-reset_timestamps", "1",
                         "-map", "0",
                         "-c", "copy",
-                        final_path
-                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        final_path,
+                    ],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                if concat_result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                    _concat_did_remux = True
+                    # Clean up individual TS segments (including current)
+                    for seg in all_segments:
+                        try:
+                            os.remove(seg)
+                        except OSError:
+                            pass
+                    logger.info(
+                        f"DVR recording {recording_id}: concat→MKV succeeded — "
+                        f"{len(all_segments)} segments → {os.path.basename(final_path)} "
+                        f"({os.path.getsize(final_path):,} bytes)"
+                    )
+                else:
+                    logger.warning(
+                        f"DVR recording {recording_id}: direct concat→MKV failed "
+                        f"(rc={concat_result.returncode}), falling back to "
+                        f"normal remux with current segment only. "
+                        f"stderr: {(concat_result.stderr or '')[:500]}"
+                    )
+            finally:
+                try:
+                    os.remove(concat_list_path)
+                except OSError:
+                    pass
+            # Clear the pre-restart paths from custom_properties
+            if _rec_obj_for_concat:
+                _ccp = _rec_obj_for_concat.custom_properties or {}
+                _ccp.pop("_pre_restart_ts_paths", None)
+                _ccp.pop("interrupted_reason", None)
+                _rec_obj_for_concat.custom_properties = _ccp
+                _rec_obj_for_concat.save(update_fields=["custom_properties"])
+    except Exception as e:
+        logger.warning(
+            f"DVR recording {recording_id}: segment concatenation error "
+            f"({type(e).__name__}: {e}), proceeding with current segment only."
+        )
 
-                    if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                        remux_success = True
-                        logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
-                    else:
-                        logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
+    # Remux TS to MKV container with retry for transient I/O errors
+    # (Skip if concat already produced the final MKV directly.)
+    remux_success = _concat_did_remux
+    existing_mkv_size = 0
+    try:
+        if final_path and os.path.exists(final_path):
+            existing_mkv_size = os.path.getsize(final_path)
+    except OSError:
+        pass
+    for _remux_attempt in range(_dvr_remux_max_retries):
+        if remux_success:
+            break
+        try:
+            if temp_ts_path and os.path.exists(temp_ts_path):
+                # First attempt: Direct TS to MKV remux
+                result = subprocess.run([
+                    "ffmpeg", "-y",
+                    "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
+                    "-err_detect", "ignore_err",   # Ignore minor stream errors
+                    "-i", temp_ts_path,
+                    "-map", "0",  # Map all streams
+                    "-c", "copy",
+                    final_path
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-                    # Clean up temp MP4
+                # Check if FFmpeg succeeded (return code 0) and output file is valid
+                if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                    remux_success = True
+                    logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
+                else:
+                    # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
+                    logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
+
+                    # Clean up partial/failed MKV
                     try:
-                        if os.path.exists(temp_mp4_path):
-                            os.remove(temp_mp4_path)
+                        if os.path.exists(final_path):
+                            os.remove(final_path)
                     except Exception:
                         pass
+
+                    # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
+                    temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
+                    result_mp4 = subprocess.run([
+                        "ffmpeg", "-y",
+                        "-fflags", "+genpts+igndts+discardcorrupt",
+                        "-err_detect", "ignore_err",
+                        "-i", temp_ts_path,
+                        "-map", "0",
+                        "-c", "copy",
+                        temp_mp4_path
+                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                    if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
+                        logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
+
+                        # Step 2: MP4 → MKV (clean timestamps from MP4)
+                        result_mkv = subprocess.run([
+                            "ffmpeg", "-y",
+                            "-i", temp_mp4_path,
+                            "-map", "0",
+                            "-c", "copy",
+                            final_path
+                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                        if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                            remux_success = True
+                            logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
+                        else:
+                            logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
+
+                        # Clean up temp MP4
+                        try:
+                            if os.path.exists(temp_mp4_path):
+                                os.remove(temp_mp4_path)
+                        except Exception:
+                            pass
+                    else:
+                        logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
+
+                # Sanity-check the remuxed file.  Two checks:
+                # 1. If a pre-existing MKV was overwritten, reject a
+                #    file that is drastically smaller (duplicate-task
+                #    overwrite protection).
+                # 2. If the MKV is smaller than the .ts source, the
+                #    remux likely produced a corrupt or truncated file.
+                if remux_success:
+                    try:
+                        new_size = os.path.getsize(final_path)
+                        ts_size = os.path.getsize(temp_ts_path) if temp_ts_path and os.path.exists(temp_ts_path) else 0
+                        reject = False
+                        if existing_mkv_size > 0 and new_size < existing_mkv_size * 0.5:
+                            logger.error(
+                                f"DVR recording {recording_id}: new MKV "
+                                f"({new_size:,} bytes) is less than 50%% of "
+                                f"the previous MKV ({existing_mkv_size:,} bytes) "
+                                f"— refusing to overwrite. Keeping .ts for "
+                                f"manual recovery."
+                            )
+                            reject = True
+                        elif ts_size > 0 and new_size < ts_size * 0.1:
+                            logger.error(
+                                f"DVR recording {recording_id}: remuxed MKV "
+                                f"({new_size:,} bytes) is less than 10%% of "
+                                f"the source TS ({ts_size:,} bytes) — likely "
+                                f"corrupt. Keeping .ts for manual recovery."
+                            )
+                            reject = True
+                        if reject:
+                            remux_success = False
+                            try:
+                                os.remove(final_path)
+                            except OSError:
+                                pass
+                    except OSError:
+                        pass
+
+                # Clean up temp TS file only on successful remux
+                if remux_success:
+                    try:
+                        os.remove(temp_ts_path)
+                        logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove temp TS file: {e}")
                 else:
-                    logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
+                    # Keep TS file for debugging/manual recovery if remux failed
+                    logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
+                    # Clean up any partial MKV
+                    try:
+                        if os.path.exists(final_path):
+                            os.remove(final_path)
+                            logger.debug(f"Cleaned up partial MKV file: {final_path}")
+                    except Exception:
+                        pass
+            break  # Completed (success or deterministic failure)
 
-            # Clean up temp TS file only on successful remux
-            if remux_success:
-                try:
-                    os.remove(temp_ts_path)
-                    logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to remove temp TS file: {e}")
+        except (OSError, subprocess.SubprocessError) as e:
+            # Clean up partial output before potential retry
+            try:
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+            except Exception:
+                pass
+            if _remux_attempt + 1 < _dvr_remux_max_retries:
+                _wait = _dvr_remux_retry_interval * (2 ** _remux_attempt)
+                logger.warning(
+                    f"DVR recording {recording_id}: remux failed "
+                    f"({type(e).__name__}), retrying in {_wait}s "
+                    f"({_remux_attempt + 1}/{_dvr_remux_max_retries})..."
+                )
+                time.sleep(_wait)
             else:
-                # Keep TS file for debugging/manual recovery if remux failed
-                logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
-                # Clean up any partial MKV
-                try:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                        logger.debug(f"Cleaned up partial MKV file: {final_path}")
-                except Exception:
-                    pass
-
-    except Exception as e:
-        logger.warning(f"MKV remux failed with exception: {e}")
-        # Clean up any partial files on exception
-        try:
-            if os.path.exists(final_path):
-                os.remove(final_path)
-        except Exception:
-            pass
+                logger.warning(
+                    f"DVR recording {recording_id}: remux failed "
+                    f"after {_dvr_remux_max_retries} attempts: {e}. "
+                    f"Keeping .ts for manual recovery: {temp_ts_path}"
+                )
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:
         if recording_obj is None:
-            from .models import Recording
             recording_obj = Recording.objects.get(id=recording_id)
 
+        # Re-read from DB to get the latest status (stop endpoint may have set it)
+        recording_obj.refresh_from_db()
         cp = recording_obj.custom_properties or {}
-        cp.update({
-            "ended_at": str(datetime.now()),
-        })
-        if interrupted:
+        cp["ended_at"] = str(datetime.now())
+
+        # Final status priority: stopped > completed > interrupted.
+        # "stopped" is set by the stop endpoint before stream teardown, so
+        # refresh_from_db() above guarantees it is visible here.
+        db_status_now = cp.get("status", "")
+        if db_status_now == "stopped":
+            # Deliberate user stop — preserve; do not overwrite with "completed".
+            cp.pop("interrupted_reason", None)
+        elif not interrupted:
+            cp["status"] = "completed"
+            cp.pop("interrupted_reason", None)
+        else:
             cp["status"] = "interrupted"
             if interrupted_reason:
                 cp["interrupted_reason"] = interrupted_reason
-        else:
-            cp["status"] = "completed"
         cp["bytes_written"] = bytes_written
         cp["remux_success"] = remux_success
 
@@ -2112,8 +2498,37 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         # Removed: local thumbnail generation. We rely on EPG/VOD/TMDB/OMDb/keyless providers only.
 
-        recording_obj.custom_properties = cp
-        recording_obj.save(update_fields=["custom_properties"])
+        # Final cancellation guard: destroy() may have deleted the record while
+        # remuxing.  If it's gone now, skip saving "interrupted" status and
+        # skip the notification — destroy() already sent recording_cancelled.
+        if not Recording.objects.filter(id=recording_id).exists():
+            logger.info(
+                f"Recording {recording_id} was deleted during post-processing — skipping final save."
+            )
+            return
+
+        def _save_final_metadata():
+            recording_obj.custom_properties = cp
+            recording_obj.save(update_fields=["custom_properties"])
+
+        _db_retry(
+            _save_final_metadata,
+            max_retries=_dvr_db_max_retries,
+            base_interval=_dvr_db_retry_interval,
+            label=f"DVR recording {recording_id}: metadata save",
+        )
+
+        # Notify frontends so the UI refreshes immediately (e.g. "Stopped" → "Completed")
+        try:
+            async_to_sync(channel_layer.group_send)(
+                "updates",
+                {
+                    "type": "update",
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name},
+                },
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.debug(f"Unable to finalize Recording metadata: {e}")
 
@@ -2143,41 +2558,189 @@ def recover_recordings_on_startup():
         redis = RedisClient.get_client()
         if redis:
             lock_key = "dvr:recover_lock"
-            # Set lock with 60s TTL; only first winner proceeds
-            if not redis.set(lock_key, "1", ex=60, nx=True):
+            # Set lock with 10-minute TTL; must be long enough for Phase 2
+            # ffmpeg remux operations on large files.
+            if not redis.set(lock_key, "1", ex=600, nx=True):
                 return "Recovery already in progress"
 
         now = timezone.now()
 
-        # Resume in-window recordings
-        active = Recording.objects.filter(start_time__lte=now, end_time__gt=now)
+        # Resume in-window recordings.  DB queries and saves use _db_retry
+        # to tolerate transient connection errors common during startup.
+        active = _db_retry(
+            lambda: list(Recording.objects.filter(
+                start_time__lte=now, end_time__gt=now
+            )),
+            label="DVR recovery: fetching active recordings",
+        )
         for rec in active:
             try:
                 cp = rec.custom_properties or {}
+                current_status = cp.get("status", "")
+
+                # Skip recordings that are already in a terminal state.
+                # "completed" / "stopped" — user stopped or it finished normally; do NOT
+                # overwrite the status and re-schedule (that would cause the
+                # Interrupted → In-Progress → Previously-Recorded ghost cycle).
+                # NOTE: "recording" is NOT skipped — this function runs on
+                # worker_ready, meaning all previous workers are dead.  A
+                # recording stuck in "recording" status is from a crashed
+                # worker and must be recovered.
+                if current_status in ("completed", "stopped"):
+                    logger.info(
+                        f"recover_recordings_on_startup: skipping recording {rec.id} "
+                        f"(status={current_status!r}, already in terminal/active state)."
+                    )
+                    continue
+
                 # Mark interrupted due to restart; will flip to 'recording' when task starts
                 cp["status"] = "interrupted"
                 cp["interrupted_reason"] = "server_restarted"
-                rec.custom_properties = cp
-                rec.save(update_fields=["custom_properties"])
 
-                # Start recording for remaining window
+                # Preserve the pre-restart .ts segment path so run_recording
+                # can concatenate it with the resumed segment later.
+                old_ts = cp.get("_temp_file_path")
+                if old_ts and os.path.exists(old_ts) and os.path.getsize(old_ts) > 0:
+                    prior_segments = cp.get("_pre_restart_ts_paths", [])
+                    prior_segments.append(old_ts)
+                    cp["_pre_restart_ts_paths"] = prior_segments
+                    logger.info(
+                        f"recover_recordings_on_startup: recording {rec.id} — "
+                        f"preserving pre-restart TS segment: {old_ts}"
+                    )
+
+                rec.custom_properties = cp
+                _db_retry(
+                    lambda r=rec: r.save(update_fields=["custom_properties"]),
+                    label=f"DVR recovery: recording {rec.id} status update",
+                )
+
+                # Revoke the old PeriodicTask so Celery Beat doesn't also
+                # fire run_recording for this recording (would be a duplicate).
+                old_task_id = rec.task_id
+                if old_task_id:
+                    try:
+                        revoke_task(old_task_id)
+                    except Exception:
+                        pass
+
+                # Start recording for remaining window.  Use a deterministic
+                # task_id so duplicate dispatches (e.g. from a second recovery
+                # attempt) are deduplicated by Celery/Redis.
+                recovery_task_id = f"dvr-recover-{rec.id}"
                 run_recording.apply_async(
-                    args=[rec.id, rec.channel_id, str(now), str(rec.end_time)], eta=now
+                    args=[rec.id, rec.channel_id, str(now), str(rec.end_time)],
+                    eta=now,
+                    task_id=recovery_task_id,
                 )
             except Exception as e:
                 logger.warning(f"Failed to resume recording {rec.id}: {e}")
 
-        # Ensure future recordings are scheduled
-        upcoming = Recording.objects.filter(start_time__gt=now, end_time__gt=now)
+        # Finalize expired recordings that were active when the server crashed
+        # but whose end_time has now passed.  Remux the partial .ts and mark
+        # as interrupted so the user can watch whatever was captured.
+        expired = _db_retry(
+            lambda: list(Recording.objects.filter(
+                end_time__lte=now,
+                custom_properties__status="recording",
+            )),
+            label="DVR recovery: fetching expired recordings",
+        )
+        for rec in expired:
+            try:
+                cp = rec.custom_properties or {}
+                ts_path = cp.get("_temp_file_path")
+                mkv_path = cp.get("file_path")
+
+                if ts_path and os.path.exists(ts_path) and os.path.getsize(ts_path) > 0 and mkv_path:
+                    logger.info(
+                        f"recover_recordings_on_startup: recording {rec.id} expired "
+                        f"during downtime — remuxing partial TS ({os.path.getsize(ts_path):,} bytes)"
+                    )
+                    os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
+                    result = subprocess.run(
+                        [
+                            "ffmpeg", "-y",
+                            "-fflags", "+genpts+igndts+discardcorrupt",
+                            "-err_detect", "ignore_err",
+                            "-i", ts_path, "-map", "0", "-c", "copy", mkv_path,
+                        ],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    if result.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
+                        cp["status"] = "interrupted"
+                        cp["interrupted_reason"] = "server_restarted_after_end"
+                        cp["remux_success"] = True
+                        try:
+                            os.remove(ts_path)
+                        except OSError:
+                            pass
+                        logger.info(f"recover_recordings_on_startup: recording {rec.id} remuxed successfully")
+                    else:
+                        cp["status"] = "interrupted"
+                        cp["interrupted_reason"] = "server_restarted_after_end"
+                        cp["remux_success"] = False
+                        logger.warning(f"recover_recordings_on_startup: recording {rec.id} remux failed, keeping .ts")
+                else:
+                    cp["status"] = "interrupted"
+                    cp["interrupted_reason"] = "server_restarted_after_end"
+                    cp["remux_success"] = False
+
+                rec.custom_properties = cp
+                _db_retry(
+                    lambda r=rec: r.save(update_fields=["custom_properties"]),
+                    label=f"DVR recovery: recording {rec.id} expired status update",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to finalize expired recording {rec.id}: {e}")
+
+        # Ensure future recordings are scheduled.
+        # With ClockedSchedule, PeriodicTasks survive restarts in the DB.
+        # Only recreate if the PeriodicTask is missing (safety net).
+        from django_celery_beat.models import PeriodicTask as _PT
+        from apps.channels.signals import _dvr_task_name
+
+        upcoming = _db_retry(
+            lambda: list(Recording.objects.filter(
+                start_time__gt=now, end_time__gt=now
+            )),
+            label="DVR recovery: fetching upcoming recordings",
+        )
+
+        # Batch-fetch existing PeriodicTask names to avoid N+1 queries
+        task_names = {_dvr_task_name(r.id) for r in upcoming}
+        existing_tasks = set(_db_retry(
+            lambda: list(_PT.objects.filter(name__in=task_names).values_list("name", flat=True)),
+            label="DVR recovery: fetching existing periodic tasks",
+        )) if task_names else set()
+
         for rec in upcoming:
             try:
-                # Schedule task at start_time
+                task_name = _dvr_task_name(rec.id)
+                if task_name in existing_tasks:
+                    if rec.task_id != task_name:
+                        rec.task_id = task_name
+                        _db_retry(
+                            lambda r=rec: r.save(update_fields=["task_id"]),
+                            label=f"DVR recovery: recording {rec.id} task_id update",
+                        )
+                    continue
+                # PeriodicTask missing - recreate it
                 task_id = schedule_recording_task(rec)
                 if task_id:
                     rec.task_id = task_id
-                    rec.save(update_fields=["task_id"])
+                    _db_retry(
+                        lambda r=rec: r.save(update_fields=["task_id"]),
+                        label=f"DVR recovery: recording {rec.id} task_id update",
+                    )
             except Exception as e:
                 logger.warning(f"Failed to schedule recording {rec.id}: {e}")
+
+        # Release the lock early so a subsequent restart can recover
+        # immediately.  The 10-minute TTL is only a safety net in case
+        # recovery itself crashes before reaching this point.
+        if redis:
+            redis.delete(lock_key)
 
         return "Recovery complete"
     except Exception as e:
@@ -2273,34 +2836,43 @@ def comskip_process_recording(recording_id: int):
                 cmd.extend([f"--ini={ini_path}"])
                 break
         cmd.append(file_path)
-        subprocess.run(
+        result = subprocess.run(
             cmd,
-            check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-    except subprocess.CalledProcessError as e:
-        stderr_tail = (e.stderr or "").strip().splitlines()
-        stderr_tail = stderr_tail[-5:] if stderr_tail else []
-        detail = {
-            "status": "error",
-            "reason": "comskip_failed",
-            "returncode": e.returncode,
-        }
-        if e.returncode and e.returncode < 0:
-            try:
-                detail["signal"] = signal.Signals(-e.returncode).name
-            except Exception:
-                detail["signal"] = f"signal_{-e.returncode}"
-        if stderr_tail:
-            detail["stderr"] = "\n".join(stderr_tail)
-        if selected_ini:
-            detail["ini_path"] = selected_ini
-        cp["comskip"] = detail
-        _persist_custom_properties()
-        _ws('error', {"reason": "comskip_failed", "returncode": e.returncode})
-        return "comskip_failed"
+        # comskip exit codes: 0 = commercials found, 1 = no commercials detected.
+        # Negative codes indicate killed by signal; anything else is a real error.
+        if result.returncode == 1:
+            # No commercials detected — not an error.
+            cp["comskip"] = {"status": "completed", "skipped": True}
+            if selected_ini:
+                cp["comskip"]["ini_path"] = selected_ini
+            _persist_custom_properties()
+            _ws('skipped', {"reason": "no_commercials_detected"})
+            return "no_commercials"
+        elif result.returncode != 0:
+            stderr_tail = (result.stderr or "").strip().splitlines()
+            stderr_tail = stderr_tail[-5:] if stderr_tail else []
+            detail = {
+                "status": "error",
+                "reason": "comskip_failed",
+                "returncode": result.returncode,
+            }
+            if result.returncode < 0:
+                try:
+                    detail["signal"] = signal.Signals(-result.returncode).name
+                except Exception:
+                    detail["signal"] = f"signal_{-result.returncode}"
+            if stderr_tail:
+                detail["stderr"] = "\n".join(stderr_tail)
+            if selected_ini:
+                detail["ini_path"] = selected_ini
+            cp["comskip"] = detail
+            _persist_custom_properties()
+            _ws('error', {"reason": "comskip_failed", "returncode": result.returncode})
+            return "comskip_failed"
     except Exception as e:
         cp["comskip"] = {"status": "error", "reason": f"comskip_failed: {e}"}
         _persist_custom_properties()
@@ -2424,14 +2996,32 @@ def comskip_process_recording(recording_id: int):
         _persist_custom_properties()
         _ws('error', {"reason": str(e)})
         return f"error:{e}"
-def _resolve_poster_for_program(channel_name, program):
-    """Internal helper that attempts to resolve a poster URL and/or Logo id.
+def _resolve_poster_for_program(channel_name, program, channel_logo_id=None):
+    """Resolve poster URL and/or Logo id for a recording program.
+
+    Callers should enrich the program dict via _match_epg_program_by_timeslot
+    before invoking this function so that EPG data is already available.
+
+    Pipeline: EPG images → VOD logo → TMDB/OMDb → TVMaze/iTunes →
+    direct program fields → Logo table → Logo creation → channel logo.
     Returns (poster_logo_id, poster_url) where either may be None.
     """
     poster_logo_id = None
     poster_url = None
+    epg_props = None
 
-    # Try EPG Program images first
+    _title = ((program.get("title") if isinstance(program, dict) else None) or "").strip() or None
+
+    # Guard: if the "title" is really just the channel name (common when EPG
+    # has no real program data), don't use it for external API searches —
+    # those queries produce false-positive artwork from unrelated shows.
+    _title_is_channel_name = False
+    if _title and channel_name:
+        def _norm_channel(s):
+            return s.lower().replace("*", "").replace("-", " ").strip()
+        _title_is_channel_name = _norm_channel(_title) == _norm_channel(channel_name)
+
+    # Stage 1: EPG Program images/icon (with URL validation)
     try:
         from apps.epg.models import ProgramData
         prog_id = program.get("id") if isinstance(program, dict) else None
@@ -2439,46 +3029,26 @@ def _resolve_poster_for_program(channel_name, program):
             epg_program = ProgramData.objects.filter(id=prog_id).only("custom_properties").first()
             if epg_program and epg_program.custom_properties:
                 epg_props = epg_program.custom_properties or {}
-
-                def pick_best_image_from_epg_props(epg_props):
-                    images = epg_props.get("images") or []
-                    if not isinstance(images, list):
-                        return None
-                    size_order = {"xxl": 6, "xl": 5, "l": 4, "m": 3, "s": 2, "xs": 1}
-                    def score(img):
-                        t = (img.get("type") or "").lower()
-                        size = (img.get("size") or "").lower()
-                        return (2 if t in ("poster", "cover") else 1, size_order.get(size, 0))
-                    best = None
-                    for im in images:
-                        if not isinstance(im, dict):
-                            continue
-                        url = im.get("url")
-                        if not url:
-                            continue
-                        if best is None or score(im) > score(best):
-                            best = im
-                    return best.get("url") if best else None
-
-                poster_url = pick_best_image_from_epg_props(epg_props)
+                poster_url = _pick_best_image_from_epg_props(epg_props)
+                if poster_url and not _validate_url(poster_url):
+                    poster_url = None
                 if not poster_url:
                     icon = epg_props.get("icon")
-                    if isinstance(icon, str) and icon:
+                    if isinstance(icon, str) and icon and _validate_url(icon):
                         poster_url = icon
     except Exception:
         pass
 
-    # VOD logo fallback by title
-    if not poster_url and not poster_logo_id:
+    # Stage 2: VOD logo fallback by title
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
             from apps.vod.models import Movie, Series
-            title = (program.get("title") if isinstance(program, dict) else None) or channel_name
             vod_logo = None
-            movie = Movie.objects.filter(name__iexact=title).select_related("logo").first()
+            movie = Movie.objects.filter(name__iexact=_title).select_related("logo").first()
             if movie and movie.logo:
                 vod_logo = movie.logo
             if not vod_logo:
-                series = Series.objects.filter(name__iexact=title).select_related("logo").first()
+                series = Series.objects.filter(name__iexact=_title).select_related("logo").first()
                 if series and series.logo:
                     vod_logo = series.logo
             if vod_logo:
@@ -2486,62 +3056,150 @@ def _resolve_poster_for_program(channel_name, program):
         except Exception:
             pass
 
-    # Keyless providers (TVMaze & iTunes)
-    if not poster_url and not poster_logo_id:
+    # Stage 3: TMDB/OMDb (keyed APIs)
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
         try:
-            title = (program.get('title') if isinstance(program, dict) else None) or channel_name
-            if title:
-                # TVMaze
+            tmdb_key = os.environ.get('TMDB_API_KEY')
+            omdb_key = os.environ.get('OMDB_API_KEY')
+            title = _title
+            year = None
+            imdb_id = None
+
+            # Derive year and imdb_id from cached EPG data
+            if epg_props:
+                d = epg_props.get('date')
+                if d and len(str(d)) >= 4:
+                    year = str(d)[:4]
+                imdb_id = epg_props.get('imdb.com_id')
+
+            # TMDB: by IMDb ID
+            if not poster_url and tmdb_key and imdb_id:
                 try:
-                    url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
+                    url = f"https://api.themoviedb.org/3/find/{quote(imdb_id)}?api_key={tmdb_key}&external_source=imdb_id"
                     resp = requests.get(url, timeout=5)
                     if resp.ok:
                         data = resp.json() or {}
-                        img = (data.get('image') or {})
-                        p = img.get('original') or img.get('medium')
-                        if p:
-                            poster_url = p
+                        picks = []
+                        for k in ('movie_results', 'tv_results', 'tv_episode_results', 'tv_season_results'):
+                            picks.extend(data.get(k) or [])
+                        for item in picks:
+                            if item.get('poster_path'):
+                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
+                                break
                 except Exception:
                     pass
-                # iTunes
-                if not poster_url:
-                    try:
-                        for media in ('movie', 'tvShow'):
-                            url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
-                            resp = requests.get(url, timeout=5)
-                            if resp.ok:
-                                data = resp.json() or {}
-                                results = data.get('results') or []
-                                if results:
-                                    art = results[0].get('artworkUrl100')
-                                    if art:
-                                        poster_url = art.replace('100x100', '600x600')
-                                        break
-                    except Exception:
-                        pass
+
+            # TMDB: by title (and year if available)
+            if not poster_url and tmdb_key and title:
+                try:
+                    q = quote(title)
+                    extra = f"&year={year}" if year else ""
+                    url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={q}{extra}"
+                    resp = requests.get(url, timeout=5)
+                    if resp.ok:
+                        data = resp.json() or {}
+                        results = data.get('results') or []
+                        results.sort(key=lambda x: float(x.get('popularity') or 0), reverse=True)
+                        for item in results:
+                            if item.get('poster_path'):
+                                poster_url = f"https://image.tmdb.org/t/p/w780{item['poster_path']}"
+                                break
+                except Exception:
+                    pass
+
+            # OMDb fallback
+            if not poster_url and omdb_key:
+                try:
+                    if imdb_id:
+                        url = f"https://www.omdbapi.com/?apikey={omdb_key}&i={quote(imdb_id)}"
+                    elif title:
+                        yy = f"&y={year}" if year else ""
+                        url = f"https://www.omdbapi.com/?apikey={omdb_key}&t={quote(title)}{yy}"
+                    else:
+                        url = None
+                    if url:
+                        resp = requests.get(url, timeout=5)
+                        if resp.ok:
+                            data = resp.json() or {}
+                            p = data.get('Poster')
+                            if p and p != 'N/A':
+                                poster_url = p
+                except Exception:
+                    pass
         except Exception:
             pass
 
-    # Fallback: search existing Logo entries by name if we still have nothing
-    if not poster_logo_id and not poster_url:
+    # Stage 4: Keyless providers (TVMaze & iTunes)
+    if not poster_url and not poster_logo_id and _title and not _title_is_channel_name:
+        try:
+            title = _title
+            # TVMaze
+            try:
+                url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(title)}"
+                resp = requests.get(url, timeout=5)
+                if resp.ok:
+                    data = resp.json() or {}
+                    img = (data.get('image') or {})
+                    p = img.get('original') or img.get('medium')
+                    if p:
+                        poster_url = p
+            except Exception:
+                pass
+            # iTunes
+            if not poster_url:
+                try:
+                    for media in ('movie', 'tvShow'):
+                        url = f"https://itunes.apple.com/search?term={quote(title)}&media={media}&limit=1"
+                        resp = requests.get(url, timeout=5)
+                        if resp.ok:
+                            data = resp.json() or {}
+                            results = data.get('results') or []
+                            if results:
+                                art = results[0].get('artworkUrl100')
+                                if art:
+                                    poster_url = art.replace('100x100', '600x600')
+                                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Stage 5: Direct fields on program object (with URL validation)
+    if not poster_url and not poster_logo_id and isinstance(program, dict):
+        for key in ("poster", "cover", "cover_big", "image", "icon"):
+            val = program.get(key)
+            if isinstance(val, dict):
+                candidate = val.get("url")
+                if candidate and _validate_url(candidate):
+                    poster_url = candidate
+                    break
+            elif isinstance(val, str) and val and _validate_url(val):
+                poster_url = val
+                break
+
+    # Stage 6: Search existing Logo entries by program title
+    if not poster_logo_id and not poster_url and _title and not _title_is_channel_name:
         try:
             from .models import Logo
-            title = (program.get("title") if isinstance(program, dict) else None) or channel_name
-            existing = Logo.objects.filter(name__iexact=title).first()
+            existing = Logo.objects.filter(name__iexact=_title).first()
             if existing:
                 poster_logo_id = existing.id
                 poster_url = existing.url
         except Exception:
             pass
 
-    # Save to Logo if URL available
+    # Stage 7: Persist to Logo table if URL available
     if not poster_logo_id and poster_url and len(poster_url) <= 1000:
         try:
             from .models import Logo
-            logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": (program.get("title") if isinstance(program, dict) else None) or channel_name})
+            logo, _ = Logo.objects.get_or_create(url=poster_url, defaults={"name": _title or channel_name})
             poster_logo_id = logo.id
         except Exception:
             pass
+
+    # Stage 8: Fall back to channel logo
+    if not poster_logo_id and not poster_url and channel_logo_id:
+        poster_logo_id = channel_logo_id
 
     return poster_logo_id, poster_url
 
@@ -2553,8 +3211,28 @@ def prefetch_recording_artwork(recording_id):
         from .models import Recording
         rec = Recording.objects.get(id=recording_id)
         cp = rec.custom_properties or {}
+
+        # Bail out if the recording is already active or finished — run_recording
+        # handles poster resolution itself, and saving here can race with status updates.
+        current_status = cp.get("status", "")
+        if current_status in ("recording", "completed", "stopped", "interrupted"):
+            return "skipped: status is " + current_status
+
         program = cp.get("program") or {}
-        poster_logo_id, poster_url = _resolve_poster_for_program(rec.channel.name, program)
+
+        # Enrich empty program dicts (manual recordings) from EPG time-slot data.
+        # Persists matched title/description for display in the recording card.
+        if isinstance(program, dict) and not program.get("user_edited") and not program.get("id") and not program.get("title"):
+            epg_match = _match_epg_program_by_timeslot(
+                rec.channel.epg_data, rec.start_time, rec.end_time,
+            )
+            if epg_match:
+                program.update(epg_match)
+                cp["program"] = program
+
+        poster_logo_id, poster_url = _resolve_poster_for_program(
+            rec.channel.name, program, channel_logo_id=rec.channel.logo_id,
+        )
         updated = False
         if poster_logo_id and cp.get("poster_logo_id") != poster_logo_id:
             cp["poster_logo_id"] = poster_logo_id
@@ -2593,7 +3271,15 @@ def prefetch_recording_artwork(recording_id):
             pass
 
         if updated:
-            rec.custom_properties = cp
+            # Re-read from DB to avoid overwriting status changes made by
+            # the stop endpoint or run_recording's final metadata save.
+            rec.refresh_from_db()
+            fresh_cp = rec.custom_properties or {}
+            for key in ("program", "poster_logo_id", "poster_url", "rating",
+                        "rating_system", "season", "episode", "onscreen_episode"):
+                if key in cp:
+                    fresh_cp[key] = cp[key]
+            rec.custom_properties = fresh_cp
             rec.save(update_fields=["custom_properties"])
             try:
                 from core.utils import send_websocket_update
@@ -2652,6 +3338,10 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
         elif starting_channel_number == 0:
             # Mode 2: Start from lowest available number
             next_number = 1
+        elif starting_channel_number == -1:
+            # Mode 4: Start after the current highest channel number
+            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            next_number = (int(highest) + 1) if highest is not None else 1
         else:
             # Mode 3: Start from specified number
             next_number = starting_channel_number

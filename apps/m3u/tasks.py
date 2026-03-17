@@ -11,7 +11,7 @@ from celery.result import AsyncResult
 from celery import shared_task, current_app, group
 from django.conf import settings
 from django.core.cache import cache
-from django.db import transaction
+from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from asgiref.sync import async_to_sync
@@ -462,6 +462,13 @@ def get_case_insensitive_attr(attributes, key, default=""):
     return default
 
 
+def parse_is_adult(value):
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
@@ -482,8 +489,10 @@ def parse_extinf_line(line: str) -> dict:
     attrs = {}
     last_attr_end = 0
 
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
+    # Use a single regex that handles both quote types.
+    # Keys must stop at '=' so values like base64-padded URLs ending with '=='
+    # don't get folded into the preceding attribute name.
+    for match in re.finditer(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2', content):
         key = match.group(1)
         value = match.group(3)
         attrs[key] = value
@@ -749,6 +758,14 @@ def collect_xc_streams(account_id, enabled_groups):
             # Filter streams based on enabled categories
             filtered_count = 0
             for stream in all_xc_streams:
+                # Fall back to a generated name if the provider returns null/empty
+                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                if not stream.get("name"):
+                    logger.warning(
+                        f"XC stream has null/empty name; using generated name '{stream_name}' "
+                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                    )
+
                 # Get the category_id for this stream
                 category_id = str(stream.get("category_id", ""))
 
@@ -758,7 +775,7 @@ def collect_xc_streams(account_id, enabled_groups):
 
                     # Convert XC stream to our standard format with all properties preserved
                     stream_data = {
-                        "name": stream["name"],
+                        "name": stream_name,
                         "url": xc_client.get_stream_url(stream["stream_id"]),
                         "attributes": {
                             "tvg-id": stream.get("epg_channel_id", ""),
@@ -842,7 +859,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     )
 
                     for stream in streams:
-                        name = stream["name"]
+                        name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                        if not stream.get("name"):
+                            logger.warning(
+                                f"XC stream has null/empty name in category {group_name}; "
+                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
+                            )
                         raw_stream_id = stream.get("stream_id", "")
                         provider_stream_id = None
                         if raw_stream_id:
@@ -875,7 +897,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
-                            "is_adult": int(stream.get("is_adult", 0)) == 1,
+                            "is_adult": parse_is_adult(stream.get("is_adult", 0)),
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
@@ -1093,7 +1115,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
                 "custom_properties": stream_info["attributes"],
-                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
+                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
@@ -1170,13 +1192,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
 
-    # Aggressive garbage collection
-    # del streams_to_create, streams_to_update, stream_hashes, existing_streams
-    # from core.utils import cleanup_memory
-    # cleanup_memory(log_usage=True, force_collection=True)
-
     # Clean up database connections for threading
     connections.close_all()
+
+    # Free batch data structures (reference-counted deallocation)
+    del streams_to_create, streams_to_update, stream_hashes, existing_streams
 
     return retval
 
@@ -2642,6 +2662,16 @@ def refresh_single_m3u_account(account_id):
     lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
     lock_renewer.start()
 
+    try:
+        return _refresh_single_m3u_account_impl(account_id)
+    finally:
+        # Guaranteed cleanup on all exit paths (success, exception, early return)
+        lock_renewer.stop()
+        release_task_lock("refresh_single_m3u_account", account_id)
+
+
+def _refresh_single_m3u_account_impl(account_id):
+    """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
     start_time = time.time()  # For tracking elapsed time as float
@@ -2653,8 +2683,6 @@ def refresh_single_m3u_account(account_id):
         account = M3UAccount.objects.get(id=account_id, is_active=True)
         if not account.is_active:
             logger.debug(f"Account {account_id} is not active, skipping.")
-            lock_renewer.stop()
-            release_task_lock("refresh_single_m3u_account", account_id)
             return
 
         # Set status to fetching
@@ -2683,8 +2711,6 @@ def refresh_single_m3u_account(account_id):
         else:
             logger.debug(f"No orphaned task found for M3U account {account_id}")
 
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive, task cleaned up"
 
     # Fetch M3U lines and handle potential issues
@@ -2699,6 +2725,7 @@ def refresh_single_m3u_account(account_id):
 
             extinf_data = data["extinf_data"]
             groups = data["groups"]
+            del data  # Free top-level dict; extinf_data/groups retain their references
         except json.JSONDecodeError as e:
             # Handle corrupted JSON file
             logger.error(
@@ -2734,8 +2761,6 @@ def refresh_single_m3u_account(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                lock_renewer.stop()
-                release_task_lock("refresh_single_m3u_account", account_id)
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -2768,8 +2793,6 @@ def refresh_single_m3u_account(account_id):
                 status="error",
                 error=f"Error refreshing M3U groups: {str(e)}",
             )
-            lock_renewer.stop()
-            release_task_lock("refresh_single_m3u_account", account_id)
             return "Failed to update m3u account"
 
     # Only proceed with parsing if we actually have data and no errors were encountered
@@ -2792,8 +2815,6 @@ def refresh_single_m3u_account(account_id):
             status="error",
             error="No data available for processing",
         )
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
         return "Failed to update m3u account, no data available"
 
     hash_keys = CoreSettings.get_m3u_hash_key().split(",")
@@ -2938,6 +2959,9 @@ def refresh_single_m3u_account(account_id):
                 ]
 
                 logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
+
+                # Free the original list; batches hold independent sliced copies
+                del all_xc_streams
 
                 # Use threading for XC stream processing - now with consistent batch sizes
                 max_workers = min(4, len(batches))
@@ -3099,32 +3123,38 @@ def refresh_single_m3u_account(account_id):
 
     except Exception as e:
         logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = f"Error processing M3U: {str(e)}"
-        account.save(update_fields=["status", "last_message"])
+        try:
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = f"Error processing M3U: {str(e)}"
+            account.save(update_fields=["status", "last_message"])
+        except Exception:
+            logger.debug(f"Failed to update account {account_id} status during error handling")
         raise  # Re-raise the exception for Celery to handle
     finally:
-        lock_renewer.stop()
-        release_task_lock("refresh_single_m3u_account", account_id)
+        # Free large data structures regardless of success or failure
+        if 'existing_groups' in locals():
+            del existing_groups
+        if 'extinf_data' in locals():
+            del extinf_data
+        if 'groups' in locals():
+            del groups
+        if 'batches' in locals():
+            del batches
+        if 'all_xc_streams' in locals():
+            del all_xc_streams
+        if 'data' in locals():
+            del data
+        if 'filtered_groups' in locals():
+            del filtered_groups
+        if 'channel_group_relationships' in locals():
+            del channel_group_relationships
 
-    # Aggressive garbage collection
-    # Only delete variables if they exist
-    if 'existing_groups' in locals():
-        del existing_groups
-    if 'extinf_data' in locals():
-        del extinf_data
-    if 'groups' in locals():
-        del groups
-    if 'batches' in locals():
-        del batches
-
-    from core.utils import cleanup_memory
-
-    cleanup_memory(log_usage=True, force_collection=True)
-
-    # Clean up cache file since we've fully processed it
-    if os.path.exists(cache_path):
-        os.remove(cache_path)
+        # Remove cache file after processing (success or failure)
+        cache_path = os.path.join(m3u_dir, f"{account_id}.json")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
 
     return f"Dispatched jobs complete."
 
@@ -3155,3 +3185,163 @@ def send_m3u_update(account_id, action, progress, **kwargs):
 
     # Explicitly clear data reference to help garbage collection
     data = None
+
+
+def evaluate_profile_expiration_notification(profile):
+    """
+    Evaluate a single M3UAccountProfile's expiration date and create, update,
+    or delete the corresponding SystemNotification accordingly.
+
+    Returns the notification key that should remain active (warning or expired),
+    or None if the profile is not expiring soon and any stale notifications were removed.
+    This return value is used by the bulk task to track active keys for stale cleanup.
+    """
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification, send_notification_dismissed
+
+    exp = profile.exp_date
+    if not exp:
+        return None
+
+    now = timezone.now()
+    warning_threshold = now + timezone.timedelta(days=7)
+    warning_key = f"xc-exp-warning-{profile.id}"
+    expired_key = f"xc-exp-expired-{profile.id}"
+
+    if exp <= now:
+        # Already expired — delete warning, create/update expired notification
+        deleted_warning = list(
+            SystemNotification.objects.filter(notification_key=warning_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=warning_key).delete()
+        for key in deleted_warning:
+            send_notification_dismissed(key)
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=expired_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.HIGH,
+                "title": f"Account Expired: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" has expired '
+                    f"(expired {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return expired_key
+
+    elif exp <= warning_threshold:
+        # Expiring within 7 days — delete expired notification, create/update warning
+        deleted_expired = list(
+            SystemNotification.objects.filter(notification_key=expired_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=expired_key).delete()
+        for key in deleted_expired:
+            send_notification_dismissed(key)
+
+        days_left = (exp - now).days
+        if days_left == 0:
+            expires_in_str = "today"
+        elif days_left == 1:
+            expires_in_str = "in 1 day"
+        else:
+            expires_in_str = f"in {days_left} days"
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=warning_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.NORMAL,
+                "title": f"Account Expiring: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" expires {expires_in_str} '
+                    f"(expires {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return warning_key
+
+    else:
+        # Not expiring soon — delete any stale notifications
+        deleted_keys = list(
+            SystemNotification.objects.filter(
+                notification_key__in=[warning_key, expired_key]
+            ).values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(
+            notification_key__in=[warning_key, expired_key]
+        ).delete()
+        for key in deleted_keys:
+            send_notification_dismissed(key)
+        return None
+
+
+@shared_task
+def check_account_expirations():
+    """
+    Daily task: check all account profiles for upcoming expirations.
+    Creates/updates SystemNotifications for profiles expiring within 7 days.
+    Uses separate notification keys for warning vs expired so users can
+    dismiss the 7-day warning and still receive the expired notification.
+    """
+    from apps.m3u.models import M3UAccountProfile
+    from core.models import SystemNotification
+    from core.utils import send_notification_dismissed
+
+    # Find all active profiles with an exp_date that is set
+    expiring_profiles = (
+        M3UAccountProfile.objects.filter(
+            m3u_account__is_active=True,
+            is_active=True,
+            exp_date__isnull=False,
+        )
+        .select_related("m3u_account")
+    )
+
+    active_notification_keys = set()
+
+    for profile in expiring_profiles:
+        active_key = evaluate_profile_expiration_notification(profile)
+        if active_key:
+            active_notification_keys.add(active_key)
+
+    # Delete stale notifications for profiles whose expiration was extended
+    stale = SystemNotification.objects.filter(
+        is_active=True,
+    ).filter(
+        models.Q(notification_key__startswith="xc-exp-warning-") |
+        models.Q(notification_key__startswith="xc-exp-expired-")
+    ).exclude(notification_key__in=active_notification_keys)
+    stale_keys = list(stale.values_list("notification_key", flat=True))
+    stale.delete()
+    for key in stale_keys:
+        send_notification_dismissed(key)
+
+    logger.info(
+        f"Account expiration check complete: {len(active_notification_keys)} active notifications"
+    )

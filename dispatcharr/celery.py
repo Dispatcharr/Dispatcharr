@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun  # Add import for signals
+from celery.signals import task_postrun, worker_ready
 
 # Initialize with defaults before Django settings are loaded
 DEFAULT_LOG_LEVEL = 'DEBUG'
@@ -54,7 +54,7 @@ app.conf.update(
 def cleanup_task_memory(**kwargs):
     """Clean up memory and database connections after each task completes"""
     from django.db import connection
-    
+
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
@@ -149,3 +149,13 @@ def setup_celery_logging(**kwargs):
         except (AttributeError, TypeError):
             # If the log level string is invalid, default to DEBUG
             logger.setLevel(logging.DEBUG)
+
+
+@worker_ready.connect
+def on_worker_ready(**kwargs):
+    """Tasks to run once the worker is fully connected and ready."""
+    from apps.channels.tasks import recover_recordings_on_startup
+    recover_recordings_on_startup.delay()
+
+    from core.tasks import check_for_version_update
+    check_for_version_update.delay()
