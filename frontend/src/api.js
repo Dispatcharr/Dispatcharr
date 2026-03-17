@@ -98,7 +98,6 @@ const request = async (url, options = {}) => {
 
 export default class API {
   static lastQueryParams = new URLSearchParams();
-  static nextHighestChannelNumberRequest = null;
 
   /**
    * A static method so we can do:  await API.getAuthToken()
@@ -254,42 +253,6 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
     }
-  }
-
-  static async getNextHighestChannelNumber() {
-    if (API.nextHighestChannelNumberRequest) {
-      return API.nextHighestChannelNumberRequest;
-    }
-
-    API.nextHighestChannelNumberRequest = (async () => {
-      try {
-        const params = new URLSearchParams({
-          page: '1',
-          page_size: '1',
-          ordering: '-channel_number',
-        });
-        const response = await request(
-          `${host}/api/channels/channels/?${params.toString()}`
-        );
-
-        const firstChannel = Array.isArray(response)
-          ? response[0]
-          : Array.isArray(response?.results)
-            ? response.results[0]
-            : null;
-
-        const highestChannelNumber = Number(firstChannel?.channel_number);
-        return Number.isFinite(highestChannelNumber) && highestChannelNumber >= 0
-          ? Math.floor(highestChannelNumber) + 1
-          : 1;
-      } catch (e) {
-        errorNotification('Failed to retrieve next highest channel number', e);
-      } finally {
-        API.nextHighestChannelNumberRequest = null;
-      }
-    })();
-
-    return API.nextHighestChannelNumberRequest;
   }
 
   /**
