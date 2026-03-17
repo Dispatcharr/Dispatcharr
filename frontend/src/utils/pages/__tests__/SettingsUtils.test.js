@@ -328,6 +328,51 @@ describe('SettingsUtils', () => {
       const result = SettingsUtils.parseSettings(mockSettings);
       expect(result.network_access).toEqual(['192.168.1.0/24', '10.0.0.0/8']);
     });
+
+    it('should parse valid series_rules as array', () => {
+      const mockSettings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: {
+            series_rules: [{ tvg_id: 'abc', mode: 'all', title: 'Show' }],
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseSettings(mockSettings);
+      expect(result.series_rules).toEqual([
+        { tvg_id: 'abc', mode: 'all', title: 'Show' },
+      ]);
+    });
+
+    it('should default series_rules to empty array when not an array', () => {
+      const mockSettings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: {
+            series_rules: 'corrupted',
+          },
+        },
+      };
+
+      const result = SettingsUtils.parseSettings(mockSettings);
+      expect(result.series_rules).toEqual([]);
+    });
+
+    it('should default series_rules to empty array when missing', () => {
+      const mockSettings = {
+        dvr_settings: {
+          id: 2,
+          key: 'dvr_settings',
+          value: {},
+        },
+      };
+
+      const result = SettingsUtils.parseSettings(mockSettings);
+      expect(result.series_rules).toEqual([]);
+    });
   });
 
   describe('getChangedSettings', () => {
@@ -446,6 +491,23 @@ describe('SettingsUtils', () => {
       expect(changes.epg_match_ignore_prefixes).toEqual([]);
       expect(changes.epg_match_ignore_suffixes).toEqual([]);
       expect(changes.epg_match_ignore_custom).toEqual([]);
+    });
+
+    it('should keep series_rules as array and not stringify', () => {
+      const rules = [{ tvg_id: 'abc', mode: 'all', title: 'Show' }];
+      const values = { series_rules: rules };
+      const settings = {};
+
+      const changes = SettingsUtils.getChangedSettings(values, settings);
+      expect(changes.series_rules).toEqual(rules);
+    });
+
+    it('should default series_rules to empty array if not an array', () => {
+      const values = { series_rules: 'corrupted' };
+      const settings = {};
+
+      const changes = SettingsUtils.getChangedSettings(values, settings);
+      expect(changes.series_rules).toEqual([]);
     });
   });
 

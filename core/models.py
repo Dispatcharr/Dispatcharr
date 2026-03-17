@@ -240,16 +240,23 @@ class CoreSettings(models.Model):
         })
 
     @classmethod
+    def _safe_string_list(cls, value):
+        """Return a list of strings, filtering out non-list or non-string values."""
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str)]
+
+    @classmethod
     def get_epg_match_ignore_prefixes(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_prefixes", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_prefixes", []))
 
     @classmethod
     def get_epg_match_ignore_suffixes(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_suffixes", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_suffixes", []))
 
     @classmethod
     def get_epg_match_ignore_custom(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_custom", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_custom", []))
 
     # DVR Settings
     @classmethod
@@ -312,12 +319,16 @@ class CoreSettings(models.Model):
 
     @classmethod
     def get_dvr_series_rules(cls):
-        return cls.get_dvr_settings().get("series_rules", [])
+        rules = cls.get_dvr_settings().get("series_rules", [])
+        if not isinstance(rules, list):
+            return []
+        return [r for r in rules if isinstance(r, dict)]
 
     @classmethod
     def set_dvr_series_rules(cls, rules):
-        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"series_rules": rules})
-        return rules
+        clean = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"series_rules": clean})
+        return clean
 
     # Proxy Settings
     @classmethod
