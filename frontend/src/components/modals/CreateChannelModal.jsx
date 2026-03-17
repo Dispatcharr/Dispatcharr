@@ -30,7 +30,6 @@ const CreateChannelModal = ({
   selectedProfileIds,
   onProfileIdsChange,
   channelProfiles = [],
-  isHighestAvailableLoading = false,
 }) => {
   const title = isBulk ? 'Create Channels Options' : 'Create Channel';
   const confirmLabel = isBulk ? 'Create Channels' : 'Create Channel';
@@ -151,16 +150,6 @@ const CreateChannelModal = ({
           </Stack>
         </Radio.Group>
 
-        {mode === 'highest' && (
-          <Text size="sm" c="dimmed">
-            {isHighestAvailableLoading
-              ? 'Fetching the current highest channel number...'
-              : isBulk
-                ? `Channels will be assigned starting from ${numberValue}.`
-                : `The channel will be assigned number ${numberValue}.`}
-          </Text>
-        )}
-
         {mode === customModeValue && (
           <NumberInput
             label={isBulk ? 'Starting Channel Number' : 'Channel Number'}
@@ -190,9 +179,7 @@ const CreateChannelModal = ({
           <Button variant="default" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={onConfirm} disabled={isHighestAvailableLoading}>
-            {confirmLabel}
-          </Button>
+          <Button onClick={onConfirm}>{confirmLabel}</Button>
         </Group>
       </Stack>
     </Modal>
