@@ -129,7 +129,7 @@ const CreateChannelModal = ({
             />
             <Radio
               value="highest"
-              label="Start After Highest Channel"
+              label="Auto-Assign After Highest"
               description={
                 isBulk
                   ? 'Assign numbers sequentially starting after the current highest channel'
