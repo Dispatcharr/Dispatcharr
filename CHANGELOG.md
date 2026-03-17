@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Backups failing on previous installations where `/data/backups` already existed: `/data/backups` was missing from the `DATA_DIRS` list in the init script, causing the PUID/PGID ownership migration to skip the directory and leave it with incorrect permissions. — Thanks [@CodeBormen](https://github.com/CodeBormen)
+
 ## [0.21.0] - 2026-03-17
 
 ### Security
