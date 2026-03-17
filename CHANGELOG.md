@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated frontend npm dependencies to resolve 1 high-severity vulnerability:
+  - Updated `flatted` to 3.4.1, resolving **high** unbounded recursion DoS in the `parse()` revive phase ([GHSA-25h7-pfq9-p65f](https://github.com/advisories/GHSA-25h7-pfq9-p65f))
+- Updated `Django` to 6.0.3 and `django-celery-beat` to 2.9.0, resolving new security vulnerabilities:
+  - [CVE-2026-25673](https://www.cve.org/CVERecord?id=CVE-2026-25673): Potential denial-of-service vulnerability in URLField via Unicode normalization on Windows (March 3, 2026)
+  - [CVE-2026-25674](https://www.cve.org/CVERecord?id=CVE-2026-25674): Potential incorrect permissions on newly created file system objects (March 3, 2026)
+
 ### Added
 
 - Configurable sidebar navigation ordering and visibility — Thanks [@jcasimir](https://github.com/jcasimir)
@@ -65,17 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removed a dead `onLogout` handler in `Sidebar` that called `logout()` and `window.location.reload()` but was never wired to any UI element.
 - EPG output when no `days` parameter is specified now excludes already-ended programs instead of returning all historical data.
 
-### Security
-
-- Updated frontend npm dependencies to resolve 1 high-severity vulnerability:
-  - Updated `flatted` to 3.4.1, resolving **high** unbounded recursion DoS in the `parse()` revive phase ([GHSA-25h7-pfq9-p65f](https://github.com/advisories/GHSA-25h7-pfq9-p65f))
-- Updated `Django` to 6.0.3 and `django-celery-beat` to 2.9.0, resolving new security vulnerabilities:
-  - [CVE-2026-25673](https://www.cve.org/CVERecord?id=CVE-2026-25673): Potential denial-of-service vulnerability in URLField via Unicode normalization on Windows (March 3, 2026)
-  - [CVE-2026-25674](https://www.cve.org/CVERecord?id=CVE-2026-25674): Potential incorrect permissions on newly created file system objects (March 3, 2026)
-
 ### Fixed
 
-- DVR series rule creation failing with a 500 error when the stored `series_rules` data contained corrupted (non-dict) entries. Added type guards on the getter, setter, and generic settings serializer to filter invalid entries on read and write. Hardened the EPG ignore list getters (`prefixes`, `suffixes`, `custom`) with the same pattern. Frontend settings parse and save now validate `series_rules` with `Array.isArray()`, matching the existing EPG field pattern, preventing corrupted data from being round-tripped back to the database. (Fixes #1059) 
+- DVR series rule creation failing with a 500 error when the stored `series_rules` data contained corrupted (non-dict) entries. Added type guards on the getter, setter, and generic settings serializer to filter invalid entries on read and write. Hardened the EPG ignore list getters (`prefixes`, `suffixes`, `custom`) with the same pattern. Frontend settings parse and save now validate `series_rules` with `Array.isArray()`, matching the existing EPG field pattern, preventing corrupted data from being round-tripped back to the database. (Fixes #1059) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - TS proxy clients stuck indefinitely in keepalive mode when a stream fails and never recovers (Fixes #1102, #1103) — Thanks [@cmcpherson274](https://github.com/cmcpherson274) & [@CodeBormen](https://github.com/CodeBormen)
   - **Keepalive duration cap**: Non-owner worker clients sending keepalive packets to hold a connection open during failover can now be held at most `MAX_KEEPALIVE_DURATION` seconds (default 300 s). If no real stream data has been received within that window, the client is disconnected with a warning log. The timer resets each time real data resumes, so independent stalls do not accumulate.
   - **`last_active` tracking**: `last_active` is now updated on every keepalive packet and on every real data chunk, so clients actively waiting during a failover are not incorrectly evicted as ghost clients by the heartbeat thread. The heartbeat thread now only refreshes the Redis TTL rather than updating `last_active`, ensuring the ghost-detection check reflects true client activity rather than heartbeat activity.
@@ -94,7 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Resize stuck after releasing mouse outside window**: The `mouseup` event is not delivered when the pointer leaves the viewport, leaving the `mousemove` listener active indefinitely. Fixed by checking `event.buttons === 0` at the top of `handleResizeMove`; when no button is held the resize session is torn down immediately.
   - **Drag stuck after releasing mouse outside window**: Same root cause as the resize bug. Fixed by detecting `event.buttons === 0` in the `onDrag` handler and dispatching a synthetic `mouseup` event so react-draggable cleanly ends the drag session.
   - **Player draggable off screen**: The player could be dragged off any edge, making the header (and drag handle) unreachable. The player is now fully bounded: left and top edges are clamped to `x ≥ 0` / `y ≥ 0` so the header is always reachable, and right/bottom edges are clamped to the viewport. Size and position are also re-clamped automatically when the browser window is resized, with proportional scale-down if the saved size exceeds the new viewport.
-- **Security**: Any authenticated user could self-escalate privileges by sending `user_level`, `is_staff`, or `is_superuser` in a `PATCH /api/accounts/users/me/` request. The `/me/` endpoint now enforces an allowlist (`custom_properties`, `first_name`, `last_name`, `email`, `password`); any other fields return HTTP 400. Privilege-sensitive fields can only be changed via the admin-only `PATCH /api/accounts/users/{id}/` endpoint.
 - Double error notification when saving user preferences: `API.updateMe` was catching errors internally and displaying a notification before re-throwing, causing callers to display a second notification for the same failure.
 - Navigation preference saves from concurrent sessions could overwrite each other due to a double-merge race: the frontend was pre-merging `custom_properties` before sending, then the backend merged again against the DB value, causing the second session's write to silently drop keys set by the first. The frontend now sends only the delta; the backend merges authoritatively against the stored value.
 - Stale nav item IDs (e.g. from a previous nav structure) are now scrubbed from `navOrder` and `hiddenNav` on the next preference save, preventing unbounded growth of the `custom_properties` JSON field.
