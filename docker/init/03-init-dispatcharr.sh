@@ -31,6 +31,7 @@ done
 
 # Create data directories, tolerating failures on external mounts
 _failed_mkdir=()
+_failed_chown=()
 for dir in "${DATA_DIRS[@]}"; do
     _mkdir_err=$(mkdir -p "$dir" 2>&1) || _failed_mkdir+=("$dir ($_mkdir_err)")
 done
@@ -63,7 +64,6 @@ if [ "$(id -u)" = "0" ]; then
     # Fix data directories (non-recursive to avoid touching user files).
     # Failures are collected rather than fatal — directories may be on
     # external mounts (NFS, SMB/CIFS, FUSE) that reject chown.
-    _failed_chown=()
     for dir in "${DATA_DIRS[@]}"; do
         if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then
             _chown_err=$(chown "$PUID:$PGID" "$dir" 2>&1) || {
