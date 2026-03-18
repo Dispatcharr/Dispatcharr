@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.accounts.permissions import Authenticated, permission_classes_by_action
 from django.http import JsonResponse, HttpResponseForbidden, HttpResponse
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel
 from .models import HDHRDevice
@@ -42,9 +42,8 @@ class HDHRDeviceViewSet(viewsets.ModelViewSet):
 class DiscoverAPIView(APIView):
     """Returns device discovery information"""
 
-    @swagger_auto_schema(
-        operation_description="Retrieve HDHomeRun device discovery information",
-        responses={200: openapi.Response("HDHR Discovery JSON")},
+    @extend_schema(
+        description="Retrieve HDHomeRun device discovery information",
     )
     def get(self, request):
         base_url = request.build_absolute_uri("/hdhr/").rstrip("/")
@@ -81,9 +80,8 @@ class DiscoverAPIView(APIView):
 class LineupAPIView(APIView):
     """Returns available channel lineup"""
 
-    @swagger_auto_schema(
-        operation_description="Retrieve the available channel lineup",
-        responses={200: openapi.Response("Channel Lineup JSON")},
+    @extend_schema(
+        description="Retrieve the available channel lineup",
     )
     def get(self, request):
         channels = Channel.objects.all().order_by("channel_number")
@@ -102,9 +100,8 @@ class LineupAPIView(APIView):
 class LineupStatusAPIView(APIView):
     """Returns the current status of the HDHR lineup"""
 
-    @swagger_auto_schema(
-        operation_description="Retrieve the HDHomeRun lineup status",
-        responses={200: openapi.Response("Lineup Status JSON")},
+    @extend_schema(
+        description="Retrieve the HDHomeRun lineup status",
     )
     def get(self, request):
         data = {
@@ -120,9 +117,8 @@ class LineupStatusAPIView(APIView):
 class HDHRDeviceXMLAPIView(APIView):
     """Returns HDHomeRun device configuration in XML"""
 
-    @swagger_auto_schema(
-        operation_description="Retrieve the HDHomeRun device XML configuration",
-        responses={200: openapi.Response("HDHR Device XML")},
+    @extend_schema(
+        description="Retrieve the HDHomeRun device XML configuration",
     )
     def get(self, request):
         base_url = request.build_absolute_uri("/hdhr/").rstrip("/")

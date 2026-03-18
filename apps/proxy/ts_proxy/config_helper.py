@@ -19,7 +19,7 @@ class ConfigHelper:
     @staticmethod
     def connection_timeout():
         """Get connection timeout in seconds"""
-        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
+        return Config.get_connection_timeout()
 
     @staticmethod
     def client_wait_timeout():
@@ -39,7 +39,14 @@ class ConfigHelper:
     @staticmethod
     def initial_behind_chunks():
         """Get number of chunks to start behind"""
-        return ConfigHelper.get('INITIAL_BEHIND_CHUNKS', 4)
+        return Config.get_initial_behind_chunks()
+
+    @staticmethod
+    def new_client_behind_seconds():
+        """Get number of seconds behind live to start new clients.
+        0 means start at live (buffer head).
+        Loaded from DB proxy_settings so users can change it at runtime."""
+        return Config.get_new_client_behind_seconds()
 
     @staticmethod
     def keepalive_interval():
@@ -64,12 +71,12 @@ class ConfigHelper:
     @staticmethod
     def max_retries():
         """Get maximum retry attempts"""
-        return ConfigHelper.get('MAX_RETRIES', 1)
+        return Config.get_max_retries()
 
     @staticmethod
     def max_stream_switches():
         """Get maximum number of stream switch attempts"""
-        return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)
+        return Config.get_max_stream_switches()
 
     @staticmethod
     def retry_wait_interval():
@@ -79,12 +86,12 @@ class ConfigHelper:
     @staticmethod
     def url_switch_timeout():
         """Get URL switch timeout in seconds (max time allowed for a stream switch operation)"""
-        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 4)
+        return Config.get_url_switch_timeout()
 
     @staticmethod
     def failover_grace_period():
         """Get extra time (in seconds) to allow for stream switching before disconnecting clients"""
-        return ConfigHelper.get('FAILOVER_GRACE_PERIOD', 20)  # Default to 20 seconds
+        return Config.get_failover_grace_period()
 
     @staticmethod
     def buffering_timeout():
@@ -108,4 +115,14 @@ class ConfigHelper:
         This controls how long we wait for each chunk before timing out.
         Set this higher (e.g., 30s) for slow providers that may have intermittent delays.
         """
-        return ConfigHelper.get('CHUNK_TIMEOUT', 5)  # Default 5 seconds
+        return Config.get_chunk_timeout()
+
+    @staticmethod
+    def chunk_batch_size():
+        """Get chunk batch size"""
+        return Config.get_chunk_batch_size()
+
+    @staticmethod
+    def health_check_interval():
+        """Get health check interval in seconds"""
+        return Config.get_health_check_interval()

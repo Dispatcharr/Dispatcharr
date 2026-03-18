@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory
+from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +146,14 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task
+@shared_task(time_limit=1800, soft_time_limit=1700)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
         return
+
+    lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
+    lock_renewer.start()
 
     source = None
     try:
@@ -168,6 +171,7 @@ def refresh_epg_data(source_id):
                 logger.info(f"No orphaned task found for EPG source {source_id}")
 
             # Release the lock and exit
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -176,6 +180,7 @@ def refresh_epg_data(source_id):
         # The source exists but is not active, just skip processing
         if not source.is_active:
             logger.info(f"EPG source {source_id} is not active. Skipping.")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -184,6 +189,7 @@ def refresh_epg_data(source_id):
         # Skip refresh for dummy EPG sources - they don't need refreshing
         if source.source_type == 'dummy':
             logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
@@ -194,6 +200,7 @@ def refresh_epg_data(source_id):
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -202,6 +209,7 @@ def refresh_epg_data(source_id):
             parse_channels_success = parse_channels_only(source)
             if not parse_channels_success:
                 logger.error(f"Failed to parse channels for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -234,6 +242,7 @@ def refresh_epg_data(source_id):
         source = None
         # Force garbage collection before releasing the lock
         gc.collect()
+        lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
 
 
@@ -286,11 +295,12 @@ def fetch_xmltv(source):
     logger.info(f"Fetching XMLTV data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
-        if default_user_agent_setting and default_user_agent_setting.value:
+        default_user_agent_id = stream_settings.get('default_user_agent')
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")
@@ -1125,11 +1135,14 @@ def parse_channels_only(source):
 
 
 
-@shared_task
+@shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
 
     source_file = None
     program_parser = None
@@ -1160,11 +1173,13 @@ def parse_programs_for_tvg_id(epg_id):
         # Skip program parsing for dummy EPG sources - they don't have program data files
         if epg_source.source_type == 'dummy':
             logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
@@ -1206,6 +1221,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1216,6 +1232,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, file missing after download"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1231,6 +1248,7 @@ def parse_programs_for_tvg_id(epg_id):
                 epg_source.last_message = f"No URL provided, cannot fetch EPG data"
                 epg_source.save(update_fields=['status', 'last_message'])
                 send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                lock_renewer.stop()
                 release_task_lock('parse_epg_programs', epg_id)
                 return
 
@@ -1287,11 +1305,28 @@ def parse_programs_for_tvg_id(epg_id):
                             logger.trace(f"Number of custom properties: {len(custom_props)}")
                             custom_properties_json = custom_props
 
+                        # Fallback: extract S/E from description when episode-num
+                        # elements didn't provide them
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
+
                         programs_to_create.append(ProgramData(
                             epg=epg,
                             start_time=start_time,
                             end_time=end_time,
-                            title=title,
+                            title=title[:255],
                             description=desc,
                             sub_title=sub_title,
                             tvg_id=epg.tvg_id,
@@ -1378,7 +1413,7 @@ def parse_programs_for_tvg_id(epg_id):
         epg_source = None
         # Add comprehensive cleanup before releasing lock
         cleanup_memory(log_usage=should_log_memory, force_collection=True)
-         # Memory tracking after processing
+        # Memory tracking after processing
         if process:
             try:
                 mem_after = process.memory_info().rss / 1024 / 1024
@@ -1388,16 +1423,29 @@ def parse_programs_for_tvg_id(epg_id):
             process = None
         epg = None
         programs_processed = None
+        lock_renewer.stop()
         release_task_lock('parse_epg_programs', epg_id)
 
 
 
 def parse_programs_for_source(epg_source, tvg_id=None):
+    """
+    Parse programs for all MAPPED channels from an EPG source in a single pass.
+
+    This is an optimized version that:
+    1. Only processes EPG entries that are actually mapped to channels
+    2. Parses the XML file ONCE instead of once per channel
+    3. Skips programmes for unmapped channels entirely during parsing
+
+    This dramatically improves performance when an EPG source has many channels
+    but only a fraction are mapped.
+    """
     # Send initial programs parsing notification
     send_epg_update(epg_source.id, "parsing_programs", 0)
     should_log_memory = False
     process = None
     initial_memory = 0
+    source_file = None
 
     # Add memory tracking only in trace mode or higher
     try:
@@ -1417,91 +1465,268 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         should_log_memory = False
 
     try:
-        # Process EPG entries in batches rather than all at once
-        batch_size = 20  # Process fewer channels at once to reduce memory usage
-        epg_count = EPGData.objects.filter(epg_source=epg_source).count()
+        # Only get EPG entries that are actually mapped to channels
+        mapped_epg_ids = set(
+            Channel.objects.filter(
+                epg_data__epg_source=epg_source,
+                epg_data__isnull=False
+            ).values_list('epg_data_id', flat=True)
+        )
 
-        if epg_count == 0:
-            logger.info(f"No EPG entries found for source: {epg_source.name}")
-            # Update status - this is not an error, just no entries
+        if not mapped_epg_ids:
+            total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
+            logger.info(f"No channels mapped to any EPG entries from source: {epg_source.name} "
+                       f"(source has {total_epg_count} EPG entries, 0 mapped)")
+            # Update status - this is not an error, just no mapped entries
             epg_source.status = 'success'
-            epg_source.save(update_fields=['status'])
+            epg_source.last_message = f"No channels mapped to this EPG source ({total_epg_count} entries available)"
+            epg_source.save(update_fields=['status', 'last_message'])
             send_epg_update(epg_source.id, "parsing_programs", 100, status="success")
             return True
 
-        logger.info(f"Parsing programs for {epg_count} EPG entries from source: {epg_source.name}")
+        # Get the mapped EPG entries with their tvg_ids
+        mapped_epgs = EPGData.objects.filter(id__in=mapped_epg_ids).values('id', 'tvg_id')
+        tvg_id_to_epg_id = {epg['tvg_id']: epg['id'] for epg in mapped_epgs if epg['tvg_id']}
+        mapped_tvg_ids = set(tvg_id_to_epg_id.keys())
 
-        failed_entries = []
-        program_count = 0
-        channel_count = 0
-        updated_count = 0
-        processed = 0
-        # Process in batches using cursor-based approach to limit memory usage
-        last_id = 0
-        while True:
-            # Get a batch of EPG entries
-            batch_entries = list(EPGData.objects.filter(
-                epg_source=epg_source,
-                id__gt=last_id
-            ).order_by('id')[:batch_size])
+        total_epg_count = EPGData.objects.filter(epg_source=epg_source).count()
+        mapped_count = len(mapped_tvg_ids)
 
-            if not batch_entries:
-                break  # No more entries to process
+        logger.info(f"Parsing programs for {mapped_count} MAPPED channels from source: {epg_source.name} "
+                   f"(skipping {total_epg_count - mapped_count} unmapped EPG entries)")
 
-            # Update last_id for next iteration
-            last_id = batch_entries[-1].id
+        # Get the file path
+        file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
+        if not file_path:
+            file_path = epg_source.get_cache_file()
 
-            # Process this batch
-            for epg in batch_entries:
-                if epg.tvg_id:
-                    try:
-                        result = parse_programs_for_tvg_id(epg.id)
-                        if result == "Task already running":
-                            logger.info(f"Program parse for {epg.id} already in progress, skipping")
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            logger.error(f"EPG file not found at: {file_path}")
 
-                        processed += 1
-                        progress = min(95, int((processed / epg_count) * 100)) if epg_count > 0 else 50
-                        send_epg_update(epg_source.id, "parsing_programs", progress)
-                    except Exception as e:
-                        logger.error(f"Error parsing programs for tvg_id={epg.tvg_id}: {e}", exc_info=True)
-                        failed_entries.append(f"{epg.tvg_id}: {str(e)}")
+            if epg_source.url:
+                # Update the file path in the database
+                new_path = epg_source.get_cache_file()
+                logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
+                epg_source.file_path = new_path
+                epg_source.save(update_fields=['file_path'])
+                logger.info(f"Fetching new EPG data from URL: {epg_source.url}")
 
-            # Force garbage collection after each batch
-            batch_entries = None  # Remove reference to help garbage collection
+                # Fetch new data before continuing
+                fetch_success = fetch_xmltv(epg_source)
+
+                if not fetch_success:
+                    logger.error(f"Failed to fetch EPG data for source: {epg_source.name}")
+                    epg_source.status = 'error'
+                    epg_source.last_message = f"Failed to download EPG data"
+                    epg_source.save(update_fields=['status', 'last_message'])
+                    send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    return False
+
+                # Update file_path with the new location
+                file_path = epg_source.extracted_file_path if epg_source.extracted_file_path else epg_source.file_path
+            else:
+                logger.error(f"No URL provided for EPG source {epg_source.name}, cannot fetch new data")
+                epg_source.status = 'error'
+                epg_source.last_message = f"No URL provided, cannot fetch EPG data"
+                epg_source.save(update_fields=['status', 'last_message'])
+                send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                return False
+
+        # SINGLE PASS PARSING: Parse the XML file once and collect all programs in memory
+        # We parse FIRST, then do an atomic delete+insert to avoid race conditions
+        # where clients might see empty/partial EPG data during the transition
+        all_programs_to_create = []
+        programs_by_channel = {tvg_id: 0 for tvg_id in mapped_tvg_ids}  # Track count per channel
+        total_programs = 0
+        skipped_programs = 0
+        last_progress_update = 0
+
+        try:
+            logger.debug(f"Opening file for single-pass parsing: {file_path}")
+            source_file = open(file_path, 'rb')
+
+            # Stream parse the file using lxml's iterparse
+            program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
+
+            for _, elem in program_parser:
+                channel_id = elem.get('channel')
+
+                # Skip programmes for unmapped channels immediately
+                if channel_id not in mapped_tvg_ids:
+                    skipped_programs += 1
+                    # Clear element to free memory
+                    clear_element(elem)
+                    continue
+
+                # This programme is for a mapped channel - process it
+                try:
+                    start_time = parse_xmltv_time(elem.get('start'))
+                    end_time = parse_xmltv_time(elem.get('stop'))
+                    title = None
+                    desc = None
+                    sub_title = None
+
+                    # Efficiently process child elements
+                    for child in elem:
+                        if child.tag == 'title':
+                            title = child.text or 'No Title'
+                        elif child.tag == 'desc':
+                            desc = child.text or ''
+                        elif child.tag == 'sub-title':
+                            sub_title = child.text or ''
+
+                    if not title:
+                        title = 'No Title'
+
+                    # Extract custom properties
+                    custom_props = extract_custom_properties(elem)
+                    custom_properties_json = custom_props if custom_props else None
+
+                    # Fallback: extract S/E from description when episode-num
+                    # elements didn't provide them
+                    if desc:
+                        has_season = (custom_properties_json or {}).get('season') is not None
+                        has_episode = (custom_properties_json or {}).get('episode') is not None
+                        if not has_season or not has_episode:
+                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                            if d_season is not None and d_episode is not None:
+                                if custom_properties_json is None:
+                                    custom_properties_json = {}
+                                if not has_season:
+                                    custom_properties_json['season'] = d_season
+                                if not has_episode:
+                                    custom_properties_json['episode'] = d_episode
+                                custom_properties_json['season_episode_source'] = 'description'
+                                desc = cleaned_desc
+
+                    epg_id = tvg_id_to_epg_id[channel_id]
+                    all_programs_to_create.append(ProgramData(
+                        epg_id=epg_id,
+                        start_time=start_time,
+                        end_time=end_time,
+                        title=title[:255],
+                        description=desc,
+                        sub_title=sub_title,
+                        tvg_id=channel_id,
+                        custom_properties=custom_properties_json
+                    ))
+                    total_programs += 1
+                    programs_by_channel[channel_id] += 1
+
+                    # Clear the element to free memory
+                    clear_element(elem)
+
+                    # Send progress update (estimate based on programs processed)
+                    if total_programs - last_progress_update >= 5000:
+                        last_progress_update = total_programs
+                        # Cap at 70% during parsing phase (save 30% for DB operations)
+                        progress = min(70, 10 + int((total_programs / max(total_programs + 10000, 1)) * 60))
+                        send_epg_update(epg_source.id, "parsing_programs", progress,
+                                      processed=total_programs, channels=mapped_count)
+
+                    # Periodic garbage collection during parsing
+                    if total_programs % 5000 == 0:
+                        gc.collect()
+
+                except Exception as e:
+                    logger.error(f"Error processing program for {channel_id}: {e}", exc_info=True)
+                    clear_element(elem)
+                    continue
+
+        except etree.XMLSyntaxError as xml_error:
+            logger.error(f"XML syntax error parsing program data: {xml_error}")
+            epg_source.status = EPGSource.STATUS_ERROR
+            epg_source.last_message = f"XML parsing error: {str(xml_error)}"
+            epg_source.save(update_fields=['status', 'last_message'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(xml_error))
+            return False
+        except Exception as e:
+            logger.error(f"Error parsing XML for programs: {e}", exc_info=True)
+            raise
+        finally:
+            if source_file:
+                source_file.close()
+                source_file = None
+
+        # Now perform atomic delete + bulk insert
+        # This ensures clients never see empty/partial EPG data
+        logger.info(f"Parsed {total_programs} programs, performing atomic database update...")
+        send_epg_update(epg_source.id, "parsing_programs", 75, message="Updating database...")
+
+        batch_size = 1000
+        try:
+            with transaction.atomic():
+                # Delete existing programs for mapped EPGs
+                deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
+                logger.debug(f"Deleted {deleted_count} existing programs")
+
+                # Clean up orphaned programs for unmapped EPG entries
+                unmapped_epg_ids = list(EPGData.objects.filter(
+                    epg_source=epg_source
+                ).exclude(id__in=mapped_epg_ids).values_list('id', flat=True))
+
+                if unmapped_epg_ids:
+                    orphaned_count = ProgramData.objects.filter(epg_id__in=unmapped_epg_ids).delete()[0]
+                    if orphaned_count > 0:
+                        logger.info(f"Cleaned up {orphaned_count} orphaned programs for {len(unmapped_epg_ids)} unmapped EPG entries")
+
+                # Bulk insert all new programs in batches within the same transaction
+                for i in range(0, len(all_programs_to_create), batch_size):
+                    batch = all_programs_to_create[i:i + batch_size]
+                    ProgramData.objects.bulk_create(batch)
+
+                    # Update progress during insertion
+                    progress = 75 + int((i / len(all_programs_to_create)) * 20) if all_programs_to_create else 95
+                    if i % (batch_size * 5) == 0:
+                        send_epg_update(epg_source.id, "parsing_programs", min(95, progress),
+                                      message=f"Inserting programs... {i}/{len(all_programs_to_create)}")
+
+            logger.info(f"Atomic update complete: deleted {deleted_count}, inserted {total_programs} programs")
+
+        except Exception as db_error:
+            logger.error(f"Database error during atomic update: {db_error}", exc_info=True)
+            epg_source.status = EPGSource.STATUS_ERROR
+            epg_source.last_message = f"Database error: {str(db_error)}"
+            epg_source.save(update_fields=['status', 'last_message'])
+            send_epg_update(epg_source.id, "parsing_programs", 100, status="error", message=str(db_error))
+            return False
+        finally:
+            # Clear the large list to free memory
+            all_programs_to_create = None
             gc.collect()
 
-        # If there were failures, include them in the message but continue
-        if failed_entries:
-            epg_source.status = EPGSource.STATUS_SUCCESS  # Still mark as success if some processed
-            error_summary = f"Failed to parse {len(failed_entries)} of {epg_count} entries"
-            stats_summary = f"Processed {program_count} programs across {channel_count} channels. Updated: {updated_count}."
-            epg_source.last_message = f"{stats_summary} Warning: {error_summary}"
-            epg_source.updated_at = timezone.now()
-            epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
+        # Count channels that actually got programs
+        channels_with_programs = sum(1 for count in programs_by_channel.values() if count > 0)
 
-            # Send completion notification with mixed status
-            send_epg_update(epg_source.id, "parsing_programs", 100,
-                          status="success",
-                          message=epg_source.last_message)
-
-            # Explicitly release memory of large lists before returning
-            del failed_entries
-            gc.collect()
-
-            return True
-
-        # If all successful, set a comprehensive success message
+        # Success message
         epg_source.status = EPGSource.STATUS_SUCCESS
-        epg_source.last_message = f"Successfully processed {program_count} programs across {channel_count} channels. Updated: {updated_count}."
+        epg_source.last_message = (
+            f"Parsed {total_programs:,} programs for {channels_with_programs} channels "
+            f"(skipped {skipped_programs:,} programs for {total_epg_count - mapped_count} unmapped channels)"
+        )
         epg_source.updated_at = timezone.now()
         epg_source.save(update_fields=['status', 'last_message', 'updated_at'])
+
+        # Log system event for EPG refresh
+        log_system_event(
+            event_type='epg_refresh',
+            source_name=epg_source.name,
+            programs=total_programs,
+            channels=channels_with_programs,
+            skipped_programs=skipped_programs,
+            unmapped_channels=total_epg_count - mapped_count,
+        )
 
         # Send completion notification with status
         send_epg_update(epg_source.id, "parsing_programs", 100,
                       status="success",
-                      message=epg_source.last_message)
+                      message=epg_source.last_message,
+                      updated_at=epg_source.updated_at.isoformat())
 
-        logger.info(f"Completed parsing all programs for source: {epg_source.name}")
+        logger.info(f"Completed parsing programs for source: {epg_source.name} - "
+               f"{total_programs:,} programs for {channels_with_programs} channels, "
+               f"skipped {skipped_programs:,} programs for unmapped channels")
         return True
 
     except Exception as e:
@@ -1516,14 +1741,19 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         return False
     finally:
         # Final memory cleanup and tracking
-
+        if source_file:
+            try:
+                source_file.close()
+            except:
+                pass
+            source_file = None
 
         # Explicitly release any remaining large data structures
-        failed_entries = None
-        program_count = None
-        channel_count = None
-        updated_count = None
-        processed = None
+        programs_to_create = None
+        programs_by_channel = None
+        mapped_epg_ids = None
+        mapped_tvg_ids = None
+        tvg_id_to_epg_id = None
         gc.collect()
 
         # Add comprehensive memory cleanup at the end
@@ -1537,12 +1767,13 @@ def fetch_schedules_direct(source):
     logger.info(f"Fetching Schedules Direct data from source: {source.name}")
     try:
         # Get default user agent from settings
-        default_user_agent_setting = CoreSettings.objects.filter(key='default-user-agent').first()
+        stream_settings = CoreSettings.get_stream_settings()
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"  # Fallback default
+        default_user_agent_id = stream_settings.get('default_user_agent')
 
-        if default_user_agent_setting and default_user_agent_setting.value:
+        if default_user_agent_id:
             try:
-                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_setting.value)).first()
+                user_agent_obj = UserAgent.objects.filter(id=int(default_user_agent_id)).first()
                 if user_agent_obj and user_agent_obj.user_agent:
                     user_agent = user_agent_obj.user_agent
                     logger.debug(f"Using default user agent: {user_agent}")
@@ -1660,6 +1891,10 @@ def parse_schedules_direct_time(time_str):
         raise
 
 
+# Re-export from utils to preserve backward compatibility for any callers
+from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: F401
+
+
 # Helper function to extract custom properties - moved to a separate function to clean up the code
 def extract_custom_properties(prog):
     # Create a new dictionary for each call
@@ -1695,8 +1930,16 @@ def extract_custom_properties(prog):
                     except ValueError:
                         pass
         elif system == 'onscreen' and ep_num.text:
-            # Just store the raw onscreen format
-            custom_props['onscreen_episode'] = ep_num.text.strip()
+            onscreen_text = ep_num.text.strip()
+            custom_props['onscreen_episode'] = onscreen_text
+            # Extract season/episode from onscreen format if not already set by xmltv_ns
+            if 'season' not in custom_props or 'episode' not in custom_props:
+                match = _ONSCREEN_RE.search(onscreen_text)
+                if match:
+                    if 'season' not in custom_props:
+                        custom_props['season'] = int(match.group(1))
+                    if 'episode' not in custom_props:
+                        custom_props['episode'] = int(match.group(2))
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()

@@ -21,4 +21,7 @@ urlpatterns = [
 
     # VOD Stats
     path('stats/', views.VODStatsView.as_view(), name='vod_stats'),
+
+    # Stop VOD client connection
+    path('stop_client/', views.stop_vod_client, name='stop_vod_client'),
 ]

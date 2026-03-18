@@ -55,6 +55,11 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Channel Initialization Grace Period',
     description: 'Grace period in seconds during channel initialization',
   },
+  new_client_behind_seconds: {
+    label: 'New Client Buffer (seconds)',
+    description:
+      'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+  },
 };
 
 export const M3U_FILTER_TYPES = [
@@ -303,6 +308,7 @@ export const REGION_CHOICES = [
   { value: 'tz', label: 'TZ' },
   { value: 'ua', label: 'UA' },
   { value: 'ug', label: 'UG' },
+  { value: 'uk', label: 'UK' },
   { value: 'um', label: 'UM' },
   { value: 'us', label: 'US' },
   { value: 'uy', label: 'UY' },
@@ -325,22 +331,49 @@ export const REGION_CHOICES = [
 
 export const VOD_TYPES = {
   MOVIE: 'movie',
-  EPISODE: 'episode'
+  EPISODE: 'episode',
 };
 
 export const VOD_FILTERS = {
   ALL: 'all',
   MOVIES: 'movies',
-  SERIES: 'series'
+  SERIES: 'series',
 };
 
 export const VOD_SORT_OPTIONS = [
   { value: 'name', label: 'Name' },
   { value: 'year', label: 'Year' },
   { value: 'created_at', label: 'Date Added' },
-  { value: 'rating', label: 'Rating' }
+  { value: 'rating', label: 'Rating' },
 ];
 
 export const CONTAINER_EXTENSIONS = [
-  'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts', 'mpg'
+  'mp4',
+  'mkv',
+  'avi',
+  'mov',
+  'wmv',
+  'flv',
+  'webm',
+  'm4v',
+  'ts',
+  'mpg',
 ];
+
+export const SUBSCRIPTION_EVENTS = {
+  channel_start: 'Channel Started',
+  channel_stop: 'Channel Stopped',
+  channel_reconnect: 'Channel Reconnected',
+  channel_error: 'Channel Error',
+  channel_failover: 'Channel Failover',
+  stream_switch: 'Stream Switch',
+  recording_start: 'Recording Started',
+  recording_end: 'Recording Ended',
+  epg_refresh: 'EPG Refreshed',
+  m3u_refresh: 'M3U Refreshed',
+  client_connect: 'Client Connected',
+  client_disconnect: 'Client Disconnected',
+  login_failed: 'Login Failed',
+  epg_blocked: 'EPG Blocked',
+  m3u_blocked: 'M3U Blocked',
+};

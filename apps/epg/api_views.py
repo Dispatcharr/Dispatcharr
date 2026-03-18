@@ -1,18 +1,19 @@
 import logging, os
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 from django.utils import timezone
 from datetime import timedelta
-from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
+from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
     ProgramDataSerializer,
+    ProgramDetailSerializer,
     EPGSourceSerializer,
     EPGDataSerializer,
-)  # Updated serializer
+)
 from .tasks import refresh_epg_data
 from apps.accounts.permissions import (
     Authenticated,
@@ -31,7 +32,9 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     API endpoint that allows EPG sources to be viewed or edited.
     """
 
-    queryset = EPGSource.objects.all()
+    queryset = EPGSource.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).all()
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
@@ -39,6 +42,17 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def get_queryset(self):
+        from django.db.models import Exists, OuterRef
+        from apps.channels.models import Channel
+        return EPGSource.objects.select_related(
+            "refresh_task__crontab", "refresh_task__interval"
+        ).annotate(
+            has_channels=Exists(
+                Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
+            )
+        )
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG sources.")
@@ -94,7 +108,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
 class ProgramViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for EPG programs"""
 
-    queryset = ProgramData.objects.all()
+    queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
 
     def get_permissions(self):
@@ -102,6 +116,16 @@ class ProgramViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return ProgramDetailSerializer
+        return ProgramDataSerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG programs.")
@@ -122,8 +146,8 @@ class EPGGridAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
+    @extend_schema(
+        description="Retrieve programs from the previous hour, currently running and upcoming for the next 24 hours",
         responses={200: ProgramDataSerializer(many=True)},
     )
     def get(self, request, format=None):
@@ -135,16 +159,9 @@ class EPGGridAPIView(APIView):
             f"EPGGridAPIView: Querying programs between {one_hour_ago} and {twenty_four_hours_later}."
         )
 
-        # Use select_related to prefetch EPGData and include programs from the last hour
-        programs = ProgramData.objects.select_related("epg").filter(
-            # Programs that end after one hour ago (includes recently ended programs)
+        programs = ProgramData.objects.filter(
             end_time__gt=one_hour_ago,
-            # AND start before the end time window
             start_time__lt=twenty_four_hours_later,
-        )
-        count = programs.count()
-        logger.debug(
-            f"EPGGridAPIView: Found {count} program(s), including recently ended, currently running, and upcoming shows."
         )
 
         # Generate dummy programs for channels that have no EPG data OR dummy EPG sources
@@ -180,8 +197,33 @@ class EPGGridAPIView(APIView):
             f"EPGGridAPIView: Found {without_count} channels needing standard dummy, {custom_count} needing custom dummy EPG."
         )
 
-        # Serialize the regular programs
-        serialized_programs = ProgramDataSerializer(programs, many=True).data
+        # Serialize the regular programs using .values() to bypass DRF overhead
+        programs_qs = programs.values(
+            'id', 'start_time', 'end_time', 'title', 'sub_title',
+            'description', 'tvg_id', 'custom_properties',
+        )
+        serialized_programs = []
+        for p in programs_qs:
+            cp = p['custom_properties'] or {}
+            premiere_text = cp.get('premiere_text', '')
+            serialized_programs.append({
+                'id': p['id'],
+                'start_time': p['start_time'],
+                'end_time': p['end_time'],
+                'title': p['title'],
+                'sub_title': p['sub_title'],
+                'description': p['description'],
+                'tvg_id': p['tvg_id'],
+                'season': cp.get('season'),
+                'episode': cp.get('episode'),
+                'is_new': bool(cp.get('new')),
+                'is_live': bool(cp.get('live')),
+                'is_premiere': bool(cp.get('premiere')),
+                'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
+            })
+        logger.debug(
+            f"EPGGridAPIView: Found {len(serialized_programs)} program(s), including recently ended, currently running, and upcoming shows."
+        )
 
         # Humorous program descriptions based on time of day - same as in output/views.py
         time_descriptions = {
@@ -273,6 +315,7 @@ class EPGGridAPIView(APIView):
                     logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
                     # Convert generated programs to API format
                     for program in generated:
+                        prog_custom = program.get('custom_properties') or {}
                         dummy_program = {
                             "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
                             "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
@@ -281,8 +324,14 @@ class EPGGridAPIView(APIView):
                             "title": program['title'],
                             "description": program['description'],
                             "tvg_id": dummy_tvg_id,
-                            "sub_title": None,
-                            "custom_properties": None,
+                            "sub_title": program.get('sub_title'),
+                            "custom_properties": prog_custom if prog_custom else None,
+                            "season": None,
+                            "episode": None,
+                            "is_new": prog_custom.get('new', False),
+                            "is_live": bool(prog_custom.get('live')),
+                            "is_premiere": False,
+                            "is_finale": False,
                         }
                         dummy_programs.append(dummy_program)
                 else:
@@ -340,6 +389,12 @@ class EPGGridAPIView(APIView):
                         "tvg_id": dummy_tvg_id,
                         "sub_title": None,
                         "custom_properties": None,
+                        "season": None,
+                        "episode": None,
+                        "is_new": False,
+                        "is_live": False,
+                        "is_premiere": False,
+                        "is_finale": False,
                     }
                     dummy_programs.append(dummy_program)
 
@@ -371,9 +426,8 @@ class EPGImportAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers an EPG data import",
-        responses={202: "EPG data import initiated"},
+    @extend_schema(
+        description="Triggers an EPG data import",
     )
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
@@ -416,4 +470,78 @@ class EPGDataViewSet(viewsets.ReadOnlyModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+
+# ─────────────────────────────
+# 6) Current Programs API
+# ─────────────────────────────
+class CurrentProgramsAPIView(APIView):
+    """
+    Lightweight endpoint that returns currently playing programs for specified channel IDs.
+    Accepts POST with JSON body containing channel_ids array, or null/empty to fetch all channels.
+    """
+
+    def get_permissions(self):
+        try:
+            return [
+                perm() for perm in permission_classes_by_method[self.request.method]
+            ]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        description="Get currently playing programs for specified channels or all channels",
+        request=inline_serializer(
+            name="CurrentProgramsRequest",
+            fields={
+                "channel_uuids": serializers.ListField(
+                    child=serializers.CharField(),
+                    required=False,
+                    allow_null=True,
+                    help_text="Array of channel UUIDs. If null or omitted, returns all channels with current programs.",
+                ),
+            },
+        ),
+        responses={200: ProgramDataSerializer(many=True)},
+    )
+    def post(self, request, format=None):
+        # Import Channel model
+        from apps.channels.models import Channel
+
+        # Build query for channels with EPG data
+        query = Channel.objects.filter(epg_data__isnull=False)
+
+        channel_uuids = request.data.get('channel_uuids', None)
+
+        if channel_uuids is not None:
+            if not isinstance(channel_uuids, list):
+                return Response(
+                    {"error": "channel_uuids must be an array of strings or null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            query = query.filter(uuid__in=channel_uuids)
+
+        # Get channels with EPG data
+        channels = query.select_related('epg_data')
+
+        # Get current time
+        now = timezone.now()
+
+        # Build list of current programs
+        current_programs = []
+
+        for channel in channels:
+            # Query for current program
+            program = ProgramData.objects.select_related("epg").filter(
+                epg=channel.epg_data,
+                start_time__lte=now,
+                end_time__gt=now
+            ).first()
+
+            if program:
+                program_data = ProgramDataSerializer(program).data
+                program_data['channel_uuid'] = str(channel.uuid)
+                current_programs.append(program_data)
+
+        return Response(current_programs, status=status.HTTP_200_OK)
 

@@ -23,7 +23,7 @@ class ClientManager:
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.clients = set()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.last_active_time = time.time()
         self.worker_id = worker_id  # Store worker ID as instance variable
         self._heartbeat_running = True  # Flag to control heartbeat thread
@@ -34,26 +34,37 @@ class ClientManager:
         self.heartbeat_interval = ConfigHelper.get('CLIENT_HEARTBEAT_INTERVAL', 10)
         self.last_heartbeat_time = {}
 
+        # Get ProxyServer instance for ownership checks
+        from .server import ProxyServer
+        self.proxy_server = ProxyServer.get_instance()
+
         # Start heartbeat thread for local clients
         self._start_heartbeat_thread()
         self._registered_clients = set()  # Track already registered client IDs
 
     def _trigger_stats_update(self):
-        """Trigger a channel stats update via WebSocket"""
+        """Trigger a channel stats update via WebSocket in a background thread.
+
+        Offloaded so the caller is not blocked. send_websocket_update is
+        gevent-safe (offloads async_to_sync to a native OS thread).
+        """
+        threading.Thread(target=self._do_stats_update, daemon=True).start()
+
+    def _do_stats_update(self):
+        """Perform the stats update in the background."""
         try:
-            # Import here to avoid potential import issues
             from apps.proxy.ts_proxy.channel_status import ChannelStatus
             import redis
+            from django.conf import settings
 
-            # Get all channels from Redis
-            redis_client = redis.Redis.from_url('redis://localhost:6379', decode_responses=True)
+            redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
             all_channels = []
             cursor = 0
 
             while True:
                 cursor, keys = redis_client.scan(cursor, match="ts_proxy:channel:*:clients", count=100)
                 for key in keys:
-                    # Extract channel ID from key
                     parts = key.split(':')
                     if len(parts) >= 4:
                         ch_id = parts[2]
@@ -64,7 +75,6 @@ class ClientManager:
                 if cursor == 0:
                     break
 
-            # Send WebSocket update using existing infrastructure
             send_websocket_update(
                 "updates",
                 "update",
@@ -148,9 +158,8 @@ class ClientManager:
                                 if time_since_heartbeat < self.heartbeat_interval * 0.5:  # Only heartbeat at half interval minimum
                                     continue
 
-                            # Only update clients that remain
+                            # Only refresh TTL - do NOT update last_active
                             client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
-                            pipe.hset(client_key, "last_active", str(current_time))
                             pipe.expire(client_key, self.client_ttl)
 
                             # Keep client in the set with TTL
@@ -337,16 +346,30 @@ class ClientManager:
 
                 self._notify_owner_of_activity()
 
-                # Publish client disconnected event
-                event_data = json.dumps({
-                    "event": EventType.CLIENT_DISCONNECTED,  # Use constant instead of string
-                    "channel_id": self.channel_id,
-                    "client_id": client_id,
-                    "worker_id": self.worker_id or "unknown",
-                    "timestamp": time.time(),
-                    "remaining_clients": remaining
-                })
-                self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
+                # Check if we're the owner - if so, handle locally; if not, publish event
+                am_i_owner = self.proxy_server and self.proxy_server.am_i_owner(self.channel_id)
+
+                if am_i_owner:
+                    # We're the owner - handle the disconnect directly
+                    logger.debug(f"Owner handling CLIENT_DISCONNECTED for client {client_id} locally (not publishing)")
+                    if remaining == 0:
+                        # Trigger shutdown check directly via ProxyServer method
+                        logger.debug(f"No clients left - triggering immediate shutdown check")
+                        # Spawn greenlet to avoid blocking
+                        import gevent
+                        gevent.spawn(self.proxy_server.handle_client_disconnect, self.channel_id)
+                else:
+                    # We're not the owner - publish event so owner can handle it
+                    logger.debug(f"Non-owner publishing CLIENT_DISCONNECTED event for client {client_id} on channel {self.channel_id} from worker {self.worker_id}")
+                    event_data = json.dumps({
+                        "event": EventType.CLIENT_DISCONNECTED,
+                        "channel_id": self.channel_id,
+                        "client_id": client_id,
+                        "worker_id": self.worker_id or "unknown",
+                        "timestamp": time.time(),
+                        "remaining_clients": remaining
+                    })
+                    self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
 
                 # Trigger channel stats update via WebSocket
                 self._trigger_stats_update()
@@ -389,3 +412,42 @@ class ClientManager:
             self.redis_client.expire(self.client_set_key, self.client_ttl)
         except Exception as e:
             logger.error(f"Error refreshing client TTL: {e}")
+
+    @staticmethod
+    def remove_ghost_clients(redis_client, channel_id, client_ids=None):
+        """Remove client SET entries whose metadata hash has expired.
+
+        Returns the list of removed (stale) client IDs, or an empty list
+        if none were found. Uses a pipelined EXISTS check for efficiency.
+
+        Args:
+            client_ids: Optional pre-fetched result of SMEMBERS for this
+                        channel. Pass this to avoid a redundant SMEMBERS
+                        call when the caller has already fetched it.
+        """
+        client_set_key = RedisKeys.clients(channel_id)
+        if client_ids is None:
+            client_ids = redis_client.smembers(client_set_key)
+        if not client_ids:
+            return []
+
+        client_id_list = list(client_ids)
+        pipe = redis_client.pipeline()
+        for cid in client_id_list:
+            cid_str = cid.decode('utf-8')
+            pipe.exists(RedisKeys.client_metadata(channel_id, cid_str))
+        results = pipe.execute()
+
+        stale_ids = [
+            cid for cid, exists in zip(client_id_list, results)
+            if not exists
+        ]
+
+        if stale_ids:
+            redis_client.srem(client_set_key, *stale_ids)
+            logger.info(
+                f"Removed {len(stale_ids)} ghost client(s) from "
+                f"channel {channel_id} client set"
+            )
+
+        return stale_ids

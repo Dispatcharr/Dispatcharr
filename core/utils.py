@@ -55,6 +55,8 @@ class RedisClient:
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                     # Use standardized settings
                     socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
@@ -68,6 +70,8 @@ class RedisClient:
                         host=redis_host,
                         port=redis_port,
                         db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
                         socket_timeout=socket_timeout,
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
@@ -77,7 +81,6 @@ class RedisClient:
 
                     # Validate connection with ping
                     client.ping()
-                    client.flushdb()
 
                     # Disable persistence on first connection - improves performance
                     # Only try to disable if not in a read-only environment
@@ -148,6 +151,8 @@ class RedisClient:
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
                     # Use standardized settings but without socket timeouts for PubSub
                     # Important: socket_timeout is None for PubSub operations
@@ -161,6 +166,8 @@ class RedisClient:
                         host=redis_host,
                         port=redis_port,
                         db=redis_db,
+                        password=redis_password if redis_password else None,
+                        username=redis_user if redis_user else None,
                         socket_timeout=None,  # Critical: No timeout for PubSub operations
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
@@ -214,34 +221,107 @@ def release_task_lock(task_name, id):
     # Remove the lock
     redis_client.delete(lock_id)
 
+
+class TaskLockRenewer:
+    """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
+
+    Use as a context manager after acquiring a lock:
+
+        if acquire_task_lock("my_task", task_id):
+            with TaskLockRenewer("my_task", task_id):
+                # ... long-running work ...
+            release_task_lock("my_task", task_id)
+
+    A daemon thread extends the lock TTL at regular intervals so that
+    slow downloads or large parsing jobs don't lose their lock mid-operation.
+    """
+
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+        self.task_name = task_name
+        self.id = id
+        self.ttl = ttl
+        self.renewal_interval = renewal_interval
+        self.lock_id = f"task_lock_{task_name}_{id}"
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _renew_loop(self):
+        """Background loop that extends the lock TTL until stopped."""
+        while not self._stop_event.wait(self.renewal_interval):
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client.exists(self.lock_id):
+                    redis_client.expire(self.lock_id, self.ttl)
+                    logger.debug(
+                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                    )
+                else:
+                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                    logger.warning(
+                        f"Lock {self.lock_id} no longer exists, stopping renewal"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error renewing lock {self.lock_id}: {e}")
+
+    def start(self):
+        """Start the background renewal thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._renew_loop, daemon=True,
+            name=f"lock-renew-{self.task_name}-{self.id}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop the renewal thread."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Standardized function to send WebSocket updates with proper memory management.
 
-    Args:
-        group_name: The WebSocket group to send to (e.g. 'updates')
-        event_type: The type of message (e.g. 'update')
-        data: The data to send
-        collect_garbage: Whether to force garbage collection after sending
+    In uWSGI + gevent deployments, async_to_sync creates an asyncio event loop
+    whose native EpollSelector blocks the entire OS thread, freezing all gevent
+    greenlets in the worker.  To avoid this, the actual send is offloaded to a
+    real OS thread from gevent's native threadpool when monkey-patching is active.
     """
     channel_layer = get_channel_layer()
-    try:
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                'type': event_type,
-                'data': data
-            }
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send WebSocket update: {e}")
-    finally:
-        # Explicitly release references to help garbage collection
-        channel_layer = None
+    message = {'type': event_type, 'data': data}
 
-        # Force garbage collection if requested
-        if collect_garbage:
-            gc.collect()
+    def _do_send():
+        try:
+            async_to_sync(channel_layer.group_send)(group_name, message)
+        except Exception as e:
+            logger.warning(f"Failed to send WebSocket update: {e}")
+
+    try:
+        import gevent.monkey
+        if gevent.monkey.is_module_patched('threading'):
+            from gevent import get_hub
+            get_hub().threadpool.spawn(_do_send)
+            return
+    except Exception:
+        pass
+
+    # Not in a gevent-patched environment — call directly
+    _do_send()
+
+    if collect_garbage:
+        gc.collect()
 
 def send_websocket_event(event, success, data):
     """Acquire a lock to prevent concurrent task execution."""
@@ -388,3 +468,204 @@ def validate_flexible_url(value):
 
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")
+
+def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    try:
+        from apps.connect.utils import trigger_event
+        from apps.channels.models import Channel, Stream
+        from core.models import StreamProfile
+        from core.utils import RedisClient
+
+        payload = dict(details)
+
+        channel_obj = None
+        if channel_id:
+            try:
+                channel_obj = Channel.objects.get(uuid=channel_id)
+                payload["channel_name"] = channel_obj.name
+            except Exception:
+                payload["channel_name"] = channel_name or None
+        else:
+            payload["channel_name"] = channel_name or None
+
+        # Resolve current stream info
+        stream_id = details.get("stream_id")
+        stream_obj = None
+        if not stream_id and channel_obj:
+            try:
+                redis = RedisClient.get_client()
+                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                if sid:
+                    stream_id = int(sid)
+            except Exception:
+                stream_id = None
+
+        if stream_id:
+            try:
+                stream_obj = Stream.objects.get(id=stream_id)
+            except Exception:
+                stream_obj = None
+
+        # Populate stream details
+        payload["stream_name"] = getattr(stream_obj, "name", None)
+        payload["stream_url"] = getattr(stream_obj, "url", None)
+
+        # Channel URL: use stream URL as best-effort
+        payload["channel_url"] = payload.get("stream_url")
+
+        # Provider name from M3U account
+        provider_name = None
+        try:
+            if stream_obj and stream_obj.m3u_account:
+                provider_name = stream_obj.m3u_account.name
+        except Exception:
+            provider_name = None
+        payload["provider_name"] = provider_name
+
+        # Profile used
+        profile_used = None
+        try:
+            if stream_id:
+                redis = RedisClient.get_client()
+                pid = redis.get(f"stream_profile:{stream_id}")
+                if pid:
+                    profile = StreamProfile.objects.filter(id=int(pid)).first()
+                    profile_used = profile.name if profile else None
+        except Exception:
+            profile_used = None
+
+        payload["profile_used"] = profile_used
+
+        # remove empty keys
+        for k in list(payload.keys()):
+            if not payload[k]:
+                del payload[k]
+
+        trigger_event(event_type, payload)
+
+    except Exception as e:
+        # Don't fail main path if connect dispatch fails
+        pass
+
+def log_system_event(event_type, channel_id=None, channel_name=None, **details):
+    """
+    Log a system event and maintain the configured max history.
+
+    Args:
+        event_type: Type of event (e.g., 'channel_start', 'client_connect')
+        channel_id: Optional UUID of the channel
+        channel_name: Optional name of the channel
+        **details: Additional details to store in the event (stored as JSON)
+
+    Example:
+        log_system_event('channel_start', channel_id=uuid, channel_name='CNN',
+                        stream_url='http://...', user='admin')
+    """
+    from core.models import SystemEvent, CoreSettings
+
+    try:
+        # Create the event
+        SystemEvent.objects.create(
+            event_type=event_type,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            details=details
+        )
+
+        # Trigger connect integrations for specific events
+        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
+
+        # Get max events from settings (default 100)
+        try:
+            from .models import CoreSettings
+            system_settings = CoreSettings.objects.filter(key='system_settings').first()
+            if system_settings and isinstance(system_settings.value, dict):
+                max_events = int(system_settings.value.get('max_system_events', 100))
+            else:
+                max_events = 100
+        except Exception:
+            max_events = 100
+
+        # Delete old events beyond the limit (keep it efficient with a single query)
+        total_count = SystemEvent.objects.count()
+        if total_count > max_events:
+            # Get the ID of the event at the cutoff point
+            cutoff_event = SystemEvent.objects.values_list('id', flat=True)[max_events]
+            # Delete all events with ID less than cutoff (older events)
+            SystemEvent.objects.filter(id__lt=cutoff_event).delete()
+
+    except Exception as e:
+        # Don't let event logging break the main application
+        logger.error(f"Failed to log system event {event_type}: {e}")
+
+
+def send_websocket_notification(notification):
+    """
+    Send a system notification to all connected WebSocket clients.
+
+    Args:
+        notification: A SystemNotification model instance or dict with notification data
+
+    Example:
+        from core.models import SystemNotification
+        notification = SystemNotification.create_version_notification('0.19.0', 'https://...')
+        send_websocket_notification(notification)
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        # Convert model instance to dict if needed
+        if hasattr(notification, 'id'):
+            notification_data = {
+                'id': notification.id,
+                'notification_key': notification.notification_key,
+                'notification_type': notification.notification_type,
+                'priority': notification.priority,
+                'title': notification.title,
+                'message': notification.message,
+                'action_data': notification.action_data,
+                'is_active': notification.is_active,
+                'admin_only': notification.admin_only,
+                'created_at': notification.created_at.isoformat() if notification.created_at else None,
+            }
+        else:
+            notification_data = notification
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'system_notification',
+                    'notification': notification_data,
+                }
+            }
+        )
+        logger.debug(f"Sent WebSocket notification: {notification_data.get('title', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Failed to send WebSocket notification: {e}")
+
+
+def send_notification_dismissed(notification_key):
+    """
+    Notify all connected clients that a notification was dismissed.
+    Useful for syncing dismissal state across multiple browser tabs/sessions.
+
+    Args:
+        notification_key: The unique key of the dismissed notification
+    """
+    try:
+        channel_layer = get_channel_layer()
+
+        async_to_sync(channel_layer.group_send)(
+            'updates',
+            {
+                'type': 'update',
+                'data': {
+                    'type': 'notification_dismissed',
+                    'notification_key': notification_key,
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to send notification dismissed event: {e}")

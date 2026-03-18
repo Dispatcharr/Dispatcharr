@@ -1,12 +1,10 @@
 import { create } from 'zustand';
-import api from '../api';
-import { notifications } from '@mantine/notifications';
-import API from '../api';
 
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
   totalCount: 0,
+  hasUnassignedEPGChannels: false,
   sorting: [{ id: 'channel_number', desc: false }],
   pagination: {
     pageIndex: 0,
@@ -15,15 +13,17 @@ const useChannelsTableStore = create((set, get) => ({
   },
   selectedChannelIds: [],
   allQueryIds: [],
+  isUnlocked: false,
 
-  queryChannels: ({ results, count }, params) => {
-    set((state) => {
-      return {
-        channels: results,
-        totalCount: count,
-        pageCount: Math.ceil(count / params.get('page_size')),
-      };
-    });
+  queryChannels: ({ results, count, has_unassigned_epg_channels }, params) => {
+    set((state) => ({
+      channels: results,
+      totalCount: count,
+      pageCount: Math.ceil(count / params.get('page_size')),
+      ...(has_unassigned_epg_channels !== undefined && {
+        hasUnassignedEPGChannels: has_unassigned_epg_channels,
+      }),
+    }));
   },
 
   setAllQueryIds: (allQueryIds) => {
@@ -52,6 +52,18 @@ const useChannelsTableStore = create((set, get) => ({
   setSorting: (sorting) => {
     set((state) => ({
       sorting,
+    }));
+  },
+
+  setIsUnlocked: (isUnlocked) => {
+    set({ isUnlocked });
+  },
+
+  updateChannel: (updatedChannel) => {
+    set((state) => ({
+      channels: state.channels.map((channel) =>
+        channel.id === updatedChannel.id ? updatedChannel : channel
+      ),
     }));
   },
 }));

@@ -4,195 +4,16 @@ Utilities for handling stream URLs and transformations.
 
 import logging
 import re
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from apps.channels.models import Channel, Stream
-from apps.m3u.models import M3UAccount, M3UAccountProfile, M3UAccountMac
-from apps.m3u.mac_portal_client import MacPortalClient, MacPortalError
+from apps.m3u.models import M3UAccount, M3UAccountProfile
 from core.models import UserAgent, CoreSettings, StreamProfile
 from .utils import get_logger
-from .redis_keys import RedisKeys
 from uuid import UUID
 import requests
 
 logger = get_logger()
-
-
-def _resolve_mac_stream_with_failover(
-    m3u_account: M3UAccount,
-    stream: Stream,
-) -> Tuple[Optional[str], Optional[M3UAccountMac], Optional[str]]:
-    """Resolve a MAC/STB-Portal stream URL using the first valid MAC.
-
-    Tries MACs in priority order. Skips those marked EXPIRED/ERROR or with past expires_at.
-    For each MAC, it can also try multiple HTTP proxies (if configured) before giving up
-    on that MAC. On MAC-level errors (expired, unauthorized, etc.) the MAC is marked as
-    EXPIRED/ERROR so it won't be retried until the next refresh.
-    """
-    if m3u_account.account_type != M3UAccount.Types.MAC:
-        return stream.url, None, None
-
-    props = m3u_account.custom_properties or {}
-    proxy_value = props.get("proxy")
-    timezone = props.get("timezone", "Europe/Berlin")
-
-    # Parse proxy list: support comma, whitespace or newline separated values,
-    # similar to apps.m3u.tasks MAC refresh logic.
-    proxy_list: list[Optional[str]] = []
-    if isinstance(proxy_value, str):
-        raw = proxy_value.replace("\r", "\n")
-        raw = raw.replace(",", "\n")
-        parts = [p.strip() for p in raw.split() if p.strip()]
-        seen = set()
-        for p in parts:
-            if p not in seen:
-                seen.add(p)
-                proxy_list.append(p)
-    elif isinstance(proxy_value, (list, tuple)):
-        seen = set()
-        for p in proxy_value:
-            s = str(p).strip()
-            if s and s not in seen:
-                seen.add(s)
-                proxy_list.append(s)
-
-    # If no proxy configured at all: try direct only
-    if not proxy_list:
-        proxy_list = [None]
-
-    # Try to get a Redis client for MAC busy tracking (optional).
-    try:
-        from core.utils import RedisClient  # imported lazily to avoid circular imports
-        redis_client = RedisClient.get_client()
-    except Exception:
-        redis_client = None
-
-    # determine command for the portal
-    stream_props = stream.custom_properties or {}
-    cmd = stream_props.get("mac_cmd") or stream_props.get("cmd") or stream.url
-
-    error_messages = []
-
-    # get candidate MACs in priority order
-    try:
-        candidates = m3u_account.get_candidate_macs_for_streaming()
-    except Exception as e:
-        logger.error(f"Error getting candidate MACs for account {m3u_account.id}: {e}")
-        candidates = []
-
-    if not candidates:
-        logger.error(f"No candidate MACs available for account {m3u_account.id}")
-        return None, None, "No candidate MACs available"
-
-    # If Redis is available, prefer MACs that are not currently busy.
-    # Busy MACs werden nur verwendet, wenn der Stream bereits läuft; beim Start
-    # sollen sie übersprungen werden. Wenn alle MACs busy sind, geben wir einen
-    # Fehler zurück, damit die Profil-/Backupstream-Logik greifen kann.
-    if redis_client:
-        free_candidates: list[M3UAccountMac] = []
-        busy_candidates: list[M3UAccountMac] = []
-        try:
-            for m in candidates:
-                try:
-                    busy_key = RedisKeys.mac_busy(m.id)
-                    is_busy = bool(redis_client.exists(busy_key))
-                except Exception:
-                    is_busy = False
-                if is_busy:
-                    busy_candidates.append(m)
-                else:
-                    free_candidates.append(m)
-        except Exception:
-            # Fallback: wenn irgendetwas schief geht, benutzen wir die Original-Liste
-            free_candidates = candidates
-            busy_candidates = []
-
-        if free_candidates:
-            candidates = free_candidates
-        elif candidates:
-            # Alle MACs sind busy → nicht erzwingen, sondern direkt Fehler liefern,
-            # damit der Aufrufer auf Backupstreams/andere Profile ausweichen kann.
-            logger.warning(
-                "All candidate MACs are currently busy for MAC account %s – skipping MAC usage",
-                m3u_account.id,
-            )
-            return None, None, "All MACs busy"
-    # Wenn kein Redis verfügbar ist, benutzen wir die Original-Kandidatenliste.
-
-    # Try each MAC, and for each MAC, try each configured proxy until one works
-    for mac_entry in candidates:
-        mac_value = mac_entry.address
-        last_error_for_mac: Optional[str] = None
-
-        for proxy in proxy_list:
-            try:
-                client = MacPortalClient(
-                    base_url=m3u_account.server_url,
-                    mac=mac_value,
-                    proxy=proxy,
-                    timezone=timezone,
-                )
-                url = client.create_link(cmd)
-                # Successfully built link → mark valid and return
-                try:
-                    mac_entry.status = M3UAccountMac.Status.VALID
-                    mac_entry.last_checked = timezone.now()
-                    mac_entry.last_error = None
-                    mac_entry.save(update_fields=["status", "last_checked", "last_error"])
-                except Exception:
-                    pass
-
-                return url, mac_entry, None
-
-            except MacPortalError as e:
-                # MAC-level error (expired / unauthorized / etc.) → mark MAC and stop trying further proxies for it
-                msg = str(e)
-                logger.warning(
-                    "MAC portal error for MAC %s on account %s with proxy %s: %s",
-                    mac_value,
-                    m3u_account.id,
-                    proxy,
-                    msg,
-                )
-                error_messages.append(f"{mac_value}: {msg}")
-                last_error_for_mac = msg
-                status = M3UAccountMac.Status.ERROR
-                lowered = msg.lower()
-                if "expir" in lowered or "no active" in lowered or "trial ended" in lowered:
-                    status = M3UAccountMac.Status.EXPIRED
-                try:
-                    mac_entry.status = status
-                    mac_entry.last_error = msg
-                    mac_entry.last_checked = timezone.now()
-                    mac_entry.save(update_fields=["status", "last_error", "last_checked"])
-                except Exception:
-                    pass
-                # MAC ist offensichtlich nicht gültig → nicht mit anderen Proxys weiterversuchen
-                break
-            except Exception as e:
-                # Netzwerk-/Proxy-Fehler: nur loggen, nächsten Proxy oder MAC probieren
-                msg = str(e)
-                logger.warning(
-                    "Network/proxy error for MAC %s on account %s with proxy %s: %s",
-                    mac_value,
-                    m3u_account.id,
-                    proxy,
-                    msg,
-                )
-                last_error_for_mac = msg
-                continue
-
-        # Wenn wir alle Proxys durch haben und keine URL bekommen haben, aber es war kein
-        # klarer MAC-Fehler, loggen wir den letzten Fehler für diese MAC.
-        if last_error_for_mac and mac_entry.status not in (M3UAccountMac.Status.ERROR, M3UAccountMac.Status.EXPIRED):
-            error_messages.append(f"{mac_value}: {last_error_for_mac}")
-
-    if error_messages:
-        return None, None, "; ".join(error_messages)
-
-    return None, None, "No usable MAC found"
-
 
 def get_stream_object(id: str):
     try:
@@ -216,68 +37,46 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
     try:
         channel_or_stream = get_stream_object(channel_id)
 
-        
         # Handle direct stream preview (custom streams)
         if isinstance(channel_or_stream, Stream):
             stream = channel_or_stream
             logger.info(f"Previewing stream directly: {stream.id} ({stream.name})")
 
-            # For custom streams, we need to get the M3U account and default profile
-            m3u_account = stream.m3u_account
-            if not m3u_account:
+            if not stream.m3u_account:
                 logger.error(f"Stream {stream.id} has no M3U account")
                 return None, None, False, None
 
-            m3u_profiles = m3u_account.profiles.all()
-            profile = next((obj for obj in m3u_profiles if getattr(obj, "is_default", False)), None)
-
-            if not profile:
-                logger.error(f"No default profile found for M3U account {m3u_account.id}")
+            # Use get_stream() to atomically reserve a slot and write the
+            # channel_stream / stream_profile Redis keys, matching the channel
+            # path so stream_name and stream_stats work correctly.
+            stream_id, profile_id, error_reason = stream.get_stream()
+            if not stream_id or not profile_id:
+                logger.error(f"No profile available for stream {stream.id}: {error_reason}")
                 return None, None, False, None
 
-            # Determine user agent
-            stream_user_agent = m3u_account.get_user_agent().user_agent
-            if stream_user_agent is None:
-                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+            try:
+                profile = M3UAccountProfile.objects.get(id=profile_id)
+                m3u_account = stream.m3u_account
 
-            # Build stream URL:
-            # - for MAC accounts: resolve via portal + MAC failover
-            # - otherwise: use normal pattern-based URL transform
-            if m3u_account.account_type == M3UAccount.Types.MAC:
-                stream_url, mac_used, error = _resolve_mac_stream_with_failover(m3u_account, stream)
-                if not stream_url:
-                    logger.error(
-                        "Failed to resolve MAC stream for preview of stream %s on account %s: %s",
-                        stream.id,
-                        m3u_account.id,
-                        error,
-                    )
-                    return None, None, False, None
-            else:
-                m3u_profile = profile
-                input_url = stream.url
-                stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
+                stream_user_agent = m3u_account.get_user_agent().user_agent
+                if stream_user_agent is None:
+                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                    logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-            # Determine stream profile (per-stream or default)
-            if stream.stream_profile:
-                stream_profile = stream.stream_profile
-                logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
-            else:
-                stream_profile = StreamProfile.objects.get(
-                    id=CoreSettings.get_default_stream_profile_id()
-                )
-                logger.debug(f"Using default stream profile: {stream_profile.name}")
+                stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
 
-            # Decide whether transcoding is needed
-            if stream_profile is None or stream_profile.is_proxy():
-                transcode = False
-            else:
-                transcode = True
+                stream_profile = stream.get_stream_profile()
+                logger.debug(f"Using stream profile: {stream_profile.name}")
 
-            stream_profile_id = stream_profile.id
+                transcode = not stream_profile.is_proxy()
+                stream_profile_id = stream_profile.id
 
-            return stream_url, stream_user_agent, transcode, stream_profile_id
+                return stream_url, stream_user_agent, transcode, stream_profile_id
+            except Exception as e:
+                logger.error(f"Error generating stream URL for stream {stream.id}: {e}")
+                stream.release_stream()
+                return None, None, False, None
+
 
         # Handle channel preview (existing logic)
         channel = channel_or_stream
@@ -290,124 +89,42 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
             logger.error(f"No stream available for channel {channel_id}: {error_reason}")
             return None, None, False, None
 
-        # Look up the Stream and Profile objects
+        # get_stream() allocated a connection slot - ensure it's released on any error
         try:
+            # Look up the Stream and Profile objects
             stream = Stream.objects.get(id=stream_id)
             profile = M3UAccountProfile.objects.get(id=profile_id)
-        except (Stream.DoesNotExist, M3UAccountProfile.DoesNotExist) as e:
-            logger.error(f"Error getting stream or profile: {e}")
-            return None, None, False, None
 
-        # Get the M3U account profile for URL pattern
-        m3u_profile = profile
+            # Get the M3U account profile for URL pattern
+            m3u_profile = profile
 
-        # Get the appropriate user agent
-        m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
-        stream_user_agent = m3u_account.get_user_agent().user_agent
+            # Get the appropriate user agent
+            m3u_account = M3UAccount.objects.get(id=m3u_profile.m3u_account.id)
+            stream_user_agent = m3u_account.get_user_agent().user_agent
 
-        if stream_user_agent is None:
-            stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-            logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+            if stream_user_agent is None:
+                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
 
-        # Generate stream URL based on the selected profile or via MAC portal
-        if m3u_account.account_type == M3UAccount.Types.MAC:
-            # For MAC accounts, resolve via portal + multi-MAC failover, no regex transform
-            stream_url, mac_used, error = _resolve_mac_stream_with_failover(m3u_account, stream)
-            if not stream_url:
-                logger.error(f"Failed to resolve MAC stream for channel {channel_id}: {error}")
-                # Wenn alle MACs belegt sind, direkt auf Backup-Profile/Backup-Streams ausweichen
-                if error == "All MACs busy":
-                    logger.info(
-                        "All MACs busy for MAC account %s on channel %s – trying alternate streams",
-                        m3u_account.id,
-                        channel_id,
-                    )
-                    try:
-                        from .url_utils import get_alternate_streams, get_stream_info_for_profile  # type: ignore
-                    except Exception as e:
-                        logger.error(
-                            "Error while importing alternate stream helpers for channel %s: %s",
-                            channel_id,
-                            e,
-                            exc_info=True,
-                        )
-                        get_alternate_streams = None
-                        get_stream_info_for_profile = None
-
-                    if get_alternate_streams is not None and get_stream_info_for_profile is not None:
-                        try:
-                            alternate_streams = get_alternate_streams(channel_id, current_stream_id=stream.id)
-                        except Exception as e:
-                            logger.error(
-                                "Error while getting alternate streams for channel %s: %s",
-                                channel_id,
-                                e,
-                                exc_info=True,
-                            )
-                            alternate_streams = []
-
-                        for alt in alternate_streams or []:
-                            alt_stream_id = alt.get("stream_id")
-                            alt_profile_id = alt.get("profile_id")
-                            if not alt_stream_id or not alt_profile_id:
-                                continue
-
-                            try:
-                                info = get_stream_info_for_profile(channel_id, alt_stream_id, alt_profile_id)
-                            except Exception as e:
-                                logger.error(
-                                    "Error while building stream info for alternate stream %s/%s on channel %s: %s",
-                                    alt_stream_id,
-                                    alt_profile_id,
-                                    channel_id,
-                                    e,
-                                    exc_info=True,
-                                )
-                                continue
-
-                            if not info or info.get("error") or not info.get("url"):
-                                logger.debug(
-                                    "Alternate stream %s/%s for channel %s not usable: %s",
-                                    alt_stream_id,
-                                    alt_profile_id,
-                                    channel_id,
-                                    info.get("error") if isinstance(info, dict) else "no info",
-                                )
-                                continue
-
-                            stream_url = info["url"]
-                            stream_user_agent = info.get("user_agent") or stream_user_agent
-                            transcode = info.get("transcode", False)
-                            stream_profile_id = info.get("stream_profile")
-
-                            logger.info(
-                                "Using alternate stream %s (profile %s) for channel %s after MAC pool exhausted on primary stream %s",
-                                alt_stream_id,
-                                alt_profile_id,
-                                channel_id,
-                                stream.id,
-                            )
-                            return stream_url, stream_user_agent, transcode, stream_profile_id
-
-                        logger.error(
-                            "All MACs busy for channel %s and no usable alternate stream found – failing",
-                            channel_id,
-                        )
-                return None, None, False, None
-        else:
+            # Generate stream URL based on the selected profile
             input_url = stream.url
             stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
 
-        # Check if transcoding is needed
-        stream_profile = channel.get_stream_profile()
-        if stream_profile.is_proxy() or stream_profile is None:
-            transcode = False
-        else:
-            transcode = True
+            # Check if transcoding is needed
+            stream_profile = channel.get_stream_profile()
+            if stream_profile.is_proxy() or stream_profile is None:
+                transcode = False
+            else:
+                transcode = True
 
-        stream_profile_id = stream_profile.id
+            stream_profile_id = stream_profile.id
 
-        return stream_url, stream_user_agent, transcode, stream_profile_id
+            return stream_url, stream_user_agent, transcode, stream_profile_id
+        except Exception as e:
+            logger.error(f"Error generating stream URL for channel {channel_id}: {e}")
+            if not channel.release_stream():
+                logger.warning(f"Failed to release stream for channel {channel_id} after URL generation error")
+            return None, None, False, None
     except Exception as e:
         logger.error(f"Error generating stream URL: {e}")
         return None, None, False, None
@@ -457,15 +174,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     try:
         from core.utils import RedisClient
 
-        obj = get_stream_object(channel_id)
-        if isinstance(obj, Channel):
-            channel = obj
-        else:
-            logger.info(
-                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
-                channel_id,
-            )
-            return []
+        channel = get_object_or_404(Channel, uuid=channel_id)
         redis_client = RedisClient.get_client()
 
         # Use the target stream if specified, otherwise use current stream
@@ -567,16 +276,18 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
 
-def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None) -> List[dict]:
+def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None, current_profile_id: Optional[int] = None) -> List[dict]:
     """
-    Get alternative streams for a channel when the current stream fails.
+    Get alternative streams/profiles for a channel when the current stream fails.
+    Includes profile failover: returns all available profiles for each stream.
 
     Args:
         channel_id: The UUID of the channel
         current_stream_id: The currently failing stream ID to exclude
+        current_profile_id: The currently failing profile ID to exclude
 
     Returns:
-        List[dict]: List of stream information dictionaries with stream_id and profile_id
+        List[dict]: List of stream/profile combinations with stream_id and profile_id
     """
     try:
         from core.utils import RedisClient
@@ -628,8 +339,12 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                 # Check profiles in order with connection availability
                 profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
 
-                selected_profile = None
                 for profile in profiles:
+                    # Skip current stream+profile combination
+                    if current_stream_id and stream.id == current_stream_id and current_profile_id and profile.id == current_profile_id:
+                        logger.debug(f"Skipping current stream/profile combination: {current_stream_id}/{current_profile_id}")
+                        continue
+
                     # Check connection availability
                     if redis_client:
                         profile_connections_key = f"profile_connections:{profile.id}"
@@ -651,32 +366,29 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
 
                         # Check if profile has available slots
                         if profile.max_streams == 0 or effective_connections < profile.max_streams:
-                            selected_profile = profile
-                            logger.debug(f"Found available profile {profile.id} for stream {stream.id}: {effective_connections}/{profile.max_streams} effective (current: {current_connections}, already using: {channel_using_profile})")
-                            break
+                            alternate_streams.append({
+                                'stream_id': stream.id,
+                                'profile_id': profile.id,
+                                'name': stream.name
+                            })
+                            logger.debug(f"Added stream {stream.id} with profile {profile.id}: {effective_connections}/{profile.max_streams}")
                         else:
-                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams} (current: {current_connections}, already using: {channel_using_profile})")
+                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams}")
                     else:
-                        # No Redis available, assume first active profile is okay
-                        selected_profile = profile
-                        break
-
-                if selected_profile:
-                    alternate_streams.append({
-                        'stream_id': stream.id,
-                        'profile_id': selected_profile.id,
-                        'name': stream.name
-                    })
-                else:
-                    logger.debug(f"No available profiles for stream ID {stream.id}")
+                        # No Redis available, add all profiles
+                        alternate_streams.append({
+                            'stream_id': stream.id,
+                            'profile_id': profile.id,
+                            'name': stream.name
+                        })
 
             except Exception as inner_e:
                 logger.error(f"Error finding profiles for stream {stream.id}: {inner_e}")
                 continue
 
         if alternate_streams:
-            stream_ids = ', '.join([str(s['stream_id']) for s in alternate_streams])
-            logger.info(f"Found {len(alternate_streams)} alternate streams with available connections for channel {channel_id}: [{stream_ids}]")
+            entries = ', '.join([f"{s['stream_id']}:{s['profile_id']}" for s in alternate_streams])
+            logger.info(f"Found {len(alternate_streams)} alternate stream/profile combinations for channel {channel_id}: [{entries}]")
         else:
             logger.warning(f"No alternate streams with available connections found for channel {channel_id}")
 
@@ -716,16 +428,21 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         session.headers.update(headers)
 
         # Make HEAD request first as it's faster and doesn't download content
-        head_response = session.head(
-            url,
-            timeout=timeout,
-            allow_redirects=True
-        )
+        head_request_success = True
+        try:
+            head_response = session.head(
+                url,
+                timeout=timeout,
+                allow_redirects=True
+            )
+        except requests.exceptions.RequestException as e:
+            head_request_success = False
+            logger.warning(f"Request error (HEAD), assuming HEAD not supported: {str(e)}")
 
         # If HEAD not supported, server will return 405 or other error
-        if 200 <= head_response.status_code < 300:
+        if head_request_success and (200 <= head_response.status_code < 300):
             # HEAD request successful
-            return True, head_response.url, head_response.status_code, "Valid (HEAD request)"
+            return True, url, head_response.status_code, "Valid (HEAD request)"
 
         # Try a GET request with stream=True to avoid downloading all content
         get_response = session.get(
@@ -738,7 +455,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         # IMPORTANT: Check status code first before checking content
         if not (200 <= get_response.status_code < 300):
             logger.warning(f"Stream validation failed with HTTP status {get_response.status_code}")
-            return False, get_response.url, get_response.status_code, f"Invalid HTTP status: {get_response.status_code}"
+            return False, url, get_response.status_code, f"Invalid HTTP status: {get_response.status_code}"
 
         # Only check content if status code is valid
         try:
@@ -792,7 +509,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
         get_response.close()
 
         # If we have content, consider it valid even with unrecognized content type
-        return is_valid, get_response.url, get_response.status_code, message
+        return is_valid, url, get_response.status_code, message
 
     except requests.exceptions.Timeout:
         return False, url, 0, "Timeout connecting to stream"
@@ -850,140 +567,50 @@ def get_connections_left(m3u_profile_id: int) -> int:
         logger.error(f"Error getting connections left for M3U profile {m3u_profile_id}: {e}")
         return 0
 
-
-# === BEGIN: profile-first failover helpers ===
-def get_next_profiles_for_stream(channel_id: str, stream_id: int, exclude_profile_id: Optional[int] = None) -> List[dict]:
-    """
-    Return available M3U profiles for THIS stream in order (default first),
-    respecting max_streams, current usage, and cooldown markers. Optionally exclude the current profile.
-    """
-    try:
-        from core.utils import RedisClient
-
-        obj = get_stream_object(channel_id)
-        if isinstance(obj, Channel):
-            channel = obj
-        else:
-            logger.info(
-                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
-                channel_id,
-            )
-            return []
-        stream = get_object_or_404(Stream, pk=stream_id)
-        m3u_account = stream.m3u_account
-        if not m3u_account:
-            return []
-
-        profiles_qs = m3u_account.profiles.filter(is_active=True)
-        default_profile = next((p for p in profiles_qs if getattr(p, "is_default", False)), None)
-        other_profiles = [p for p in profiles_qs if not getattr(p, "is_default", False)]
-        ordered = ([default_profile] if default_profile else []) + other_profiles
-
-        try:
-            redis_client = RedisClient.get_client()
-        except Exception:
-            redis_client = None
-
-        result: List[dict] = []
-        for p in ordered:
-            if not p:
-                continue
-            if exclude_profile_id and int(p.id) == int(exclude_profile_id):
-                continue
-
-            # Skip profiles that are on cooldown
-            if redis_client:
-                try:
-                    cooldown_key = RedisKeys.m3u_profile_cooldown(p.id)
-                    if redis_client.exists(cooldown_key):
-                        logger.info(
-                            "Skipping M3U profile %s for stream %s on channel %s due to active cooldown",
-                            p.id,
-                            stream.id,
-                            channel.id,
-                        )
-                        continue
-                except Exception:
-                    # Ignore cooldown check failures, fall back to normal behavior
-                    pass
-
-            allowed = True
-            if redis_client:
-                try:
-                    current = int(redis_client.get(f"profile_connections:{p.id}") or 0)
-                except Exception:
-                    current = 0
-
-                channel_using_profile = False
-                try:
-                    existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
-                    if existing_stream_id:
-                        existing_stream_id = existing_stream_id.decode("utf-8")
-                        existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
-                        if existing_profile_id and int(existing_profile_id.decode("utf-8")) == p.id:
-                            channel_using_profile = True
-                except Exception:
-                    channel_using_profile = False
-
-                effective = current - (1 if channel_using_profile else 0)
-                if getattr(p, "max_streams", 0) != 0 and effective >= getattr(p, "max_streams", 0):
-                    allowed = False
-
-            if allowed:
-                result.append({"profile_id": p.id})
-
-        return result
-    except Exception as e:
-        logger.error(f"Error in get_next_profiles_for_stream: {e}", exc_info=True)
-        return []
-
 def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
     """
     Build URL/User-Agent/Transcode for a fixed combination of Stream + M3U profile.
     Return schema compatible with get_stream_info_for_switch(...).
+    
+    Args:
+        channel_id: The UUID of the channel
+        stream_id: The ID of the stream
+        m3u_profile_id: The ID of the M3U profile
+    
+    Returns:
+        dict: Stream information including URL, user agent, transcode flag, etc.
     """
     try:
-        obj = get_stream_object(channel_id)
-        if isinstance(obj, Channel):
-            channel = obj
-        else:
-            logger.info(
-                "get_next_profiles_for_stream: %s refers to a Stream, skipping profile failover",
-                channel_id,
-            )
-            return []
+        channel = get_stream_object(channel_id)
+        if isinstance(channel, Stream):
+            logger.error(f"get_stream_info_for_profile: {channel_id} refers to a Stream, not a Channel")
+            return {"error": "Invalid channel ID"}
+        
         stream = get_object_or_404(Stream, pk=stream_id)
         m3u_profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
-
+        
         m3u_account = m3u_profile.m3u_account
-
-        if m3u_account.account_type == M3UAccount.Types.MAC:
-            input_url, mac_used, error = _resolve_mac_stream_with_failover(m3u_account, stream)
-            if not input_url:
-                return {"error": error or "Failed to resolve MAC stream"}
-            stream_url = input_url
-        else:
-            input_url = stream.url
-            stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
-
+        
+        # Get the user agent from the M3U account
+        user_agent = m3u_account.get_user_agent().user_agent
+        
+        # Generate URL using the specific profile's transformation
+        input_url = stream.url
+        stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
+        
+        # Get transcode info from the channel's stream profile
         stream_profile = channel.get_stream_profile()
-        transcode = False if (stream_profile is None or stream_profile.is_proxy()) else True
-        profile_value = stream_profile.id if stream_profile else None
-
-        user_agent = stream_profile.user_agent if (stream_profile and stream_profile.user_agent) else None
-        if not user_agent:
-            default_ua = UserAgent.objects.filter(is_active=True).first()
-            user_agent = default_ua.user_agent if default_ua else (CoreSettings.get_value("default-user-agent") or None)
-
+        transcode = not (stream_profile.is_proxy() or stream_profile is None)
+        profile_value = stream_profile.id
+        
         return {
-            "url": stream_url,
-            "user_agent": user_agent,
-            "transcode": transcode,
-            "stream_profile": profile_value,
-            "stream_id": stream.id,
-            "m3u_profile_id": m3u_profile.id,
+            'url': stream_url,
+            'user_agent': user_agent,
+            'transcode': transcode,
+            'stream_profile': profile_value,
+            'stream_id': stream_id,
+            'm3u_profile_id': m3u_profile_id
         }
     except Exception as e:
-        logger.error(f"Error in get_stream_info_for_profile: {e}")
-        return {"error": str(e)}
-# === END: profile-first failover helpers ===
+        logger.error(f"Error in get_stream_info_for_profile: {e}", exc_info=True)
+        return {'error': f'Error: {str(e)}'}

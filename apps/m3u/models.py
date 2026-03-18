@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
 from core.models import UserAgent
@@ -6,43 +7,14 @@ from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.models import CoreSettings, UserAgent
-from django.utils import timezone
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
-
-
-def parse_mac_list(raw: str):
-    """Parse a user-entered MAC list string into a normalized, ordered list.
-
-    Supports comma/semicolon/newline separated values and normalizes common formats.
-    """
-    if not raw:
-        return []
-
-    candidates = re.split(r"[\s,;]+", raw.strip())
-    result = []
-
-    for mac in candidates:
-        if not mac:
-            continue
-        # remove separators
-        clean = re.sub(r"[^0-9A-Fa-f]", "", mac)
-        if len(clean) != 12:
-            # keep original if user really wants a weird MAC, but still store something
-            normalized = mac.strip()
-        else:
-            clean = clean.upper()
-            normalized = ":".join(clean[i : i + 2] for i in range(0, 12, 2))
-        if normalized not in result:
-            result.append(normalized)
-    return result
 
 
 class M3UAccount(models.Model):
     class Types(models.TextChoices):
         STADNARD = "STD", "Standard"
         XC = "XC", "Xtream Codes"
-        MAC = "MAC", "MAC / STB-Portal"
 
     class Status(models.TextChoices):
         IDLE = "idle", "Idle"
@@ -115,12 +87,6 @@ class M3UAccount(models.Model):
     account_type = models.CharField(choices=Types.choices, default=Types.STADNARD)
     username = models.CharField(max_length=255, null=True, blank=True)
     password = models.CharField(max_length=255, null=True, blank=True)
-    mac_address = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        help_text="One or more MAC addresses (comma/semicolon/whitespace separated) for MAC/STB accounts",
-    )
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
     refresh_task = models.ForeignKey(
@@ -133,6 +99,12 @@ class M3UAccount(models.Model):
     priority = models.PositiveIntegerField(
         default=0,
         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
+    )
+    proxy = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="HTTP proxy URL (e.g., http://proxy.example.com:8080) for this M3U account",
     )
 
     def __str__(self):
@@ -170,65 +142,6 @@ class M3UAccount(models.Model):
 
         return user_agent
 
-    # ------- multi-MAC helpers (MAC accounts only) -------
-
-    def _ensure_macs_from_mac_address(self):
-        """Sync M3UAccountMac entries from the raw mac_address field (order = priority)."""
-        from .models import M3UAccountMac  # local import to avoid circular
-
-        if self.account_type != self.Types.MAC:
-            return
-
-        normalized_list = parse_mac_list(self.mac_address or "")
-        existing = {m.address: m for m in self.macs.all()}
-
-        seen_addresses = set()
-        priority = 0
-        for addr in normalized_list:
-            seen_addresses.add(addr)
-            obj = existing.get(addr)
-            if obj:
-                if obj.priority != priority:
-                    obj.priority = priority
-                    obj.save(update_fields=["priority"])
-            else:
-                M3UAccountMac.objects.create(
-                    account=self,
-                    address=addr,
-                    priority=priority,
-                )
-            priority += 1
-
-        # delete entries that are no longer in the raw field
-        to_delete = [m.id for a, m in existing.items() if a not in seen_addresses]
-        if to_delete:
-            M3UAccountMac.objects.filter(id__in=to_delete).delete()
-
-    def get_mac_list(self):
-        """Return normalized MAC addresses in priority order (for display)."""
-        if self.account_type != self.Types.MAC:
-            return []
-        # ensure DB entries are in sync
-        self._ensure_macs_from_mac_address()
-        return [m.address for m in self.macs.order_by("priority", "id")]
-
-    def get_candidate_macs_for_streaming(self):
-        """Return ordered list of M3UAccountMac objects that are usable for streaming."""
-        if self.account_type != self.Types.MAC:
-            return []
-        self._ensure_macs_from_mac_address()
-        now = timezone.now()
-        candidates = []
-        for mac in self.macs.order_by("priority", "id"):
-            if mac.status == M3UAccountMac.Status.EXPIRED:
-                continue
-            if mac.status == M3UAccountMac.Status.ERROR:
-                continue
-            if mac.expires_at and mac.expires_at <= now:
-                continue
-            candidates.append(mac)
-        return candidates
-
     def save(self, *args, **kwargs):
         # Prevent auto_now behavior by handling updated_at manually
         if "update_fields" in kwargs and "updated_at" not in kwargs["update_fields"]:
@@ -248,53 +161,6 @@ class M3UAccount(models.Model):
     # def get_enabled_streams(self):
     #     """Return all streams linked to this account with enabled ChannelGroups."""
     #     return self.streams.filter(channel_group__in=ChannelGroup.objects.filter(m3u_account__enabled=True))
-
-
-class M3UAccountMac(models.Model):
-    class Status(models.TextChoices):
-        UNKNOWN = "unknown", "Unknown"          # never checked
-        VALID = "valid", "Valid"
-        EXPIRED = "expired", "Expired"
-        ERROR = "error", "Error"               # other error (portal down, max connections, etc.)
-
-    account = models.ForeignKey(
-        M3UAccount,
-        on_delete=models.CASCADE,
-        related_name="macs",
-        help_text="Parent MAC / STB-Portal account",
-    )
-    address = models.CharField(max_length=17, help_text="Normalized MAC address (AA:BB:CC:DD:EE:FF)")
-    priority = models.PositiveIntegerField(
-        default=0,
-        help_text="Order in which MACs are tried for streaming (0 = highest priority)",
-    )
-    status = models.CharField(
-        max_length=20,
-        choices=Status.choices,
-        default=Status.UNKNOWN,
-        help_text="Validation status based on last portal check",
-    )
-    expires_at = models.DateTimeField(null=True, blank=True, help_text="Parsed expiry timestamp if available")
-    expires_text = models.CharField(max_length=255, null=True, blank=True, help_text="Raw expiry text from portal (for UI display)")
-    last_checked = models.DateTimeField(null=True, blank=True)
-    last_error = models.TextField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["priority", "id"]
-        unique_together = ("account", "address")
-
-    def __str__(self):
-        return f"{self.address} ({self.account.name})"
-
-    @property
-    def is_valid_for_streaming(self):
-        if self.status == self.Status.EXPIRED:
-            return False
-        if self.status == self.Status.ERROR:
-            return False
-        if self.expires_at and self.expires_at <= timezone.now():
-            return False
-        return True
 
 
 class M3UFilter(models.Model):
@@ -405,10 +271,15 @@ class M3UAccountProfile(models.Model):
     )
     current_viewers = models.PositiveIntegerField(default=0)
     custom_properties = models.JSONField(
-        default=dict, 
-        blank=True, 
-        null=True, 
+        default=dict,
+        blank=True,
+        null=True,
         help_text="Custom properties for storing account information from provider (e.g., XC account details, expiration dates)"
+    )
+    exp_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Account expiration date, auto-synced from custom_properties on save",
     )
 
     class Meta:
@@ -421,36 +292,51 @@ class M3UAccountProfile(models.Model):
     def __str__(self):
         return f"{self.name} ({self.m3u_account.name})"
 
-    def get_account_expiration(self):
-        """Get account expiration date from custom properties if available"""
+    def save(self, *args, **kwargs):
+        """Auto-sync exp_date from custom_properties for XC accounts on every save.
+        For non-XC accounts, exp_date is set directly and left untouched here."""
+        parsed = self._parse_exp_date_from_custom_properties()
+        if parsed is not None:
+            # XC account with exp_date in custom_properties — always sync
+            self.exp_date = parsed
+        # else: keep whatever exp_date is already set (manual entry for non-XC)
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def _parse_exp_date(raw_value):
+        """Parse a raw exp_date value (unix timestamp or ISO string) into a datetime."""
+        if raw_value is None:
+            return None
+        try:
+            if isinstance(raw_value, (int, float)):
+                return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+            elif isinstance(raw_value, str):
+                try:
+                    return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+                except ValueError:
+                    return datetime.fromisoformat(raw_value)
+        except (ValueError, TypeError, OSError):
+            pass
+        return None
+
+    def _parse_exp_date_from_custom_properties(self):
+        """Extract exp_date from custom_properties JSON."""
         if not self.custom_properties:
             return None
-        
         user_info = self.custom_properties.get('user_info', {})
-        exp_date = user_info.get('exp_date')
-        
-        if exp_date:
-            try:
-                from datetime import datetime
-                # XC exp_date is typically a Unix timestamp
-                if isinstance(exp_date, (int, float)):
-                    return datetime.fromtimestamp(exp_date)
-                elif isinstance(exp_date, str):
-                    # Try to parse as timestamp first, then as ISO date
-                    try:
-                        return datetime.fromtimestamp(float(exp_date))
-                    except ValueError:
-                        return datetime.fromisoformat(exp_date)
-            except (ValueError, TypeError):
-                pass
-        
-        return None
+        return self._parse_exp_date(user_info.get('exp_date'))
+
+    def get_account_expiration(self):
+        """Get account expiration date — uses the dedicated field if set, otherwise parses JSON."""
+        if self.exp_date:
+            return self.exp_date
+        return self._parse_exp_date_from_custom_properties()
 
     def get_account_status(self):
         """Get account status from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('status')
 
@@ -458,7 +344,7 @@ class M3UAccountProfile(models.Model):
         """Get maximum connections from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('max_connections')
 
@@ -466,7 +352,7 @@ class M3UAccountProfile(models.Model):
         """Get active connections from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('active_cons')
 
@@ -474,7 +360,7 @@ class M3UAccountProfile(models.Model):
         """Get last refresh timestamp from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         last_refresh = self.custom_properties.get('last_refresh')
         if last_refresh:
             try:
@@ -482,7 +368,7 @@ class M3UAccountProfile(models.Model):
                 return datetime.fromisoformat(last_refresh)
             except (ValueError, TypeError):
                 pass
-        
+
         return None
 
 
@@ -490,12 +376,6 @@ class M3UAccountProfile(models.Model):
 def create_profile_for_m3u_account(sender, instance, created, **kwargs):
     """Automatically create an M3UAccountProfile when M3UAccount is created."""
     if created:
-        from .models import M3UAccountMac  # ensure model is ready
-
-        # initial sync of MACs from raw field (if any)
-        if instance.account_type == M3UAccount.Types.MAC:
-            instance._ensure_macs_from_mac_address()
-
         M3UAccountProfile.objects.create(
             m3u_account=instance,
             name=f"{instance.name} Default",

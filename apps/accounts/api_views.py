@@ -1,13 +1,15 @@
 from django.contrib.auth import authenticate, login, logout
+import logging
 from django.contrib.auth.models import Group, Permission
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
-from rest_framework import viewsets, status
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from rest_framework import viewsets, status, serializers
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 import json
+import secrets
 from .permissions import IsAdmin, Authenticated
 from dispatcharr.utils import network_access_allowed
 
@@ -15,35 +17,101 @@ from .models import User
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+logger = logging.getLogger(__name__)
+
 
 class TokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
+            # Log blocked login attempt due to network restrictions
+            from core.utils import log_system_event
+            username = request.data.get("username", 'unknown')
+            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            logger.info(f"Login blocked by network policy: user={username} ip={client_ip} ua={user_agent}")
+            log_system_event(
+                event_type='login_failed',
+                user=username,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason='Network access denied',
+            )
             return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         # Get the response from the parent class first
-        response = super().post(request, *args, **kwargs)
+        username = request.data.get("username")
 
-        # If login was successful, update last_login
-        if response.status_code == 200:
-            username = request.data.get("username")
-            if username:
-                from django.utils import timezone
-                try:
-                    user = User.objects.get(username=username)
-                    user.last_login = timezone.now()
-                    user.save(update_fields=['last_login'])
-                except User.DoesNotExist:
-                    pass  # User doesn't exist, but login somehow succeeded
+        # Log login attempt
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
-        return response
+        try:
+            logger.debug(f"Attempting JWT login for user={username}")
+            response = super().post(request, *args, **kwargs)
+
+            # If login was successful, update last_login and log success
+            if response.status_code == 200:
+                if username:
+                    from django.utils import timezone
+                    try:
+                        user = User.objects.get(username=username)
+                        user.last_login = timezone.now()
+                        user.save(update_fields=['last_login'])
+
+                        # Log successful login
+                        log_system_event(
+                            event_type='login_success',
+                            user=username,
+                            client_ip=client_ip,
+                            user_agent=user_agent,
+                        )
+                        logger.info(f"Login success: user={username} ip={client_ip}")
+                    except User.DoesNotExist:
+                        pass  # User doesn't exist, but login somehow succeeded
+            else:
+                # Log failed login attempt
+                log_system_event(
+                    event_type='login_failed',
+                    user=username or 'unknown',
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    reason='Invalid credentials',
+                )
+                logger.info(f"Login failed: user={username} ip={client_ip}")
+
+            return response
+
+        except Exception as e:
+            # If parent class raises an exception (e.g., validation error), log failed attempt
+            log_system_event(
+                event_type='login_failed',
+                user=username or 'unknown',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason=f'Authentication error: {str(e)[:100]}',
+            )
+            logger.error(f"Login error for user={username}: {e}")
+            raise  # Re-raise the exception to maintain normal error flow
 
 
 class TokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
+            # Log blocked token refresh attempt due to network restrictions
+            from core.utils import log_system_event
+            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+            user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            logger.info(f"Token refresh blocked by network policy: ip={client_ip} ua={user_agent}")
+            log_system_event(
+                event_type='login_failed',
+                user='token_refresh',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason='Network access denied (token refresh)',
+            )
             return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         return super().post(request, *args, **kwargs)
@@ -51,8 +119,8 @@ class TokenRefreshView(TokenRefreshView):
 
 @csrf_exempt  # In production, consider CSRF protection strategies or ensure this endpoint is only accessible when no superuser exists.
 def initialize_superuser(request):
-    # If a superuser already exists, always indicate that
-    if User.objects.filter(is_superuser=True).exists():
+    # If an admin-level user already exists, the system is configured
+    if User.objects.filter(user_level__gte=10).exists():
         return JsonResponse({"superuser_exists": True})
 
     if request.method == "POST":
@@ -80,19 +148,24 @@ def initialize_superuser(request):
 class AuthViewSet(viewsets.ViewSet):
     """Handles user login and logout"""
 
-    @swagger_auto_schema(
-        operation_description="Authenticate and log in a user",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["username", "password"],
-            properties={
-                "username": openapi.Schema(type=openapi.TYPE_STRING),
-                "password": openapi.Schema(
-                    type=openapi.TYPE_STRING, format=openapi.FORMAT_PASSWORD
-                ),
+    def get_permissions(self):
+        """
+        Login doesn't require auth, but logout does
+        """
+        if self.action == 'logout':
+            from rest_framework.permissions import IsAuthenticated
+            return [IsAuthenticated()]
+        return []
+
+    @extend_schema(
+        description="Authenticate and log in a user",
+        request=inline_serializer(
+            name="LoginRequest",
+            fields={
+                "username": serializers.CharField(),
+                "password": serializers.CharField(),
             },
         ),
-        responses={200: "Login successful", 400: "Invalid credentials"},
     )
     def login(self, request):
         """Logs in a user and returns user details"""
@@ -100,12 +173,27 @@ class AuthViewSet(viewsets.ViewSet):
         password = request.data.get("password")
         user = authenticate(request, username=username, password=password)
 
+        # Get client info for logging
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        logger.debug(f"Login attempt via session: user={username} ip={client_ip}")
+
         if user:
             login(request, user)
             # Update last_login timestamp
             from django.utils import timezone
             user.last_login = timezone.now()
             user.save(update_fields=['last_login'])
+
+            # Log successful login
+            log_system_event(
+                event_type='login_success',
+                user=username,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+            logger.info(f"Login success via session: user={username} ip={client_ip}")
 
             return Response(
                 {
@@ -118,14 +206,37 @@ class AuthViewSet(viewsets.ViewSet):
                     },
                 }
             )
+
+        # Log failed login attempt
+        log_system_event(
+            event_type='login_failed',
+            user=username or 'unknown',
+            client_ip=client_ip,
+            user_agent=user_agent,
+            reason='Invalid credentials',
+        )
+        logger.info(f"Login failed via session: user={username} ip={client_ip}")
         return Response({"error": "Invalid credentials"}, status=400)
 
-    @swagger_auto_schema(
-        operation_description="Log out the current user",
-        responses={200: "Logout successful"},
+    @extend_schema(
+        description="Log out the current user",
     )
     def logout(self, request):
         """Logs out the authenticated user"""
+        # Log logout event before actually logging out
+        from core.utils import log_system_event
+        username = request.user.username if request.user and request.user.is_authenticated else 'unknown'
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+
+        log_system_event(
+            event_type='logout',
+            user=username,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        logger.info(f"Logout: user={username} ip={client_ip}")
+
         logout(request)
         return Response({"message": "Logout successful"})
 
@@ -143,36 +254,48 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return [IsAdmin()]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve a list of users",
+    @extend_schema(
+        description="Retrieve a list of users",
         responses={200: UserSerializer(many=True)},
     )
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Retrieve a specific user by ID")
+    @extend_schema(description="Retrieve a specific user by ID")
     def retrieve(self, request, *args, **kwargs):
         return super().retrieve(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Create a new user")
+    @extend_schema(description="Create a new user")
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Update a user")
+    @extend_schema(description="Update a user")
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Delete a user")
+    @extend_schema(description="Delete a user")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
 
-    @swagger_auto_schema(
-        method="get",
-        operation_description="Get active user information",
+    @extend_schema(
+        description="Get or update active user information. PATCH updates custom_properties with merge semantics.",
+        methods=["GET", "PATCH"],
     )
-    @action(detail=False, methods=["get"], url_path="me")
+    @action(detail=False, methods=["get", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        if request.method == "PATCH":
+            ALLOWED_FIELDS = {"custom_properties", "first_name", "last_name", "email", "password"}
+            disallowed = set(request.data.keys()) - ALLOWED_FIELDS
+            if disallowed:
+                return Response(
+                    {"detail": f"Fields not allowed for self-update: {', '.join(disallowed)}"},
+                    status=400,
+                )
+            serializer = UserSerializer(user, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
         serializer = UserSerializer(user)
         return Response(serializer.data)
 
@@ -185,34 +308,86 @@ class GroupViewSet(viewsets.ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [Authenticated]
 
-    @swagger_auto_schema(
-        operation_description="Retrieve a list of groups",
+    @extend_schema(
+        description="Retrieve a list of groups",
         responses={200: GroupSerializer(many=True)},
     )
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Retrieve a specific group by ID")
+    @extend_schema(description="Retrieve a specific group by ID")
     def retrieve(self, request, *args, **kwargs):
         return super().retrieve(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Create a new group")
+    @extend_schema(description="Create a new group")
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Update a group")
+    @extend_schema(description="Update a group")
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
 
-    @swagger_auto_schema(operation_description="Delete a group")
+    @extend_schema(description="Delete a group")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
 
 
+# API Key management
+class APIKeyViewSet(viewsets.ViewSet):
+    permission_classes = [Authenticated]
+
+    def list(self, request):
+        user = request.user
+        return Response({"key": user.api_key})
+
+    @action(detail=False, methods=["post"], url_path="generate")
+    def generate(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to create keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        raw = secrets.token_urlsafe(40)
+        target_user.api_key = raw
+        target_user.save(update_fields=["api_key"])
+
+        user_data = UserSerializer(target_user).data
+        return Response({"key": raw, "user": user_data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="revoke")
+    def revoke(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to revoke keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        target_user.api_key = None
+        target_user.save(update_fields=["api_key"])
+
+        return Response({"success": True})
+
+
 # 🔹 4) Permissions List API
-@swagger_auto_schema(
-    method="get",
-    operation_description="Retrieve a list of all permissions",
+@extend_schema(
+    description="Retrieve a list of all permissions",
     responses={200: PermissionSerializer(many=True)},
 )
 @api_view(["GET"])

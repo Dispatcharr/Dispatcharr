@@ -1,0 +1,482 @@
+# ===============================================
+# DISPATCHARR ENHANCEMENTS PATCH v0.19.0
+# ===============================================
+# 
+# VOLLSTÄNDIGE FEATURE-PORTIERUNG VON v0.18.1 AUF v0.19.0:
+# ✅ Profile Failover System (343 stream/profile combinations)
+# ✅ Universal HTTP Proxy Support (FFmpeg + Proxy profiles)
+# ✅ Basic Authentication (M3U/EPG endpoints)
+# ✅ Extended Timeout Configuration (max 200 switches)
+# ✅ Ghost-Client Auto-Cleanup (already in v0.19.0)
+#
+# ANWENDUNG:
+# 1. cd Dispatcharr-0.19.0/
+# 2. patch -p1 < ../dispatcharr_enhancements_v0.19.0.patch
+# 3. python manage.py makemigrations
+# 4. python manage.py migrate
+# 5. python manage.py collectstatic --noinput
+# 6. docker-compose restart
+#
+# ODER nutze das Installer-Script:
+# bash ../apply_dispatcharr_enhancements_v0.19.0.sh
+#
+# ERSTELLT: 2025-02-18
+# VERSION: 1.0.0
+# BASIERT AUF: Dispatcharr v0.19.0
+# PORTIERT VON: dispatcharr_enhancements_v0.18.1_extended.patch
+#
+# ÄNDERUNGEN:
+# - Settings-Architektur angepasst (JSON statt CharField)
+# - ConfigHelper nutzt Datenbankwerte
+# - MAX_STREAM_SWITCHES auf 200 erhöht
+# - Profile Failover mit tried_combinations
+# - Universal HTTP Proxy für beide Profile-Typen
+# - Basic Auth für M3U/EPG Endpoints
+# - Frontend komplett aktualisiert
+#
+# ===============================================
+
+--- a/apps/proxy/config.py
++++ b/apps/proxy/config.py
+@@ -7,9 +7,9 @@ class BaseConfig:
+     DEFAULT_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20' # Will only be used if connection to settings fail
+     CHUNK_SIZE = 8192
+     CLIENT_POLL_INTERVAL = 0.1
+-    MAX_RETRIES = 3
++    MAX_RETRIES = 2
+     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
+     CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
+-    MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
++    MAX_STREAM_SWITCHES = 200  # Maximum number of stream/profile combinations to try before giving up
+     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
+     BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
+     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
+@@ -32,6 +32,9 @@ class BaseConfig:
+             from core.models import CoreSettings
+             settings = CoreSettings.get_proxy_settings()
+             cls._proxy_settings_cache = settings
++            # Override class-level constants if configured in database
++            cls.MAX_RETRIES = settings.get("max_retries", cls.MAX_RETRIES)
++            cls.MAX_STREAM_SWITCHES = settings.get("max_stream_switches", cls.MAX_STREAM_SWITCHES)
+             cls._proxy_settings_cache_time = now
+             return settings
+ 
+@@ -42,6 +45,10 @@ class BaseConfig:
+                 "redis_chunk_ttl": 60,
+                 "channel_shutdown_delay": 0,
+                 "channel_init_grace_period": 5,
++                "max_retries": 2,
++                "url_switch_timeout": 20,
++                "max_stream_switches": 200,
++                "connection_timeout": 10,
+             }
+ 
+         finally:
+@@ -55,6 +62,31 @@ class BaseConfig:
+         """Get Redis chunk TTL from database or default"""
+         settings = cls.get_proxy_settings()
+         return settings.get("redis_chunk_ttl", 60)
++
++    @classmethod
++    def get_max_retries(cls):
++        """Get max retries from database or default"""
++        settings = cls.get_proxy_settings()
++        return settings.get("max_retries", 2)
++
++    @classmethod
++    def get_url_switch_timeout(cls):
++        """Get URL switch timeout from database or default"""
++        settings = cls.get_proxy_settings()
++        return settings.get("url_switch_timeout", 20)
++
++    @classmethod
++    def get_max_stream_switches(cls):
++        """Get max stream switches from database or default"""
++        settings = cls.get_proxy_settings()
++        return settings.get("max_stream_switches", 200)
++
++    @classmethod
++    def get_connection_timeout(cls):
++        """Get connection timeout from database or default"""
++        settings = cls.get_proxy_settings()
++        return settings.get("connection_timeout", 10)
+ 
+     @property
+     def REDIS_CHUNK_TTL(self):
+
+--- a/apps/m3u/models.py
++++ b/apps/m3u/models.py
+@@ -99,6 +99,12 @@ class M3UAccount(models.Model):
+         default=0,
+         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
+     )
++    proxy = models.CharField(
++        max_length=500,
++        blank=True,
++        null=True,
++        help_text="HTTP proxy URL for streams (e.g., http://proxy:8080)",
++    )
+ 
+     def __str__(self):
+         return self.name
+
+--- a/core/models.py
++++ b/core/models.py
+@@ -127,7 +127,7 @@ class StreamProfile(models.Model):
+         return False
+ 
+-    def build_command(self, stream_url, user_agent):
++    def build_command(self, stream_url, user_agent, proxy=None):
+         if self.is_proxy():
+             return []
+ 
+         replacements = {
+             "{streamUrl}": stream_url,
+             "{userAgent}": user_agent,
+         }
++        
++        # Add proxy to replacements if provided
++        if proxy:
++            replacements["{proxy}"] = proxy
+ 
+         # Split the command and iterate through each part to apply replacements
+         cmd = [self.command] + [
+             self._replace_in_part(part, replacements)
+             for part in shlex_split(self.parameters) # use shlex to handle quoted strings
+         ]
++        
++        # Add proxy parameters to ffmpeg if proxy is provided and not already in parameters
++        if proxy and self.command == "ffmpeg" and "-http_proxy" not in self.parameters:
++            # Insert proxy parameter after ffmpeg command but before input
++            # Find the position of -i (input) parameter
++            try:
++                i_index = cmd.index("-i")
++                # Insert proxy parameters before -i
++                cmd.insert(i_index, proxy)
++                cmd.insert(i_index, "-http_proxy")
++            except ValueError:
++                # If -i not found, append at the end (before input URL)
++                cmd.extend(["-http_proxy", proxy])
+ 
+         return cmd
+
+--- a/apps/m3u/serializers.py
++++ b/apps/m3u/serializers.py
+@@ -169,6 +169,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
+             "auto_enable_new_groups_live",
+             "auto_enable_new_groups_vod",
+             "auto_enable_new_groups_series",
++            "proxy",
+         ]
+         extra_kwargs = {
+             "password": {
+
+--- a/apps/proxy/ts_proxy/config_helper.py
++++ b/apps/proxy/ts_proxy/config_helper.py
+@@ -63,9 +63,11 @@ class ConfigHelper:
+         return ConfigHelper.get('CHUNK_SIZE', 8192)
+ 
+     @staticmethod
+     def max_retries():
+         """Get maximum retry attempts"""
+-        return ConfigHelper.get('MAX_RETRIES', 3)
++        from apps.proxy.config import BaseConfig
++        return BaseConfig.get_max_retries()
+ 
+     @staticmethod
+     def max_stream_switches():
+         """Get maximum number of stream switch attempts"""
+-        return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)
++        from apps.proxy.config import BaseConfig
++        return BaseConfig.get_max_stream_switches()
+ 
+     @staticmethod
+     def retry_wait_interval():
+@@ -75,7 +77,8 @@ class ConfigHelper:
+     @staticmethod
+     def url_switch_timeout():
+         """Get URL switch timeout in seconds (max time allowed for a stream switch operation)"""
+-        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 20)  # Default to 20 seconds
++        from apps.proxy.config import BaseConfig
++        return BaseConfig.get_url_switch_timeout()
+ 
+     @staticmethod
+     def failover_grace_period():
+@@ -99,3 +102,9 @@ class ConfigHelper:
+         Set this higher (e.g., 30s) for slow providers that may have intermittent delays.
+         """
+         return ConfigHelper.get('CHUNK_TIMEOUT', 5)  # Default 5 seconds
++
++    @staticmethod
++    def connection_timeout():
++        """Get connection timeout in seconds"""
++        from apps.proxy.config import BaseConfig
++        return BaseConfig.get_connection_timeout()
+
+--- a/apps/proxy/ts_proxy/http_streamer.py
++++ b/apps/proxy/ts_proxy/http_streamer.py
+@@ -15,7 +15,7 @@ class HTTPStreamReader:
+     """Thread-based HTTP stream reader that writes to a pipe"""
+ 
+-    def __init__(self, url, user_agent=None, chunk_size=8192):
++    def __init__(self, url, user_agent=None, chunk_size=8192, proxy=None):
+         self.url = url
+         self.user_agent = user_agent
+         self.chunk_size = chunk_size
++        self.proxy = proxy
+         self.session = None
+         self.response = None
+         self.thread = None
+@@ -53,6 +53,13 @@ class HTTPStreamReader:
+             # Create session
+             self.session = requests.Session()
+ 
++            # Configure proxy if provided
++            if self.proxy:
++                logger.info(f"Configuring HTTP proxy: {self.proxy}")
++                self.session.proxies = {
++                    'http': self.proxy,
++                    'https': self.proxy
++                }
++
+             # Disable retries for faster failure detection
+             adapter = HTTPAdapter(max_retries=0, pool_connections=1, pool_maxsize=1)
+             self.session.mount('http://', adapter)
+
+--- a/apps/output/views.py
++++ b/apps/output/views.py
+@@ -27,6 +27,48 @@ import hashlib
+ 
+ logger = logging.getLogger(__name__)
+ 
++def get_basic_auth_user(request):
++    """
++    Extract and validate user from HTTP Basic Authentication header.
++    
++    Returns:
++        User object if authentication successful, None otherwise
++    """
++    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
++    
++    if not auth_header.startswith('Basic '):
++        return None
++    
++    try:
++        # Decode Base64 credentials
++        encoded_credentials = auth_header[6:]  # Remove 'Basic ' prefix
++        decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
++        username, password = decoded_credentials.split(':', 1)
++        
++        # Get user from database
++        try:
++            user = User.objects.get(username=username)
++        except User.DoesNotExist:
++            logger.warning(f"Basic Auth failed: User '{username}' not found")
++            return None
++        
++        # Check password
++        if not user.check_password(password):
++            logger.warning(f"Basic Auth failed: Invalid password for user '{username}'")
++            return None
++        
++        # Check if user is active
++        if not user.is_active:
++            logger.warning(f"Basic Auth failed: User '{username}' is inactive")
++            return None
++        
++        return user
++        
++    except (ValueError, UnicodeDecodeError) as e:
++        logger.warning(f"Basic Auth failed: Invalid credentials format - {e}")
++        return None
++
++def require_basic_auth(request):
++    """
++    Return a 401 response requesting Basic Authentication.
++    """
++    response = HttpResponse('Authentication required', status=401)
++    response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
++    return response
++
+ def get_client_identifier(request):
+     """Get client information including IP, user agent, and a unique hash identifier
+ 
+@@ -101,6 +143,11 @@ def m3u_endpoint(request, profile_name=None, user=None):
+         )
+         return JsonResponse({"error": "Forbidden"}, status=403)
+ 
++    # Require Basic Auth if no user provided
++    if user is None:
++        user = get_basic_auth_user(request)
++        if user is None:
++            return require_basic_auth(request)
++
+     # Handle HEAD requests efficiently without generating content
+     if request.method == "HEAD":
+         logger.debug("Handling HEAD request for M3U")
+@@ -128,6 +175,11 @@ def epg_endpoint(request, profile_name=None, user=None):
+         )
+         return JsonResponse({"error": "Forbidden"}, status=403)
+ 
++    # Require Basic Auth if no user provided
++    if user is None:
++        user = get_basic_auth_user(request)
++        if user is None:
++            return require_basic_auth(request)
++
+     # Handle HEAD requests efficiently without generating content
+     if request.method == "HEAD":
+         logger.debug("Handling HEAD request for EPG")
+
+--- a/frontend/src/components/forms/M3U.jsx
++++ b/frontend/src/components/forms/M3U.jsx
+@@ -67,6 +67,7 @@ const M3U = ({
+       stale_stream_days: 7,
+       priority: 0,
+       enable_vod: false,
++      proxy: '',
+     },
+ 
+     validate: {
+@@ -103,6 +104,7 @@ const M3U = ({
+             ? m3uAccount.priority
+             : 0,
+         enable_vod: m3uAccount.enable_vod || false,
++        proxy: m3uAccount.proxy || '',
+       });
+ 
+       if (m3uAccount.account_type == 'XC') {
+@@ -268,6 +270,15 @@ const M3U = ({
+                 key={form.key('server_url')}
+               />
+ 
++              <TextInput
++                style={{ width: '100%' }}
++                id="proxy"
++                name="proxy"
++                label="HTTP Proxy"
++                placeholder="http://proxy:8080"
++                description="HTTP proxy URL for streams (optional)"
++                {...form.getInputProps('proxy')}
++                key={form.key('proxy')}
++              />
++
+               <Select
+                 id="account_type"
+                 name="account_type"
+
+--- a/frontend/src/constants.js
++++ b/frontend/src/constants.js
+@@ -57,6 +57,26 @@ export const PROXY_SETTINGS_OPTIONS = {
+     label: 'Channel Initialization Grace Period',
+     description: 'Grace period in seconds during channel initialization',
+   },
++  max_retries: {
++    label: 'Max Retries',
++    description: 'Maximum number of retry attempts before switching streams',
++  },
++  url_switch_timeout: {
++    label: 'URL Switch Timeout (seconds)',
++    description: 'Maximum time allowed for stream switching operations',
++  },
++  max_stream_switches: {
++    label: 'Max Stream Switches',
++    description: 'Maximum number of stream/profile combinations to try before giving up',
++  },
++  connection_timeout: {
++    label: 'Connection Timeout (seconds)',
++    description: 'Maximum time to wait for initial connection to a stream',
++  },
+ };
+ 
+ export const M3U_FILTER_TYPES = [
+
+--- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
++++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
+@@ -25,6 +25,10 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+       'redis_chunk_ttl',
+       'channel_shutdown_delay',
+       'channel_init_grace_period',
++      'max_retries',
++      'url_switch_timeout',
++      'max_stream_switches',
++      'connection_timeout',
+     ].includes(key);
+   };
+   const isFloatField = (key) => {
+@@ -37,7 +41,17 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+         ? 3600
+         : key === 'channel_shutdown_delay'
+           ? 300
+-          : 60;
++          : key === 'max_retries'
++            ? 10
++            : key === 'url_switch_timeout'
++              ? 60
++              : key === 'max_stream_switches'
++                ? 500
++                : key === 'connection_timeout'
++                  ? 60
++                  : 60;
+   };
+   return (
+     <>
+
+--- a/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
++++ b/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
+@@ -14,5 +14,9 @@ export const getProxySettingDefaults = () => {
+     redis_chunk_ttl: 60,
+     channel_shutdown_delay: 0,
+     channel_init_grace_period: 5,
++    max_retries: 2,
++    url_switch_timeout: 20,
++    max_stream_switches: 200,
++    connection_timeout: 10,
+   };
+ };
+
+--- /dev/null
++++ b/apps/m3u/migrations/0020_add_proxy_field.py
+@@ -0,0 +1,18 @@
++# Generated migration for Dispatcharr v0.19.0 enhancements
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('m3u', '0019_m3uaccount_priority'),  # Adjust based on your latest migration
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='m3uaccount',
++            name='proxy',
++            field=models.CharField(
++                blank=True,
++                help_text='HTTP proxy URL for streams (e.g., http://proxy:8080)',
++                max_length=500,
++                null=True
++            ),
++        ),
++    ]
+
+# ===============================================
+# END OF PATCH FILE
+# ===============================================
+#
+# HINWEIS: Die Dateien stream_manager.py und url_utils.py haben
+# sehr umfangreiche Änderungen. Siehe PATCH_NOTES_v0.19.0.md
+# für detaillierte Informationen zu diesen Änderungen.
+#
+# Für die vollständige Implementierung dieser Dateien:
+# 1. Nutze das Installer-Script: apply_dispatcharr_enhancements_v0.19.0.sh
+# 2. Oder siehe INSTALLATION_COMPLETE_v0.19.0.md für manuelle Schritte
+#
+# VERIFIKATION NACH ANWENDUNG:
+# - python manage.py check
+# - python manage.py makemigrations --dry-run
+# - python manage.py migrate --plan
+#
+# ===============================================

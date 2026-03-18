@@ -80,6 +80,12 @@ class RedisKeys:
         return f"ts_proxy:worker:{worker_id}:heartbeat"
 
     @staticmethod
+    def chunk_timestamps(channel_id):
+        """Sorted set mapping chunk receive-timestamps (score) to chunk indices (member).
+        Used for time-based client positioning."""
+        return f"ts_proxy:channel:{channel_id}:buffer:chunk_timestamps"
+
+    @staticmethod
     def transcode_active(channel_id):
         """Key indicating active transcode process"""
         return f"ts_proxy:channel:{channel_id}:transcode_active"
@@ -88,22 +94,3 @@ class RedisKeys:
     def client_metadata(channel_id, client_id):
         """Key for client metadata hash"""
         return f"ts_proxy:channel:{channel_id}:clients:{client_id}"
-    @staticmethod
-    def m3u_profile_cooldown(profile_id):
-        """Key for cooldown marker of a specific M3U profile (to avoid retrying bad profiles)."""
-        return f"ts_proxy:m3u_profile:{profile_id}:cooldown"
-
-    @staticmethod
-    def m3u_account_cooldown(account_id):
-        """Key for cooldown marker of a specific M3U account (prepared, disabled by default)."""
-        return f"ts_proxy:m3u_account:{account_id}:cooldown"
-
-    @staticmethod
-    def mac_busy(mac_id):
-        """Key indicating that a MAC address is currently in use by an active stream."""
-        return f"ts_proxy:mac:{mac_id}:busy"
-
-    @staticmethod
-    def mac_cooldown(mac_id):
-        """Key for cooldown marker of a specific M3UAccountMac (to avoid retrying bad MACs temporarily)."""
-        return f"ts_proxy:m3u_mac:{mac_id}:cooldown"

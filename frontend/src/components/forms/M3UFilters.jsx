@@ -151,6 +151,7 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [filterToDelete, setFilterToDelete] = useState(null);
   const [filters, setFilters] = useState([]);
+  const [deleting, setDeleting] = useState(false);
 
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
@@ -192,16 +193,17 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
 
   const deleteFilter = async (id) => {
     if (!playlist || !playlist.id) return;
+    setDeleting(true);
     try {
       await API.deleteM3UFilter(playlist.id, id);
-      setConfirmDeleteOpen(false);
+      fetchPlaylist(playlist.id);
+      setFilters(filters.filter((f) => f.id !== id));
     } catch (error) {
       console.error('Error deleting profile:', error);
+    } finally {
+      setDeleting(false);
       setConfirmDeleteOpen(false);
     }
-
-    fetchPlaylist(playlist.id);
-    setFilters(filters.filter((f) => f.id !== id));
   };
 
   const closeEditor = (updatedPlaylist = null) => {
@@ -253,7 +255,16 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
 
   return (
     <>
-      <Modal opened={isOpen} onClose={onClose} title="Filters" size="lg">
+      <Modal
+        opened={isOpen}
+        onClose={onClose}
+        title="Filters"
+        size="lg"
+        scrollAreaComponent={Modal.NativeScrollArea}
+        lockScroll={false}
+        withinPortal={true}
+        yOffset="2vh"
+      >
         <Alert
           icon={<Info size={16} />}
           color="blue"
@@ -312,6 +323,7 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => deleteFilter(deleteTarget)}
+        loading={deleting}
         title="Confirm Filter Deletion"
         message={
           filterToDelete ? (

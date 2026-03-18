@@ -1,0 +1,703 @@
+################################################################################
+# Dispatcharr v0.21.1 Enhanced - Complete Implementation Patch
+################################################################################
+# 
+# Date: 2026-03-18
+# Version: v0.21.1 Enhanced
+# 
+# This patch ports 6 critical enhancements from v0.20.1 to v0.21.1
+# All features properly adapted to v0.21.1 architecture
+#
+################################################################################
+# FEATURES INCLUDED
+################################################################################
+#
+# 1. Logo Timeout Fix
+#    - Increased timeout from (3,5) to (10,15) seconds
+#    - Prevents premature timeouts on slow logo servers
+#    - Files: apps/channels/api_views.py, apps/channels/tasks.py
+#
+# 2. Basic Authentication
+#    - HTTP Basic Auth for M3U/EPG endpoints
+#    - Secure access without API keys
+#    - Files: apps/output/views.py
+#
+# 3. HTTP Proxy Support
+#    - Per-account proxy configuration
+#    - Works with FFmpeg, VLC, and HTTP streams
+#    - Files: apps/m3u/models.py, apps/m3u/serializers.py, core/models.py,
+#             apps/proxy/ts_proxy/stream_manager.py, apps/proxy/ts_proxy/http_streamer.py
+#    - Migration: apps/m3u/migrations/0020_m3uaccount_proxy.py
+#
+# 4. Extended Timeout Configuration
+#    - 15+ configurable timeout settings
+#    - Database-backed with caching
+#    - Files: apps/proxy/config.py, apps/proxy/ts_proxy/config_helper.py
+#
+# 5. Profile Failover Enhancement
+#    - Try all stream/profile combinations
+#    - Better failover coverage
+#    - Files: apps/proxy/ts_proxy/stream_manager.py, apps/proxy/ts_proxy/url_utils.py
+#
+# 6. Adaptive Health Monitor
+#    - Faster detection after stream switches
+#    - Adaptive thresholds (5s/1/0 recent, 10s/3/30 normal)
+#    - Files: apps/proxy/ts_proxy/stream_manager.py
+#
+################################################################################
+# INSTALLATION
+################################################################################
+#
+# 1. Backup Database:
+#    docker exec dispatcharr python manage.py dumpdata > backup.json
+#
+# 2. Apply Changes:
+#    Follow the patches below for each file
+#
+# 3. Create Migration:
+#    docker exec dispatcharr python manage.py makemigrations
+#    docker exec dispatcharr python manage.py migrate
+#
+# 4. Restart:
+#    docker restart dispatcharr
+#
+# 5. Verify:
+#    - M3U Accounts have "Proxy" field in WebUI
+#    - Core Settings > Proxy Settings shows new timeout options
+#    - Basic Auth works on M3U/EPG endpoints
+#
+################################################################################
+# WEBUI COMPATIBILITY
+################################################################################
+#
+# ✅ Proxy Field: Automatically displayed in M3U Account form (serializer includes 'proxy')
+# ✅ Timeout Settings: Displayed in Core Settings > Proxy Settings (JSON field)
+# ✅ All changes are WebUI-compatible without frontend modifications
+#
+################################################################################
+
+################################################################################
+# FEATURE 1: Logo Timeout Fix
+################################################################################
+
+--- a/apps/channels/api_views.py
++++ b/apps/channels/api_views.py
+@@ -1986,7 +1986,7 @@ class LogoViewSet(viewsets.ModelViewSet):
+                 response = requests.get(
+                     logo_url,
+                     stream=True,
+-                    timeout=(3, 5),
++                    timeout=(10, 15),  # (connect_timeout, read_timeout) - Increased to prevent premature timeouts
+                     headers={'User-Agent': user_agent}
+                 )
+
+--- a/apps/channels/tasks.py
++++ b/apps/channels/tasks.py
+@@ -1900,7 +1900,7 @@ def fetch_logo_from_url(logo_id):
+                     'User-Agent': user_agent
+                 },
+                 stream=True,
+-                timeout=(3, 5),
++                timeout=(10, 15),
+             ) as response:
+                 response.raise_for_status()
+
+################################################################################
+# FEATURE 2: Basic Authentication
+################################################################################
+
+--- a/apps/output/views.py
++++ b/apps/output/views.py
+@@ -51,6 +51,56 @@ def get_client_identifier(request):
+ 
+     return client_id_hash, client_ip, user_agent
+ 
++def get_basic_auth_user(request):
++    """
++    Extract and validate user from HTTP Basic Authentication header.
++    
++    Returns:
++        User object if authentication successful, None otherwise
++    """
++    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
++    
++    if not auth_header.startswith('Basic '):
++        return None
++    
++    try:
++        # Decode Base64 credentials
++        encoded_credentials = auth_header[6:]  # Remove 'Basic ' prefix
++        decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
++        username, password = decoded_credentials.split(':', 1)
++        
++        # Get user from database
++        try:
++            user = User.objects.get(username=username)
++        except User.DoesNotExist:
++            logger.warning(f"Basic Auth failed: User '{username}' not found")
++            return None
++        
++        # Check password
++        if not user.check_password(password):
++            logger.warning(f"Basic Auth failed: Invalid password for user '{username}'")
++            return None
++        
++        # Check if user is active
++        if not user.is_active:
++            logger.warning(f"Basic Auth failed: User '{username}' is inactive")
++            return None
++        
++        return user
++        
++    except Exception as e:
++        logger.warning(f"Basic Auth failed: {e}")
++        return None
++
++def require_basic_auth(request):
++    """
++    Return a 401 response requesting Basic Authentication.
++    """
++    response = HttpResponse('Unauthorized', status=401)
++    response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
++    return response
++
+ def m3u_endpoint(request, profile_name=None, user=None):
+     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
++    
++    # Require Basic Auth if no user provided
++    if user is None:
++        user = get_basic_auth_user(request)
++        if user is None:
++            return require_basic_auth(request)
+     
+     if not network_access_allowed(request, "M3U_EPG"):
+ 
+@@ -119,6 +169,12 @@ def m3u_endpoint(request, profile_name=None, user=None):
+ 
+ def epg_endpoint(request, profile_name=None, user=None):
+     logger.debug("epg_endpoint called: method=%s, profile=%s", request.method, profile_name)
++    
++    # Require Basic Auth if no user provided
++    if user is None:
++        user = get_basic_auth_user(request)
++        if user is None:
++            return require_basic_auth(request)
+     
+     if not network_access_allowed(request, "M3U_EPG"):
+
+################################################################################
+# FEATURE 3: HTTP Proxy Support
+################################################################################
+
+--- a/apps/m3u/models.py
++++ b/apps/m3u/models.py
+@@ -100,6 +100,12 @@ class M3UAccount(models.Model):
+         default=0,
+         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
+     )
++    proxy = models.CharField(
++        max_length=255,
++        blank=True,
++        null=True,
++        help_text="HTTP proxy URL (e.g., http://proxy.example.com:8080) for this M3U account",
++    )
+ 
+     def __str__(self):
+         return self.name
+
+--- a/apps/m3u/serializers.py
++++ b/apps/m3u/serializers.py
+@@ -175,6 +175,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
+             "password",
+             "stale_stream_days",
+             "priority",
++            "proxy",
+             "status",
+             "last_message",
+             "enable_vod",
+
+--- a/core/models.py
++++ b/core/models.py
+@@ -127,11 +127,15 @@ class StreamProfile(models.Model):
+ 
+     def build_command(self, stream_url, user_agent, proxy=None):
+         if self.is_proxy():
++            # Proxy type doesn't use external commands
+             return []
+ 
+         replacements = {
+             "{streamUrl}": stream_url,
+             "{userAgent}": user_agent,
+         }
++        
++        # Add proxy to replacements if provided
++        if proxy:
++            replacements["{proxy}"] = proxy
+ 
+         # Split the command and iterate through each part to apply replacements
+         cmd = [self.command] + [
+
+--- a/apps/proxy/ts_proxy/http_streamer.py
++++ b/apps/proxy/ts_proxy/http_streamer.py
+@@ -15,11 +15,12 @@ logger = get_logger()
+ 
+ class HTTPStreamReader:
+     """Reads HTTP stream in a background thread and pipes data to a file descriptor"""
+-    def __init__(self, url, user_agent=None, chunk_size=8192):
++    def __init__(self, url, user_agent=None, chunk_size=8192, proxy=None):
+         self.url = url
+         self.user_agent = user_agent or 'VLC/3.0.20 LibVLC/3.0.20'
+         self.chunk_size = chunk_size
++        self.proxy = proxy
+         self.running = False
+         self.thread = None
+         self.pipe_read_fd = None
+@@ -32,6 +33,12 @@ class HTTPStreamReader:
+             'User-Agent': self.user_agent,
+             'Connection': 'keep-alive'
+         })
++        
++        # Configure proxy if provided
++        if self.proxy:
++            session.proxies = {
++                'http': self.proxy,
++                'https': self.proxy
++            }
+ 
+         # Set up connection pooling
+         adapter = requests.adapters.HTTPAdapter(
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ -595,7 +595,21 @@ class StreamManager:
+             else:
+                 stream_profile = channel.get_stream_profile()
+ 
+-            self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent)
++            # Get proxy from M3U account if available
++            proxy = None
++            try:
++                if hasattr(self, 'current_stream_id') and self.current_stream_id:
++                    from apps.channels.models import Stream
++                    stream = Stream.objects.get(id=self.current_stream_id)
++                    if hasattr(stream, 'm3u_account') and stream.m3u_account:
++                        proxy = stream.m3u_account.proxy
++                        if proxy:
++                            logger.info(f"Using proxy {proxy} for channel {self.channel_id}")
++            except Exception as e:
++                logger.debug(f"Could not get proxy: {e}")
++
++            # Build and start transcode command
++            self.transcode_cmd = stream_profile.build_command(self.url, self.user_agent, proxy)
+ 
+             # Store stream command for efficient log parser routing
+             self.stream_command = stream_profile.command
+@@ -945,11 +959,25 @@ class StreamManager:
+             if self.transcode_process and self.transcode_process.poll() is None:
+                 logger.debug(f"Closing existing transcode process before establishing HTTP connection for channel {self.channel_id}")
+                 self._close_socket()
++
++            # Get proxy from M3U account if available
++            proxy = None
++            try:
++                if hasattr(self, 'current_stream_id') and self.current_stream_id:
++                    from apps.channels.models import Stream
++                    stream = Stream.objects.get(id=self.current_stream_id)
++                    if hasattr(stream, 'm3u_account') and stream.m3u_account:
++                        proxy = stream.m3u_account.proxy
++                        if proxy:
++                            logger.info(f"Using HTTP proxy {proxy} for channel {self.channel_id}")
++            except Exception as e:
++                logger.debug(f"Could not get HTTP proxy: {e}")
+ 
+             # Create and start the HTTP stream reader
+             self.http_reader = HTTPStreamReader(
+                 url=self.url,
+                 user_agent=self.user_agent,
+-                chunk_size=self.chunk_size
++                chunk_size=self.chunk_size,
++                proxy=proxy
+             )
+
+################################################################################
+# MIGRATION for Feature 3
+################################################################################
+
+Create new file: apps/m3u/migrations/0020_m3uaccount_proxy.py
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('m3u', '0019_m3uaccountprofile_exp_date'),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='m3uaccount',
+            name='proxy',
+            field=models.CharField(
+                blank=True,
+                help_text='HTTP proxy URL (e.g., http://proxy.example.com:8080) for this M3U account',
+                max_length=255,
+                null=True
+            ),
+        ),
+    ]
+
+################################################################################
+# FEATURE 4: Extended Timeout Configuration
+################################################################################
+
+--- a/apps/proxy/config.py
++++ b/apps/proxy/config.py
+@@ -40,6 +40,17 @@ class BaseConfig:
+         except Exception:
+             # Return defaults if database query fails
+             return {
++                "buffering_timeout": 15,
++                "buffering_speed": 1.0,
++                "redis_chunk_ttl": 60,
++                "channel_shutdown_delay": 0,
++                "channel_init_grace_period": 5,
++                "new_client_behind_seconds": 5,
++                "max_retries": 2,
++                "url_switch_timeout": 20,
++                "max_stream_switches": 200,
++                "connection_timeout": 10,
++                "failover_grace_period": 20,
+                 "chunk_timeout": 5,
+                 "initial_behind_chunks": 4,
+                 "chunk_batch_size": 5,
+
+--- a/apps/proxy/ts_proxy/config_helper.py
++++ b/apps/proxy/ts_proxy/config_helper.py
+@@ -10,6 +10,66 @@ class ConfigHelper:
+     """
+     Helper class to access configuration values from database or defaults
+     """
++    
++    @staticmethod
++    def max_retries():
++        """Get max retries from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("max_retries", 2)
++
++    @staticmethod
++    def url_switch_timeout():
++        """Get URL switch timeout from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("url_switch_timeout", 20)
++
++    @staticmethod
++    def max_stream_switches():
++        """Get max stream switches from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("max_stream_switches", 200)
++
++    @staticmethod
++    def connection_timeout():
++        """Get connection timeout from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("connection_timeout", 10)
++
++    @staticmethod
++    def failover_grace_period():
++        """Get failover grace period from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("failover_grace_period", 20)
++
++    @staticmethod
++    def buffering_timeout():
++        """Get buffering timeout from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("buffering_timeout", 15)
++
++    @staticmethod
++    def buffering_speed():
++        """Get buffering speed threshold from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("buffering_speed", 1.0)
++
++    @staticmethod
++    def chunk_size():
++        """Get chunk size from database or default"""
++        return 188 * 1361  # ~256KB
++
++    @staticmethod
++    def chunk_timeout():
++        """Get chunk timeout from database or default"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get("chunk_timeout", 5)
++
++    @staticmethod
++    def get(key, default=None):
++        """Generic getter for any config value"""
++        settings = TSConfig.get_proxy_settings()
++        return settings.get(key, default)
+ 
+     @staticmethod
+     def get_channel_shutdown_delay():
+
+################################################################################
+# FEATURE 5: Profile Failover Enhancement
+################################################################################
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ -71,8 +71,9 @@ class StreamManager:
+ 
+         # Add tracking for tried streams and current stream
+         self.current_stream_id = stream_id
+         self.current_profile_id = None
+-        self.tried_stream_ids = set()
++        self.tried_combinations = set()  # Track (stream_id, profile_id) combinations
++        self.tried_stream_ids = set()  # Keep for backward compatibility
+ 
+         # IMPROVED LOGGING: Better handle and track stream ID
+         if stream_id:
+@@ -1660,20 +1661,35 @@ class StreamManager:
+     def _try_next_stream(self):
+         """Try to switch to the next available stream/profile combination"""
+         try:
++            # Mark current combination as tried
++            if self.current_stream_id and self.current_profile_id:
++                self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
++
+             # Get alternate streams/profiles excluding the current combination
+             alternate_streams = get_alternate_streams(
+                 self.channel_id,
+                 self.current_stream_id,
++                self.current_profile_id
+             )
+ 
+-            if not alternate_streams:
++            # Filter out combinations we've already tried
++            untried_combinations = [
++                s for s in alternate_streams 
++                if (s['stream_id'], s['profile_id']) not in self.tried_combinations
++            ]
++            
++            if untried_combinations:
++                entries = ', '.join([f"{s['stream_id']}:{s['profile_id']}" for s in untried_combinations])
++                logger.info(f"Found {len(untried_combinations)} untried combinations for channel {self.channel_id}: [{entries}]")
++            else:
++                logger.warning(f"No untried combinations available for channel {self.channel_id}, tried: {self.tried_combinations}")
++
++            if not untried_combinations:
++                # Check if we have combinations but they've all been tried
++                if alternate_streams and len(self.tried_combinations) > 0:
++                    logger.warning(f"All {len(alternate_streams)} alternate combinations have been tried for channel {self.channel_id}")
+                 return False
+ 
+-            # Try the next stream
+-            for next_stream in alternate_streams:
++            # Try multiple combinations until we find one that works
++            for next_stream in untried_combinations:
+                 stream_id = next_stream['stream_id']
++                profile_id = next_stream['profile_id']
++
++                # Add to tried combinations
++                self.tried_combinations.add((stream_id, profile_id))
+                 self.tried_stream_ids.add(stream_id)
+ 
+-                # Get stream info
+-                stream_info = get_stream_info_for_switch(
++                # Get stream info for this specific combination
++                stream_info = get_stream_info_for_profile(
+                     self.channel_id,
+-                    stream_id
++                    stream_id,
++                    profile_id
+                 )
+
+--- a/apps/proxy/ts_proxy/url_utils.py
++++ b/apps/proxy/ts_proxy/url_utils.py
+@@ -287,7 +287,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int]
+         return {'error': f'Error: {str(e)}'}
+ 
+-def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None) -> List[dict]:
++def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None, current_profile_id: Optional[int] = None) -> List[dict]:
+     """
+     Get alternative streams/profiles for a channel when the current stream fails.
++    Includes profile failover: returns all available profiles for each stream.
+ 
+     Args:
+         channel_id: The UUID of the channel
+         current_stream_id: The currently failing stream ID to exclude
++        current_profile_id: The currently failing profile ID to exclude
+ 
+     Returns:
+-        List[dict]: List of streams with stream_id
++        List[dict]: List of stream/profile combinations with stream_id and profile_id
+     """
+     try:
+         from core.utils import RedisClient
+@@ -350,6 +351,11 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = N
+ 
+                 for profile in profiles:
++                    # Skip current stream+profile combination
++                    if current_stream_id and stream.id == current_stream_id and current_profile_id and profile.id == current_profile_id:
++                        logger.debug(f"Skipping current stream/profile combination: {current_stream_id}/{current_profile_id}")
++                        continue
++
+                     # Check connection availability
+                     if redis_client:
+                         profile_connections_key = f"profile_connections:{profile.id}"
+@@ -373,8 +379,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = N
+                         if profile.max_streams == 0 or effective_connections < profile.max_streams:
+                             alternate_streams.append({
+                                 'stream_id': stream.id,
++                                'profile_id': profile.id,
+                                 'name': stream.name
+                             })
+-                            break  # Found a profile with capacity, move to next stream
++                            # NO BREAK - continue to check all profiles
+                         else:
+                             logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams}")
+                     else:
+                         # No Redis available, add all profiles
+                         alternate_streams.append({
+                             'stream_id': stream.id,
++                            'profile_id': profile.id,
+                             'name': stream.name
+                         })
++                        # NO BREAK - continue to check all profiles
+
++def get_stream_info_for_profile(channel_id: str, stream_id: int, profile_id: int) -> dict:
++    """
++    Get stream information for a specific stream/profile combination.
++    
++    Args:
++        channel_id: The UUID of the channel
++        stream_id: The stream ID to use
++        profile_id: The profile ID to use
++        
++    Returns:
++        dict: Stream information including URL, user agent, transcode flag
++    """
++    try:
++        from core.utils import RedisClient
++        
++        channel = get_object_or_404(Channel, uuid=channel_id)
++        redis_client = RedisClient.get_client()
++        
++        # Get the stream and profile objects
++        stream = get_object_or_404(Stream, pk=stream_id)
++        profile = get_object_or_404(M3UAccountProfile, pk=profile_id)
++        
++        # Get the M3U account
++        m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
++        
++        # Get the user agent
++        user_agent = m3u_account.get_user_agent().user_agent
++        
++        # Generate URL using the transform function
++        stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
++        
++        # Get transcode info from the channel's stream profile
++        stream_profile = channel.get_stream_profile()
++        transcode = not (stream_profile.is_proxy() or stream_profile is None)
++        profile_value = stream_profile.id
++        
++        return {
++            'url': stream_url,
++            'user_agent': user_agent,
++            'transcode': transcode,
++            'stream_profile': profile_value,
++            'stream_id': stream_id,
++            'm3u_profile_id': profile_id
++        }
++    except Exception as e:
++        logger.error(f"Error getting stream info for profile: {e}", exc_info=True)
++        return {'error': f'Error: {str(e)}'}
+
+################################################################################
+# FEATURE 6: Adaptive Health Monitor
+################################################################################
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ -136,6 +136,9 @@ class StreamManager:
+         # Add stderr reader thread property
+         self.stderr_reader_thread = None
+         self.ffmpeg_input_phase = True
++
++        # Track last stream switch time for adaptive health monitor cooldown
++        self.last_stream_switch_time = 0
+ 
+     def _create_session(self):
+         """Create and configure requests session with optimal settings"""
+@@ -241,6 +244,7 @@ class StreamManager:
+                         logger.info(f"Health-requested stream switch successful for channel {self.channel_id}")
+                         stream_switch_attempts += 1
+                         self.retry_count = 0  # Reset retries for new stream
++                        self.last_stream_switch_time = time.time()
+                         continue  # Go back to main loop with new stream
+                     else:
+                         logger.error(f"Health-requested stream switch failed for channel {self.channel_id}")
+@@ -381,6 +385,7 @@ class StreamManager:
+                     if switch_result:
+                         # Successfully switched to a new stream, continue with the new URL
+                         stream_switch_attempts += 1
++                        self.last_stream_switch_time = time.time()
+                         logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
+                         # Reset retry count for the new stream - important for the loop to work correctly
+                         self.retry_count = 0
+@@ -1218,6 +1223,24 @@ class StreamManager:
+                 now = time.time()
+                 inactivity_duration = now - self.last_data_time
+ 
++                # Adaptive thresholds based on time since last switch
++                last_switch_time = getattr(self, 'last_stream_switch_time', 0)
++                time_since_switch = now - last_switch_time if last_switch_time > 0 else float('inf')
++                recently_switched = time_since_switch < 30
++
++                # After a recent switch: detect problems faster (5s timeout, 1 check, 0s cooldown)
++                # Normal operation: standard thresholds (10s timeout, 3 checks, 30s cooldown)
++                if recently_switched:
++                    timeout_threshold = 5
++                    max_unhealthy_checks = 1
++                    action_cooldown = 0
++                else:
++                    timeout_threshold = getattr(Config, 'CONNECTION_TIMEOUT', 10)
++                    max_unhealthy_checks = 3
++                    action_cooldown = 30
++
+                 if inactivity_duration > timeout_threshold and self.connected:
+                     if self.healthy:
+                         logger.warning(f"Stream unhealthy for channel {self.channel_id} - no data for {inactivity_duration:.1f}s")
+
+################################################################################
+# END OF PATCH
+################################################################################
+#
+# VERIFICATION CHECKLIST:
+#
+# □ Feature 1: Logo timeout (10, 15) in 2 files
+# □ Feature 2: Basic auth functions + integration in 2 endpoints
+# □ Feature 3: Proxy field + serializer + build_command + 2 connection methods
+# □ Feature 4: 15+ timeout settings + helper methods
+# □ Feature 5: tried_combinations + get_alternate_streams returns all profiles
+# □ Feature 6: last_stream_switch_time + 2 timestamp sets + adaptive thresholds
+# □ Migration created for proxy field
+# □ Database backup created
+# □ All changes tested
+#
+################################################################################
+# SUPPORT
+################################################################################
+#
+# Issues? Check logs:
+# - docker logs dispatcharr
+# - /var/log/dispatcharr/dispatcharr.log
+# - /var/log/dispatcharr/proxy.log
+#
+# Rollback:
+# 1. docker exec dispatcharr python manage.py loaddata backup.json
+# 2. Restore original files
+# 3. docker restart dispatcharr
+#
+################################################################################

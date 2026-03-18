@@ -1,20 +1,19 @@
-import React, { useState } from 'react';
 import useUserAgentsStore from '../store/userAgents';
 import M3UsTable from '../components/tables/M3UsTable';
 import EPGsTable from '../components/tables/EPGsTable';
 import { Box, Stack } from '@mantine/core';
+import ErrorBoundary from '../components/ErrorBoundary';
 
-const M3UPage = () => {
-  const isLoading = useUserAgentsStore((state) => state.isLoading);
+const PageContent = () => {
   const error = useUserAgentsStore((state) => state.error);
-  if (isLoading) return <div>Loading...</div>;
-  if (error) return <div>Error: {error}</div>;
+  if (error) throw new Error(error);
+
   return (
     <Stack
+      p="10"
+      h="100%" // Set a specific height to ensure proper display
+      miw="1100px" // Prevent tables from becoming too cramped
       style={{
-        padding: 10,
-        height: '100%', // Set a specific height to ensure proper display
-        minWidth: '1100px', // Prevent tables from becoming too cramped
         overflowX: 'auto', // Enable horizontal scrolling when needed
         overflowY: 'auto', // Enable vertical scrolling on the container
       }}
@@ -28,6 +27,14 @@ const M3UPage = () => {
         <EPGsTable />
       </Box>
     </Stack>
+  );
+};
+
+const M3UPage = () => {
+  return (
+    <ErrorBoundary>
+      <PageContent />
+    </ErrorBoundary>
   );
 };
 

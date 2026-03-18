@@ -6,7 +6,6 @@ import M3UProfiles from './M3UProfiles';
 import {
   LoadingOverlay,
   TextInput,
-  Textarea,
   Button,
   Checkbox,
   Modal,
@@ -21,9 +20,6 @@ import {
   Switch,
   Box,
   PasswordInput,
-  Table,
-  Badge,
-  ActionIcon,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
@@ -32,6 +28,8 @@ import { isNotEmpty, useForm } from '@mantine/form';
 import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import M3UFilters from './M3UFilters';
+import ScheduleInput from './ScheduleInput';
+import { DateTimePicker } from '@mantine/dates';
 
 const M3U = ({
   m3uAccount = null,
@@ -48,11 +46,13 @@ const M3U = ({
 
   const [playlist, setPlaylist] = useState(null);
   const [file, setFile] = useState(null);
+  const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [showCredentialFields, setShowCredentialFields] = useState(false);
+  const [scheduleType, setScheduleType] = useState('interval');
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -63,6 +63,7 @@ const M3U = ({
       is_active: true,
       max_streams: 0,
       refresh_interval: 24,
+      cron_expression: '',
       account_type: 'XC',
       create_epg: false,
       username: '',
@@ -70,38 +71,17 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
-      mac_address: '',
-      custom_properties: {},
-      proxy: '',
-      multi_proxy_enabled: false,
     },
 
     validate: {
       name: isNotEmpty('Please select a name'),
       user_agent: isNotEmpty('Please select a user-agent'),
-      refresh_interval: isNotEmpty('Please specify a refresh interval'),
     },
   });
 
   useEffect(() => {
     if (m3uAccount) {
       setPlaylist(m3uAccount);
-
-      const proxy =
-        m3uAccount.custom_properties &&
-        typeof m3uAccount.custom_properties === 'object' &&
-        m3uAccount.custom_properties.proxy
-          ? m3uAccount.custom_properties.proxy
-          : '';
-
-      const proxies = (proxy || '')
-        .replace(/\r/g, '\n')
-        .split(/[\n,]/)
-        .map((p) => p.trim())
-        .filter(Boolean);
-
-      const multiProxyEnabled = proxies.length > 1;
-
       form.setValues({
         name: m3uAccount.name,
         server_url: m3uAccount.server_url,
@@ -109,6 +89,7 @@ const M3U = ({
         user_agent: m3uAccount.user_agent ? `${m3uAccount.user_agent}` : '0',
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
+        cron_expression: m3uAccount.cron_expression || '',
         account_type: m3uAccount.account_type,
         username: m3uAccount.username ?? '',
         password: '',
@@ -122,12 +103,17 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
-        mac_address: m3uAccount.mac_address ?? '',
-        proxy,
-        multi_proxy_enabled: multiProxyEnabled,
       });
+      setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
-      if (m3uAccount.account_type === 'XC') {
+      // Determine schedule type from existing data
+      setScheduleType(
+        m3uAccount.cron_expression && m3uAccount.cron_expression.trim() !== ''
+          ? 'cron'
+          : 'interval'
+      );
+
+      if (m3uAccount.account_type == 'XC') {
         setShowCredentialFields(true);
       } else {
         setShowCredentialFields(false);
@@ -135,67 +121,48 @@ const M3U = ({
     } else {
       setPlaylist(null);
       form.reset();
+      setScheduleType('interval');
+      setExpDate(null);
     }
   }, [m3uAccount]);
 
   useEffect(() => {
-    if (form.values.account_type === 'XC') {
+    if (form.values.account_type == 'XC') {
       setShowCredentialFields(true);
     }
   }, [form.values.account_type]);
 
-  // Auto-detect multi-proxy: if more than one proxy is configured, enable it
-  useEffect(() => {
-    if (form.values.account_type !== 'MAC') {
-      form.setFieldValue('multi_proxy_enabled', false);
-      return;
-    }
-
-    const proxy = form.values.proxy || '';
-
-    const proxies = proxy
-      .replace(/\r/g, '\n')
-      .split(/[\n,]/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    form.setFieldValue('multi_proxy_enabled', proxies.length > 1);
-  }, [form.values.proxy, form.values.account_type]);
-
   const onSubmit = async () => {
-    const { create_epg, proxy, multi_proxy_enabled, ...values } = form.getValues();
+    const { create_epg, ...values } = form.getValues();
 
-    let custom_properties = {
-      ...(playlist?.custom_properties || {}),
-      ...(values.custom_properties || {}),
-    };
-
-    if (values.account_type === 'MAC') {
-      if (proxy && proxy.trim() !== '') {
-        custom_properties.proxy = proxy.trim();
-      } else {
-        delete custom_properties.proxy;
-      }
-
-      if (multi_proxy_enabled) {
-        custom_properties.multi_proxy_enabled = true;
-      } else {
-        delete custom_properties.multi_proxy_enabled;
-      }
+    // Convert exp_date (from controlled state) to ISO string for the API
+    if (values.account_type === 'XC') {
+      // XC accounts have exp_date auto-managed server-side; don't send it
+      delete values.exp_date;
+    } else if (expDate instanceof Date) {
+      values.exp_date = expDate.toISOString();
     } else {
-      // For non-MAC accounts we never keep multi-proxy enabled
-      delete custom_properties.multi_proxy_enabled;
+      values.exp_date = null;
     }
 
-    values.custom_properties = custom_properties;
+    // Determine which schedule type is active based on field values
+    const hasCronExpression =
+      values.cron_expression && values.cron_expression.trim() !== '';
 
-    if (values.account_type === 'XC' && values.password === '') {
+    // Clear the field that isn't active based on actual field values
+    if (hasCronExpression) {
+      values.refresh_interval = 0;
+    } else {
+      values.cron_expression = '';
+    }
+
+    if (values.account_type == 'XC' && values.password == '') {
       // If account XC and no password input, assuming no password change
       // from previously stored value.
       delete values.password;
     }
 
-    if (values.user_agent === '0') {
+    if (values.user_agent == '0') {
       values.user_agent = null;
     }
 
@@ -212,24 +179,26 @@ const M3U = ({
         file,
       });
 
-      if (create_epg && values.account_type === 'XC') {
+      if (create_epg) {
         API.addEPG({
           name: values.name,
           source_type: 'xmltv',
-          url: `${values.server_url}/xmltv.php?username=${values.username}&password=${values.password}`,
+          url: `${new URL(values.server_url).origin}/xmltv.php?username=${values.username}&password=${values.password}`,
           api_key: '',
           is_active: true,
           refresh_interval: 24,
         });
       }
 
-      if (values.account_type !== 'XC' && values.account_type !== 'MAC') {
+      if (values.account_type != 'XC') {
         notifications.show({
           title: 'Fetching M3U Groups',
           message:
             'Configure group filters and auto sync settings once complete.',
         });
 
+        // Don't prompt for group filters, but keeping this here
+        // in case we want to revive it
         newPlaylist = null;
         close();
         return;
@@ -249,6 +218,7 @@ const M3U = ({
         fetchCategories();
       }
 
+      console.log('opening group options');
       setPlaylist(updatedPlaylist);
       setGroupFilterModalOpen(true);
       return;
@@ -285,94 +255,23 @@ const M3U = ({
     }
   }, [playlist, playlistCreated]);
 
-  const handleDeleteExpiredMacs = async () => {
-    if (!playlist?.id) {
-      return;
-    }
-    try {
-      // Du brauchst im API-Client eine Methode API.deleteExpiredMacs (siehe Kommentar unten)
-      const res = await API.deleteExpiredMacs(playlist.id);
-      const account = res.account || res; // falls du direkt account zurückgibst
-
-      setPlaylist(account);
-      form.setFieldValue('mac_address', account.mac_address ?? '');
-
-      const deleted = res.deleted ?? 0;
-      notifications.show({
-        title: 'MACs aktualisiert',
-        message: `${deleted} abgelaufene MAC(s) gelöscht.`,
-      });
-    } catch (e) {
-      console.error(e);
-      notifications.show({
-        color: 'red',
-        title: 'Fehler',
-        message: 'Abgelaufene MACs konnten nicht gelöscht werden.',
-      });
-    }
-  };
-
-
-  const handleDeleteMac = async (macId) => {
-    if (!playlist?.id) return;
-
-    try {
-      const res = await API.deleteAccountMac(playlist.id, macId);
-      const account = res.account || res;
-
-      setPlaylist(account);
-      form.setFieldValue('mac_address', account.mac_address ?? '');
-    } catch (e) {
-      console.error(e);
-      notifications.show({
-        color: 'red',
-        title: 'Fehler',
-        message: 'MAC konnte nicht gelöscht werden.',
-      });
-    }
-  };
-
-  const handleMoveMac = async (macId, direction) => {
-    if (!playlist?.id) return;
-
-    const macs = playlist?.macs || [];
-    const ids = macs.map((m) => m.id);
-    const index = ids.indexOf(macId);
-    if (index === -1) return;
-
-    if (direction === 'up' && index > 0) {
-      [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
-    } else if (direction === 'down' && index < ids.length - 1) {
-      [ids[index + 1], ids[index]] = [ids[index], ids[index + 1]];
-    } else {
-      return;
-    }
-
-    try {
-      const res = await API.reorderAccountMacs(playlist.id, ids);
-      const account = res.account || res;
-
-      setPlaylist(account);
-      form.setFieldValue('mac_address', account.mac_address ?? '');
-    } catch (e) {
-      console.error(e);
-      notifications.show({
-        color: 'red',
-        title: 'Fehler',
-        message: 'Reihenfolge konnte nicht aktualisiert werden.',
-      });
-    }
-  };
-
-  const macs = playlist?.macs || [];
-
   if (!isOpen) {
     return <></>;
   }
 
   return (
     <>
-      <Modal size={900} opened={isOpen} onClose={close} title="M3U Account">
+      <Modal
+        size={700}
+        opened={isOpen}
+        onClose={close}
+        title="M3U Account"
+        scrollAreaComponent={Modal.NativeScrollArea}
+        lockScroll={false}
+        withinPortal={true}
+        trapFocus={false}
+        yOffset="2vh"
+      >
         <LoadingOverlay
           visible={form.submitting}
           overlayBlur={2}
@@ -408,8 +307,7 @@ const M3U = ({
                 description={
                   <>
                     Standard for direct M3U URLs, <br />
-                    Xtream Codes for panel-based services, <br />
-                    MAC / STB-Portal for MAC-based STB portals
+                    Xtream Codes for panel-based services
                   </>
                 }
                 data={[
@@ -421,52 +319,12 @@ const M3U = ({
                     value: 'XC',
                     label: 'Xtream Codes',
                   },
-                  {
-                    value: 'MAC',
-                    label: 'MAC / STB-Portal',
-                  },
                 ]}
                 key={form.key('account_type')}
                 {...form.getInputProps('account_type')}
               />
 
-              {form.getValues().account_type === 'MAC' && (
-                <>
-                  <TextInput
-                    style={{ width: '100%' }}
-                    id="mac_address"
-                    name="mac_address"
-                    label="MAC Address(es)"
-                    description="Eine oder mehrere MACs (z.B. AA:BB:CC:DD:EE:FF, 11:22:33:44:55:66 oder jede MAC in neuer Zeile)"
-                    {...form.getInputProps('mac_address')}
-                    key={form.key('mac_address')}
-                  />
-                  <Textarea
-                    autosize
-                    minRows={2}
-                    style={{ width: '100%' }}
-                    id="proxy"
-                    name="proxy"
-                    label="HTTP Proxy"
-                    description="Optional HTTP proxies for MAC account requests. Mehrere Proxies mit Leerzeichen, Komma oder Zeilenumbruch trennen."
-                    placeholder="http://proxy1:port1, http://proxy2:port2"
-                    {...form.getInputProps('proxy')}
-                    key={form.key('proxy')}
-                  />
-                  <Checkbox
-                    mt="xs"
-                    id="multi_proxy_enabled"
-                    name="multi_proxy_enabled"
-                    label="Multi-Proxy aktivieren"
-                    description="Wird automatisch aktiv, wenn mehr als ein Proxy im Feld definiert ist."
-                    {...form.getInputProps('multi_proxy_enabled', { type: 'checkbox' })}
-                    key={form.key('multi_proxy_enabled')}
-                    readOnly
-                  />
-                </>
-              )}
-
-              {form.getValues().account_type === 'XC' && (
+              {form.getValues().account_type == 'XC' && (
                 <Box>
                   {!m3uAccount && (
                     <Group justify="space-between">
@@ -514,102 +372,27 @@ const M3U = ({
                 </Box>
               )}
 
-              {form.getValues().account_type !== 'MAC' && (
-                <FileInput
-                  id="file"
-                  label="Upload files"
-                  placeholder="Upload files"
-                  description="Upload a local M3U file instead of using URL"
-                  onChange={setFile}
-                />
+              {form.getValues().account_type != 'XC' && (
+                <>
+                  <FileInput
+                    id="file"
+                    label="Upload files"
+                    placeholder="Upload files"
+                    description="Upload a local M3U file instead of using URL"
+                    onChange={setFile}
+                  />
+
+                  <DateTimePicker
+                    label="Expiration Date"
+                    description="Set an expiration date to receive a warning notification"
+                    placeholder="No expiration"
+                    clearable
+                    valueFormat="MMM D, YYYY h:mm A"
+                    value={expDate}
+                    onChange={(v) => setExpDate(v ? new Date(v) : null)}
+                  />
+                </>
               )}
-
-              {macs.length > 0 && (
-                <Box mt="sm">
-                      <Group justify="space-between" align="center" mb={4}>
-                        <Box fw={500}>MAC-Status</Box>
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          color="red"
-                          onClick={handleDeleteExpiredMacs}
-                        >
-                          Abgelaufene MACs löschen
-                        </Button>
-                      </Group>
-                      <Table striped highlightOnHover withTableBorder withColumnBorders>
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th>#</Table.Th>
-                            <Table.Th>MAC</Table.Th>
-                            <Table.Th>Status</Table.Th>
-                            <Table.Th>Gültig bis</Table.Th>
-                            <Table.Th>Aktionen</Table.Th>
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
-                          {macs.map((mac, idx) => {
-                            let color = 'gray';
-                            if (mac.status === 'valid') color = 'green';
-                            if (mac.status === 'expired') color = 'red';
-                            if (mac.status === 'error') color = 'orange';
-
-                            return (
-                              <Table.Tr
-                                key={mac.id || idx}
-                                style={
-                                  mac.status === 'expired'
-                                    ? { color: theme.colors.red[6] }
-                                    : undefined
-                                }
-                              >
-                                <Table.Td>{mac.priority + 1}</Table.Td>
-                                <Table.Td>{mac.address}</Table.Td>
-                                <Table.Td>
-                                  <Badge color={color} size="sm">
-                                    {mac.status}
-                                  </Badge>
-                                </Table.Td>
-                                <Table.Td>
-                                  {mac.expires_text ||
-                                    mac.expires_at ||
-                                    'unbekannt'}
-                                </Table.Td>
-                                <Table.Td>
-                                  <Group gap="xs" justify="flex-end">
-                                    <ActionIcon
-                                      color="red"
-                                      variant="subtle"
-                                      onClick={() => handleDeleteMac(mac.id)}
-                                      title="MAC löschen"
-                                    >
-                                      ❌
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => handleMoveMac(mac.id, 'up')}
-                                      disabled={idx === 0}
-                                      title="Nach oben"
-                                    >
-                                      ↑
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => handleMoveMac(mac.id, 'down')}
-                                      disabled={idx === macs.length - 1}
-                                      title="Nach unten"
-                                    >
-                                      ↓
-                                    </ActionIcon>
-                                  </Group>
-                                </Table.Td>
-                              </Table.Tr>
-                            );
-                          })}
-                        </Table.Tbody>
-                      </Table>
-                    </Box>
-                  )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
@@ -641,17 +424,25 @@ const M3U = ({
                 )}
               />
 
-              <NumberInput
-                label="Refresh Interval (hours)"
-                description={
+              <ScheduleInput
+                scheduleType={scheduleType}
+                onScheduleTypeChange={setScheduleType}
+                intervalValue={form.getValues().refresh_interval}
+                onIntervalChange={(v) =>
+                  form.setFieldValue('refresh_interval', v)
+                }
+                cronValue={form.getValues().cron_expression}
+                onCronChange={(expr) =>
+                  form.setFieldValue('cron_expression', expr)
+                }
+                intervalLabel="Refresh Interval (hours)"
+                intervalDescription={
                   <>
                     How often to automatically refresh M3U data
                     <br />
                     (0 to disable automatic refreshes)
                   </>
                 }
-                {...form.getInputProps('refresh_interval')}
-                key={form.key('refresh_interval')}
               />
 
               <NumberInput
@@ -692,6 +483,7 @@ const M3U = ({
                 </Button>
                 <Button
                   variant="filled"
+                  // color={theme.custom.colors.buttonPrimary}
                   size="sm"
                   onClick={() => {
                     // If this is an XC account with VOD enabled, fetch VOD categories
@@ -708,6 +500,7 @@ const M3U = ({
                 </Button>
                 <Button
                   variant="filled"
+                  // color={theme.custom.colors.buttonPrimary}
                   size="sm"
                   onClick={() => setProfileModalOpen(true)}
                 >

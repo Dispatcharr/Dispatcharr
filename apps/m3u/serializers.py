@@ -1,57 +1,17 @@
 from core.utils import validate_flexible_url
 from rest_framework import serializers, status
 from rest_framework.response import Response
-
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile, M3UAccountMac, parse_mac_list
+from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
-from apps.channels.models import ChannelGroupM3UAccount
-from apps.channels.serializers import ChannelGroupM3UAccountSerializer
-
+from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
+from apps.channels.serializers import (
+    ChannelGroupM3UAccountSerializer,
+)
+from datetime import timezone as dt_tz
 import logging
 import json
 
 logger = logging.getLogger(__name__)
-
-
-class RelaxedJSONField(serializers.JSONField):
-    """
-    JSONField, das auch "", null und JSON-Strings akzeptiert.
-
-    Speziell für custom_properties:
-
-    - "" oder null      -> {}
-    - dict / list       -> wird direkt übernommen
-    - JSON-String       -> dict(JSON)
-    - sonstiger String  -> WARNING loggen, {} zurückgeben (keinen Fehler werfen!)
-    """
-
-    def to_internal_value(self, data):
-        # komplett leer -> leeres dict
-        if data in ("", None, {}):
-            return {}
-
-        # Falls Frontend schon ein dict/list schickt
-        if isinstance(data, (dict, list)):
-            return data
-
-        # Wenn ein String ankommt, versuchen wir JSON zu parsen
-        if isinstance(data, str):
-            try:
-                return json.loads(data)
-            except ValueError:
-                # Hier NICHT mehr abbrechen, sondern einfach {} verwenden
-                logger.warning(
-                    "RelaxedJSONField: could not parse custom_properties '%s', using {} instead",
-                    data,
-                )
-                return {}
-
-        # Fallback: alles andere einfach {} (maximal tolerant)
-        logger.warning(
-            "RelaxedJSONField: unexpected type %s for custom_properties, using {} instead",
-            type(data),
-        )
-        return {}
 
 
 class M3UFilterSerializer(serializers.ModelSerializer):
@@ -75,10 +35,10 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
     def get_account(self, obj):
         """Include basic account information for frontend use"""
         return {
-            "id": obj.m3u_account.id,
-            "name": obj.m3u_account.name,
-            "account_type": obj.m3u_account.account_type,
-            "is_xtream_codes": obj.m3u_account.account_type == "XC",
+            'id': obj.m3u_account.id,
+            'name': obj.m3u_account.name,
+            'account_type': obj.m3u_account.account_type,
+            'is_xtream_codes': obj.m3u_account.account_type == 'XC'
         }
 
     class Meta:
@@ -93,47 +53,54 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
             "search_pattern",
             "replace_pattern",
             "custom_properties",
+            "exp_date",
             "account",
         ]
         read_only_fields = ["id", "account"]
         extra_kwargs = {
-            "search_pattern": {"required": False, "allow_blank": True},
-            "replace_pattern": {"required": False, "allow_blank": True},
+            'search_pattern': {'required': False, 'allow_blank': True},
+            'replace_pattern': {'required': False, 'allow_blank': True},
+            'exp_date': {'required': False, 'allow_null': True},
         }
 
     def create(self, validated_data):
         m3u_account = self.context.get("m3u_account")
+
+        # Use the m3u_account when creating the profile
         validated_data["m3u_account_id"] = m3u_account.id
+
         return super().create(validated_data)
 
     def validate(self, data):
         """Custom validation to handle default profiles"""
-        # Updates auf bestehende Instanz
+        # For updates to existing instances
         if self.instance and self.instance.is_default:
-            # Default-Profile: search/replace dürfen nicht geändert werden
+            # For default profiles, search_pattern and replace_pattern are not required
+            # and we don't want to validate them since they shouldn't be changed
             return data
 
-        # Nicht-Default oder neu: search und replace werden benötigt
-        if not data.get("search_pattern"):
-            raise serializers.ValidationError(
-                {"search_pattern": ["This field is required for non-default profiles."]}
-            )
-        if not data.get("replace_pattern"):
-            raise serializers.ValidationError(
-                {"replace_pattern": ["This field is required for non-default profiles."]}
-            )
+        # For non-default profiles or new profiles, ensure required fields are present
+        if not data.get('search_pattern'):
+            raise serializers.ValidationError({
+                'search_pattern': ['This field is required for non-default profiles.']
+            })
+        if not data.get('replace_pattern'):
+            raise serializers.ValidationError({
+                'replace_pattern': ['This field is required for non-default profiles.']
+            })
 
         return data
 
     def update(self, instance, validated_data):
         if instance.is_default:
-            # Default-Profile: nur name + custom_properties (Notizen)
-            allowed_fields = {"name", "custom_properties"}
+            # For default profiles, only allow updating name, custom_properties, and exp_date
+            allowed_fields = {'name', 'custom_properties', 'exp_date'}
 
+            # Remove any fields that aren't allowed for default profiles
             disallowed_fields = set(validated_data.keys()) - allowed_fields
             if disallowed_fields:
                 raise serializers.ValidationError(
-                    "Default profiles can only modify name and notes. "
+                    f"Default profiles can only modify name, notes, and expiration. "
                     f"Cannot modify: {', '.join(disallowed_fields)}"
                 )
 
@@ -149,57 +116,39 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
         return super().destroy(request, *args, **kwargs)
 
 
-class M3UAccountMacSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = M3UAccountMac
-        fields = [
-            "id",
-            "address",
-            "priority",
-            "status",
-            "expires_at",
-            "expires_text",
-            "last_checked",
-            "last_error",
-        ]
-        read_only_fields = ["id", "status", "expires_at", "expires_text", "last_checked", "last_error"]
-
-
 class M3UAccountSerializer(serializers.ModelSerializer):
     """Serializer for M3U Account"""
 
     filters = serializers.SerializerMethodField()
-
+    earliest_expiration = serializers.SerializerMethodField()
+    all_expirations = serializers.SerializerMethodField()
+    exp_date = serializers.DateTimeField(
+        required=False, allow_null=True, write_only=True,
+        help_text="Expiration date for the default profile (write-through)",
+    )
+    # Include user_agent as a mandatory field using its primary key.
     user_agent = serializers.PrimaryKeyRelatedField(
         queryset=UserAgent.objects.all(),
         required=False,
         allow_null=True,
     )
-
     profiles = M3UAccountProfileSerializer(many=True, read_only=True)
-
-    # channel_groups werden über Join-Tabelle abgebildet
+    read_only_fields = ["locked", "created_at", "updated_at"]
+    # channel_groups = serializers.SerializerMethodField()
     channel_groups = ChannelGroupM3UAccountSerializer(
         source="channel_group", many=True, required=False
     )
-
     server_url = serializers.CharField(
         required=False,
         allow_blank=True,
         allow_null=True,
         validators=[validate_flexible_url],
     )
-
-    # Unser maximal toleranter JSON-Field
-    custom_properties = RelaxedJSONField(required=False, allow_null=True)
-
     enable_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
-
-    # Exponieren der einzelnen MAC-Einträge (für Status/Expiry im UI)
-    macs = M3UAccountMacSerializer(many=True, read_only=True)
+    cron_expression = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
         model = M3UAccount
@@ -219,22 +168,24 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "locked",
             "channel_groups",
             "refresh_interval",
+            "cron_expression",
             "custom_properties",
             "account_type",
             "username",
             "password",
-            "mac_address",
-            "macs",
             "stale_stream_days",
             "priority",
+            "proxy",
             "status",
             "last_message",
             "enable_vod",
             "auto_enable_new_groups_live",
             "auto_enable_new_groups_vod",
             "auto_enable_new_groups_series",
+            "earliest_expiration",
+            "all_expirations",
+            "exp_date",
         ]
-        read_only_fields = ["created_at", "updated_at", "locked"]
         extra_kwargs = {
             "password": {
                 "required": False,
@@ -242,119 +193,85 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             },
         }
 
-    # ----------- Output (GET) -----------
-
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # custom_properties kann None sein → zu {}
+        # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}
 
-        # Backend-Defaults für UI
         data["enable_vod"] = custom_props.get("enable_vod", False)
         data["auto_enable_new_groups_live"] = custom_props.get("auto_enable_new_groups_live", True)
         data["auto_enable_new_groups_vod"] = custom_props.get("auto_enable_new_groups_vod", True)
         data["auto_enable_new_groups_series"] = custom_props.get("auto_enable_new_groups_series", True)
 
-        # Für MAC-Accounts zusätzlich die normalisierte Liste zurückgeben (hilft beim Frontend-Editing)
-        if instance.account_type == M3UAccount.Types.MAC:
-            try:
-                data["mac_list"] = instance.get_mac_list()
-            except Exception:
-                data["mac_list"] = []
+        # Derive cron_expression from the linked PeriodicTask's crontab (single source of truth)
+        # But first check if we have a transient _cron_expression (from create/update before signal runs)
+        cron_expr = ""
+        if hasattr(instance, '_cron_expression'):
+            cron_expr = instance._cron_expression
+        elif instance.refresh_task_id and instance.refresh_task and instance.refresh_task.crontab:
+            ct = instance.refresh_task.crontab
+            cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
+        data["cron_expression"] = cron_expr
+
+        # Surface default profile's exp_date for the form.
+        # Use prefetch cache (obj.profiles.all()) to avoid an extra query per account.
+        # Always emit a Z-suffix UTC string so JS new Date() never misinterprets it as local.
+        default_profile = next((p for p in instance.profiles.all() if p.is_default), None)
+        exp = default_profile.exp_date if default_profile else None
+        if exp:
+            exp_utc = exp.astimezone(dt_tz.utc) if exp.tzinfo else exp.replace(tzinfo=dt_tz.utc)
+            data["exp_date"] = exp_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            data["exp_date"] = None
 
         return data
 
-    # ----------- Input (POST/PUT/PATCH) -----------
+    def update(self, instance, validated_data):
+        # Pop exp_date — it's written to the default profile, not the account
+        exp_date = validated_data.pop("exp_date", "__NOT_SET__")
 
-    def _extract_feature_flags(self, validated_data):
-        """Hilfsfunktion: Flags aus validated_data holen und entfernen."""
-        flags = {}
-        for key, default in [
-            ("enable_vod", False),
-            ("auto_enable_new_groups_live", True),
-            ("auto_enable_new_groups_vod", True),
-            ("auto_enable_new_groups_series", True),
-        ]:
-            flags[key] = validated_data.pop(key, default)
-        return flags
-
-    def _merge_custom_properties(self, instance, validated_data, flags):
-        """Merge feature flags into custom_properties while respecting incoming values.
-
-        Important behaviour:
-        - If the request explicitly sends custom_properties, this payload is treated
-          as the source of truth (so keys like "proxy" can be added/updated/removed
-          from the UI).
-        - If the request omits custom_properties, we fall back to the instance's
-          existing custom_properties (for backwards compatibility or non-API usage).
-        """
-        # Determine base custom_properties
-        if "custom_properties" in validated_data:
-            # Client provided an explicit payload (e.g. from React form)
-            custom_props = validated_data.get("custom_properties") or {}
-        elif instance is not None:
-            # No explicit payload -> keep existing properties
-            custom_props = instance.custom_properties or {}
+        # Pop cron_expression before it reaches model fields
+        # If not present (partial update), preserve the existing cron from the PeriodicTask
+        if "cron_expression" in validated_data:
+            cron_expr = validated_data.pop("cron_expression")
         else:
-            # Create without explicit custom_properties
-            custom_props = {}
+            cron_expr = ""
+            if instance.refresh_task_id and instance.refresh_task and instance.refresh_task.crontab:
+                ct = instance.refresh_task.crontab
+                cron_expr = f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}"
+        instance._cron_expression = cron_expr
 
-        # Ensure we always work with a dict
-        if not isinstance(custom_props, dict):
-            # falls z.B. ein String kam, unseren RelaxedJSONField-Fallback respektieren
-            custom_props = {}
+        # Handle enable_vod preference and auto_enable_new_groups settings
+        enable_vod = validated_data.pop("enable_vod", None)
+        auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", None)
+        auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
+        auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
 
-        # Flags in custom_properties schreiben / überschreiben
-        custom_props["enable_vod"] = flags["enable_vod"]
-        custom_props["auto_enable_new_groups_live"] = flags["auto_enable_new_groups_live"]
-        custom_props["auto_enable_new_groups_vod"] = flags["auto_enable_new_groups_vod"]
-        custom_props["auto_enable_new_groups_series"] = flags["auto_enable_new_groups_series"]
+        # Get existing custom_properties
+        custom_props = instance.custom_properties or {}
+
+        # Update preferences
+        if enable_vod is not None:
+            custom_props["enable_vod"] = enable_vod
+        if auto_enable_new_groups_live is not None:
+            custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
+        if auto_enable_new_groups_vod is not None:
+            custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
+        if auto_enable_new_groups_series is not None:
+            custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
 
         validated_data["custom_properties"] = custom_props
 
-    def _sync_macs_from_mac_address(self, account: M3UAccount):
-        """Helper to sync M3UAccountMac rows from account.mac_address after save."""
-        try:
-            if account.account_type != M3UAccount.Types.MAC:
-                return
-            account._ensure_macs_from_mac_address()
-        except Exception as e:
-            logger.warning("Failed to sync MAC list for account %s: %s", account.id, e)
-
-    def create(self, validated_data):
-        # Flags holen
-        flags = self._extract_feature_flags(validated_data)
-
-        # custom_properties korrekt aufbauen
-        self._merge_custom_properties(instance=None, validated_data=validated_data, flags=flags)
-
-        account = super().create(validated_data)
-
-        # Nach dem Anlegen MAC-List in separate Tabelle syncen (falls MAC-Account)
-        self._sync_macs_from_mac_address(account)
-
-        return account
-
-    def update(self, instance, validated_data):
-        # Flags holen
-        flags = self._extract_feature_flags(validated_data)
-
-        # custom_properties mergen
-        self._merge_custom_properties(instance=instance, validated_data=validated_data, flags=flags)
-
-        # channel_group-Daten getrennt verarbeiten
+        # Pop out channel group memberships so we can handle them manually
         channel_group_data = validated_data.pop("channel_group", [])
 
-        # Erst das M3UAccount-Objekt selbst updaten
+        # First, update the M3UAccount itself
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # MAC-List syncen (wenn sich mac_address geändert hat oder Account MAC-Typ ist)
-        self._sync_macs_from_mac_address(instance)
-
-        # ChannelGroupM3UAccount-Relationen aktualisieren
+        # Prepare a list of memberships to update
         memberships_to_update = []
         for group_data in channel_group_data:
             group = group_data.get("channel_group")
@@ -369,18 +286,95 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             except ChannelGroupM3UAccount.DoesNotExist:
                 continue
 
+        # Perform the bulk update
         if memberships_to_update:
             ChannelGroupM3UAccount.objects.bulk_update(
                 memberships_to_update, ["enabled"]
             )
 
+        # Write exp_date through to the default profile.
+        # Use a fresh DB query (not the prefetch cache) so we get the profile
+        # object AFTER the post_save signal (create_profile_for_m3u_account)
+        # has already updated max_streams, avoiding a stale-value overwrite.
+        if exp_date != "__NOT_SET__":
+            default_profile = instance.profiles.filter(is_default=True).first()
+            if default_profile:
+                default_profile.exp_date = exp_date
+                default_profile.save(update_fields=['exp_date'])
+            # Invalidate the profiles prefetch cache so to_representation
+            # sees the updated exp_date rather than the pre-request snapshot.
+            if '_prefetched_objects_cache' in instance.__dict__:
+                instance._prefetched_objects_cache.pop('profiles', None)
+
         return instance
 
-    # ----------- Hilfsfelder -----------
+    def create(self, validated_data):
+        # Pop exp_date — it's written to the default profile after creation
+        exp_date = validated_data.pop("exp_date", None)
+
+        # Pop cron_expression — it's not a model field
+        cron_expr = validated_data.pop("cron_expression", "")
+
+        # Handle enable_vod preference and auto_enable_new_groups settings during creation
+        enable_vod = validated_data.pop("enable_vod", False)
+        auto_enable_new_groups_live = validated_data.pop("auto_enable_new_groups_live", True)
+        auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", True)
+        auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", True)
+
+        # Parse existing custom_properties or create new
+        custom_props = validated_data.get("custom_properties", {})
+
+        # Set preferences (default to True for auto_enable_new_groups)
+        custom_props["enable_vod"] = enable_vod
+        custom_props["auto_enable_new_groups_live"] = auto_enable_new_groups_live
+        custom_props["auto_enable_new_groups_vod"] = auto_enable_new_groups_vod
+        custom_props["auto_enable_new_groups_series"] = auto_enable_new_groups_series
+        validated_data["custom_properties"] = custom_props
+
+        # Build instance manually so we can attach transient attr before save triggers signal
+        instance = M3UAccount(**validated_data)
+        instance._cron_expression = cron_expr
+        instance.save()
+
+        # Write exp_date through to the default profile created by post_save signal
+        if exp_date is not None:
+            default_profile = instance.profiles.filter(is_default=True).first()
+            if default_profile:
+                default_profile.exp_date = exp_date
+                default_profile.save()
+
+        return instance
 
     def get_filters(self, obj):
         filters = obj.filters.order_by("order")
         return M3UFilterSerializer(filters, many=True).data
+
+    def get_earliest_expiration(self, obj):
+        """Return the soonest exp_date across all active profiles for this account."""
+        # Filter in Python over the prefetch cache to avoid an extra query per account.
+        expiring = [p.exp_date for p in obj.profiles.all() if p.is_active and p.exp_date]
+        if not expiring:
+            return None
+        exp = min(expiring)
+        exp_utc = exp.astimezone(dt_tz.utc) if exp.tzinfo else exp.replace(tzinfo=dt_tz.utc)
+        return exp_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    def get_all_expirations(self, obj):
+        """Return exp_date info for every profile that has one (for tooltip)."""
+        # Filter in Python over the prefetch cache to avoid an extra query per account.
+        profiles = sorted(
+            (p for p in obj.profiles.all() if p.exp_date),
+            key=lambda p: p.exp_date,
+        )
+        return [
+            {
+                "profile_id": p.id,
+                "profile_name": p.name,
+                "exp_date": (p.exp_date.astimezone(dt_tz.utc) if p.exp_date.tzinfo else p.exp_date.replace(tzinfo=dt_tz.utc)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                "is_active": p.is_active,
+            }
+            for p in profiles
+        ]
 
 
 class ServerGroupSerializer(serializers.ModelSerializer):

@@ -3,7 +3,6 @@ import API from '../../api';
 import useEPGsStore from '../../store/epgs';
 import EPGForm from '../forms/EPG';
 import DummyEPGForm from '../forms/DummyEPG';
-import { TableHelper } from '../../helpers';
 import {
   ActionIcon,
   Text,
@@ -14,7 +13,6 @@ import {
   Flex,
   useMantineTheme,
   Switch,
-  Badge,
   Progress,
   Stack,
   Group,
@@ -31,9 +29,9 @@ import {
   SquarePlus,
   ChevronDown,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import useSettingsStore from '../../store/settings';
+import { format } from '../../utils/dateTimeUtils.js';
 import useLocalStorage from '../../hooks/useLocalStorage';
+import { useDateTimeFormat } from '../../utils/dateTimeUtils.js';
 import ConfirmationDialog from '../../components/ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from './CustomTable';
@@ -110,27 +108,25 @@ const EPGsTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [epgToDelete, setEpgToDelete] = useState(null);
   const [data, setData] = useState([]);
+  const [deleting, setDeleting] = useState(false);
 
   const epgs = useEPGsStore((s) => s.epgs);
   const refreshProgress = useEPGsStore((s) => s.refreshProgress);
 
   const theme = useMantineTheme();
-  // Get tableSize directly from localStorage instead of the store
+  const { fullDateTimeFormat } = useDateTimeFormat();
   const [tableSize] = useLocalStorage('table-size', 'default');
-
-  // Get proper size for action icons to match ChannelsTable
-  const iconSize =
-    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'md' : 'sm';
-
-  // Calculate density for Mantine Table
-  const tableDensity =
-    tableSize === 'compact' ? 'xs' : tableSize === 'large' ? 'xl' : 'md';
-
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   const toggleActive = async (epg) => {
     try {
+      // Validate that epg is a valid object with an id
+      if (!epg || typeof epg !== 'object' || !epg.id) {
+        console.error('toggleActive called with invalid epg:', epg);
+        return;
+      }
+
       // Send only the is_active field to trigger our special handling
       await API.updateEPG(
         {
@@ -154,6 +150,9 @@ const EPGsTable = () => {
       case 'downloading':
         label = 'Downloading';
         break;
+      case 'extracting':
+        label = 'Extracting';
+        break;
       case 'parsing_channels':
         label = 'Parsing Channels';
         break;
@@ -162,6 +161,22 @@ const EPGsTable = () => {
         break;
       default:
         return null;
+    }
+
+    // Build additional info string from progress data
+    let additionalInfo = '';
+    if (progress.message) {
+      additionalInfo = progress.message;
+    } else if (
+      progress.processed !== undefined &&
+      progress.channels !== undefined
+    ) {
+      additionalInfo = `${progress.processed.toLocaleString()} programs for ${progress.channels} channels`;
+    } else if (
+      progress.processed !== undefined &&
+      progress.total !== undefined
+    ) {
+      additionalInfo = `${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
     }
 
     return (
@@ -175,7 +190,14 @@ const EPGsTable = () => {
           style={{ margin: '2px 0' }}
         />
         {progress.speed && (
-          <Text size="xs">Speed: {parseInt(progress.speed)} KB/s</Text>
+          <Text size="xs" c="dimmed">
+            Speed: {parseInt(progress.speed)} KB/s
+          </Text>
+        )}
+        {additionalInfo && (
+          <Text size="xs" c="dimmed" lineClamp={1}>
+            {additionalInfo}
+          </Text>
         )}
       </Stack>
     );
@@ -280,14 +302,35 @@ const EPGsTable = () => {
 
           // Show success message for successful sources
           if (data.status === 'success') {
+            const successMessage =
+              data.last_message || 'EPG data refreshed successfully';
             return (
-              <Text
-                c="dimmed"
-                size="xs"
-                style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
-              >
-                EPG data refreshed successfully
-              </Text>
+              <Tooltip label={successMessage} multiline width={300}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ color: theme.colors.green[6], lineHeight: 1.3 }}
+                >
+                  {successMessage}
+                </Text>
+              </Tooltip>
+            );
+          }
+
+          // Show last_message for idle sources (from previous refresh)
+          if (data.status === 'idle' && data.last_message) {
+            return (
+              <Tooltip label={data.last_message} multiline width={300}>
+                <Text
+                  c="dimmed"
+                  size="xs"
+                  lineClamp={2}
+                  style={{ lineHeight: 1.3 }}
+                >
+                  {data.last_message}
+                </Text>
+              </Tooltip>
             );
           }
 
@@ -302,11 +345,11 @@ const EPGsTable = () => {
         enableSorting: false,
         cell: ({ cell }) => {
           const value = cell.getValue();
-          return value ? (
-            <Text size="xs">{new Date(value).toLocaleString()}</Text>
-          ) : (
-            <Text size="xs">Never</Text>
-          );
+          if (!value) {
+            return <Text size="xs">Never</Text>;
+          }
+          const formatted = format(value, fullDateTimeFormat);
+          return <Text size="xs">{formatted}</Text>;
         },
       },
       {
@@ -337,7 +380,7 @@ const EPGsTable = () => {
         size: tableSize == 'compact' ? 75 : 100,
       },
     ],
-    [refreshProgress]
+    [refreshProgress, fullDateTimeFormat]
   );
 
   const [isLoading, setIsLoading] = useState(true);
@@ -378,10 +421,13 @@ const EPGsTable = () => {
   };
 
   const executeDeleteEPG = async (id) => {
-    setIsLoading(true);
-    await API.deleteEPG(id);
-    setIsLoading(false);
-    setConfirmDeleteOpen(false);
+    setDeleting(true);
+    try {
+      await API.deleteEPG(id);
+    } finally {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+    }
   };
 
   const refreshEPG = async (id) => {
@@ -635,6 +681,7 @@ const EPGsTable = () => {
         opened={confirmDeleteOpen}
         onClose={() => setConfirmDeleteOpen(false)}
         onConfirm={() => executeDeleteEPG(deleteTarget)}
+        loading={deleting}
         title="Confirm EPG Source Deletion"
         message={
           epgToDelete ? (

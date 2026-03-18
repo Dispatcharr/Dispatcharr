@@ -7,8 +7,6 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from django.contrib.auth import authenticate
-from core.models import CoreSettings, NETWORK_ACCESS
 from dispatcharr.utils import network_access_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
@@ -24,68 +22,149 @@ from django.db.models.functions import Lower
 import os
 from apps.m3u.utils import calculate_tuner_count
 import regex
+from core.utils import log_system_event
+import hashlib
 
 logger = logging.getLogger(__name__)
 
+def get_client_identifier(request):
+    """Get client information including IP, user agent, and a unique hash identifier
+
+    Returns:
+        tuple: (client_id_hash, client_ip, user_agent)
+    """
+    # Get client IP (handle proxies)
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        client_ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+
+    # Get user agent
+    user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+
+    # Create a hash for a shorter cache key
+    client_str = f"{client_ip}:{user_agent}"
+    client_id_hash = hashlib.md5(client_str.encode()).hexdigest()[:12]
+
+    return client_id_hash, client_ip, user_agent
 
 def get_basic_auth_user(request):
-    """Authenticate request using HTTP Basic Auth against the Django user model.
-
-    Returns a User instance on success or an HttpResponse (401) on failure.
     """
-    auth_header = request.META.get("HTTP_AUTHORIZATION")
-    if not auth_header or not auth_header.lower().startswith("basic "):
-        # No or invalid auth header -> ask for credentials
-        response = HttpResponse("Authentication required", status=401)
-        response["WWW-Authenticate"] = 'Basic realm="M3U"'
-        return response
-
-    encoded = auth_header.split(" ", 1)[1].strip()
+    Extract and validate user from HTTP Basic Authentication header.
+    
+    Returns:
+        User object if authentication successful, None otherwise
+    """
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    
+    if not auth_header.startswith('Basic '):
+        return None
+    
     try:
-        decoded = base64.b64decode(encoded).decode("utf-8")
-    except Exception:
-        response = HttpResponse("Invalid Authorization header", status=401)
-        response["WWW-Authenticate"] = 'Basic realm="M3U"'
-        return response
+        # Decode Base64 credentials
+        encoded_credentials = auth_header[6:]  # Remove 'Basic ' prefix
+        decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
+        username, password = decoded_credentials.split(':', 1)
+        
+        # Get user from database
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            logger.warning(f"Basic Auth failed: User '{username}' not found")
+            return None
+        
+        # Check password
+        if not user.check_password(password):
+            logger.warning(f"Basic Auth failed: Invalid password for user '{username}'")
+            return None
+        
+        # Check if user is active
+        if not user.is_active:
+            logger.warning(f"Basic Auth failed: User '{username}' is inactive")
+            return None
+        
+        return user
+        
+    except Exception as e:
+        logger.warning(f"Basic Auth failed: {e}")
+        return None
 
-    if ":" not in decoded:
-        response = HttpResponse("Invalid Authorization header", status=401)
-        response["WWW-Authenticate"] = 'Basic realm="M3U"'
-        return response
-
-    username, password = decoded.split(":", 1)
-
-    user = authenticate(request, username=username, password=password)
-    if user is None or not user.is_active:
-        response = HttpResponse("Invalid username or password", status=401)
-        response["WWW-Authenticate"] = 'Basic realm="M3U"'
-        return response
-
-    return user
-
+def require_basic_auth(request):
+    """
+    Return a 401 response requesting Basic Authentication.
+    """
+    response = HttpResponse('Unauthorized', status=401)
+    response['WWW-Authenticate'] = 'Basic realm="Dispatcharr"'
+    return response
 
 def m3u_endpoint(request, profile_name=None, user=None):
+    logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
+    
+    # Require Basic Auth if no user provided
+    if user is None:
+        user = get_basic_auth_user(request)
+        if user is None:
+            return require_basic_auth(request)
+    
     if not network_access_allowed(request, "M3U_EPG"):
+        # Log blocked M3U download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            profile=profile_name or 'all',
+            reason='Network access denied',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # Protect /output/m3u with HTTP Basic Auth using Dispatcharr users
-    if user is None:
-        auth_result = get_basic_auth_user(request)
-        # If authentication failed, the helper returns an HttpResponse (401)
-        if isinstance(auth_result, HttpResponse):
-            return auth_result
-        user = auth_result
+    # Handle HEAD requests efficiently without generating content
+    if request.method == "HEAD":
+        logger.debug("Handling HEAD request for M3U")
+        response = HttpResponse(content_type="audio/x-mpegurl")
+        response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
+        return response
 
     return generate_m3u(request, profile_name, user)
 
 def epg_endpoint(request, profile_name=None, user=None):
+    logger.debug("epg_endpoint called: method=%s, profile=%s", request.method, profile_name)
+    
+    # Require Basic Auth if no user provided
+    if user is None:
+        user = get_basic_auth_user(request)
+        if user is None:
+            return require_basic_auth(request)
+    
     if not network_access_allowed(request, "M3U_EPG"):
+        # Log blocked EPG download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            profile=profile_name or 'all',
+            reason='Network access denied',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    # Handle HEAD requests efficiently without generating content
+    if request.method == "HEAD":
+        logger.debug("Handling HEAD request for EPG")
+        response = HttpResponse(content_type="application/xml")
+        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+        response["Cache-Control"] = "no-cache"
+        return response
 
     return generate_epg(request, profile_name, user)
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "HEAD"])
 def generate_m3u(request, profile_name=None, user=None):
     """
     Dynamically generate an M3U file from channels.
@@ -93,20 +172,36 @@ def generate_m3u(request, profile_name=None, user=None):
     Supports both GET and POST methods for compatibility with IPTVSmarters.
     """
     # Check if this is a POST request and the body is not empty (which we don't want to allow)
-    logger.debug("Generating M3U for profile: %s, user: %s", profile_name, user.username if user else "Anonymous")
+    logger.debug("Generating M3U for profile: %s, user: %s, method: %s", profile_name, user.username if user else "Anonymous", request.method)
+
+    # Check cache for recent identical request (helps with double-GET from browsers)
+    from django.core.cache import cache
+    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+    content_cache_key = f"m3u_content:{cache_params}"
+
+    cached_content = cache.get(content_cache_key)
+    if cached_content:
+        logger.debug("Serving M3U from cache")
+        response = HttpResponse(cached_content, content_type="audio/x-mpegurl")
+        response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
+        return response
     # Check if this is a POST request with data (which we don't want to allow)
     if request.method == "POST" and request.body:
         if request.body.decode() != '{}':
             return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
 
     if user is not None:
-        if user.user_level == 0:
+        if user.user_level < 10:
             user_profile_count = user.channel_profiles.count()
 
             # If user has ALL profiles or NO profiles, give unrestricted access
             if user_profile_count == 0:
                 # No profile filtering - user sees all channels based on user_level
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                filters = {"user_level__lte": user.user_level}
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
+                channels = Channel.objects.filter(**filters).order_by("channel_number")
             else:
                 # User has specific limited profiles assigned
                 filters = {
@@ -114,6 +209,9 @@ def generate_m3u(request, profile_name=None, user=None):
                     "user_level__lte": user.user_level,
                     "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                 }
+                # Hide adult content if user preference is set
+                if (user.custom_properties or {}).get('hide_adult_content', False):
+                    filters["is_adult"] = False
                 channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
         else:
             channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -122,20 +220,17 @@ def generate_m3u(request, profile_name=None, user=None):
 
     else:
         if profile_name is not None:
-            channel_profile = ChannelProfile.objects.get(name=profile_name)
+            try:
+                channel_profile = ChannelProfile.objects.get(name=profile_name)
+            except ChannelProfile.DoesNotExist:
+                logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
+                raise Http404(f"Channel profile '{profile_name}' not found")
             channels = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
                 channelprofilemembership__enabled=True
             ).order_by('channel_number')
         else:
-            if profile_name is not None:
-                channel_profile = ChannelProfile.objects.get(name=profile_name)
-                channels = Channel.objects.filter(
-                    channelprofilemembership__channel_profile=channel_profile,
-                    channelprofilemembership__enabled=True,
-                ).order_by("channel_number")
-            else:
-                channels = Channel.objects.order_by("channel_number")
+            channels = Channel.objects.order_by("channel_number")
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -148,16 +243,27 @@ def generate_m3u(request, profile_name=None, user=None):
     tvg_id_source = request.GET.get('tvg_id_source', 'channel_number').lower()
 
     # Build EPG URL with query parameters if needed
-    epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+    # Check if this is an XC API request (has username/password in GET params and user is authenticated)
+    xc_username = request.GET.get('username')
+    xc_password = request.GET.get('password')
+    is_xc_request = user is not None and xc_username and xc_password
 
-    # Optionally preserve certain query parameters
-    preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
-    query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
-    if query_params:
-        from urllib.parse import urlencode
-        epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+    if is_xc_request:
+        # This is an XC API request - use XC-style EPG URL
+        base_url = build_absolute_uri_with_port(request, '')
+        epg_url = f"{base_url}/xmltv.php?username={xc_username}&password={xc_password}"
     else:
-        epg_url = epg_base_url
+        # Regular request - use standard EPG endpoint
+        epg_base_url = build_absolute_uri_with_port(request, reverse('output:epg_endpoint', args=[profile_name]) if profile_name else reverse('output:epg_endpoint'))
+
+        # Optionally preserve certain query parameters
+        preserved_params = ['tvg_id_source', 'cachedlogos', 'days']
+        query_params = {k: v for k, v in request.GET.items() if k in preserved_params}
+        if query_params:
+            from urllib.parse import urlencode
+            epg_url = f"{epg_base_url}?{urlencode(query_params)}"
+        else:
+            epg_url = epg_base_url
 
     # Add x-tvg-url and url-tvg attribute for EPG URL
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
@@ -212,8 +318,12 @@ def generate_m3u(request, profile_name=None, user=None):
             f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{channel.name}\n'
         )
 
-        # Determine the stream URL based on the direct parameter
-        if use_direct_urls:
+        # Determine the stream URL based on request type
+        if is_xc_request:
+            # XC API request - use XC-style stream URL format
+            base_url = build_absolute_uri_with_port(request, '')
+            stream_url = f"{base_url}/live/{xc_username}/{xc_password}/{channel.id}"
+        elif use_direct_urls:
             # Try to get the first stream's direct URL
             first_stream = channel.streams.order_by('channelstream__order').first()
             if first_stream and first_stream.url:
@@ -221,14 +331,29 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = first_stream.url
             else:
                 # Fall back to proxy URL if no direct URL available
-                base_url = request.build_absolute_uri('/')[:-1]
-                stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+                stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
         else:
             # Standard behavior - use proxy URL
-            base_url = request.build_absolute_uri('/')[:-1]
-            stream_url = f"{base_url}/proxy/ts/stream/{channel.uuid}"
+            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
 
         m3u_content += extinf_line + stream_url + "\n"
+
+    # Cache the generated content for 2 seconds to handle double-GET requests
+    cache.set(content_cache_key, m3u_content, 2)
+
+    # Log system event for M3U download (with deduplication based on client)
+    client_id, client_ip, user_agent = get_client_identifier(request)
+    event_cache_key = f"m3u_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
+    if not cache.get(event_cache_key):
+        log_system_event(
+            event_type='m3u_download',
+            profile=profile_name or 'all',
+            user=user.username if user else 'anonymous',
+            channels=channels.count(),
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        cache.set(event_cache_key, True, 2)  # Prevent duplicate events for 2 seconds
 
     response = HttpResponse(m3u_content, content_type="audio/x-mpegurl")
     response["Content-Disposition"] = 'attachment; filename="channels.m3u"'
@@ -449,6 +574,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
     output_timezone_value = custom_properties.get('output_timezone', '')  # Optional: display times in different timezone
     program_duration = custom_properties.get('program_duration', 180)  # Minutes
     title_template = custom_properties.get('title_template', '')
+    subtitle_template = custom_properties.get('subtitle_template', '')
     description_template = custom_properties.get('description_template', '')
 
     # Templates for upcoming/ended programs
@@ -610,28 +736,39 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
             try:
                 # Support various date group names: month, day, year
                 month_str = date_groups.get('month', '')
-                day = int(date_groups.get('day', 1))
-                year = int(date_groups.get('year', now.year))  # Default to current year if not provided
+                day_str = date_groups.get('day', '')
+                year_str = date_groups.get('year', '')
+
+                # Parse day - default to current day if empty or invalid
+                day = int(day_str) if day_str else now.day
+
+                # Parse year - default to current year if empty or invalid (matches frontend behavior)
+                year = int(year_str) if year_str else now.year
 
                 # Parse month - can be numeric (1-12) or text (Jan, January, etc.)
                 month = None
-                if month_str.isdigit():
-                    month = int(month_str)
-                else:
-                    # Try to parse text month names
-                    import calendar
-                    month_str_lower = month_str.lower()
-                    # Check full month names
-                    for i, month_name in enumerate(calendar.month_name):
-                        if month_name.lower() == month_str_lower:
-                            month = i
-                            break
-                    # Check abbreviated month names if not found
-                    if month is None:
-                        for i, month_abbr in enumerate(calendar.month_abbr):
-                            if month_abbr.lower() == month_str_lower:
+                if month_str:
+                    if month_str.isdigit():
+                        month = int(month_str)
+                    else:
+                        # Try to parse text month names
+                        import calendar
+                        month_str_lower = month_str.lower()
+                        # Check full month names
+                        for i, month_name in enumerate(calendar.month_name):
+                            if month_name.lower() == month_str_lower:
                                 month = i
                                 break
+                        # Check abbreviated month names if not found
+                        if month is None:
+                            for i, month_abbr in enumerate(calendar.month_abbr):
+                                if month_abbr.lower() == month_str_lower:
+                                    month = i
+                                    break
+
+                # Default to current month if not extracted or invalid
+                if month is None:
+                    month = now.month
 
                 if month and 1 <= month <= 12 and 1 <= day <= 31:
                     date_info = {'year': year, 'month': month, 'day': day}
@@ -843,6 +980,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     title_parts.append(all_groups['title'])
                 main_event_title = ' - '.join(title_parts) if title_parts else channel_name
 
+            if subtitle_template:
+                main_event_subtitle = format_template(subtitle_template, all_groups)
+            else:
+                main_event_subtitle = None
+
             if description_template:
                 main_event_description = format_template(description_template, all_groups)
             else:
@@ -893,6 +1035,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": upcoming_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": upcoming_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -932,6 +1075,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": event_start_utc,
                     "end_time": event_end_utc,
                     "title": main_event_title,
+                    "sub_title": main_event_subtitle,
                     "description": main_event_description,
                     "custom_properties": main_event_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -976,6 +1120,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": ended_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": ended_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1036,6 +1181,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                         "start_time": program_start_utc,
                         "end_time": program_end_utc,
                         "title": program_title,
+                        "sub_title": None,  # No subtitle for filler programs
                         "description": program_description,
                         "custom_properties": program_custom_properties,
                         "channel_logo_url": channel_logo_url,
@@ -1062,6 +1208,11 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     elif 'title' in all_groups and all_groups['title']:
                         title_parts.append(all_groups['title'])
                     title = ' - '.join(title_parts) if title_parts else channel_name
+
+                if subtitle_template:
+                    subtitle = format_template(subtitle_template, all_groups)
+                else:
+                    subtitle = None
 
                 if description_template:
                     description = format_template(description_template, all_groups)
@@ -1099,6 +1250,7 @@ def generate_custom_dummy_programs(channel_id, channel_name, now, num_days, cust
                     "start_time": program_start_utc,
                     "end_time": program_end_utc,
                     "title": title,
+                    "sub_title": subtitle,
                     "description": description,
                     "custom_properties": program_custom_properties,
                     "channel_logo_url": channel_logo_url,  # Pass channel logo for EPG generation
@@ -1135,9 +1287,14 @@ def generate_dummy_epg(
 
         # Create program entry with escaped channel name
         xml_lines.append(
-            f'  <programme start="{start_str}" stop="{stop_str}" channel="{program["channel_id"]}">'
+            f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(program["channel_id"])}">'
         )
         xml_lines.append(f"    <title>{html.escape(program['title'])}</title>")
+
+        # Add subtitle if available
+        if program.get('sub_title'):
+            xml_lines.append(f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>")
+
         xml_lines.append(f"    <desc>{html.escape(program['description'])}</desc>")
 
         # Add custom_properties if present
@@ -1172,8 +1329,22 @@ def generate_epg(request, profile_name=None, user=None):
     by their associated EPGData record.
     This version filters data based on the 'days' parameter and sends keep-alives during processing.
     """
+    # Check cache for recent identical request (helps with double-GET from browsers)
+    from django.core.cache import cache
+    cache_params = f"{profile_name or 'all'}:{user.username if user else 'anonymous'}:{request.GET.urlencode()}"
+    content_cache_key = f"epg_content:{cache_params}"
+
+    cached_content = cache.get(content_cache_key)
+    if cached_content:
+        logger.debug("Serving EPG from cache")
+        response = HttpResponse(cached_content, content_type="application/xml")
+        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+        response["Cache-Control"] = "no-cache"
+        return response
+
     def epg_generator():
-        """Generator function that yields EPG data with keep-alives during processing"""        # Send initial HTTP headers as comments (these will be ignored by XML parsers but keep connection alive)
+        """Generator function that yields EPG data with keep-alives during processing"""
+        # Send initial HTTP headers as comments (these will be ignored by XML parsers but keep connection alive)
 
         xml_lines = []
         xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -1183,13 +1354,17 @@ def generate_epg(request, profile_name=None, user=None):
 
         # Get channels based on user/profile
         if user is not None:
-            if user.user_level == 0:
+            if user.user_level < 10:
                 user_profile_count = user.channel_profiles.count()
 
                 # If user has ALL profiles or NO profiles, give unrestricted access
                 if user_profile_count == 0:
                     # No profile filtering - user sees all channels based on user_level
-                    channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+                    filters = {"user_level__lte": user.user_level}
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
+                    channels = Channel.objects.filter(**filters).order_by("channel_number")
                 else:
                     # User has specific limited profiles assigned
                     filters = {
@@ -1197,6 +1372,9 @@ def generate_epg(request, profile_name=None, user=None):
                         "user_level__lte": user.user_level,
                         "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
                     }
+                    # Hide adult content if user preference is set
+                    if (user.custom_properties or {}).get('hide_adult_content', False):
+                        filters["is_adult"] = False
                     channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
                 channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
@@ -1204,7 +1382,11 @@ def generate_epg(request, profile_name=None, user=None):
                 )
         else:
             if profile_name is not None:
-                channel_profile = ChannelProfile.objects.get(name=profile_name)
+                try:
+                    channel_profile = ChannelProfile.objects.get(name=profile_name)
+                except ChannelProfile.DoesNotExist:
+                    logger.warning("Requested channel profile (%s) during epg generation does not exist", profile_name)
+                    raise Http404(f"Channel profile '{profile_name}' not found")
                 channels = Channel.objects.filter(
                     channelprofilemembership__channel_profile=channel_profile,
                     channelprofilemembership__enabled=True,
@@ -1236,16 +1418,45 @@ def generate_epg(request, profile_name=None, user=None):
         now = django_timezone.now()
         cutoff_date = now + timedelta(days=num_days) if num_days > 0 else None
 
+        # Build collision-free channel number mapping for XC clients (if user is authenticated)
+        # XC clients require integer channel numbers, so we need to ensure no conflicts
+        channel_num_map = {}
+        if user is not None:
+            # This is an XC client - build collision-free mapping
+            used_numbers = set()
+
+            # First pass: assign integers for channels that already have integer numbers
+            for channel in channels:
+                if channel.channel_number == int(channel.channel_number):
+                    num = int(channel.channel_number)
+                    channel_num_map[channel.id] = num
+                    used_numbers.add(num)
+
+            # Second pass: assign integers for channels with float numbers
+            for channel in channels:
+                if channel.channel_number != int(channel.channel_number):
+                    candidate = int(channel.channel_number)
+                    while candidate in used_numbers:
+                        candidate += 1
+                    channel_num_map[channel.id] = candidate
+                    used_numbers.add(candidate)
+
         # Process channels for the <channel> section
         for channel in channels:
-            # Format channel number as integer if it has no decimal component - same as M3U generation
-            if channel.channel_number is not None:
-                if channel.channel_number == int(channel.channel_number):
-                    formatted_channel_number = int(channel.channel_number)
-                else:
-                    formatted_channel_number = channel.channel_number
+            # For XC clients (user is not None), use collision-free integer mapping
+            # For regular clients (user is None), use original formatting logic
+            if user is not None:
+                # XC client - use collision-free integer
+                formatted_channel_number = channel_num_map[channel.id]
             else:
-                formatted_channel_number = ""
+                # Regular client - format channel number as integer if it has no decimal component
+                if channel.channel_number is not None:
+                    if channel.channel_number == int(channel.channel_number):
+                        formatted_channel_number = int(channel.channel_number)
+                    else:
+                        formatted_channel_number = channel.channel_number
+                else:
+                    formatted_channel_number = ""
 
             # Determine the channel ID based on the selected source
             if tvg_id_source == 'tvg_id' and channel.tvg_id:
@@ -1326,13 +1537,14 @@ def generate_epg(request, profile_name=None, user=None):
                     else:
                         tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
             display_name = channel.name
-            xml_lines.append(f'  <channel id="{channel_id}">')
+            xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
             xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
             xml_lines.append("  </channel>")
 
         # Send all channel definitions
-        yield '\n'.join(xml_lines) + '\n'
+        channel_xml = '\n'.join(xml_lines) + '\n'
+        yield channel_xml
         xml_lines = []  # Clear to save memory
 
         # Process programs for each channel
@@ -1344,14 +1556,20 @@ def generate_epg(request, profile_name=None, user=None):
             elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
                 channel_id = channel.tvc_guide_stationid
             else:
-                # Get formatted channel number
-                if channel.channel_number is not None:
-                    if channel.channel_number == int(channel.channel_number):
-                        formatted_channel_number = int(channel.channel_number)
-                    else:
-                        formatted_channel_number = channel.channel_number
+                # For XC clients (user is not None), use collision-free integer mapping
+                # For regular clients (user is None), use original formatting logic
+                if user is not None:
+                    # XC client - use collision-free integer from map
+                    formatted_channel_number = channel_num_map[channel.id]
                 else:
-                    formatted_channel_number = ""
+                    # Regular client - format channel number as before
+                    if channel.channel_number is not None:
+                        if channel.channel_number == int(channel.channel_number):
+                            formatted_channel_number = int(channel.channel_number)
+                        else:
+                            formatted_channel_number = channel.channel_number
+                    else:
+                        formatted_channel_number = ""
                 # Default to channel number
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
@@ -1394,8 +1612,13 @@ def generate_epg(request, profile_name=None, user=None):
                     stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
                     # Create program entry with escaped channel name
-                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                    yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                     yield f"    <title>{html.escape(program['title'])}</title>\n"
+
+                    # Add subtitle if available
+                    if program.get('sub_title'):
+                        yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
+
                     yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
                     # Add custom_properties if present
@@ -1443,8 +1666,13 @@ def generate_epg(request, profile_name=None, user=None):
                             start_str = program['start_time'].strftime("%Y%m%d%H%M%S %z")
                             stop_str = program['end_time'].strftime("%Y%m%d%H%M%S %z")
 
-                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">\n'
+                            yield f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">\n'
                             yield f"    <title>{html.escape(program['title'])}</title>\n"
+
+                            # Add subtitle if available
+                            if program.get('sub_title'):
+                                yield f"    <sub-title>{html.escape(program['sub_title'])}</sub-title>\n"
+
                             yield f"    <desc>{html.escape(program['description'])}</desc>\n"
 
                             # Add custom_properties if present
@@ -1478,12 +1706,14 @@ def generate_epg(request, profile_name=None, user=None):
                 # For real EPG data - filter only if days parameter was specified
                 if num_days > 0:
                     programs_qs = channel.epg_data.programs.filter(
-                        start_time__gte=now,
+                        end_time__gte=now,
                         start_time__lt=cutoff_date
                     ).order_by('id')  # Explicit ordering for consistent chunking
                 else:
-                    # Return all programs if days=0 or not specified
-                    programs_qs = channel.epg_data.programs.all().order_by('id')
+                    # Return all non-expired programs if days=0 or not specified
+                    programs_qs = channel.epg_data.programs.filter(
+                        end_time__gte=now
+                    ).order_by('id')
 
                 # Process programs in chunks to avoid cursor timeout issues
                 program_batch = []
@@ -1505,7 +1735,7 @@ def generate_epg(request, profile_name=None, user=None):
                         start_str = prog.start_time.strftime("%Y%m%d%H%M%S %z")
                         stop_str = prog.end_time.strftime("%Y%m%d%H%M%S %z")
 
-                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{channel_id}">']
+                        program_xml = [f'  <programme start="{start_str}" stop="{stop_str}" channel="{html.escape(channel_id)}">']
                         program_xml.append(f'    <title>{html.escape(prog.title)}</title>')
 
                         # Add subtitle if available
@@ -1722,7 +1952,8 @@ def generate_epg(request, profile_name=None, user=None):
 
                         # Send batch when full or send keep-alive
                         if len(program_batch) >= batch_size:
-                            yield '\n'.join(program_batch) + '\n'
+                            batch_xml = '\n'.join(program_batch) + '\n'
+                            yield batch_xml
                             program_batch = []
 
                     # Move to next chunk
@@ -1730,12 +1961,40 @@ def generate_epg(request, profile_name=None, user=None):
 
                 # Send remaining programs in batch
                 if program_batch:
-                    yield '\n'.join(program_batch) + '\n'
+                    batch_xml = '\n'.join(program_batch) + '\n'
+                    yield batch_xml
 
         # Send final closing tag and completion message
-        yield "</tv>\n"    # Return streaming response
+        yield "</tv>\n"
+
+        # Log system event for EPG download after streaming completes (with deduplication based on client)
+        client_id, client_ip, user_agent = get_client_identifier(request)
+        event_cache_key = f"epg_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
+        if not cache.get(event_cache_key):
+            log_system_event(
+                event_type='epg_download',
+                profile=profile_name or 'all',
+                user=user.username if user else 'anonymous',
+                channels=channels.count(),
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+            cache.set(event_cache_key, True, 2)  # Prevent duplicate events for 2 seconds
+
+    # Wrapper generator that collects content for caching
+    def caching_generator():
+        collected_content = []
+        for chunk in epg_generator():
+            collected_content.append(chunk)
+            yield chunk
+        # After streaming completes, cache the full content
+        full_content = ''.join(collected_content)
+        cache.set(content_cache_key, full_content, 300)
+        logger.debug("Cached EPG content (%d bytes)", len(full_content))
+
+    # Return streaming response
     response = StreamingHttpResponse(
-        streaming_content=epg_generator(),
+        streaming_content=caching_generator(),
         content_type="application/xml"
     )
     response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
@@ -1751,6 +2010,7 @@ def xc_get_user(request):
         return None
 
     user = get_object_or_404(User, username=username)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
@@ -1823,45 +2083,31 @@ def xc_player_api(request, full=False):
     if user is None:
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    server_info = xc_get_info(request)
-
-    if not action:
-        return JsonResponse(server_info)
-
     if action == "get_live_categories":
         return JsonResponse(xc_get_live_categories(user), safe=False)
-    if action == "get_live_streams":
+    elif action == "get_live_streams":
         return JsonResponse(xc_get_live_streams(request, user, request.GET.get("category_id")), safe=False)
-    if action == "get_short_epg":
+    elif action == "get_short_epg":
         return JsonResponse(xc_get_epg(request, user, short=True), safe=False)
-    if action == "get_simple_data_table":
+    elif action == "get_simple_data_table":
         return JsonResponse(xc_get_epg(request, user, short=False), safe=False)
-
-    # Endpoints not implemented, but still provide a response
-    if action in [
-        "get_vod_categories",
-        "get_vod_streams",
-        "get_series",
-        "get_series_categories",
-        "get_series_info",
-        "get_vod_info",
-    ]:
-        if action == "get_vod_categories":
-            return JsonResponse(xc_get_vod_categories(user), safe=False)
-        elif action == "get_vod_streams":
-            return JsonResponse(xc_get_vod_streams(request, user, request.GET.get("category_id")), safe=False)
-        elif action == "get_series_categories":
-            return JsonResponse(xc_get_series_categories(user), safe=False)
-        elif action == "get_series":
-            return JsonResponse(xc_get_series(request, user, request.GET.get("category_id")), safe=False)
-        elif action == "get_series_info":
-            return JsonResponse(xc_get_series_info(request, user, request.GET.get("series_id")), safe=False)
-        elif action == "get_vod_info":
-            return JsonResponse(xc_get_vod_info(request, user, request.GET.get("vod_id")), safe=False)
-        else:
-            return JsonResponse([], safe=False)
-
-    raise Http404()
+    elif action == "get_vod_categories":
+        return JsonResponse(xc_get_vod_categories(user), safe=False)
+    elif action == "get_vod_streams":
+        return JsonResponse(xc_get_vod_streams(request, user, request.GET.get("category_id")), safe=False)
+    elif action == "get_series_categories":
+        return JsonResponse(xc_get_series_categories(user), safe=False)
+    elif action == "get_series":
+        return JsonResponse(xc_get_series(request, user, request.GET.get("category_id")), safe=False)
+    elif action == "get_series_info":
+        return JsonResponse(xc_get_series_info(request, user, request.GET.get("series_id")), safe=False)
+    elif action == "get_vod_info":
+        return JsonResponse(xc_get_vod_info(request, user, request.GET.get("vod_id")), safe=False)
+    else:
+        # For any other action (including get_account_info or unknown actions),
+        # return server_info/account_info to match provider behavior
+        server_info = xc_get_info(request)
+        return JsonResponse(server_info, safe=False)
 
 
 def xc_panel_api(request):
@@ -1878,12 +2124,34 @@ def xc_panel_api(request):
 
 def xc_get(request):
     if not network_access_allowed(request, 'XC_API'):
+        # Log blocked M3U download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     action = request.GET.get("action")
     user = xc_get_user(request)
 
     if user is None:
+        # Log blocked M3U download due to invalid credentials
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Invalid XC credentials',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
     return generate_m3u(request, None, user)
@@ -1891,11 +2159,33 @@ def xc_get(request):
 
 def xc_xmltv(request):
     if not network_access_allowed(request, 'XC_API'):
+        # Log blocked EPG download
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     user = xc_get_user(request)
 
     if user is None:
+        # Log blocked EPG download due to invalid credentials
+        from core.utils import log_system_event
+        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Invalid XC credentials',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
     return generate_epg(request, None, user)
@@ -1905,7 +2195,7 @@ def xc_get_live_categories(user):
     from django.db.models import Min
     response = []
 
-    if user.user_level == 0:
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
@@ -1942,7 +2232,7 @@ def xc_get_live_categories(user):
 def xc_get_live_streams(request, user, category_id=None):
     streams = []
 
-    if user.user_level == 0:
+    if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
         # If user has ALL profiles or NO profiles, give unrestricted access
@@ -1951,6 +2241,9 @@ def xc_get_live_streams(request, user, category_id=None):
             filters = {"user_level__lte": user.user_level}
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).order_by("channel_number")
         else:
             # User has specific limited profiles assigned
@@ -1961,6 +2254,9 @@ def xc_get_live_streams(request, user, category_id=None):
             }
             if category_id is not None:
                 filters["channel_group__id"] = category_id
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
     else:
         if not category_id:
@@ -1970,10 +2266,38 @@ def xc_get_live_streams(request, user, category_id=None):
                 channel_group__id=category_id, user_level__lte=user.user_level
             ).order_by("channel_number")
 
+    # Build collision-free mapping for XC clients (which require integers)
+    # This ensures channels with float numbers don't conflict with existing integers
+    channel_num_map = {}  # Maps channel.id -> integer channel number for XC
+    used_numbers = set()  # Track all assigned integer channel numbers
+
+    # First pass: assign integers for channels that already have integer numbers
     for channel in channels:
+        if channel.channel_number == int(channel.channel_number):
+            # Already an integer, use it directly
+            num = int(channel.channel_number)
+            channel_num_map[channel.id] = num
+            used_numbers.add(num)
+
+    # Second pass: assign integers for channels with float numbers
+    # Find next available number to avoid collisions
+    for channel in channels:
+        if channel.channel_number != int(channel.channel_number):
+            # Has decimal component, need to find available integer
+            # Start from truncated value and increment until we find an unused number
+            candidate = int(channel.channel_number)
+            while candidate in used_numbers:
+                candidate += 1
+            channel_num_map[channel.id] = candidate
+            used_numbers.add(candidate)
+
+    # Build the streams list with the collision-free channel numbers
+    for channel in channels:
+        channel_num_int = channel_num_map[channel.id]
+
         streams.append(
             {
-                "num": int(channel.channel_number) if channel.channel_number.is_integer() else channel.channel_number,
+                "num": channel_num_int,
                 "name": channel.name,
                 "stream_type": "live",
                 "stream_id": channel.id,
@@ -1985,11 +2309,11 @@ def xc_get_live_streams(request, user, category_id=None):
                         reverse("api:channels:logo-cache", args=[channel.logo.id])
                     )
                 ),
-                "epg_channel_id": str(int(channel.channel_number)) if channel.channel_number.is_integer() else str(channel.channel_number),
-                "added": int(channel.created_at.timestamp()),
-                "is_adult": 0,
-                "category_id": str(channel.channel_group.id),
-                "category_ids": [channel.channel_group.id],
+                "epg_channel_id": str(channel_num_int),
+                "added": str(int(channel.created_at.timestamp())),
+                "is_adult": int(channel.is_adult),
+                "category_id": str(channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id),
+                "category_ids": [channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id],
                 "custom_sid": None,
                 "tv_archive": 0,
                 "direct_source": "",
@@ -2012,10 +2336,14 @@ def xc_get_epg(request, user, short=False):
         # If user has ALL profiles or NO profiles, give unrestricted access
         if user_profile_count == 0:
             # No profile filtering - user sees all channels based on user_level
-            channel = Channel.objects.filter(
-                id=channel_id,
-                user_level__lte=user.user_level
-            ).first()
+            filters = {
+                "id": channel_id,
+                "user_level__lte": user.user_level
+            }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
+            channel = Channel.objects.filter(**filters).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2024,6 +2352,9 @@ def xc_get_epg(request, user, short=False):
                 "user_level__lte": user.user_level,
                 "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                filters["is_adult"] = False
             channel = Channel.objects.filter(**filters).distinct().first()
 
         if not channel:
@@ -2034,7 +2365,36 @@ def xc_get_epg(request, user, short=False):
     if not channel:
         raise Http404()
 
-    limit = request.GET.get('limit', 4)
+    # Calculate the collision-free integer channel number for this channel
+    # This must match the logic in xc_get_live_streams to ensure consistency
+    # Get all channels in the same category for collision detection
+    category_channels = Channel.objects.filter(
+        channel_group=channel.channel_group
+    ).order_by("channel_number")
+
+    channel_num_map = {}
+    used_numbers = set()
+
+    # First pass: assign integers for channels that already have integer numbers
+    for ch in category_channels:
+        if ch.channel_number == int(ch.channel_number):
+            num = int(ch.channel_number)
+            channel_num_map[ch.id] = num
+            used_numbers.add(num)
+
+    # Second pass: assign integers for channels with float numbers
+    for ch in category_channels:
+        if ch.channel_number != int(ch.channel_number):
+            candidate = int(ch.channel_number)
+            while candidate in used_numbers:
+                candidate += 1
+            channel_num_map[ch.id] = candidate
+            used_numbers.add(candidate)
+
+    # Get the mapped integer for this specific channel
+    channel_num_int = channel_num_map.get(channel.id, int(channel.channel_number))
+
+    limit = int(request.GET.get('limit', 4))
     if channel.epg_data:
         # Check if this is a dummy EPG that generates on-demand
         if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
@@ -2049,49 +2409,64 @@ def xc_get_epg(request, user, short=False):
                 # Has stored programs, use them
                 if short == False:
                     programs = channel.epg_data.programs.filter(
-                        start_time__gte=django_timezone.now()
+                        end_time__gt=django_timezone.now()
                     ).order_by('start_time')
                 else:
-                    programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                    programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
         else:
             # Regular EPG with stored programs
             if short == False:
                 programs = channel.epg_data.programs.filter(
-                    start_time__gte=django_timezone.now()
+                    end_time__gt=django_timezone.now()
                 ).order_by('start_time')
             else:
-                programs = channel.epg_data.programs.all().order_by('start_time')[:limit]
+                programs = channel.epg_data.programs.filter(
+                        end_time__gt=django_timezone.now()
+                    ).order_by('start_time')[:limit]
     else:
         # No EPG data assigned, generate default dummy
         programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)
 
     output = {"epg_listings": []}
+
     for program in programs:
-        id = "0"
-        epg_id = "0"
         title = program['title'] if isinstance(program, dict) else program.title
         description = program['description'] if isinstance(program, dict) else program.description
 
         start = program["start_time"] if isinstance(program, dict) else program.start_time
         end = program["end_time"] if isinstance(program, dict) else program.end_time
 
+        # For database programs, use actual ID; for generated dummy programs, create synthetic ID
+        if isinstance(program, dict):
+            # Generated dummy program - create unique ID from channel + timestamp
+            program_id = str(abs(hash(f"{channel_id}_{int(start.timestamp())}")))
+        else:
+            # Database program - use actual ID
+            program_id = str(program.id)
+
+        # epg_id refers to the EPG source/channel mapping in XC panels
+        # Use the actual EPGData ID when available, otherwise fall back to 0
+        epg_id = str(channel.epg_data.id) if channel.epg_data else "0"
+
         program_output = {
-            "id": f"{id}",
-            "epg_id": f"{epg_id}",
-            "title": base64.b64encode(title.encode()).decode(),
+            "id": program_id,
+            "epg_id": epg_id,
+            "title": base64.b64encode((title or "").encode()).decode(),
             "lang": "",
-            "start": start.strftime("%Y%m%d%H%M%S"),
-            "end": end.strftime("%Y%m%d%H%M%S"),
-            "description": base64.b64encode(description.encode()).decode(),
-            "channel_id": int(channel.channel_number) if channel.channel_number.is_integer() else channel.channel_number,
-            "start_timestamp": int(start.timestamp()),
-            "stop_timestamp": int(end.timestamp()),
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "description": base64.b64encode((description or "").encode()).decode(),
+            "channel_id": str(channel_num_int),
+            "start_timestamp": str(int(start.timestamp())),
+            "stop_timestamp": str(int(end.timestamp())),
             "stream_id": f"{channel_id}",
         }
 
         if short == False:
             program_output["now_playing"] = 1 if start <= django_timezone.now() <= end else 0
-            program_output["has_archive"] = "0"
+            program_output["has_archive"] = 0
 
         output['epg_listings'].append(program_output)
 
@@ -2250,6 +2625,8 @@ def xc_get_series(request, user, category_id=None):
             "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
             "category_id": str(relation.category.id) if relation.category else "0",
             "category_ids": [int(relation.category.id)] if relation.category else [],
+            "tmdb_id": series.tmdb_id or "",
+            "imdb_id": series.imdb_id or "",
         })
 
     return series_list
@@ -2296,34 +2673,45 @@ def xc_get_series_info(request, user, series_id):
     except Exception as e:
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
-    # Get episodes for this series from the same M3U account
-    episode_relations = M3UEpisodeRelation.objects.filter(
-        episode__series=series,
-        m3u_account=series_relation.m3u_account
-    ).select_related('episode').order_by('episode__season_number', 'episode__episode_number')
+    # Get unique episodes for this series that have relations from any active M3U account
+    # We query episodes directly to avoid duplicates when multiple relations exist
+    # (e.g., same episode in different languages/qualities)
+    from apps.vod.models import Episode
+    episodes = Episode.objects.filter(
+        series=series,
+        m3u_relations__m3u_account__is_active=True
+    ).distinct().order_by('season_number', 'episode_number')
 
     # Group episodes by season
     seasons = {}
-    for relation in episode_relations:
-        episode = relation.episode
+    for episode in episodes:
         season_num = episode.season_number or 1
         if season_num not in seasons:
             seasons[season_num] = []
 
-        # Try to get the highest priority related M3UEpisodeRelation for this episode (for video/audio/bitrate)
+        # Get the highest priority relation for this episode (for container_extension, video/audio/bitrate)
         from apps.vod.models import M3UEpisodeRelation
-        first_relation = M3UEpisodeRelation.objects.filter(
-            episode=episode
+        best_relation = M3UEpisodeRelation.objects.filter(
+            episode=episode,
+            m3u_account__is_active=True
         ).select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+
         video = audio = bitrate = None
-        if first_relation and first_relation.custom_properties:
-            info = first_relation.custom_properties.get('info')
-            if info and isinstance(info, dict):
-                info_info = info.get('info')
-                if info_info and isinstance(info_info, dict):
-                    video = info_info.get('video', {})
-                    audio = info_info.get('audio', {})
-                    bitrate = info_info.get('bitrate', 0)
+        container_extension = "mp4"
+        added_timestamp = str(int(episode.created_at.timestamp()))
+
+        if best_relation:
+            container_extension = best_relation.container_extension or "mp4"
+            added_timestamp = str(int(best_relation.created_at.timestamp()))
+            if best_relation.custom_properties:
+                info = best_relation.custom_properties.get('info')
+                if info and isinstance(info, dict):
+                    info_info = info.get('info')
+                    if info_info and isinstance(info_info, dict):
+                        video = info_info.get('video', {})
+                        audio = info_info.get('audio', {})
+                        bitrate = info_info.get('bitrate', 0)
+
         if video is None:
             video = episode.custom_properties.get('video', {}) if episode.custom_properties else {}
         if audio is None:
@@ -2336,8 +2724,8 @@ def xc_get_series_info(request, user, series_id):
             "season": season_num,
             "episode_num": episode.episode_number or 0,
             "title": episode.name,
-            "container_extension": relation.container_extension or "mp4",
-            "added": str(int(relation.created_at.timestamp())),
+            "container_extension": container_extension,
+            "added": added_timestamp,
             "custom_sid": None,
             "direct_source": "",
             "info": {
@@ -2586,7 +2974,7 @@ def xc_get_vod_info(request, user, vod_id):
         "movie_data": {
             "stream_id": movie.id,
             "name": movie.name,
-            "added": int(movie_relation.created_at.timestamp()),
+            "added": str(int(movie_relation.created_at.timestamp())),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",
             "category_ids": [int(movie_relation.category.id)] if movie_relation.category else [],
             "container_extension": movie_relation.container_extension or "mp4",
@@ -2653,7 +3041,7 @@ def xc_series_stream(request, username, password, stream_id, extension):
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
 
     try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').get(**filters)
+        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
     except M3UEpisodeRelation.DoesNotExist:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
@@ -2686,19 +3074,16 @@ def get_host_and_port(request):
     if xfh:
         if ":" in xfh:
             host, port = xfh.split(":", 1)
-            # Omit standard ports from URLs, or omit if port doesn't match standard for scheme
-            # (e.g., HTTPS but port is 9191 = behind external reverse proxy)
+            # Omit standard ports from URLs
             if port == standard_port:
                 return host, None
-            # If port doesn't match standard and X-Forwarded-Proto is set, likely behind external RP
-            if request.META.get("HTTP_X_FORWARDED_PROTO"):
-                host = xfh.split(":")[0]  # Strip port, will check for proper port below
-            else:
-                return host, port
+            # Non-standard port in X-Forwarded-Host - return it
+            # This handles reverse proxies on non-standard ports (e.g., https://example.com:8443)
+            return host, port
         else:
             host = xfh
 
-        # Check for X-Forwarded-Port header (if we didn't already find a valid port)
+        # Check for X-Forwarded-Port header (if we didn't find a port in X-Forwarded-Host)
         port = request.META.get("HTTP_X_FORWARDED_PORT")
         if port:
             # Omit standard ports from URLs
@@ -2716,22 +3101,28 @@ def get_host_and_port(request):
     else:
         host = raw_host
 
-    # 3. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
+    # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
+    port = request.META.get("HTTP_X_FORWARDED_PORT")
+    if port:
+        # Omit standard ports from URLs
+        return host, None if port == standard_port else port
+
+    # 4. Check if we're behind a reverse proxy (X-Forwarded-Proto or X-Forwarded-For present)
     # If so, assume standard port for the scheme (don't trust SERVER_PORT in this case)
     if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
         return host, None
 
-    # 4. Try SERVER_PORT from META (only if NOT behind reverse proxy)
+    # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
         # Omit standard ports from URLs
         return host, None if port == standard_port else port
 
-    # 5. Dev fallback: guess port 5656
+    # 6. Dev fallback: guess port 5656
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
         return host, "5656"
 
-    # 6. Final fallback: assume standard port for scheme (omit from URL)
+    # 7. Final fallback: assume standard port for scheme (omit from URL)
     return host, None
 
 def build_absolute_uri_with_port(request, path):

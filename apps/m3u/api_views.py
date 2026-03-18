@@ -6,8 +6,9 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
     permission_classes_by_method,
 )
-from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.core.cache import cache
@@ -17,7 +18,7 @@ from django.conf import settings
 from .tasks import refresh_m3u_groups
 import json
 
-from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile, M3UAccountMac
+from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
 from apps.channels.models import ChannelGroupM3UAccount
 from core.serializers import UserAgentSerializer
@@ -37,7 +38,9 @@ import json
 class M3UAccountViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for M3U accounts"""
 
-    queryset = M3UAccount.objects.prefetch_related("channel_group")
+    queryset = M3UAccount.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).prefetch_related("channel_group", "profiles")
     serializer_class = M3UAccountSerializer
 
     def get_permissions(self):
@@ -152,6 +155,46 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
             and not old_vod_enabled
             and new_vod_enabled
         ):
+            # Create Uncategorized categories immediately so they're available in the UI
+            from apps.vod.models import VODCategory, M3UVODCategoryRelation
+
+            # Create movie Uncategorized category
+            movie_category, _ = VODCategory.objects.get_or_create(
+                name="Uncategorized",
+                category_type="movie",
+                defaults={}
+            )
+
+            # Create series Uncategorized category
+            series_category, _ = VODCategory.objects.get_or_create(
+                name="Uncategorized",
+                category_type="series",
+                defaults={}
+            )
+
+            # Create relations for both categories (disabled by default until first refresh)
+            account_custom_props = instance.custom_properties or {}
+            auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+
+            M3UVODCategoryRelation.objects.get_or_create(
+                category=movie_category,
+                m3u_account=instance,
+                defaults={
+                    'enabled': auto_enable_new,
+                    'custom_properties': {}
+                }
+            )
+
+            M3UVODCategoryRelation.objects.get_or_create(
+                category=series_category,
+                m3u_account=instance,
+                defaults={
+                    'enabled': auto_enable_new,
+                    'custom_properties': {}
+                }
+            )
+
+            # Trigger full VOD refresh
             from apps.vod.tasks import refresh_vod_content
 
             refresh_vod_content.delay(instance.id)
@@ -222,38 +265,50 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
-            for setting in group_settings:
-                group_id = setting.get("channel_group")
-                enabled = setting.get("enabled", True)
-                auto_sync = setting.get("auto_channel_sync", False)
-                sync_start = setting.get("auto_sync_channel_start")
-                custom_properties = setting.get("custom_properties", {})
-
-                if group_id:
-                    ChannelGroupM3UAccount.objects.update_or_create(
-                        channel_group_id=group_id,
+            with transaction.atomic():
+                group_objects = [
+                    ChannelGroupM3UAccount(
+                        channel_group_id=setting["channel_group"],
                         m3u_account=account,
-                        defaults={
-                            "enabled": enabled,
-                            "auto_channel_sync": auto_sync,
-                            "auto_sync_channel_start": sync_start,
-                            "custom_properties": custom_properties,
-                        },
+                        enabled=setting.get("enabled", True),
+                        auto_channel_sync=setting.get("auto_channel_sync", False),
+                        auto_sync_channel_start=setting.get("auto_sync_channel_start"),
+                        custom_properties=setting.get("custom_properties", {}),
+                    )
+                    for setting in group_settings
+                    if setting.get("channel_group")
+                ]
+
+                if group_objects:
+                    ChannelGroupM3UAccount.objects.bulk_create(
+                        group_objects,
+                        update_conflicts=True,
+                        unique_fields=["channel_group", "m3u_account"],
+                        update_fields=[
+                            "enabled",
+                            "auto_channel_sync",
+                            "auto_sync_channel_start",
+                            "custom_properties",
+                        ],
                     )
 
-            for setting in category_settings:
-                category_id = setting.get("id")
-                enabled = setting.get("enabled", True)
-                custom_properties = setting.get("custom_properties", {})
-
-                if category_id:
-                    M3UVODCategoryRelation.objects.update_or_create(
-                        category_id=category_id,
+                category_objects = [
+                    M3UVODCategoryRelation(
+                        category_id=setting["id"],
                         m3u_account=account,
-                        defaults={
-                            "enabled": enabled,
-                            "custom_properties": custom_properties,
-                        },
+                        enabled=setting.get("enabled", True),
+                        custom_properties=setting.get("custom_properties", {}),
+                    )
+                    for setting in category_settings
+                    if setting.get("id")
+                ]
+
+                if category_objects:
+                    M3UVODCategoryRelation.objects.bulk_create(
+                        category_objects,
+                        update_conflicts=True,
+                        unique_fields=["m3u_account", "category"],
+                        update_fields=["enabled", "custom_properties"],
                     )
 
             return Response({"message": "Group settings updated successfully"})
@@ -263,172 +318,6 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 {"error": f"Failed to update group settings: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-    def _delete_expired_macs_impl(self, account):
-        """
-        Interne Logik zum Löschen abgelaufener/unklarer MACs.
-        Löscht EXPIRED und UNKNOWN, sortiert Prioritäten neu und
-        aktualisiert das mac_address-Feld auf Basis der verbleibenden MACs.
-        Gibt (deleted_count, remaining_addresses) zurück.
-        """
-        from .models import M3UAccountMac
-        from django.db import transaction
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        if account.account_type != M3UAccount.Types.MAC:
-            return 0, []
-
-        with transaction.atomic():
-            qs = account.macs.filter(
-                status__in=[
-                    M3UAccountMac.Status.EXPIRED,
-                    M3UAccountMac.Status.UNKNOWN,
-                ]
-            )
-            deleted_count = qs.count()
-            qs.delete()
-
-            remaining = list(account.macs.order_by("priority", "id"))
-            # Prioritäten neu setzen
-            for idx, m in enumerate(remaining):
-                if m.priority != idx:
-                    m.priority = idx
-                    m.save(update_fields=["priority"])
-
-            # mac_address-Feld aus verbleibenden MACs aufbauen
-            mac_list = [m.address for m in remaining]
-            account.mac_address = " ".join(mac_list)
-            account.save(update_fields=["mac_address"])
-
-        logger.info(
-            "Deleted %s expired/unknown MACs for account %s; remaining MACs: %s",
-            deleted_count,
-            account.id,
-            mac_list,
-        )
-        return deleted_count, mac_list
-
-    @action(detail=True, methods=["post"], url_path="delete-expired-macs")
-    def delete_expired_macs(self, request, pk=None):
-        """
-        Löscht alle EXPIRED- und UNKNOWN-MAC-Einträge für diesen Account.
-        Wird vom Button im M3U-Manager verwendet (Pfad: delete-expired-macs/).
-        """
-        account = self.get_object()
-
-        deleted_count, mac_list = self._delete_expired_macs_impl(account)
-
-        # Aktualisierte Account-Daten zurückgeben (inkl. frischer MAC-Liste)
-        serializer = self.get_serializer(account)
-        return Response(
-            {
-                "deleted": deleted_count,
-                "account": serializer.data,
-                "remaining_macs": mac_list,
-            }
-        )
-
-    @action(detail=True, methods=["post"], url_path="delete_expired_macs")
-    def delete_expired_macs_underscore(self, request, pk=None):
-        """
-        Alias-Endpoint mit Unterstrich im Pfad, falls das Frontend
-        /delete_expired_macs/ verwendet. Verwendet die gleiche Logik.
-        """
-        account = self.get_object()
-        deleted_count, mac_list = self._delete_expired_macs_impl(account)
-        serializer = self.get_serializer(account)
-        return Response(
-            {
-                "deleted": deleted_count,
-                "account": serializer.data,
-                "remaining_macs": mac_list,
-            }
-        )
-
-    @action(detail=True, methods=["delete"], url_path=r"macs/(?P<mac_id>[^/.]+)")
-    def delete_single_mac(self, request, pk=None, mac_id=None):
-        """
-        Löscht eine einzelne MAC anhand ihrer ID (für das rote X im UI).
-        """
-        from .models import M3UAccountMac
-
-        account = self.get_object()
-        try:
-            mac_obj = account.macs.get(id=mac_id)
-        except M3UAccountMac.DoesNotExist:
-            return Response(
-                {"error": "MAC not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        mac_obj.delete()
-
-        # Prioritäten neu setzen und mac_address aktualisieren
-        remaining = list(account.macs.order_by("priority", "id"))
-        for idx, m in enumerate(remaining):
-            if m.priority != idx:
-                m.priority = idx
-                m.save(update_fields=["priority"])
-
-        account.mac_address = " ".join(m.address for m in remaining)
-        account.save(update_fields=["mac_address"])
-
-        serializer = self.get_serializer(account)
-        return Response(
-            {
-                "account": serializer.data,
-            }
-        )
-
-    @action(detail=True, methods=["post"], url_path="reorder-macs")
-    def reorder_macs(self, request, pk=None):
-        """
-        Passt die Reihenfolge (Priorität) der MACs an.
-        Erwartet im Body: {"order": [mac_id1, mac_id2, ...]} in gewünschter Reihenfolge.
-        """
-        from .models import M3UAccountMac
-
-        account = self.get_object()
-        order = request.data.get("order", [])
-        if not isinstance(order, list):
-            return Response(
-                {"error": "Field 'order' must be a list of MAC IDs."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Map bestehende MACs nach ID
-        mac_qs = account.macs.all()
-        mac_map = {str(m.id): m for m in mac_qs}
-
-        next_idx = 0
-        # Zuerst die IDs aus 'order' in genau dieser Reihenfolge
-        for mac_id in order:
-            m = mac_map.pop(str(mac_id), None)
-            if m is None:
-                continue
-            if m.priority != next_idx:
-                m.priority = next_idx
-                m.save(update_fields=["priority"])
-            next_idx += 1
-
-        # Alle übrigen MACs hinten anhängen
-        for m in mac_map.values():
-            if m.priority != next_idx:
-                m.priority = next_idx
-                m.save(update_fields=["priority"])
-            next_idx += 1
-
-        remaining = list(account.macs.order_by("priority", "id"))
-        account.mac_address = " ".join(m.address for m in remaining)
-        account.save(update_fields=["mac_address"])
-
-        serializer = self.get_serializer(account)
-        return Response(
-            {
-                "account": serializer.data,
-            }
-        )
 
 
 class M3UFilterViewSet(viewsets.ModelViewSet):
@@ -483,9 +372,8 @@ class RefreshM3UAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of all active M3U accounts",
-        responses={202: "M3U refresh initiated"},
+    @extend_schema(
+        description="Triggers a refresh of all active M3U accounts",
     )
     def post(self, request, format=None):
         refresh_m3u_accounts.delay()
@@ -506,9 +394,8 @@ class RefreshSingleM3UAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of a single M3U account",
-        responses={202: "M3U account refresh initiated"},
+    @extend_schema(
+        description="Triggers a refresh of a single M3U account",
     )
     def post(self, request, account_id, format=None):
         refresh_single_m3u_account.delay(account_id)
@@ -532,9 +419,8 @@ class RefreshAccountInfoAPIView(APIView):
         except KeyError:
             return [Authenticated()]
 
-    @swagger_auto_schema(
-        operation_description="Triggers a refresh of account information for a specific M3U profile",
-        responses={202: "Account info refresh initiated", 400: "Profile not found or not XtreamCodes"},
+    @extend_schema(
+        description="Triggers a refresh of account information for a specific M3U profile",
     )
     def post(self, request, profile_id, format=None):
         try:

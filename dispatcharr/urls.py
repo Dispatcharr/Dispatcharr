@@ -3,35 +3,20 @@ from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.generic import TemplateView, RedirectView
-from rest_framework import permissions
-from drf_yasg.views import get_schema_view
-from drf_yasg import openapi
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.ts_proxy.views import stream_xc
 from apps.output.views import xc_movie_stream, xc_series_stream
 
-# Define schema_view for Swagger
-schema_view = get_schema_view(
-    openapi.Info(
-        title="Dispatcharr API",
-        default_version="v1",
-        description="API documentation for Dispatcharr",
-        terms_of_service="https://www.google.com/policies/terms/",
-        contact=openapi.Contact(email="contact@dispatcharr.local"),
-        license=openapi.License(name="Creative Commons by-nc-sa"),
-    ),
-    public=True,
-    permission_classes=(permissions.AllowAny,),
-)
-
 urlpatterns = [
     # API Routes
     path("api/", include(("apps.api.urls", "api"), namespace="api")),
     path("api", RedirectView.as_view(url="/api/", permanent=True)),
-    # Admin
-    path("admin", RedirectView.as_view(url="/admin/", permanent=True)),
-    path("admin/", admin.site.urls),
+    # Swagger redirects (Swagger UI is served at /api/swagger/)
+    path("swagger/", RedirectView.as_view(url="/api/swagger/", permanent=True)),
+    path("swagger", RedirectView.as_view(url="/api/swagger/", permanent=True)),
+    path("redoc/", RedirectView.as_view(url="/api/redoc/", permanent=True)),
+    path("redoc", RedirectView.as_view(url="/api/redoc/", permanent=True)),
     # Outputs
     path("output", RedirectView.as_view(url="/output/", permanent=True)),
     path("output/", include(("apps.output.urls", "output"), namespace="output")),
@@ -67,12 +52,9 @@ urlpatterns = [
         xc_series_stream,
         name="xc_series_stream",
     ),
-
-    re_path(r"^swagger/?$", schema_view.with_ui("swagger", cache_timeout=0), name="schema-swagger-ui"),
-    # ReDoc UI
-    path("redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"),
-    # Optionally, serve the raw Swagger JSON
-    path("swagger.json", schema_view.without_ui(cache_timeout=0), name="schema-json"),
+    # Admin
+    path("admin", RedirectView.as_view(url="/admin/", permanent=True)),
+    path("admin/", admin.site.urls),
 
     # VOD proxy is now handled by the main proxy URLs above
     # Catch-all routes should always be last

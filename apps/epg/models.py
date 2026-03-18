@@ -45,6 +45,10 @@ class EPGSource(models.Model):
         null=True,
         help_text="Custom properties for dummy EPG configuration (regex patterns, timezone, duration, etc.)"
     )
+    priority = models.PositiveIntegerField(
+        default=0,
+        help_text="Priority for EPG matching (higher numbers = higher priority). Used when multiple EPG sources have matching entries for a channel."
+    )
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,

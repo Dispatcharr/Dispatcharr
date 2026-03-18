@@ -19,6 +19,21 @@ import useAuthStore from './store/auth';
 
 export const WebsocketContext = createContext([false, () => {}, null]);
 
+// Debounce: coalesces rapid recording WS events into a single fetchRecordings()
+// call (400 ms window) to prevent redundant re-renders in the TV Guide.
+let _recordingFetchTimer = null;
+function scheduleRecordingFetch() {
+  if (_recordingFetchTimer) clearTimeout(_recordingFetchTimer);
+  _recordingFetchTimer = setTimeout(async () => {
+    _recordingFetchTimer = null;
+    try {
+      await useChannelsStore.getState().fetchRecordings();
+    } catch (e) {
+      console.warn('Failed to refresh recordings:', e);
+    }
+  }, 400);
+}
+
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
   const [val, setVal] = useState(null);
@@ -193,21 +208,21 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 4000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               } else if (status === 'skipped') {
+                const reasonMap = {
+                  no_commercials_detected: 'No commercials were detected in this recording',
+                  no_commercials: 'No commercials were detected in this recording',
+                };
                 notifications.update({
                   id,
                   title: 'No commercials to remove',
-                  message: parsedEvent.data.reason || '',
+                  message: reasonMap[parsedEvent.data.reason] || parsedEvent.data.reason || '',
                   color: 'teal',
                   loading: false,
                   autoClose: 3000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               } else if (status === 'error') {
                 notifications.update({
                   id,
@@ -217,9 +232,7 @@ export const WebsocketProvider = ({ children }) => {
                   loading: false,
                   autoClose: 6000,
                 });
-                try {
-                  await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                scheduleRecordingFetch();
               }
               break;
             }
@@ -424,7 +437,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data and logos
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
 
                   // Get updated channel data and extract logo IDs to load
                   const channels = useChannelsStore.getState().channels;
@@ -489,7 +502,7 @@ export const WebsocketProvider = ({ children }) => {
                 // Refresh channels data
                 try {
                   await API.requeryChannels();
-                  await useChannelsStore.getState().fetchChannels();
+                  await useChannelsStore.getState().fetchChannelIds();
                 } catch (e) {
                   console.warn(
                     'Failed to refresh channels after name setting:',
@@ -508,19 +521,11 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'recording_updated':
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on update:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recordings_refreshed':
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on refreshed:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recording_started':
@@ -528,11 +533,7 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording started!',
                 message: `Started recording channel ${parsedEvent.data.channel}`,
               });
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on start:', e);
-              }
+              scheduleRecordingFetch();
               break;
 
             case 'recording_ended':
@@ -540,10 +541,36 @@ export const WebsocketProvider = ({ children }) => {
                 title: 'Recording finished!',
                 message: `Stopped recording channel ${parsedEvent.data.channel}`,
               });
-              try {
-                await useChannelsStore.getState().fetchRecordings();
-              } catch (e) {
-                console.warn('Failed to refresh recordings on end:', e);
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_stopped':
+              notifications.show({
+                title: 'Recording stopped',
+                message: `Recording stopped early for ${parsedEvent.data.channel || 'channel'}. Partial content has been saved.`,
+                color: 'yellow',
+              });
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_extended':
+              scheduleRecordingFetch();
+              break;
+
+            case 'recording_cancelled':
+              notifications.show({
+                title: parsedEvent.data.was_in_progress ? 'Recording cancelled' : 'Recording deleted',
+                message: parsedEvent.data.was_in_progress
+                  ? 'Recording cancelled and content removed.'
+                  : 'Recording deleted.',
+                color: 'red',
+              });
+              // Surgical removal by ID avoids a full fetchRecordings() re-render.
+              // Fall back to a full refresh if the ID is missing (e.g. older server).
+              if (parsedEvent.data.recording_id != null) {
+                useChannelsStore.getState().removeRecording(parsedEvent.data.recording_id);
+              } else {
+                scheduleRecordingFetch();
               }
               break;
 
@@ -569,14 +596,24 @@ export const WebsocketProvider = ({ children }) => {
               break;
 
             case 'epg_refresh':
-              // Update the store with progress information
-              updateEPGProgress(parsedEvent.data);
-
-              // If we have source_id/account info, update the EPG source status
-              if (parsedEvent.data.source_id || parsedEvent.data.account) {
+              // If we have source/account info, check if EPG exists before processing
+              if (parsedEvent.data.source || parsedEvent.data.account) {
                 const sourceId =
-                  parsedEvent.data.source_id || parsedEvent.data.account;
+                  parsedEvent.data.source || parsedEvent.data.account;
                 const epg = epgs[sourceId];
+
+                // Only update progress if the EPG still exists in the store
+                // This prevents crashes when receiving updates for deleted EPGs
+                if (epg) {
+                  // Update the store with progress information
+                  updateEPGProgress(parsedEvent.data);
+                } else {
+                  // EPG was deleted, ignore this update
+                  console.debug(
+                    `Ignoring EPG refresh update for deleted EPG ${sourceId}`
+                  );
+                  break;
+                }
 
                 if (epg) {
                   // Check for any indication of an error (either via status or error field)
@@ -613,6 +650,10 @@ export const WebsocketProvider = ({ children }) => {
                       status: parsedEvent.data.status || 'success',
                       last_message:
                         parsedEvent.data.message || epg.last_message,
+                      // Use the timestamp from the backend if provided
+                      ...(parsedEvent.data.updated_at && {
+                        updated_at: parsedEvent.data.updated_at,
+                      }),
                     });
 
                     // Only show success notification if we've finished parsing programs and had no errors
@@ -686,6 +727,17 @@ export const WebsocketProvider = ({ children }) => {
                   withCloseButton: true, // Allow manual close
                   loading: false, // Remove loading indicator
                 });
+                // Requery streams and channels after rehash completes
+                try {
+                  await API.requeryChannels();
+                  await API.requeryStreams();
+                  await useChannelsStore.getState().fetchChannelIds();
+                } catch (error) {
+                  console.error(
+                    'Error refreshing channels/streams after rehash:',
+                    error
+                  );
+                }
               } else if (parsedEvent.data.action === 'blocked') {
                 // Handle blocked rehash attempt
                 notifications.show({
@@ -741,7 +793,9 @@ export const WebsocketProvider = ({ children }) => {
               // Refresh the channels table to show new channels
               try {
                 await API.requeryChannels();
-                await useChannelsStore.getState().fetchChannels();
+                await API.requeryStreams();
+                useChannelsStore.getState().fetchChannelIds();
+                await fetchChannelProfiles();
                 console.log('Channels refreshed after bulk creation');
               } catch (error) {
                 console.error(
@@ -815,6 +869,59 @@ export const WebsocketProvider = ({ children }) => {
 
               // Pass through to individual components for any additional handling
               setVal(parsedEvent);
+              break;
+            }
+
+            case 'system_notification': {
+              // Handle real-time system notifications (version updates, setting recommendations, etc.)
+              const notificationData = parsedEvent.data.notification;
+              if (notificationData) {
+                // Import and update the notifications store
+                const { default: useNotificationsStore } =
+                  await import('./store/notifications');
+                useNotificationsStore
+                  .getState()
+                  .addNotification(notificationData);
+
+                // Show a toast notification for high priority items
+                if (
+                  notificationData.priority === 'high' ||
+                  notificationData.priority === 'critical'
+                ) {
+                  const color =
+                    notificationData.notification_type === 'version_update'
+                      ? 'green'
+                      : notificationData.notification_type === 'warning'
+                        ? 'orange'
+                        : 'blue';
+
+                  notifications.show({
+                    title: notificationData.title,
+                    message: notificationData.message,
+                    color,
+                    autoClose: 10000,
+                  });
+                }
+              }
+              break;
+            }
+
+            case 'notification_dismissed': {
+              // Handle notification dismissed from another session
+              const { notification_key } = parsedEvent.data;
+              if (notification_key) {
+                const { default: useNotificationsStore } =
+                  await import('./store/notifications');
+                useNotificationsStore
+                  .getState()
+                  .dismissNotification(notification_key);
+              }
+              break;
+            }
+
+            case 'notifications_cleared': {
+              // Handle bulk notification clearing (e.g., when version is updated)
+              API.getNotifications();
               break;
             }
 

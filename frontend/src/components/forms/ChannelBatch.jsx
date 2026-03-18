@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import useChannelsStore from '../../store/channels';
+import useChannelsTableStore from '../../store/channelsTable.jsx';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import useEPGsStore from '../../store/epgs';
@@ -77,6 +78,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const [confirmSetLogosOpen, setConfirmSetLogosOpen] = useState(false);
   const [confirmSetTvgIdsOpen, setConfirmSetTvgIdsOpen] = useState(false);
   const [confirmBatchUpdateOpen, setConfirmBatchUpdateOpen] = useState(false);
+  const [settingNames, setSettingNames] = useState(false);
+  const [settingLogos, setSettingLogos] = useState(false);
+  const [settingTvgIds, setSettingTvgIds] = useState(false);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
@@ -99,6 +103,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
+      is_adult: '-1',
     },
   });
 
@@ -135,8 +140,10 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       if (values.stream_profile_id === '0') {
         changes.push(`• Stream Profile: Use Default`);
       } else {
-        const profileName =
-          streamProfiles[values.stream_profile_id]?.name || 'Selected Profile';
+        const profile = streamProfiles.find(
+          (p) => `${p.id}` === `${values.stream_profile_id}`
+        );
+        const profileName = profile?.name || 'Selected Profile';
         changes.push(`• Stream Profile: ${profileName}`);
       }
     }
@@ -146,6 +153,13 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       const userLevelLabel =
         USER_LEVEL_LABELS[values.user_level] || values.user_level;
       changes.push(`• User Level: ${userLevelLabel}`);
+    }
+
+    // Check mature content flag
+    if (values.is_adult && values.is_adult !== '-1') {
+      changes.push(
+        `• Mature Content: ${values.is_adult === 'true' ? 'Yes' : 'No'}`
+      );
     }
 
     // Check dummy EPG
@@ -218,42 +232,35 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       delete values.user_level;
     }
 
+    if (values.is_adult === '-1') {
+      delete values.is_adult;
+    } else if (values.is_adult === 'true') {
+      values.is_adult = true;
+    } else if (values.is_adult === 'false') {
+      values.is_adult = false;
+    }
+
     // Remove the channel_group field from form values as we use channel_group_id
     delete values.channel_group;
 
     try {
       const applyRegex = regexFind.trim().length > 0;
 
-      // First, handle standard field updates (name, group, logo, etc.)
-      if (applyRegex) {
-        // Build per-channel updates to apply unique names via regex
-        let flags = 'g';
-        let re;
-        try {
-          re = new RegExp(regexFind, flags);
-        } catch (e) {
-          console.error('Invalid regex:', e);
-          setIsSubmitting(false);
-          return;
-        }
-
-        const channelsMap = useChannelsStore.getState().channels;
-        const updates = channelIds.map((id) => {
-          const ch = channelsMap[id];
-          const currentName = ch?.name ?? '';
-          const newName = currentName.replace(re, regexReplace ?? '');
-          const update = { id };
-          if (newName !== currentName && newName.trim().length > 0) {
-            update.name = newName;
-          }
-          // Merge base values (group/profile/user_level) if present
-          Object.assign(update, values);
-          return update;
-        });
-
-        await API.bulkUpdateChannels(updates);
-      } else if (Object.keys(values).length > 0) {
+      // First, handle standard field updates (group, logo, profile, etc.)
+      if (Object.keys(values).length > 0) {
         await API.updateChannels(channelIds, values);
+      }
+
+      // Then, handle name changes via server-side regex to avoid loading all channels client-side
+      if (applyRegex) {
+        // Default global replace; case-insensitive could be added later via UI if needed
+        const flags = 'g';
+        await API.bulkRegexRenameChannels(
+          channelIds,
+          regexFind,
+          regexReplace ?? '',
+          flags
+        );
       }
 
       // Then, handle EPG assignment if a dummy EPG was selected
@@ -297,7 +304,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       // Refresh both the channels table data and the main channels store
       await Promise.all([
         API.requeryChannels(),
-        useChannelsStore.getState().fetchChannels(),
+        useChannelsStore.getState().fetchChannelIds(),
       ]);
       onClose();
     } catch (error) {
@@ -326,6 +333,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetNamesFromEpg = async () => {
+    setSettingNames(true);
     try {
       // Start the backend task
       await API.setChannelNamesFromEpg(channelIds);
@@ -339,7 +347,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetNamesOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG name setting task:', error);
@@ -348,6 +355,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG name setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingNames(false);
       setConfirmSetNamesOpen(false);
     }
   };
@@ -371,6 +380,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetLogosFromEpg = async () => {
+    setSettingLogos(true);
     try {
       // Start the backend task
       await API.setChannelLogosFromEpg(channelIds);
@@ -384,7 +394,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetLogosOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG logo setting task:', error);
@@ -393,6 +402,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG logo setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingLogos(false);
       setConfirmSetLogosOpen(false);
     }
   };
@@ -416,6 +427,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   };
 
   const executeSetTvgIdsFromEpg = async () => {
+    setSettingTvgIds(true);
     try {
       // Start the backend task
       await API.setChannelTvgIdsFromEpg(channelIds);
@@ -429,7 +441,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       });
 
       // Close the modal since the task is now running in background
-      setConfirmSetTvgIdsOpen(false);
       onClose();
     } catch (error) {
       console.error('Failed to start EPG TVG-ID setting task:', error);
@@ -438,6 +449,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         message: 'Failed to start EPG TVG-ID setting task.',
         color: 'red',
       });
+    } finally {
+      setSettingTvgIds(false);
       setConfirmSetTvgIdsOpen(false);
     }
   };
@@ -920,6 +933,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   })
                 )}
               />
+
+              <Select
+                size="xs"
+                label="Mature Content"
+                {...form.getInputProps('is_adult')}
+                key={form.key('is_adult')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Yes' },
+                  { value: 'false', label: 'No' },
+                ]}
+              />
             </Stack>
           </Group>
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
@@ -945,6 +970,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         opened={confirmSetNamesOpen}
         onClose={() => setConfirmSetNamesOpen(false)}
         onConfirm={executeSetNamesFromEpg}
+        loading={settingNames}
         title="Confirm Set Names from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -966,6 +992,7 @@ This action cannot be undone.`}
         opened={confirmSetLogosOpen}
         onClose={() => setConfirmSetLogosOpen(false)}
         onConfirm={executeSetLogosFromEpg}
+        loading={settingLogos}
         title="Confirm Set Logos from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -987,6 +1014,7 @@ This action cannot be undone.`}
         opened={confirmSetTvgIdsOpen}
         onClose={() => setConfirmSetTvgIdsOpen(false)}
         onConfirm={executeSetTvgIdsFromEpg}
+        loading={settingTvgIds}
         title="Confirm Set TVG-IDs from EPG"
         message={
           <div style={{ whiteSpace: 'pre-line' }}>
@@ -1008,6 +1036,7 @@ This action cannot be undone.`}
         opened={confirmBatchUpdateOpen}
         onClose={() => setConfirmBatchUpdateOpen(false)}
         onConfirm={onSubmit}
+        loading={isSubmitting}
         title="Confirm Batch Update"
         message={
           <div>
@@ -1052,7 +1081,17 @@ export default ChannelBatchForm;
 
 // Lightweight inline preview component to visualize rename results for a subset
 const RegexPreview = ({ channelIds, find, replace }) => {
-  const channelsMap = useChannelsStore((s) => s.channels);
+  // Use only current page data from the channels table for preview
+  const pageChannels = useChannelsTableStore((s) => s.channels);
+  const nameById = useMemo(() => {
+    const map = {};
+    if (Array.isArray(pageChannels)) {
+      for (const ch of pageChannels) {
+        if (ch?.id != null) map[ch.id] = ch.name || '';
+      }
+    }
+    return map;
+  }, [pageChannels]);
   const previewItems = useMemo(() => {
     const items = [];
     if (!find) return items;
@@ -1064,24 +1103,25 @@ const RegexPreview = ({ channelIds, find, replace }) => {
       console.error('Invalid regex:', error);
       return [{ before: 'Invalid regex', after: '' }];
     }
-    for (let i = 0; i < Math.min(channelIds.length, 25); i++) {
-      const id = channelIds[i];
-      const before = channelsMap[id]?.name ?? '';
+    // Limit preview to items that exist on the current page
+    const pageOnlyIds = channelIds.filter((id) => nameById[id] !== undefined);
+    for (let i = 0; i < Math.min(pageOnlyIds.length, 25); i++) {
+      const id = pageOnlyIds[i];
+      const before = nameById[id] ?? '';
       const after = before.replace(re, replace ?? '');
       if (before !== after) {
         items.push({ before, after });
       }
     }
     return items;
-  }, [channelIds, channelsMap, find, replace]);
+  }, [channelIds, nameById, find, replace]);
 
   if (!find) return null;
 
   return (
     <Box mt={8}>
       <Text size="xs" c="dimmed" mb={4}>
-        Preview (first {Math.min(channelIds.length, 25)} of {channelIds.length}{' '}
-        selected)
+        Preview shows matches from the current page only (up to 25).
       </Text>
       <ScrollArea h={120} offsetScrollbars>
         <Stack gap={4}>

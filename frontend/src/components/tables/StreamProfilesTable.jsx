@@ -155,7 +155,7 @@ const StreamProfiles = () => {
   };
 
   const deleteStreamProfile = async (id) => {
-    if (id == settings['default-stream-profile'].value) {
+    if (id == settings.default_stream_profile) {
       notifications.show({
         title: 'Cannot delete default stream-profile',
         color: 'red.5',

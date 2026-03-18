@@ -1,5 +1,6 @@
 # core/views.py
 import os
+from shlex import split as shlex_split
 import sys
 import subprocess
 import logging
@@ -37,7 +38,17 @@ def stream_view(request, channel_uuid):
     """
     try:
         redis_host = getattr(settings, "REDIS_HOST", "localhost")
-        redis_client = redis.Redis(host=settings.REDIS_HOST, port=6379, db=int(getattr(settings, "REDIS_DB", "0")))
+        redis_port = int(getattr(settings, "REDIS_PORT", 6379))
+        redis_db = int(getattr(settings, "REDIS_DB", "0"))
+        redis_password = getattr(settings, "REDIS_PASSWORD", "")
+        redis_user = getattr(settings, "REDIS_USER", "")
+        redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            password=redis_password if redis_password else None,
+            username=redis_user if redis_user else None
+        )
 
         # Retrieve the channel by the provided stream_id.
         channel = Channel.objects.get(uuid=channel_uuid)
@@ -129,7 +140,7 @@ def stream_view(request, channel_uuid):
         stream_profile = channel.stream_profile
         if not stream_profile:
             logger.error("No stream profile set for channel ID=%s, using default", channel.id)
-            stream_profile = StreamProfile.objects.get(id=CoreSettings.objects.get(key="default-stream-profile").value)
+            stream_profile = StreamProfile.objects.get(id=CoreSettings.get_default_stream_profile_id())
 
         logger.debug("Stream profile used: %s", stream_profile.name)
 
@@ -142,7 +153,7 @@ def stream_view(request, channel_uuid):
         logger.debug("Formatted parameters: %s", parameters)
 
         # Build the final command.
-        cmd = [stream_profile.command] + parameters.split()
+        cmd = [stream_profile.command] + shlex_split(parameters)
         logger.debug("Executing command: %s", cmd)
 
         try:
