@@ -61,7 +61,7 @@ class StreamManager:
         # Stream health monitoring
         self.last_data_time = time.time()
         self.healthy = True
-        self.health_check_interval = ConfigHelper.get('HEALTH_CHECK_INTERVAL', 5)
+        self.health_check_interval = 5  # Fixed value to avoid property issues
         self.chunk_size = ConfigHelper.chunk_size()
 
         # Add to your __init__ method
