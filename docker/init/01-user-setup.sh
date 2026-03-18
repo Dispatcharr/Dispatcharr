@@ -6,24 +6,11 @@
 # runtime behavior since all postgres operations run as $POSTGRES_USER
 # rather than the postgres system user.
 
-# Auto-detect PUID/PGID from existing data when not explicitly set.
-# Avoids a cross-UID chown on upgrade, which would fail on restricted
-# filesystems (NFS root_squash, CIFS). UID/GID 0 is excluded — PostgreSQL
-# refuses to run as root. Falls through to default 1000 for new installs.
-if [ -z "${PUID+x}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
-    _data_uid=$(stat -c '%u' "${POSTGRES_DIR}/PG_VERSION")
-    if [ "$_data_uid" -ne 0 ] 2>/dev/null; then
-        export PUID=$_data_uid
-        echo "PUID not set — defaulting to existing data owner UID: $PUID"
-    fi
-fi
-if [ -z "${PGID+x}" ] && [ -f "${POSTGRES_DIR}/PG_VERSION" ]; then
-    _data_gid=$(stat -c '%g' "${POSTGRES_DIR}/PG_VERSION")
-    if [ "$_data_gid" -ne 0 ] 2>/dev/null; then
-        export PGID=$_data_gid
-        echo "PGID not set — defaulting to existing data owner GID: $PGID"
-    fi
-fi
+# Default PUID/PGID to 1000 when not explicitly set.
+# The old image ran Django as UID 1000 and PostgreSQL as UID 102. Since
+# DATA_DIRS and host-side files are owned by 1000, defaulting to 1000
+# preserves access for upgrading users without requiring configuration.
+# The DB ownership migration (102 → 1000) is handled by 02-postgres.sh.
 export PUID=${PUID:-1000}
 export PGID=${PGID:-1000}
 
