@@ -20,4 +20,5 @@ uwsgi.sock
 package-lock.json
 models
 .idea
+.vite/
 uv.lock

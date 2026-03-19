@@ -11,7 +11,8 @@ from django.shortcuts import get_object_or_404, get_list_or_404
 from django.db import transaction
 from django.db.models import Count, F
 from django.db.models import Q
-import os, json, requests, logging, mimetypes
+import os, json, requests, logging, mimetypes, threading, time
+from datetime import timedelta
 from django.utils.http import http_date
 from urllib.parse import unquote
 from apps.accounts.permissions import (
@@ -49,7 +50,6 @@ from .serializers import (
 )
 from .tasks import (
     match_epg_channels,
-    evaluate_series_rules,
     evaluate_series_rules_impl,
     match_single_channel_epg,
     match_selected_channels_epg,
@@ -72,6 +72,12 @@ from rest_framework.pagination import PageNumberPagination
 
 
 logger = logging.getLogger(__name__)
+
+# Negative cache for remote logo URLs that failed to fetch.
+# Prevents repeated blocking requests to unreachable hosts (e.g., dead CDNs)
+# from exhausting Daphne workers.  Keyed by URL, value is expiry timestamp.
+_logo_fetch_failures = {}
+_LOGO_FAIL_TTL = 300  # seconds
 
 
 class OrInFilter(django_filters.Filter):
@@ -469,7 +475,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ChannelFilter
     search_fields = ["name", "channel_group__name"]
-    ordering_fields = ["channel_number", "name", "channel_group__name"]
+    ordering_fields = ["channel_number", "name", "channel_group__name", "epg_data__name"]
     ordering = ["-channel_number"]
 
     def create(self, request, *args, **kwargs):
@@ -579,6 +585,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_profile_id = self.request.query_params.get("channel_profile_id")
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
+        only_stale = self.request.query_params.get("only_stale", None)
 
         if channel_profile_id:
             try:
@@ -598,6 +605,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         if only_streamless:
             q_filters &= Q(streams__isnull=True)
+        if only_stale:
+            # Filter channels that have at least one related stream marked as stale
+            q_filters &= Q(streams__is_stale=True)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
@@ -1070,6 +1080,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
         elif channel_number == 0:
             # Special case: 0 means ignore provider numbers and auto-assign
             channel_number = None
+        elif channel_number == -1:
+            # Special case: -1 means assign the number after the current highest
+            highest = Channel.objects.order_by('-channel_number').values_list('channel_number', flat=True).first()
+            channel_number = (int(highest) + 1) if highest is not None else 1
 
         if channel_number is None:
             # Still None, auto-assign the next available channel number
@@ -1954,6 +1968,12 @@ class LogoViewSet(viewsets.ModelViewSet):
             return response
 
         else:  # Remote image
+            # Skip URLs that recently failed to avoid blocking Daphne workers
+            # on unreachable hosts (e.g., dead CDNs referenced by old recordings).
+            fail_expiry = _logo_fetch_failures.get(logo_url)
+            if fail_expiry and time.monotonic() < fail_expiry:
+                raise Http404("Remote image temporarily unavailable")
+
             try:
                 # Get the default user agent
                 try:
@@ -1972,6 +1992,9 @@ class LogoViewSet(viewsets.ModelViewSet):
                     headers={'User-Agent': user_agent}
                 )
                 if remote_response.status_code == 200:
+                    # Success — clear any previous failure entry
+                    _logo_fetch_failures.pop(logo_url, None)
+
                     # Try to get content type from response headers first
                     content_type = remote_response.headers.get("Content-Type")
 
@@ -1995,14 +2018,19 @@ class LogoViewSet(viewsets.ModelViewSet):
                         os.path.basename(logo_url)
                     )
                     return response
+                # Non-200 response — cache the failure and evict stale entries
+                now = time.monotonic()
+                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
+                if len(_logo_fetch_failures) > 256:
+                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
+                        _logo_fetch_failures.pop(k, None)
                 raise Http404("Remote image not found")
-            except requests.exceptions.Timeout:
-                logger.warning(f"Timeout fetching logo from {logo_url}")
-                raise Http404("Logo request timed out")
-            except requests.exceptions.ConnectionError:
-                logger.warning(f"Connection error fetching logo from {logo_url}")
-                raise Http404("Unable to connect to logo server")
             except requests.RequestException as e:
+                now = time.monotonic()
+                _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
+                if len(_logo_fetch_failures) > 256:
+                    for k in [k for k, v in _logo_fetch_failures.items() if v <= now]:
+                        _logo_fetch_failures.pop(k, None)
                 logger.warning(f"Error fetching logo from {logo_url}: {e}")
                 raise Http404("Error fetching remote image")
 
@@ -2247,6 +2275,54 @@ class RecurringRecordingRuleViewSet(viewsets.ModelViewSet):
             logger.warning(f"Failed to purge recordings for rule {rule_id}: {err}")
 
 
+def _stop_dvr_clients(channel_uuid, recording_id=None):
+    """Stop DVR recording clients for a channel.
+
+    If recording_id is provided, only the client whose User-Agent contains that
+    recording ID is stopped (safe for simultaneous recordings on the same channel).
+    If recording_id is None, all Dispatcharr-DVR clients for the channel are stopped
+    (used by destroy() when deleting a recording whose task_id is unknown).
+
+    Returns the number of DVR clients stopped.
+    """
+    from core.utils import RedisClient
+    from apps.proxy.ts_proxy.redis_keys import RedisKeys
+    from apps.proxy.ts_proxy.services.channel_service import ChannelService
+
+    r = RedisClient.get_client()
+    if not r:
+        return 0
+    client_set_key = RedisKeys.clients(channel_uuid)
+    client_ids = r.smembers(client_set_key) or []
+    stopped = 0
+    for raw_id in client_ids:
+        try:
+            cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
+            meta_key = RedisKeys.client_metadata(channel_uuid, cid)
+            ua = r.hget(meta_key, "user_agent")
+            ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
+            if not (ua_s and "Dispatcharr-DVR" in ua_s):
+                continue
+            # When a recording_id is specified, only stop the client for that recording.
+            # Each run_recording task connects with User-Agent "Dispatcharr-DVR/recording-{id}",
+            # so we can safely target just this recording without affecting others on the channel.
+            if recording_id is not None and f"recording-{recording_id}" not in ua_s:
+                continue
+            try:
+                ChannelService.stop_client(channel_uuid, cid)
+                stopped += 1
+            except Exception as inner_e:
+                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
+        except Exception as inner:
+            logger.debug(f"Error while checking client metadata: {inner}")
+    # Do not call ChannelService.stop_channel() here.
+    # Stopping the channel proxy would terminate the source connection which may
+    # be shared with other recordings on the same channel.  The TS proxy server
+    # already detects when client count reaches zero and tears down the channel
+    # cleanly on its own (with the configured shutdown delay).
+    return stopped
+
+
 class RecordingViewSet(viewsets.ModelViewSet):
     queryset = Recording.objects.all()
     serializer_class = RecordingSerializer
@@ -2341,72 +2417,290 @@ class RecordingViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = f"inline; filename=\"{file_name}\""
         return response
 
+    @action(detail=True, methods=["post"], url_path="stop")
+    def stop(self, request, pk=None):
+        """Stop a recording early while retaining the partial content for playback."""
+        instance = self.get_object()
+
+        cp = instance.custom_properties or {}
+        current_status = cp.get("status", "")
+
+        # Reject stop on recordings that are already in a terminal state.
+        # Without this guard, stop() would overwrite "completed" or
+        # "interrupted" with "stopped", losing the original outcome.
+        terminal = {"completed", "interrupted", "failed"}
+        if current_status in terminal:
+            return Response(
+                {"success": False, "error": f"Recording is already {current_status}"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Mark as stopped in the DB first so run_recording detects it.
+        # This is the only operation that MUST be synchronous — run_recording reads
+        # the status field to decide whether the stream disconnection was deliberate.
+        cp["status"] = "stopped"
+        cp["stopped_at"] = str(timezone.now())
+        instance.custom_properties = cp
+        instance.save(update_fields=["custom_properties"])
+
+        # Send the WebSocket notification before returning the response.
+        # send_websocket_update is gevent-safe (offloads async_to_sync to a
+        # real OS thread when monkey-patching is active).
+        channel_uuid = str(instance.channel.uuid)
+        recording_id = instance.id
+        task_id = instance.task_id
+        channel_name = instance.channel.name
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_stopped",
+                "channel": channel_name,
+            })
+        except Exception:
+            pass
+
+        # DVR client teardown and task revocation are deferred to a daemon thread
+        # because they have occasional slow paths (Redis timeouts, Celery control
+        # broadcasts) that would otherwise add 5-15 s to the HTTP response time.
+        def _background_stop():
+            try:
+                stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
+                if stopped:
+                    logger.info(
+                        f"Stopped {stopped} DVR client(s) for channel {channel_uuid} (recording stopped early)"
+                    )
+            except Exception as e:
+                logger.debug(f"Unable to stop DVR clients for stopped recording: {e}")
+
+            try:
+                from apps.channels.signals import revoke_task
+                revoke_task(task_id)
+            except Exception as e:
+                logger.debug(f"Unable to revoke task for stopped recording: {e}")
+
+            try:
+                from django.db import connection as _conn
+                _conn.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_background_stop, daemon=True).start()
+
+        return Response({"success": True, "status": "stopped"})
+
+    @action(detail=True, methods=["post"], url_path="extend")
+    def extend(self, request, pk=None):
+        """Extend an in-progress recording's end_time without interrupting the stream.
+
+        The running task re-reads end_time every ~2 s and adjusts its deadline
+        dynamically.  The pre_save signal skips task revocation while the
+        recording status is 'recording'.
+        """
+        instance = self.get_object()
+        cp = instance.custom_properties or {}
+
+        if cp.get("status") in ("completed", "stopped", "interrupted"):
+            return Response(
+                {"success": False, "error": "Recording has already finished"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            extra_minutes = int(request.data.get("extra_minutes", 0))
+        except (TypeError, ValueError):
+            extra_minutes = 0
+
+        if extra_minutes <= 0:
+            return Response(
+                {"success": False, "error": "extra_minutes must be a positive integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_end_time = instance.end_time + timedelta(minutes=extra_minutes)
+        # Use queryset .update() to bypass pre_save/post_save signals.
+        # This avoids the pre_save signal revoking the scheduled/running
+        # Celery task.  The running task's 2-second polling loop re-reads
+        # end_time from the DB and extends its deadline dynamically.
+        # If the task hasn't started yet (still in Beat's queue), it will
+        # read the updated end_time from the DB on its first poll cycle.
+        Recording.objects.filter(pk=instance.pk).update(end_time=new_end_time)
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_extended",
+                "recording_id": instance.id,
+                "new_end_time": new_end_time.isoformat(),
+                "extra_minutes": extra_minutes,
+                "channel": instance.channel.name,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True, "new_end_time": new_end_time.isoformat()})
+
+    @action(detail=True, methods=["post"], url_path="refresh-artwork")
+    def refresh_artwork(self, request, pk=None):
+        """Re-run the poster resolution pipeline for this recording.
+
+        Useful when a recording fell back to a channel logo or default logo
+        because external sources were temporarily unavailable.
+        """
+        instance = self.get_object()
+
+        def _background_refresh(rec_id):
+            try:
+                from .tasks import _resolve_poster_for_program
+                from .models import Recording
+                from core.utils import send_websocket_update
+                from django.db import close_old_connections
+
+                rec = Recording.objects.select_related("channel").get(id=rec_id)
+                cp = rec.custom_properties or {}
+                program = cp.get("program") or {}
+
+                poster_logo_id, poster_url = _resolve_poster_for_program(
+                    rec.channel.name, program, channel_logo_id=rec.channel.logo_id,
+                )
+
+                # Refresh and merge to avoid overwriting concurrent changes.
+                # Only upgrade — never replace a real poster with a channel logo fallback.
+                rec.refresh_from_db()
+                fresh_cp = rec.custom_properties or {}
+                updated = False
+                is_channel_logo_fallback = (
+                    poster_logo_id == rec.channel.logo_id
+                    and not poster_url
+                )
+                if program and program.get("id"):
+                    fresh_cp["program"] = program
+                    updated = True
+                if not is_channel_logo_fallback:
+                    if poster_logo_id and fresh_cp.get("poster_logo_id") != poster_logo_id:
+                        fresh_cp["poster_logo_id"] = poster_logo_id
+                        updated = True
+                    if poster_url and fresh_cp.get("poster_url") != poster_url:
+                        fresh_cp["poster_url"] = poster_url
+                        updated = True
+
+                if updated:
+                    rec.custom_properties = fresh_cp
+                    rec.save(update_fields=["custom_properties"])
+
+                send_websocket_update('updates', 'update', {
+                    "success": True,
+                    "type": "recording_updated",
+                    "recording_id": rec_id,
+                })
+            except Exception as e:
+                logger.debug(f"refresh-artwork background failed for {rec_id}: {e}")
+            finally:
+                close_old_connections()
+
+        t = threading.Thread(target=_background_refresh, args=(instance.id,), daemon=True)
+        t.start()
+
+        return Response({"success": True, "message": "Artwork refresh started"})
+
+    @action(detail=True, methods=["post"], url_path="update-metadata")
+    def update_metadata(self, request, pk=None):
+        """Update user-editable recording metadata (title, description).
+
+        Sets user_edited flag to prevent EPG auto-enrichment from overwriting
+        the user's changes on subsequent task runs.
+        """
+        instance = self.get_object()
+        title = request.data.get("title")
+        description = request.data.get("description")
+
+        if title is None and description is None:
+            return Response(
+                {"success": False, "error": "No fields to update"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Strip whitespace; treat blank strings as "no change"
+        clean_title = str(title).strip() if title is not None else None
+        clean_desc = str(description).strip() if description is not None else None
+
+        if not clean_title and not clean_desc:
+            return Response(
+                {"success": False, "error": "Title and description cannot be blank"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cp = instance.custom_properties or {}
+        program = cp.get("program") or {}
+
+        if clean_title:
+            program["title"] = clean_title
+        if clean_desc:
+            program["description"] = clean_desc
+        program["user_edited"] = True
+
+        cp["program"] = program
+        instance.custom_properties = cp
+        instance.save(update_fields=["custom_properties"])
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_updated",
+                "recording_id": instance.id,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True})
+
     def destroy(self, request, *args, **kwargs):
         """Delete the Recording and ensure any active DVR client connection is closed.
 
         Also removes the associated file(s) from disk if present.
+
+        Operation order matters for correctness:
+          1. Delete the DB record first — run_recording's cancellation guard
+             (Recording.objects.filter(id=...).exists()) will now return False,
+             preventing it from saving 'interrupted' status or sending
+             recording_ended after the stream is torn down.
+          2. Send recording_cancelled WebSocket immediately so the frontend
+             removes the card without waiting for the slow DVR client teardown.
+          3. Spawn a background thread to stop the DVR client and delete files.
+             This mirrors the stop() endpoint's approach and avoids the 5-15 s
+             delay that _stop_dvr_clients() can introduce.
         """
         instance = self.get_object()
+        recording_id = instance.pk
+        channel_name = instance.channel.name
 
-        # Attempt to close the DVR client connection for this channel if active
-        try:
-            channel_uuid = str(instance.channel.uuid)
-            # Lazy imports to avoid module overhead if proxy isn't used
-            from core.utils import RedisClient
-            from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.services.channel_service import ChannelService
-
-            r = RedisClient.get_client()
-            if r:
-                client_set_key = RedisKeys.clients(channel_uuid)
-                client_ids = r.smembers(client_set_key) or []
-                stopped = 0
-                for raw_id in client_ids:
-                    try:
-                        cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
-                        meta_key = RedisKeys.client_metadata(channel_uuid, cid)
-                        ua = r.hget(meta_key, "user_agent")
-                        ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
-                        # Identify DVR recording client by its user agent
-                        if ua_s and "Dispatcharr-DVR" in ua_s:
-                            try:
-                                ChannelService.stop_client(channel_uuid, cid)
-                                stopped += 1
-                            except Exception as inner_e:
-                                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
-                    except Exception as inner:
-                        logger.debug(f"Error while checking client metadata: {inner}")
-                if stopped:
-                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
-                # If no clients remain after stopping DVR clients, proactively stop the channel
-                try:
-                    remaining = r.scard(client_set_key) or 0
-                except Exception:
-                    remaining = 0
-                if remaining == 0:
-                    try:
-                        ChannelService.stop_channel(channel_uuid)
-                        logger.info(f"Stopped channel {channel_uuid} (no clients remain)")
-                    except Exception as sc_e:
-                        logger.debug(f"Unable to stop channel {channel_uuid}: {sc_e}")
-        except Exception as e:
-            logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
-
-        # Capture paths before deletion
+        # Capture state before the DB row is deleted
         cp = instance.custom_properties or {}
+        rec_status = cp.get("status", "")
         file_path = cp.get("file_path")
         temp_ts_path = cp.get("_temp_file_path")
+        channel_uuid = str(instance.channel.uuid)
 
-        # Perform DB delete first, then try to remove files
+        # 1. Delete the DB record (also fires post_delete → revoke_task_on_delete)
         response = super().destroy(request, *args, **kwargs)
 
-        # Notify frontends to refresh recordings
+        # 2. Notify frontends immediately
         try:
             from core.utils import send_websocket_update
-            send_websocket_update('updates', 'update', {"success": True, "type": "recordings_refreshed"})
+            send_websocket_update('updates', 'update', {
+                "success": True,
+                "type": "recording_cancelled",
+                "recording_id": recording_id,
+                "channel": channel_name,
+                "was_in_progress": rec_status == "recording",
+            })
         except Exception:
             pass
 
+        # 3. Defer slow teardown to a background thread
         library_dir = '/data'
         allowed_roots = ['/data/', library_dir.rstrip('/') + '/']
 
@@ -2420,8 +2714,32 @@ class RecordingViewSet(viewsets.ModelViewSet):
             except Exception as ex:
                 logger.warning(f"Failed to delete recording artifact {path}: {ex}")
 
-        _safe_remove(file_path)
-        _safe_remove(temp_ts_path)
+        def _background_cancel():
+            # Only stop the DVR client if the recording was actively streaming.
+            # Stopping for completed/upcoming recordings would kill an unrelated
+            # in-progress recording on the same channel.
+            if rec_status == "recording":
+                try:
+                    stopped = _stop_dvr_clients(channel_uuid, recording_id=recording_id)
+                    if stopped:
+                        logger.info(
+                            f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation"
+                        )
+                except Exception as e:
+                    logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
+
+            # Best-effort file cleanup in case run_recording already exited
+            # before the DB delete.
+            _safe_remove(file_path)
+            _safe_remove(temp_ts_path)
+
+            try:
+                from django.db import connection as _conn
+                _conn.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_background_cancel, daemon=True).start()
 
         return response
 
@@ -2534,11 +2852,9 @@ class SeriesRulesAPIView(APIView):
         else:
             rules.append({"tvg_id": tvg_id, "mode": mode, "title": title})
         CoreSettings.set_dvr_series_rules(rules)
-        # Evaluate immediately for this tvg_id (async)
-        try:
-            evaluate_series_rules.delay(tvg_id)
-        except Exception:
-            pass
+        # Note: frontend calls the evaluate endpoint explicitly after creating
+        # the rule, so do NOT fire evaluate_series_rules.delay() here to
+        # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
 
 
@@ -2551,16 +2867,44 @@ class DeleteSeriesRuleAPIView(APIView):
 
     @extend_schema(
         summary="Delete a series rule",
-        description="Remove a series recording rule by TVG ID. This does not remove already scheduled recordings.",
+        description="Remove a series recording rule by TVG ID and clean up future scheduled recordings.",
         parameters=[
             OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
         ],
     )
     def delete(self, request, tvg_id):
         tvg_id = unquote(str(tvg_id or ""))
-        rules = [r for r in CoreSettings.get_dvr_series_rules() if str(r.get("tvg_id")) != tvg_id]
-        CoreSettings.set_dvr_series_rules(rules)
-        return Response({"success": True, "rules": rules})
+
+        # Find the rule before removing to retain the title for cleanup
+        rules = CoreSettings.get_dvr_series_rules()
+        deleted_rule = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
+        remaining = [r for r in rules if str(r.get("tvg_id")) != tvg_id]
+        CoreSettings.set_dvr_series_rules(remaining)
+
+        # Delete only FUTURE recordings — preserve previously recorded episodes
+        removed = 0
+        if deleted_rule:
+            from .models import Recording
+            qs = Recording.objects.filter(
+                start_time__gte=timezone.now(),
+                custom_properties__program__tvg_id=tvg_id,
+            )
+            title = deleted_rule.get("title")
+            if title:
+                qs = qs.filter(custom_properties__program__title=title)
+            removed = qs.count()
+            qs.delete()
+
+        # Notify frontend to refresh recordings list
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True, "type": "recordings_refreshed", "removed": removed,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True, "rules": remaining, "removed": removed})
 
 
 class EvaluateSeriesRulesAPIView(APIView):

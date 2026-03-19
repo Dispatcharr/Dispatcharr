@@ -16,6 +16,7 @@ import {
   Textarea,
   NumberInput,
 } from '@mantine/core';
+import { DateTimePicker } from '@mantine/dates';
 import { useWebSocket } from '../../WebSocket';
 import usePlaylistsStore from '../../store/playlists';
 
@@ -32,6 +33,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const [sampleInput, setSampleInput] = useState('');
   const isDefaultProfile = profile?.is_default;
 
+  const isXC = m3u?.account_type === 'XC';
+
   const defaultValues = useMemo(
     () => ({
       name: profile?.name || '',
@@ -39,6 +42,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       search_pattern: profile?.search_pattern || '',
       replace_pattern: profile?.replace_pattern || '',
       notes: profile?.custom_properties?.notes || '',
+      exp_date: profile?.exp_date ? new Date(profile.exp_date) : null,
     }),
     [profile]
   );
@@ -73,6 +77,17 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const onSubmit = async (values) => {
     console.log('submiting');
 
+    // Convert exp_date for submission
+    let expDateValue = values.exp_date;
+    if (isXC) {
+      // XC accounts have exp_date auto-managed; don't send it
+      expDateValue = undefined;
+    } else if (expDateValue instanceof Date) {
+      expDateValue = expDateValue.toISOString();
+    } else if (!expDateValue) {
+      expDateValue = null;
+    }
+
     // For default profiles, only send name and custom_properties (notes)
     let submitValues;
     if (isDefaultProfile) {
@@ -97,6 +112,11 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           notes: values.notes || '',
         },
       };
+    }
+
+    // Add exp_date for non-XC accounts
+    if (expDateValue !== undefined) {
+      submitValues.exp_date = expDateValue;
     }
 
     if (profile?.id) {
@@ -255,6 +275,18 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
               error={errors.replace_pattern?.message}
             />
           </>
+        )}
+
+        {!isXC && (
+          <DateTimePicker
+            label="Expiration Date"
+            description="Set an expiration date to receive a 7-day warning notification"
+            placeholder="No expiration"
+            clearable
+            valueFormat="MMM D, YYYY h:mm A"
+            value={watch('exp_date')}
+            onChange={(value) => setValue('exp_date', value)}
+          />
         )}
 
         <Textarea
