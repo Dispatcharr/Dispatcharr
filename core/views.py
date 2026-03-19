@@ -184,7 +184,7 @@ def stream_view(request, channel_uuid):
             persistent_lock.release()
             logger.debug("Persistent lock released for channel ID=%s", channel.id)
 
-        return StreamingHttpResponse(
-            stream_generator(process, stream, persistent_lock),
-            content_type="video/MP2T"
-        )
+    return StreamingHttpResponse(
+        stream_generator(process, stream, persistent_lock),
+        content_type="video/MP2T"
+    )
