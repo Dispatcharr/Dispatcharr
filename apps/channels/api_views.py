@@ -2352,8 +2352,15 @@ class RecordingViewSet(viewsets.ModelViewSet):
         file_path = cp.get("file_path")
         file_name = cp.get("file_name") or "recording"
 
-        if not file_path or not os.path.exists(file_path):
-            raise Http404("Recording file not found")
+        # For in-progress recordings, the final MKV may not exist yet or be empty.
+        # Fall back to the temporary .ts file if available.
+        if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            temp_path = cp.get("_temp_file_path")
+            if temp_path and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                file_path = temp_path
+                file_name = os.path.basename(temp_path)
+            elif not file_path or not os.path.exists(file_path):
+                raise Http404("Recording file not found")
 
         # Guess content type
         ext = os.path.splitext(file_path)[1].lower()
@@ -2361,6 +2368,8 @@ class RecordingViewSet(viewsets.ModelViewSet):
             content_type = "video/mp4"
         elif ext == ".mkv":
             content_type = "video/x-matroska"
+        elif ext == ".ts":
+            content_type = "video/mp2t"
         else:
             content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
