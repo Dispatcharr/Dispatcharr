@@ -21,10 +21,9 @@ import {
   Center,
   SegmentedControl,
 } from '@mantine/core';
-import { Info } from 'lucide-react';
+import { Info, CircleCheck, CircleX } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import { CircleCheck, CircleX } from 'lucide-react';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { FixedSizeList as List } from 'react-window';
 import LazyLogo from '../LazyLogo';

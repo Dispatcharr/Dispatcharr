@@ -8,7 +8,6 @@ import {
   Group,
   SimpleGrid,
   Text,
-  Divider,
   Box,
   Checkbox,
   SegmentedControl,
