@@ -19,6 +19,7 @@ import {
   Popover,
   ScrollArea,
   Center,
+  SegmentedControl,
 } from '@mantine/core';
 import { Info } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
@@ -54,6 +55,7 @@ const LiveGroupFilter = ({
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const fetchStreamProfiles = useStreamProfilesStore((s) => s.fetchProfiles);
   const [groupFilter, setGroupFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [epgSources, setEpgSources] = useState([]);
 
   // Logo selection functionality
@@ -177,13 +179,22 @@ const LiveGroupFilter = ({
     setCurrentEditingGroupId(null);
   };
 
+  const isVisible = (group) => {
+    const matchesText = group.name
+      .toLowerCase()
+      .includes(groupFilter.toLowerCase());
+    const matchesStatus =
+      statusFilter === 'all' ||
+      (statusFilter === 'enabled' && group.enabled) ||
+      (statusFilter === 'disabled' && !group.enabled);
+    return matchesText && matchesStatus;
+  };
+
   const selectAll = () => {
     setGroupStates(
       groupStates.map((state) => ({
         ...state,
-        enabled: state.name.toLowerCase().includes(groupFilter.toLowerCase())
-          ? true
-          : state.enabled,
+        enabled: isVisible(state) ? true : state.enabled,
       }))
     );
   };
@@ -192,9 +203,7 @@ const LiveGroupFilter = ({
     setGroupStates(
       groupStates.map((state) => ({
         ...state,
-        enabled: state.name.toLowerCase().includes(groupFilter.toLowerCase())
-          ? false
-          : state.enabled,
+        enabled: isVisible(state) ? false : state.enabled,
       }))
     );
   };
@@ -220,13 +229,23 @@ const LiveGroupFilter = ({
         description="When disabled, new groups from the M3U source will be created but disabled by default. You can enable them manually later."
       />
 
-      <Flex gap="sm">
+      <Flex gap="sm" align="center">
         <TextInput
           placeholder="Filter groups..."
           value={groupFilter}
           onChange={(event) => setGroupFilter(event.currentTarget.value)}
           style={{ flex: 1 }}
           size="xs"
+        />
+        <SegmentedControl
+          value={statusFilter}
+          onChange={setStatusFilter}
+          size="xs"
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Enabled', value: 'enabled' },
+            { label: 'Disabled', value: 'disabled' },
+          ]}
         />
         <Button variant="default" size="xs" onClick={selectAll}>
           Select Visible
@@ -245,9 +264,7 @@ const LiveGroupFilter = ({
           verticalSpacing="xs"
         >
           {groupStates
-            .filter((group) =>
-              group.name.toLowerCase().includes(groupFilter.toLowerCase())
-            )
+            .filter((group) => isVisible(group))
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((group) => (
               <Group
