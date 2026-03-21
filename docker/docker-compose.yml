@@ -14,6 +14,7 @@ services:
       - 9191:9191
     volumes:
       - ./data:/data
+      #- ./certs:/certs:ro  # TLS certificates (optional)
     depends_on:
       db:
         condition: service_healthy
@@ -33,15 +34,26 @@ services:
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
+      # PostgreSQL TLS (optional) — mount certs via the volume above
+      #- POSTGRES_SSL=true                             # required to enable TLS
+      #- POSTGRES_SSL_MODE=verify-full                 # optional: verify-full (default) | verify-ca | require
+      #- POSTGRES_SSL_CA_CERT=/certs/postgres/ca.crt   # optional: CA cert to verify the server
+      #- POSTGRES_SSL_CERT=/certs/postgres/client.crt  # optional: client cert (only if server requires client auth)
+      #- POSTGRES_SSL_KEY=/certs/postgres/client.key   # optional: client key  (only if server requires client auth)
 
       # Redis Connection
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-
       # Redis Authentication (Optional)
       # Uncomment and set if your Redis requires authentication:
       #- REDIS_PASSWORD=your_strong_redis_password
       #- REDIS_USER=your_redis_username  # For Redis 6+ ACL - see Redis service below
+      # Redis TLS (optional) — mount certs via the volume above
+      #- REDIS_SSL=true                                # required to enable TLS
+      #- REDIS_SSL_VERIFY=true                         # optional: set false for self-signed certs without a CA
+      #- REDIS_SSL_CA_CERT=/certs/redis/ca.crt         # optional: CA cert to verify the server
+      #- REDIS_SSL_CERT=/certs/redis/client.crt        # optional: client cert (only if server requires client auth)
+      #- REDIS_SSL_KEY=/certs/redis/client.key         # optional: client key  (only if server requires client auth)
 
       # Logging
       - DISPATCHARR_LOG_LEVEL=info
@@ -95,6 +107,7 @@ services:
         condition: service_started
     volumes:
       - ./data:/data
+      #- ./certs:/certs:ro  # TLS certificates (optional)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     entrypoint: ["/app/docker/entrypoint.celery.sh"]
@@ -108,21 +121,30 @@ services:
       # Must match the web service port for DVR recording and internal API calls
       - DISPATCHARR_PORT=9191
 
-      # PostgreSQL Connection
+      # PostgreSQL — must match web service settings
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=dispatcharr
       - POSTGRES_USER=dispatch
       - POSTGRES_PASSWORD=secret
+      # PostgreSQL TLS — must match web service
+      #- POSTGRES_SSL=true
+      #- POSTGRES_SSL_MODE=verify-full
+      #- POSTGRES_SSL_CA_CERT=/certs/postgres/ca.crt
+      #- POSTGRES_SSL_CERT=/certs/postgres/client.crt
+      #- POSTGRES_SSL_KEY=/certs/postgres/client.key
 
-      # Redis Connection
+      # Redis — must match web service settings
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-
-      # Redis Authentication (Optional)
-      # Uncomment and set if your Redis requires authentication:
       #- REDIS_PASSWORD=your_strong_redis_password
-      #- REDIS_USER=your_redis_username  # For Redis 6+ ACL - see Redis service below
+      #- REDIS_USER=your_redis_username
+      # Redis TLS — must match web service
+      #- REDIS_SSL=true
+      #- REDIS_SSL_VERIFY=true
+      #- REDIS_SSL_CA_CERT=/certs/redis/ca.crt
+      #- REDIS_SSL_CERT=/certs/redis/client.crt
+      #- REDIS_SSL_KEY=/certs/redis/client.key
 
       # Logging
       - DISPATCHARR_LOG_LEVEL=info

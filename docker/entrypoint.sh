@@ -112,6 +112,14 @@ variables=(
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
 )
 
+# TLS variables are optional — only propagate when set to avoid noisy warnings
+for _tls_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
+                REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY; do
+    if [ -n "${!_tls_var+x}" ]; then
+        variables+=("$_tls_var")
+    fi
+done
+
 # Truncate files before rewriting
 > /etc/profile.d/dispatcharr.sh
 
@@ -226,6 +234,28 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
         echo_with_timestamp "✅ Legacy NumPy installed"
     else
         echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
+    fi
+fi
+
+# Fix TLS client key permissions for PostgreSQL.
+# libpq requires the client key to be 0600 or stricter. Volume-mounted files
+# from Windows/macOS hosts often have 0755 permissions, so copy the key to a
+# writable location with correct permissions if needed.
+if [ -n "${POSTGRES_SSL_KEY:-}" ] && [ -f "$POSTGRES_SSL_KEY" ]; then
+    _key_perms=$(stat -c '%a' "$POSTGRES_SSL_KEY" 2>/dev/null)
+    if [ "$_key_perms" != "600" ] && [ "$_key_perms" != "640" ]; then
+        _fixed_key="/data/.pg-client.key"
+        cp "$POSTGRES_SSL_KEY" "$_fixed_key"
+        chmod 600 "$_fixed_key"
+        if [ "$(id -u)" = "0" ] && [ -n "${PUID:-}" ]; then
+            chown "${PUID}:${PGID}" "$_fixed_key"
+        fi
+        export POSTGRES_SSL_KEY="$_fixed_key"
+        # Update /etc/environment so login shells see the fixed path
+        sed -i "/^POSTGRES_SSL_KEY=/d" /etc/environment
+        echo "POSTGRES_SSL_KEY='$_fixed_key'" >> /etc/environment
+        sed -i "s|export POSTGRES_SSL_KEY=.*|export POSTGRES_SSL_KEY='$_fixed_key'|" /etc/profile.d/dispatcharr.sh
+        echo "Fixed PostgreSQL client key permissions (${_key_perms} → 600)"
     fi
 fi
 

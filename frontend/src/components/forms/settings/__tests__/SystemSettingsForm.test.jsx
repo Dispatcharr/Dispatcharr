@@ -16,6 +16,12 @@ vi.mock('../../../../utils/forms/settings/SystemSettingsFormUtils.js', () => ({
   getSystemSettingsFormInitialValues: vi.fn(),
 }));
 
+vi.mock('../ConnectionSecurityPanel.jsx', () => ({
+  default: () => (
+    <div data-testid="connection-security-panel">ConnectionSecurityPanel</div>
+  ),
+}));
+
 // ── Mantine form ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/form', () => ({
   useForm: vi.fn(),
@@ -47,6 +53,7 @@ vi.mock('@mantine/core', () => ({
   ),
   Stack: ({ children }) => <div>{children}</div>,
   Text: ({ children }) => <span>{children}</span>,
+  Divider: () => <hr />,
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────

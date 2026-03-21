@@ -166,6 +166,7 @@ class ProxyServer:
                         redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
                         redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
+                        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
                         pubsub_client = redis.Redis(
                             host=redis_host,
                             port=redis_port,
@@ -175,7 +176,8 @@ class ProxyServer:
                             socket_timeout=60,
                             socket_connect_timeout=10,
                             socket_keepalive=True,
-                            health_check_interval=30
+                            health_check_interval=30,
+                            **ssl_params
                         )
                         logger.info("Created fallback Redis PubSub client for event listener")
 
