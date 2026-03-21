@@ -58,7 +58,8 @@ class ClientManager:
             from django.conf import settings
 
             redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True, **ssl_params)
             all_channels = []
             cursor = 0
 

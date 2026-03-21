@@ -13,6 +13,8 @@ from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 import gc
 
+_REDIS_TLS_HINT = " (TLS is enabled — verify certificate paths and that Redis is configured for TLS)"
+
 logger = logging.getLogger(__name__)
 
 # Import the command detector
@@ -65,6 +67,9 @@ class RedisClient:
                     socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
                     retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
 
+                    # TLS params from settings (empty dict when TLS is disabled)
+                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
                     # Create Redis client with better defaults
                     client = redis.Redis(
                         host=redis_host,
@@ -76,7 +81,8 @@ class RedisClient:
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
                         health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
+                        retry_on_timeout=retry_on_timeout,
+                        **ssl_params
                     )
 
                     # Validate connection with ping
@@ -125,8 +131,9 @@ class RedisClient:
 
                 except (ConnectionError, TimeoutError) as e:
                     retry_count += 1
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
                     if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}")
+                        logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}{_tls_hint}")
                         return None
                     else:
                         # Use exponential backoff for retries
@@ -135,7 +142,8 @@ class RedisClient:
                         time.sleep(wait_time)
 
                 except Exception as e:
-                    logger.error(f"Unexpected error connecting to Redis: {e}")
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+                    logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
                     return None
 
         return cls._client
@@ -161,6 +169,8 @@ class RedisClient:
                     health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
                     retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
 
+                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
                     # Create Redis client with PubSub-optimized settings - no timeout
                     client = redis.Redis(
                         host=redis_host,
@@ -172,7 +182,8 @@ class RedisClient:
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
                         health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
+                        retry_on_timeout=retry_on_timeout,
+                        **ssl_params
                     )
 
                     # Validate connection with ping
@@ -185,8 +196,9 @@ class RedisClient:
 
                 except (ConnectionError, TimeoutError) as e:
                     retry_count += 1
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
                     if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}")
+                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}{_tls_hint}")
                         return None
                     else:
                         # Use exponential backoff for retries
@@ -195,7 +207,8 @@ class RedisClient:
                         time.sleep(wait_time)
 
                 except Exception as e:
-                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}")
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}{_tls_hint}")
                     return None
 
         return cls._pubsub_client

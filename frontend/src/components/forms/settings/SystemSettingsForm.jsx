@@ -5,7 +5,16 @@ import {
   parseSettings,
   saveChangedSettings,
 } from '../../../utils/pages/SettingsUtils.js';
-import { Alert, Button, Flex, NumberInput, Stack, Text } from '@mantine/core';
+import {
+  Alert,
+  Button,
+  Divider,
+  Flex,
+  NumberInput,
+  Stack,
+  Text,
+} from '@mantine/core';
+import ConnectionSecurityPanel from './ConnectionSecurityPanel.jsx';
 import { useForm } from '@mantine/form';
 import { getSystemSettingsFormInitialValues } from '../../../utils/forms/settings/SystemSettingsFormUtils.js';
 
@@ -68,6 +77,8 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
+      <Divider my="md" label="Connection Security" labelPosition="left" />
+      <ConnectionSecurityPanel />
       <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
         <Button
           onClick={form.onSubmit(onSubmit)}
