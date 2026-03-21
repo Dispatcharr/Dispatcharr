@@ -161,6 +161,21 @@ Have a question? Want to suggest a feature? Just want to say hi?\
 
 ---
 
+## 💖 Support Dispatcharr
+
+<img src="https://opencollective.com/dispatcharr/tiers/badge.svg" alt="Dispatcharr Open Collective" />
+
+Open Collective provides a transparent way for anyone who finds value in Dispatcharr to support things like:
+• Infrastructure costs (Domains, Servers, etc.)
+• Apple Developer Program and Google Play Developer accounts
+• Helping contributors dedicate more time to improving the project
+
+Support is completely optional, and Dispatcharr will always remain free and open-source.
+
+[Contribute here](https://opencollective.com/dispatcharr/contribute)
+
+---
+
 ### 🚀 _Happy Streaming! The Dispatcharr Team_
 
 Dispatcharr is a trademark of the Dispatcharr project.
