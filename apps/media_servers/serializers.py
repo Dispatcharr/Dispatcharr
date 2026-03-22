@@ -1,6 +1,5 @@
 from rest_framework import serializers
 
-from core.models import CoreSettings
 from apps.media_servers.models import MediaServerIntegration, MediaServerSyncRun
 
 
@@ -162,15 +161,6 @@ class MediaServerIntegrationSerializer(serializers.ModelSerializer):
             if not locations:
                 raise serializers.ValidationError(
                     {'provider_config': 'Local provider requires at least one location.'}
-                )
-            if not CoreSettings.get_tmdb_api_key():
-                raise serializers.ValidationError(
-                    {
-                        'provider_config': (
-                            'Local provider requires a TMDB API key. '
-                            'Configure it in Settings > Stream Settings.'
-                        )
-                    }
                 )
         elif provider == MediaServerIntegration.ProviderTypes.PLEX:
             if not base_url:
