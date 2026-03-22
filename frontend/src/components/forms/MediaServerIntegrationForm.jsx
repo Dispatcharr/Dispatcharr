@@ -36,6 +36,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import API from '../../api';
+import useSettingsStore from '../../store/settings';
 
 const PROVIDER_OPTIONS = [
   { value: 'plex', label: 'Plex' },
@@ -876,7 +877,19 @@ export default function MediaServerIntegrationForm({
       (entry) => entry.value === form.values.provider_type
     )?.label || 'Provider';
 
+  const settings = useSettingsStore((s) => s.settings);
   const isLocalProvider = form.values.provider_type === 'local';
+  const hasTmdbApiKey = useMemo(() => {
+    const streamKey = settings?.stream_settings?.value?.tmdb_api_key;
+    if (typeof streamKey === 'string' && streamKey.trim()) return true;
+
+    const mediaLibraryKey = settings?.media_library_settings?.value?.tmdb_api_key;
+    if (typeof mediaLibraryKey === 'string' && mediaLibraryKey.trim()) return true;
+
+    const legacyKey = settings?.['tmdb-api-key']?.value;
+    return typeof legacyKey === 'string' && legacyKey.trim().length > 0;
+  }, [settings]);
+
   const showTokenInput =
     !isLocalProvider &&
     (form.values.provider_type === 'plex' || form.values.auth_mode === 'token');
@@ -961,11 +974,13 @@ export default function MediaServerIntegrationForm({
           ) : isLocalProvider ? (
             <Stack gap={6}>
               <Text size="xs" c="dimmed">
-                Local provider imports files directly from folders on this server.
+                Local provider imports files directly from folders on this server and prefers local `.nfo` metadata.
               </Text>
-              <Alert color="yellow" icon={<CircleAlert size={14} />}>
-                Local provider requires a TMDB API key. Set it in Settings &gt; Stream Settings before saving.
-              </Alert>
+              {!hasTmdbApiKey ? (
+                <Alert color="yellow" icon={<CircleAlert size={14} />}>
+                  TMDB API key not found. Scans will still run using `.nfo` and filename metadata; TMDB enrichment is optional.
+                </Alert>
+              ) : null}
             </Stack>
           ) : (
             <Text size="xs" c="dimmed">

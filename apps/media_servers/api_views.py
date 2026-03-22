@@ -664,6 +664,12 @@ def _get_output_settings_value() -> tuple[CoreSettings | None, dict]:
 
     settings_value = _normalize_settings_value(obj.value)
     sanitized_value, changed = sanitize_output_settings_paths(settings_value)
+    raw_profiles = sanitized_value.get('output_integrations')
+    if isinstance(raw_profiles, list) and raw_profiles:
+        profiles = _extract_output_profiles(sanitized_value)
+        if _output_profiles_need_id_backfill(raw_profiles):
+            sanitized_value = _persist_output_profiles(sanitized_value, profiles)
+            changed = True
     if changed:
         obj.value = sanitized_value
         obj.save(update_fields=['value'])
@@ -856,6 +862,18 @@ def _persist_output_profiles(settings_value: dict, profiles: list[dict]) -> dict
     return cleared
 
 
+def _output_profiles_need_id_backfill(raw_profiles: list) -> bool:
+    seen_ids = set()
+    for raw_profile in raw_profiles:
+        if not isinstance(raw_profile, dict):
+            return True
+        profile_id = str(raw_profile.get('id') or raw_profile.get('integration_id') or '').strip()
+        if not profile_id or profile_id in seen_ids:
+            return True
+        seen_ids.add(profile_id)
+    return False
+
+
 def _find_output_profile(profiles: list[dict], integration_id: str) -> tuple[int, dict | None]:
     target_id = str(integration_id or '').strip()
     if not target_id:
@@ -863,6 +881,35 @@ def _find_output_profile(profiles: list[dict], integration_id: str) -> tuple[int
     for idx, profile in enumerate(profiles):
         if str(profile.get('id') or '').strip() == target_id:
             return idx, profile
+    if len(profiles) == 1:
+        # Backward-compatible fallback for legacy settings where profile IDs were
+        # missing and have to be regenerated server-side.
+        return 0, profiles[0]
+    return -1, None
+
+
+def _find_output_profile_by_path(
+    profiles: list[dict],
+    output_path: str,
+) -> tuple[int, dict | None]:
+    target_path = normalize_strm_output_path(
+        output_path,
+        fallback=DEFAULT_STRM_OUTPUT_PATH,
+    )
+    if not target_path:
+        return -1, None
+
+    matches: list[tuple[int, dict]] = []
+    for idx, profile in enumerate(profiles):
+        profile_path = normalize_strm_output_path(
+            profile.get('strm_output_path'),
+            fallback=DEFAULT_STRM_OUTPUT_PATH,
+        )
+        if profile_path == target_path:
+            matches.append((idx, profile))
+
+    if len(matches) == 1:
+        return matches[0]
     return -1, None
 
 
@@ -1031,6 +1078,12 @@ class OutputSTRMExportBuildView(APIView):
                     profiles,
                     integration_id,
                 )
+                if selected_profile is None:
+                    if has_output_path_override:
+                        selected_profile_index, selected_profile = _find_output_profile_by_path(
+                            profiles,
+                            request.data.get('output_path'),
+                        )
                 if selected_profile is None:
                     return Response(
                         {'detail': 'Output integration not found.'},

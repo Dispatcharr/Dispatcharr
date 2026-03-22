@@ -20,7 +20,6 @@ from apps.media_servers.local_metadata import (
     find_movie_nfo_metadata,
     find_series_nfo_metadata,
     find_episode_nfo_metadata,
-    has_tmdb_api_key,
     parse_nfo_episode_entries,
 )
 
@@ -1340,11 +1339,6 @@ class LocalClient(BaseMediaServerClient):
     def ping(self) -> None:
         if not self._location_by_id:
             raise ValueError('Local provider requires at least one location.')
-        if not has_tmdb_api_key():
-            raise ValueError(
-                'Local provider requires a TMDB API key. '
-                'Configure it in Settings > Stream Settings.'
-            )
         missing = [
             location['path']
             for location in self._location_by_id.values()
