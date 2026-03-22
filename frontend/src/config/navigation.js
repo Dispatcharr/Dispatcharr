@@ -13,6 +13,7 @@ import {
   Logs,
   Blocks,
   MonitorCog,
+  ServerCog,
 } from 'lucide-react';
 
 export const NAV_ITEMS = {
@@ -74,6 +75,7 @@ export const NAV_ITEMS = {
     paths: [
       { label: 'Connections', icon: Webhook, path: '/connect' },
       { label: 'Logs', icon: Logs, path: '/connect/logs' },
+      { label: 'Media Server', icon: ServerCog, path: '/media-servers'}
     ],
   },
   system: {
