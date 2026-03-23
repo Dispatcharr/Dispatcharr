@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Duplicate recordings created when EPG sources refresh and re-evaluate series rules — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - **Program ID instability**: `parse_programs_for_source()` deletes and recreates all `ProgramData` rows with new auto-increment IDs on every EPG refresh. The dedup set used these IDs, so it never matched after a refresh. Deduplication now uses a stable `(tvg_id, start_time, end_time)` composite key sourced from `Recording.custom_properties.program`.
+  - **Secondary guard using wrong times**: The DB guard compared unadjusted program times against offset-adjusted `Recording.start_time`/`end_time`, so it never matched when any DVR pre/post offset was configured. It now queries `custom_properties__program__start_time/end_time` (the original, unadjusted program times stored at recording creation).
+  - **No concurrency guard**: Each EPG source refresh fired `evaluate_series_rules.delay()` independently. Concurrent tasks loaded the dedup set before others committed, allowing races. Evaluation is now serialized with `acquire_task_lock` (reusing the existing EPG task pattern). Gracefully degrades if Redis is unavailable — the primary and secondary dedup guards still protect. (Fixes #940)
+
 ## [0.21.1] - 2026-03-18
 
 ### Fixed
