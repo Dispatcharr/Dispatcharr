@@ -1084,7 +1084,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
         if not lock_acquired:
             result["details"].append({"status": "skipped", "reason": "concurrent evaluation in progress"})
             return result
-    except (ConnectionError, OSError):
+    except (ConnectionError, OSError, AttributeError):
         logger.warning("Could not acquire series rule evaluation lock (Redis unavailable), proceeding without lock")
 
     try:
@@ -1093,7 +1093,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
         if lock_acquired:
             try:
                 release_task_lock('evaluate_series_rules', 'all')
-            except (ConnectionError, OSError):
+            except (ConnectionError, OSError, AttributeError):
                 logger.warning("Could not release series rule evaluation lock")
 
 
