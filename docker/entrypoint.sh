@@ -248,7 +248,7 @@ if [ -n "${POSTGRES_SSL_KEY:-}" ] && [ -f "$POSTGRES_SSL_KEY" ]; then
         cp "$POSTGRES_SSL_KEY" "$_fixed_key"
         chmod 600 "$_fixed_key"
         if [ "$(id -u)" = "0" ] && [ -n "${PUID:-}" ]; then
-            chown "${PUID}:${PGID}" "$_fixed_key"
+            chown "${PUID}:${PGID:-$PUID}" "$_fixed_key"
         fi
         export POSTGRES_SSL_KEY="$_fixed_key"
         # Update /etc/environment so login shells see the fixed path
