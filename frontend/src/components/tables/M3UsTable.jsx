@@ -588,6 +588,46 @@ const M3UTable = () => {
         accessorKey: 'max_streams',
         sortable: true,
         size: 125,
+        cell: ({ cell, row }) => {
+          const profiles = row.original.profiles || [];
+          const activeProfiles = profiles.filter((p) => p.is_active);
+
+          if (activeProfiles.length <= 1) {
+            const val = cell.getValue();
+            return <Text size="xs">{val === 0 ? '∞' : val}</Text>;
+          }
+
+          const hasUnlimited = activeProfiles.some((p) => p.max_streams === 0);
+          const total = hasUnlimited
+            ? null
+            : activeProfiles.reduce((sum, p) => sum + p.max_streams, 0);
+
+          const tooltipLines = activeProfiles
+            .map(
+              (p) =>
+                `${p.name}: ${p.max_streams === 0 ? 'Unlimited' : p.max_streams}`
+            )
+            .join('\n');
+
+          return (
+            <Tooltip
+              label={tooltipLines}
+              multiline
+              width={220}
+              style={{ whiteSpace: 'pre-line' }}
+            >
+              <Text
+                size="xs"
+                style={{
+                  cursor: 'default',
+                  textDecoration: 'underline dotted',
+                }}
+              >
+                {hasUnlimited ? '∞' : total}
+              </Text>
+            </Tooltip>
+          );
+        },
       },
       {
         header: 'Expiration',
