@@ -8,7 +8,7 @@ const useSettingsStore = create((set, get) => ({
     public_ip: '',
     country_code: '',
     country_name: '',
-    env_mode: 'prod',
+    env_mode: 'aio',
   },
   version: {
     version: '',
@@ -40,7 +40,7 @@ const useSettingsStore = create((set, get) => ({
           public_ip: '',
           country_code: '',
           country_name: '',
-          env_mode: 'prod',
+          env_mode: 'aio',
         },
       };
 

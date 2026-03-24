@@ -36,6 +36,23 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     fi
 fi
 
+# Fix TLS client key permissions for PostgreSQL (same issue as web entrypoint).
+# libpq requires 0600 but Docker Desktop mounts files as 0777.
+if [ -n "${POSTGRES_SSL_KEY:-}" ] && [ -f "$POSTGRES_SSL_KEY" ]; then
+    _key_perms=$(stat -c '%a' "$POSTGRES_SSL_KEY" 2>/dev/null)
+    if [ "$_key_perms" != "600" ] && [ "$_key_perms" != "640" ]; then
+        _fixed_key="/data/.pg-client-celery.key"
+        cp "$POSTGRES_SSL_KEY" "$_fixed_key"
+        chmod 600 "$_fixed_key"
+        # Match ownership to the user running Celery if running as root
+        if [ "$(id -u)" = "0" ] && [ -n "${PUID:-}" ]; then
+            chown "${PUID}:${PGID:-$PUID}" "$_fixed_key"
+        fi
+        export POSTGRES_SSL_KEY="$_fixed_key"
+        echo "Fixed PostgreSQL client key permissions (${_key_perms} → 600)"
+    fi
+fi
+
 # Wait for migrations to complete
 # Uses 'migrate --check' which exits 0 only when all migrations are applied,
 # and exits 1 on unapplied migrations OR connection errors (safe either way)
