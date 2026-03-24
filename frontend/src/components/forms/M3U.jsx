@@ -12,7 +12,6 @@ import {
   Flex,
   Select,
   FileInput,
-  useMantineTheme,
   NumberInput,
   Divider,
   Stack,
@@ -37,8 +36,6 @@ const M3U = ({
   onClose,
   playlistCreated = false,
 }) => {
-  const theme = useMantineTheme();
-
   const userAgents = useUserAgentsStore((s) => s.userAgents);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
@@ -398,13 +395,14 @@ const M3U = ({
             <Divider size="sm" orientation="vertical" />
 
             <Stack gap="5" style={{ flex: 1 }}>
-              <TextInput
+              <NumberInput
                 style={{ width: '100%' }}
                 id="max_streams"
                 name="max_streams"
                 label="Max Streams"
                 placeholder="0 = Unlimited"
                 description="Maximum number of concurrent streams (0 for unlimited)"
+                min={0}
                 {...form.getInputProps('max_streams')}
                 key={form.key('max_streams')}
               />

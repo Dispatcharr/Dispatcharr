@@ -1601,9 +1601,7 @@ export default class API {
       });
 
       const playlist = await API.getPlaylist(accountId);
-      usePlaylistsStore
-        .getState()
-        .updateProfiles(playlist.id, playlist.profiles);
+      usePlaylistsStore.getState().updatePlaylist(playlist);
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }
