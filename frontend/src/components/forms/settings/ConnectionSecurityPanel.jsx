@@ -152,21 +152,17 @@ const PostgresStatus = ({ tls }) => {
 
 const ConnectionSecurityPanel = React.memo(() => {
   const environment = useSettingsStore((s) => s.environment);
-  const isModular = environment.env_mode === 'modular';
 
   return (
     <Stack gap="md">
       <Text size="sm" c="dimmed">
-        {isModular
-          ? 'Encrypt connections to Redis and PostgreSQL using environment variables in the docker compose file.'
-          : 'Connection encryption is only available in modular deployment mode with external services.'}
+        Encrypt connections to Redis and PostgreSQL using environment variables
+        in the docker compose file.
       </Text>
-      {isModular && (
-        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-          <RedisStatus tls={environment.redis_tls} />
-          <PostgresStatus tls={environment.postgres_tls} />
-        </SimpleGrid>
-      )}
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+        <RedisStatus tls={environment.redis_tls} />
+        <PostgresStatus tls={environment.postgres_tls} />
+      </SimpleGrid>
     </Stack>
   );
 });

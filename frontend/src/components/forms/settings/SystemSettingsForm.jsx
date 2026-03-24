@@ -20,6 +20,8 @@ import { getSystemSettingsFormInitialValues } from '../../../utils/forms/setting
 
 const SystemSettingsForm = React.memo(({ active }) => {
   const settings = useSettingsStore((s) => s.settings);
+  const isModular =
+    useSettingsStore((s) => s.environment.env_mode) === 'modular';
 
   const [saved, setSaved] = useState(false);
 
@@ -77,8 +79,12 @@ const SystemSettingsForm = React.memo(({ active }) => {
         max={1000}
         step={10}
       />
-      <Divider my="md" label="Connection Security" labelPosition="left" />
-      <ConnectionSecurityPanel />
+      {isModular && (
+        <>
+          <Divider my="md" label="Connection Security" labelPosition="left" />
+          <ConnectionSecurityPanel />
+        </>
+      )}
       <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
         <Button
           onClick={form.onSubmit(onSubmit)}
