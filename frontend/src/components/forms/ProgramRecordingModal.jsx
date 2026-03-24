@@ -2,7 +2,7 @@ import React from 'react';
 import { Modal, Flex, Button } from '@mantine/core';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
-import { deleteSeriesRuleByTvgId } from '../../pages/guideUtils.js';
+import { deleteSeriesRuleByTvgId } from '../../utils/guideUtils.js';
 
 export default function ProgramRecordingModal({
   opened,
