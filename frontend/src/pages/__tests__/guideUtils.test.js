@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
-import * as guideUtils from '../guideUtils';
+import * as guideUtils from '../../utils/guideUtils';
 import * as dateTimeUtils from '../../utils/dateTimeUtils';
 import API from '../../api';
 
@@ -676,11 +676,26 @@ describe('guideUtils', () => {
 
     it('should exclude terminal status recordings', () => {
       const recordings = [
-        { id: 1, custom_properties: { program: { id: 'p1' }, status: 'completed' } },
-        { id: 2, custom_properties: { program: { id: 'p2' }, status: 'stopped' } },
-        { id: 3, custom_properties: { program: { id: 'p3' }, status: 'interrupted' } },
-        { id: 4, custom_properties: { program: { id: 'p4' }, status: 'failed' } },
-        { id: 5, custom_properties: { program: { id: 'p5' }, status: 'recording' } },
+        {
+          id: 1,
+          custom_properties: { program: { id: 'p1' }, status: 'completed' },
+        },
+        {
+          id: 2,
+          custom_properties: { program: { id: 'p2' }, status: 'stopped' },
+        },
+        {
+          id: 3,
+          custom_properties: { program: { id: 'p3' }, status: 'interrupted' },
+        },
+        {
+          id: 4,
+          custom_properties: { program: { id: 'p4' }, status: 'failed' },
+        },
+        {
+          id: 5,
+          custom_properties: { program: { id: 'p5' }, status: 'recording' },
+        },
         { id: 6, custom_properties: { program: { id: 'p6' } } },
       ];
 
