@@ -585,15 +585,23 @@ const M3UTable = () => {
       },
       {
         header: 'Max Streams',
-        accessorKey: 'max_streams',
+        id: 'max_streams',
+        accessorFn: (row) => {
+          const activeProfiles = (row.profiles || []).filter(
+            (p) => p.is_active
+          );
+          if (activeProfiles.length === 0) return row.max_streams;
+          if (activeProfiles.some((p) => p.max_streams === 0)) return Infinity;
+          return activeProfiles.reduce((sum, p) => sum + p.max_streams, 0);
+        },
         sortable: true,
         size: 125,
-        cell: ({ cell, row }) => {
+        cell: ({ row }) => {
           const profiles = row.original.profiles || [];
           const activeProfiles = profiles.filter((p) => p.is_active);
 
           if (activeProfiles.length <= 1) {
-            const val = cell.getValue();
+            const val = row.original.max_streams;
             return <Text size="xs">{val === 0 ? '∞' : val}</Text>;
           }
 
