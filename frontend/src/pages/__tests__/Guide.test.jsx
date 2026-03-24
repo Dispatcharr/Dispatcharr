@@ -10,7 +10,7 @@ import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
-import * as guideUtils from '../guideUtils';
+import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
@@ -127,7 +127,12 @@ vi.mock('@mantine/core', async () => {
       </select>
     ),
     Badge: ({ children, size, variant, color, style }) => (
-      <span data-size={size} data-variant={variant} data-color={color} style={style}>
+      <span
+        data-size={size}
+        data-variant={variant}
+        data-color={color}
+        style={style}
+      >
         {children}
       </span>
     ),
@@ -208,8 +213,8 @@ vi.mock('../../components/ProgramDetailModal', () => ({
     ) : null,
 }));
 
-vi.mock('../guideUtils', async () => {
-  const actual = await vi.importActual('../guideUtils');
+vi.mock('../../utils/guideUtils', async () => {
+  const actual = await vi.importActual('../../utils/guideUtils');
   return {
     ...actual,
     fetchPrograms: vi.fn(),

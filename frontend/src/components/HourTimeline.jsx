@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Text } from '@mantine/core';
 import { format } from '../utils/dateTimeUtils.js';
-import { HOUR_WIDTH } from '../pages/guideUtils.js';
+import { HOUR_WIDTH } from '../utils/guideUtils.js';
 
 const HourBlock = React.memo(
   ({ hourData, timeFormat, formatDayLabel, handleTimeClick }) => {
