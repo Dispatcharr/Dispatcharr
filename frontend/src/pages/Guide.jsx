@@ -114,6 +114,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [recordingForProgram, setRecordingForProgram] = useState(null);
   const [recordChoiceOpen, setRecordChoiceOpen] = useState(false);
   const [recordChoiceProgram, setRecordChoiceProgram] = useState(null);
+  const [recordChoiceChannel, setRecordChoiceChannel] = useState(null);
   const [existingRuleMode, setExistingRuleMode] = useState(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rules, setRules] = useState([]);
@@ -708,8 +709,9 @@ export default function TVChannelGuide({ startDate, endDate }) {
   );
 
   const openRecordChoice = useCallback(
-    async (program) => {
+    async (program, channel) => {
       setRecordChoiceProgram(program);
+      setRecordChoiceChannel(channel);
       setRecordChoiceOpen(true);
       try {
         const rules = await fetchRules();
@@ -725,8 +727,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
   );
 
   const recordOne = useCallback(
-    async (program) => {
-      const channel = findChannelByTvgId(program.tvg_id);
+    async (program, channel) => {
       if (!channel) {
         showNotification({
           title: 'Unable to schedule recording',
@@ -739,7 +740,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
       await createRecording(channel, program);
       showNotification({ title: 'Recording scheduled' });
     },
-    [findChannelByTvgId]
+    []
   );
 
   const saveSeriesRule = useCallback(async (program, mode) => {
@@ -1436,7 +1437,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               program={recordChoiceProgram}
               recording={recordingForProgram}
               existingRuleMode={existingRuleMode}
-              onRecordOne={() => recordOne(recordChoiceProgram)}
+              onRecordOne={() => recordOne(recordChoiceProgram, recordChoiceChannel)}
               onRecordSeriesAll={() =>
                 saveSeriesRule(recordChoiceProgram, 'all')
               }
@@ -1473,7 +1474,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
               recording={recordingForProgram}
               opened={!!selectedProgram}
               onClose={handleCloseModal}
-              onRecord={openRecordChoice}
+              onRecord={(program) => openRecordChoice(program, selectedChannel)}
             />
           </Suspense>
         </ErrorBoundary>
