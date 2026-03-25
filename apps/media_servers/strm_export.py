@@ -243,7 +243,12 @@ def _to_xml_text(root: ET.Element) -> str:
     return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + xml_bytes.decode("utf-8")
 
 
-def _build_movie_nfo(movie: Movie, relation: Optional[M3UMovieRelation]) -> str:
+def _build_movie_nfo(
+    movie: Movie,
+    relation: Optional[M3UMovieRelation],
+    *,
+    base_url: str,
+) -> str:
     movie_props = _read_dict(movie.custom_properties)
     relation_props = _read_dict(getattr(relation, "custom_properties", None))
     detailed = _read_dict(relation_props.get("detailed_info"))
@@ -284,6 +289,7 @@ def _build_movie_nfo(movie: Movie, relation: Optional[M3UMovieRelation]) -> str:
     set_name = _first_non_empty(movie_props.get("set"), detailed.get("set"))
     runtime = _duration_minutes(_first_non_empty(movie.duration_secs, detailed.get("duration_secs")))
     poster = _first_non_empty(
+        _vod_logo_cache_url(base_url, getattr(movie, "logo_id", None)),
         detailed.get("cover_big"),
         detailed.get("movie_image"),
         getattr(movie.logo, "url", None),
@@ -326,7 +332,12 @@ def _build_movie_nfo(movie: Movie, relation: Optional[M3UMovieRelation]) -> str:
     return _to_xml_text(root)
 
 
-def _build_tvshow_nfo(series: Series, relation: Optional[M3USeriesRelation]) -> str:
+def _build_tvshow_nfo(
+    series: Series,
+    relation: Optional[M3USeriesRelation],
+    *,
+    base_url: str,
+) -> str:
     series_props = _read_dict(series.custom_properties)
     relation_props = _read_dict(getattr(relation, "custom_properties", None))
     detailed = _read_dict(relation_props.get("detailed_info"))
@@ -362,6 +373,7 @@ def _build_tvshow_nfo(series: Series, relation: Optional[M3USeriesRelation]) -> 
         detailed.get("episode_run_time"),
     )
     poster = _first_non_empty(
+        _vod_logo_cache_url(base_url, getattr(series, "logo_id", None)),
         detailed.get("cover_big"),
         detailed.get("movie_image"),
         getattr(series.logo, "url", None),
@@ -404,6 +416,8 @@ def _build_episode_nfo(
     series: Series,
     episode: Episode,
     relation: Optional[M3UEpisodeRelation],
+    *,
+    base_url: str,
 ) -> str:
     episode_props = _read_dict(episode.custom_properties)
     relation_props = _read_dict(getattr(relation, "custom_properties", None))
@@ -427,7 +441,14 @@ def _build_episode_nfo(
     )
     cast = _first_non_empty(episode_props.get("cast"), episode_props.get("actors"), detailed.get("cast"))
     genre = _first_non_empty(episode_props.get("genre"), detailed.get("genre"), series.genre)
+    poster_logo_id = _first_non_empty(
+        episode_props.get("poster_logo_id"),
+        relation_props.get("poster_logo_id"),
+        detailed.get("poster_logo_id"),
+        getattr(series, "logo_id", None),
+    )
     poster = _first_non_empty(
+        _vod_logo_cache_url(base_url, poster_logo_id),
         episode_props.get("movie_image"),
         detailed.get("movie_image"),
         detailed.get("thumb"),
@@ -466,6 +487,14 @@ def _stream_url(base_url: str, content_type: str, content_uuid) -> str:
         "proxy:vod_proxy:vod_stream",
         kwargs={"content_type": content_type, "content_id": content_uuid},
     )
+    return f"{base_url.rstrip('/')}{path}"
+
+
+def _vod_logo_cache_url(base_url: str, logo_id: Any) -> Optional[str]:
+    normalized_id = _safe_int(logo_id)
+    if normalized_id is None:
+        return None
+    path = reverse("api:vod:vodlogo-cache", args=[normalized_id])
     return f"{base_url.rstrip('/')}{path}"
 
 
@@ -555,7 +584,10 @@ def build_strm_nfo_snapshot(
 
         if include_nfo:
             nfo_path = movie_dir / f"{movie_name}.nfo"
-            _write_text(nfo_path, _build_movie_nfo(movie, relation))
+            _write_text(
+                nfo_path,
+                _build_movie_nfo(movie, relation, base_url=base_url),
+            )
             nfo_written += 1
         movies_written += 1
 
@@ -588,12 +620,23 @@ def build_strm_nfo_snapshot(
 
             if include_nfo:
                 nfo_path = season_dir / f"{episode_base}.nfo"
-                _write_text(nfo_path, _build_episode_nfo(series, episode, episode_relation))
+                _write_text(
+                    nfo_path,
+                    _build_episode_nfo(
+                        series,
+                        episode,
+                        episode_relation,
+                        base_url=base_url,
+                    ),
+                )
                 nfo_written += 1
 
         if series_has_episode and include_nfo:
             tvshow_nfo = show_dir / "tvshow.nfo"
-            _write_text(tvshow_nfo, _build_tvshow_nfo(series, series_relation))
+            _write_text(
+                tvshow_nfo,
+                _build_tvshow_nfo(series, series_relation, base_url=base_url),
+            )
             nfo_written += 1
 
         if series_has_episode:

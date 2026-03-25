@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 import uuid
 
 import requests
+from django.db import transaction
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
@@ -108,6 +109,12 @@ class MediaServerIntegrationViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         integration = serializer.save()
         ensure_integration_vod_account(integration)
+        if integration.enabled and integration.add_to_vod:
+            transaction.on_commit(
+                lambda integration_id=integration.id: sync_media_server_integration.delay(
+                    integration_id
+                )
+            )
 
     def perform_update(self, serializer):
         integration = serializer.save()
@@ -694,7 +701,9 @@ def _resolve_backend_base_url(request, settings_value: dict) -> str:
     configured = str((settings_value or {}).get('backend_base_url') or '').strip()
     if configured.startswith(('http://', 'https://')):
         return configured.rstrip('/')
-    return request.build_absolute_uri('/').rstrip('/')
+    from apps.output.views import build_absolute_uri_with_port
+
+    return build_absolute_uri_with_port(request, '').rstrip('/')
 
 
 def _resolve_strm_output_path(request, settings_value: dict, payload_path: str = '') -> str:
@@ -1188,6 +1197,7 @@ class OutputSTRMExportBuildView(APIView):
             )
         else:
             merged_settings = dict(settings_value)
+        merged_settings['backend_base_url'] = base_url
 
         if merged_settings != settings_value or settings_obj is None:
             _save_output_settings_value(merged_settings, obj=settings_obj)

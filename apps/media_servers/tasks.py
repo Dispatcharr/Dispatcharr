@@ -439,7 +439,17 @@ def _resolve_output_backend_base_url(settings_value: dict) -> str:
     configured = str((settings_value or {}).get('backend_base_url') or '').strip()
     if configured.startswith(('http://', 'https://')):
         return configured.rstrip('/')
-    return 'http://127.0.0.1:9191'
+
+    from apps.channels.tasks import build_dvr_candidates
+
+    for candidate in build_dvr_candidates():
+        normalized = str(candidate or '').strip()
+        if not normalized.startswith(('http://', 'https://')):
+            continue
+        return normalized.rstrip('/')
+
+    return ''
+
 
 def _queue_output_export_sync(*, reason: str = '') -> bool:
     safe_reason = str(reason or '').strip()[:255]
@@ -535,12 +545,47 @@ def sync_output_exports(self, reason: str = ''):
             logger.info('Output export sync skipped: no output integration profiles found.')
             return {'success': True, 'profiles_considered': 0, 'profiles_built': 0}
 
-        base_url = _resolve_output_backend_base_url(settings_value)
         now_iso = timezone.now().isoformat()
         profiles_considered = 0
         profiles_built = 0
         profiles_failed = 0
+        base_url = _resolve_output_backend_base_url(settings_value)
+        if not base_url:
+            error_message = (
+                'Unable to resolve backend base URL for VOD export. Configure '
+                '`backend_base_url` in output settings (run Initialize STRM source once) '
+                'or set DISPATCHARR_INTERNAL_API_BASE.'
+            )
+            logger.warning('Output export sync skipped: %s', error_message)
+            for profile in profiles:
+                export_mode = _derive_output_export_mode(
+                    profile.get('target_provider'),
+                    profile.get('export_mode'),
+                )
+                if export_mode != 'strm_nfo':
+                    continue
+                if not _as_bool_output(profile.get('export_enabled'), default=True):
+                    continue
 
+                profiles_considered += 1
+                profiles_failed += 1
+                profile['updated_at'] = now_iso
+                profile['strm_last_build_summary'] = {
+                    'success': False,
+                    'message': error_message,
+                    'build_mode': 'auto',
+                    'build_reason': safe_reason,
+                }
+
+            _persist_output_profiles(settings_obj, settings_value, profiles)
+            return {
+                'success': False,
+                'profiles_considered': profiles_considered,
+                'profiles_built': 0,
+                'profiles_failed': profiles_failed,
+                'reason': safe_reason,
+                'error': error_message,
+            }
         for profile in profiles:
             export_mode = _derive_output_export_mode(
                 profile.get('target_provider'),
@@ -1057,6 +1102,8 @@ def _ensure_category(
 def _movie_relation_custom_properties(
     integration: MediaServerIntegration,
     provider_movie: ProviderMovie,
+    *,
+    logo: Optional[VODLogo] = None,
 ) -> dict:
     payload = {
         'managed_source': 'media_server',
@@ -1067,6 +1114,7 @@ def _movie_relation_custom_properties(
         'provider_item_id': provider_movie.external_id,
         'provider_library': provider_movie.category_name,
         'poster_url': provider_movie.poster_url,
+        'poster_logo_id': getattr(logo, 'id', None),
         'file_path': provider_movie.local_path,
         'file_name': provider_movie.local_file_name,
         'file_size_bytes': provider_movie.local_file_size,
@@ -1079,6 +1127,8 @@ def _movie_relation_custom_properties(
 def _series_relation_custom_properties(
     integration: MediaServerIntegration,
     provider_series: ProviderSeries,
+    *,
+    logo: Optional[VODLogo] = None,
 ) -> dict:
     return {
         'managed_source': 'media_server',
@@ -1089,6 +1139,7 @@ def _series_relation_custom_properties(
         'provider_item_id': provider_series.external_id,
         'provider_library': provider_series.category_name,
         'poster_url': provider_series.poster_url,
+        'poster_logo_id': getattr(logo, 'id', None),
         'episodes_fetched': True,
         'detailed_fetched': True,
     }
@@ -1098,6 +1149,8 @@ def _episode_relation_custom_properties(
     integration: MediaServerIntegration,
     provider_series: ProviderSeries,
     provider_episode: ProviderEpisode,
+    *,
+    logo: Optional[VODLogo] = None,
 ) -> dict:
     payload = {
         'managed_source': 'media_server',
@@ -1109,6 +1162,7 @@ def _episode_relation_custom_properties(
         'provider_series_item_id': provider_series.external_id,
         'provider_library': provider_series.category_name,
         'poster_url': provider_series.poster_url,
+        'poster_logo_id': getattr(logo, 'id', None),
         'file_path': provider_episode.local_path,
         'file_name': provider_episode.local_file_name,
         'file_size_bytes': provider_episode.local_file_size,
@@ -1464,7 +1518,9 @@ def sync_media_server_integration(self, integration_id: int, sync_run_id: Option
                         'category': category,
                         'container_extension': provider_movie.container_extension,
                         'custom_properties': _movie_relation_custom_properties(
-                            integration, provider_movie
+                            integration,
+                            provider_movie,
+                            logo=movie.logo,
                         ),
                         'last_advanced_refresh': scan_started,
                         'last_seen': scan_started,
@@ -1505,7 +1561,9 @@ def sync_media_server_integration(self, integration_id: int, sync_run_id: Option
                         'series': series,
                         'category': category,
                         'custom_properties': _series_relation_custom_properties(
-                            integration, provider_series
+                            integration,
+                            provider_series,
+                            logo=series.logo,
                         ),
                         'last_seen': scan_started,
                         'last_episode_refresh': scan_started,
@@ -1547,6 +1605,7 @@ def sync_media_server_integration(self, integration_id: int, sync_run_id: Option
                                 integration,
                                 provider_series,
                                 provider_episode,
+                                logo=series.logo,
                             ),
                             'last_seen': scan_started,
                         },

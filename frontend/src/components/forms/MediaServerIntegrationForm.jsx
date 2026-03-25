@@ -383,6 +383,7 @@ export default function MediaServerIntegrationForm({
   };
 
   const handleSelectDirectory = (path) => {
+    setBrowserSearch('');
     void loadDirectory(path ?? '');
   };
 

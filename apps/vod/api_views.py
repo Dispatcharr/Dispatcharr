@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.http import StreamingHttpResponse, HttpResponse, FileResponse
+from django.urls import reverse
 from django.db.models import Q
 import django_filters
 import logging
@@ -148,6 +149,12 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
         custom_props = relation.custom_properties or {}
         info = custom_props.get('detailed_info', {})
         movie_data = custom_props.get('movie_data', {})
+        movie_logo = movie.logo
+        logo_cache_url = (
+            reverse("api:vod:vodlogo-cache", args=[movie_logo.id])
+            if movie_logo
+            else ''
+        )
 
         # Build response with available data
         response_data = {
@@ -173,7 +180,18 @@ class MovieViewSet(viewsets.ReadOnlyModelViewSet):
             'backdrop_path': (movie.custom_properties or {}).get('backdrop_path') or info.get('backdrop_path', []),
             'cover': info.get('cover_big', ''),
             'cover_big': info.get('cover_big', ''),
-            'movie_image': movie.logo.url if movie.logo else info.get('movie_image', ''),
+            # Use cache endpoint for local/absolute logo paths so frontend always gets a web-safe URL.
+            'movie_image': logo_cache_url or info.get('movie_image', ''),
+            'logo': (
+                {
+                    'id': movie_logo.id,
+                    'name': movie_logo.name,
+                    'url': logo_cache_url,
+                    'cache_url': logo_cache_url,
+                }
+                if movie_logo
+                else None
+            ),
             'bitrate': info.get('bitrate', 0),
             'video': info.get('video', {}),
             'audio': info.get('audio', {}),
