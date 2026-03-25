@@ -374,7 +374,7 @@ class ProxyServer:
             if result is None:
                 return None
             try:
-                return result.decode('utf-8')
+                return result
             except (AttributeError, UnicodeDecodeError) as e:
                 logger.error(f"Error decoding channel owner for {channel_id}: {e}, raw={result!r}")
                 return None
@@ -940,14 +940,14 @@ class ProxyServer:
                             # Calculate runtime from init_time
                             if b'init_time' in metadata:
                                 try:
-                                    init_time = float(metadata[b'init_time'].decode('utf-8'))
+                                    init_time = float(metadata['init_time'])
                                     runtime = round(time.time() - init_time, 2)
                                 except Exception:
                                     pass
                             # Get total bytes transferred
                             if b'total_bytes' in metadata:
                                 try:
-                                    total_bytes = int(metadata[b'total_bytes'].decode('utf-8'))
+                                    total_bytes = int(metadata['total_bytes'])
                                 except Exception:
                                     pass
 
@@ -1105,7 +1105,7 @@ class ProxyServer:
                                         attempt_value = self.redis_client.get(attempt_key)
                                         if attempt_value:
                                             try:
-                                                connection_attempt_time = float(attempt_value.decode('utf-8'))
+                                                connection_attempt_time = float(attempt_value)
                                             except (ValueError, TypeError):
                                                 pass
 
@@ -1113,7 +1113,7 @@ class ProxyServer:
                                     init_time = None
                                     if metadata and b'init_time' in metadata:
                                         try:
-                                            init_time = float(metadata[b'init_time'].decode('utf-8'))
+                                            init_time = float(metadata[b'init_time'])
                                         except (ValueError, TypeError):
                                             pass
 
@@ -1350,7 +1350,7 @@ class ProxyServer:
 
             for key in channel_keys:
                 try:
-                    channel_id = key.decode('utf-8').split(':')[2]
+                    channel_id = key.split(':')[2]
 
                     # Get metadata first
                     metadata = self.redis_client.hgetall(key)
@@ -1365,7 +1365,7 @@ class ProxyServer:
                         continue
 
                     # Get owner
-                    owner = metadata.get(b'owner', b'').decode('utf-8') if b'owner' in metadata else ''
+                    owner = metadata.get('owner', '') if 'owner' in metadata else ''
 
                     # Check if owner is still alive
                     owner_alive = False
@@ -1379,7 +1379,7 @@ class ProxyServer:
 
                     # If no owner and no clients, clean it up
                     if not owner_alive and client_count == 0:
-                        state = metadata.get(b'state', b'unknown').decode('utf-8') if b'state' in metadata else 'unknown'
+                        state = metadata.get('state', 'unknown')
                         logger.warning(f"Found orphaned metadata for channel {channel_id} (state: {state}, owner: {owner}, clients: {client_count}) - cleaning up")
 
                         # If we have it locally, stop it properly to clean up transcode/proxy processes

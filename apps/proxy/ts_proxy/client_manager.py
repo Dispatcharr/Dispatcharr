@@ -247,7 +247,7 @@ class ClientManager:
             "connected_at": current_time,
             "last_active": current_time,
             "worker_id": self.worker_id or "unknown",
-            "user_id": str(user.id) if user is not None else "unknown",
+            "user_id": str(user.id) if user is not None else "0",
             # "user_level": user.user_level if user is not None else 100, # default to a high value since no user means the non-user specific M3U/HDHR
         }
 

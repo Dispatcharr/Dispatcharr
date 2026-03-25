@@ -1006,7 +1006,7 @@ class VODConnectionManager:
             return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile, client_ip, user_agent, request,
-                                  utc_start=None, utc_end=None, offset=None, range_header=None):
+                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None):
         """
         Stream VOD content with persistent connection per session
 

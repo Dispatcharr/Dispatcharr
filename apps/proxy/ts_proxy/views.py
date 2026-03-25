@@ -40,6 +40,7 @@ from .utils import get_logger
 from uuid import UUID
 import gevent
 from dispatcharr.utils import network_access_allowed
+from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
 
@@ -70,6 +71,13 @@ def stream_ts(request, channel_id, user=None):
                     f"[{client_id}] Client connected with user agent: {client_user_agent}"
                 )
                 break
+
+        if user:
+            if not check_user_stream_limits(user, client_id):
+                return JsonResponse(
+                    {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
+                    status=429
+                )
 
         # Check if we need to reinitialize the channel
         needs_initialization = True
