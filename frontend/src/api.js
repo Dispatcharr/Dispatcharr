@@ -2037,6 +2037,54 @@ export default class API {
     }
   }
 
+  // IP Aliases
+  static async getIPAliases() {
+    try {
+      const response = await request(`${host}/api/core/ip-aliases/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve IP aliases', e);
+      return [];
+    }
+  }
+
+  static async createIPAlias(data) {
+    try {
+      const response = await request(`${host}/api/core/ip-aliases/`, {
+        method: 'POST',
+        body: data,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create IP alias', e);
+      throw e;
+    }
+  }
+
+  static async updateIPAlias(id, data) {
+    try {
+      const response = await request(`${host}/api/core/ip-aliases/${id}/`, {
+        method: 'PUT',
+        body: data,
+      });
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update IP alias', e);
+      throw e;
+    }
+  }
+
+  static async deleteIPAlias(id) {
+    try {
+      await request(`${host}/api/core/ip-aliases/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete IP alias', e);
+      throw e;
+    }
+  }
+
   static async getChannelStats(uuid = null) {
     try {
       const response = await request(`${host}/proxy/ts/status`);

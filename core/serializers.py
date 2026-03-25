@@ -3,7 +3,7 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, IPAlias, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -32,6 +32,19 @@ class StreamProfileSerializer(serializers.ModelSerializer):
             "user_agent",
             "locked",
         ]
+
+
+class IPAliasSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IPAlias
+        fields = [
+            "id",
+            "ip_address",
+            "alias",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
 
 
 class CoreSettingsSerializer(serializers.ModelSerializer):

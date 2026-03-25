@@ -14,6 +14,9 @@ import {
 const UserAgentsTable = React.lazy(
   () => import('../components/tables/UserAgentsTable.jsx')
 );
+const IPAliasesTable = React.lazy(
+  () => import('../components/tables/IPAliasesTable.jsx')
+);
 const StreamProfilesTable = React.lazy(
   () => import('../components/tables/StreamProfilesTable.jsx')
 );
@@ -169,6 +172,29 @@ const SettingsPage = () => {
                     <Suspense fallback={<Loader />}>
                       <NetworkAccessForm
                         active={accordianValue === 'network-access'}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="ip-aliases">
+                <AccordionControl>
+                  <Box>IP Aliases</Box>
+                  {accordianValue === 'ip-aliases' && (
+                    <Box>
+                      <Text size="sm" c="dimmed">
+                        Assign friendly names to IP addresses on the Stats
+                        page
+                      </Text>
+                    </Box>
+                  )}
+                </AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <IPAliasesTable
+                        active={accordianValue === 'ip-aliases'}
                       />
                     </Suspense>
                   </ErrorBoundary>

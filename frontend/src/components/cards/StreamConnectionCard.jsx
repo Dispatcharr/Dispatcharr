@@ -23,6 +23,7 @@ import {
   Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  Pencil,
   Radio,
   SquareX,
   Timer,
@@ -53,6 +54,8 @@ import {
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
+import useIPAliasesStore from '../../store/ipAliases';
+import IPAliasForm from '../forms/IPAliasForm';
 
 const formatProgramTime = (seconds) => {
   const absSeconds = Math.abs(seconds);
@@ -118,6 +121,9 @@ const StreamConnectionCard = ({
   const [data, setData] = useState([]);
   const [previewedStream, setPreviewedStream] = useState(null);
   const [isProgramDescExpanded, setIsProgramDescExpanded] = useState(false);
+  const [aliasFormOpen, setAliasFormOpen] = useState(false);
+  const [aliasFormIp, setAliasFormIp] = useState('');
+  const [editingAliasObj, setEditingAliasObj] = useState(null);
 
   const theme = useMantineTheme();
 
@@ -129,6 +135,9 @@ const StreamConnectionCard = ({
     useSettingsStore((s) => s.environment?.env_mode) || 'production';
   // Get video preview function
   const showVideo = useVideoStore((s) => s.showVideo);
+  // Get IP alias data
+  const aliasMap = useIPAliasesStore((s) => s.aliasMap);
+  const aliases = useIPAliasesStore((s) => s.aliases);
 
   // Get user's date/time format preferences
   const { fullDateTimeFormat } = useDateTimeFormat();
@@ -314,14 +323,43 @@ const StreamConnectionCard = ({
       {
         header: 'IP Address',
         accessorKey: 'ip_address',
-        size: 150,
-        cell: ({ cell }) => (
-          <Tooltip label={cell.getValue()}>
-            <Text size="xs" truncate style={{ maxWidth: '100%' }}>
-              {cell.getValue()}
-            </Text>
-          </Tooltip>
-        ),
+        size: 180,
+        cell: ({ cell }) => {
+          const ip = cell.getValue();
+          const alias = aliasMap[ip];
+          const existingAlias = aliases.find((a) => a.ip_address === ip);
+          return (
+            <Group gap={4} wrap="nowrap" style={{ maxWidth: '100%' }}>
+              <Tooltip label={alias ? ip : 'No alias set'}>
+                <Text
+                  size="xs"
+                  truncate
+                  style={{ maxWidth: '100%' }}
+                  fw={alias ? 500 : 400}
+                  c={alias ? 'white' : undefined}
+                >
+                  {alias || ip}
+                </Text>
+              </Tooltip>
+              <Tooltip label={alias ? 'Edit alias' : 'Add alias'}>
+                <ActionIcon
+                  size="xs"
+                  variant="subtle"
+                  color="dimmed"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAliasFormIp(ip);
+                    setEditingAliasObj(existingAlias || null);
+                    setAliasFormOpen(true);
+                  }}
+                  style={{ flexShrink: 0 }}
+                >
+                  <Pencil size="12" />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+          );
+        },
       },
       // Updated Connected column with tooltip
       {
@@ -367,7 +405,7 @@ const StreamConnectionCard = ({
         size: 100,
       },
     ],
-    [fullDateTimeFormat]
+    [fullDateTimeFormat, aliasMap, aliases]
   );
 
   const channelClientsTable = useTable({
@@ -756,6 +794,17 @@ const StreamConnectionCard = ({
 
         <CustomTable table={channelClientsTable} />
       </Stack>
+
+      <IPAliasForm
+        ipAlias={editingAliasObj}
+        isOpen={aliasFormOpen}
+        onClose={() => {
+          setAliasFormOpen(false);
+          setEditingAliasObj(null);
+          setAliasFormIp('');
+        }}
+        defaultIp={aliasFormIp}
+      />
     </Card>
   );
 };

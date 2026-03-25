@@ -8,6 +8,7 @@ import useEPGsStore from '../epgs';
 import useStreamProfilesStore from '../streamProfiles';
 import useUserAgentsStore from '../userAgents';
 import useUsersStore from '../users';
+import useIPAliasesStore from '../ipAliases';
 import API from '../../api';
 import { USER_LEVELS } from '../../constants';
 
@@ -19,6 +20,7 @@ vi.mock('../epgs');
 vi.mock('../streamProfiles');
 vi.mock('../userAgents');
 vi.mock('../users');
+vi.mock('../ipAliases');
 vi.mock('../../api');
 
 // Mock localStorage
@@ -96,6 +98,12 @@ describe('useAuthStore', () => {
     useUsersStore.mockImplementation((selector) =>
       selector({
         fetchUsers: vi.fn().mockResolvedValue(),
+      })
+    );
+
+    useIPAliasesStore.mockImplementation((selector) =>
+      selector({
+        fetchAliases: vi.fn().mockResolvedValue(),
       })
     );
   });
@@ -371,6 +379,7 @@ describe('useAuthStore', () => {
     const fetchProfiles = vi.fn().mockResolvedValue();
     const fetchUserAgents = vi.fn().mockResolvedValue();
     const fetchUsers = vi.fn().mockResolvedValue();
+    const fetchAliases = vi.fn().mockResolvedValue();
 
     // Mock getState for each store
     useSettingsStore.getState = () => ({ fetchSettings });
@@ -386,6 +395,7 @@ describe('useAuthStore', () => {
     useStreamProfilesStore.getState = () => ({ fetchProfiles });
     useUserAgentsStore.getState = () => ({ fetchUserAgents });
     useUsersStore.getState = () => ({ fetchUsers });
+    useIPAliasesStore.getState = () => ({ fetchAliases });
 
     it('should initialize data for admin user', async () => {
       const mockUser = {

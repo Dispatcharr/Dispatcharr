@@ -6,6 +6,7 @@ import useEPGsStore from './epgs';
 import useStreamProfilesStore from './streamProfiles';
 import useUserAgentsStore from './userAgents';
 import useUsersStore from './users';
+import useIPAliasesStore from './ipAliases';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
 import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
@@ -123,6 +124,7 @@ const useAuthStore = create((set, get) => ({
         useStreamProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
         useChannelsStore.getState().fetchChannelIds(),
+        useIPAliasesStore.getState().fetchAliases(),
       ]);
 
       if (user.user_level >= USER_LEVELS.ADMIN) {

@@ -17,6 +17,7 @@ from .models import (
     UserAgent,
     StreamProfile,
     CoreSettings,
+    IPAlias,
     STREAM_SETTINGS_KEY,
     DVR_SETTINGS_KEY,
     NETWORK_ACCESS_KEY,
@@ -27,6 +28,7 @@ from .serializers import (
     StreamProfileSerializer,
     CoreSettingsSerializer,
     ProxySettingsSerializer,
+    IPAliasSerializer,
 )
 
 import socket
@@ -58,6 +60,15 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
 
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+
+
+class IPAliasViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for managing IP address aliases.
+    Allows CRUD operations on IP-to-alias mappings.
+    """
+    queryset = IPAlias.objects.all()
+    serializer_class = IPAliasSerializer
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):

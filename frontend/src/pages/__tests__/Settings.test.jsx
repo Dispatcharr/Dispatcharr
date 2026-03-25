@@ -15,6 +15,13 @@ vi.mock('../../components/tables/UserAgentsTable', () => ({
     </div>
   ),
 }));
+vi.mock('../../components/tables/IPAliasesTable', () => ({
+  default: ({ active }) => (
+    <div data-testid="ip-aliases-table">
+      IPAliasesTable {active ? 'active' : 'inactive'}
+    </div>
+  ),
+}));
 vi.mock('../../components/tables/StreamProfilesTable', () => ({
   default: ({ active }) => (
     <div data-testid="stream-profiles-table">
@@ -162,6 +169,7 @@ describe('SettingsPage', () => {
       expect(screen.queryByText('User-Agents')).not.toBeInTheDocument();
       expect(screen.queryByText('Stream Profiles')).not.toBeInTheDocument();
       expect(screen.queryByText('Network Access')).not.toBeInTheDocument();
+      expect(screen.queryByText('IP Aliases')).not.toBeInTheDocument();
       expect(screen.queryByText('Proxy Settings')).not.toBeInTheDocument();
       expect(screen.queryByText('Backup & Restore')).not.toBeInTheDocument();
     });
@@ -196,6 +204,7 @@ describe('SettingsPage', () => {
         expect(screen.getByText('User-Agents')).toBeInTheDocument();
         expect(screen.getByText('Stream Profiles')).toBeInTheDocument();
         expect(screen.getByText('Network Access')).toBeInTheDocument();
+        expect(screen.getByText('IP Aliases')).toBeInTheDocument();
         expect(screen.getByText('Proxy Settings')).toBeInTheDocument();
         expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
         expect(screen.getByText('Navigation')).toBeInTheDocument();
@@ -247,6 +256,14 @@ describe('SettingsPage', () => {
 
       expect(
         screen.getByTestId('accordion-item-network-access')
+      ).toBeInTheDocument();
+    });
+
+    it('renders IP Aliases accordion item', () => {
+      renderWithRouter(<SettingsPage />);
+
+      expect(
+        screen.getByTestId('accordion-item-ip-aliases')
       ).toBeInTheDocument();
     });
 

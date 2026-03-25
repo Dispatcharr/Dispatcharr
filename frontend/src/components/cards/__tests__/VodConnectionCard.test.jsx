@@ -78,12 +78,22 @@ vi.mock('lucide-react', () => ({
     <svg data-testid="icon-chevron-down" data-size={size} style={style} />
   ),
   HardDriveUpload: () => <svg data-testid="icon-hdd-upload" />,
+  Pencil: () => <svg data-testid="icon-pencil" />,
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
   Video: () => <svg data-testid="icon-video" />,
 }));
 
+// ── IP Alias mocks ──────────────────────────────────────────────────────────
+vi.mock('../../../store/ipAliases', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../forms/IPAliasForm', () => ({
+  default: () => null,
+}));
+
 // ── Imports after mocks ───────────────────────────────────────────────────────
+import useIPAliasesStore from '../../../store/ipAliases';
 import { useDateTimeFormat } from '../../../utils/dateTimeUtils.js';
 import {
   calculateProgress,
@@ -169,6 +179,9 @@ describe('VodConnectionCard', () => {
     vi.mocked(getEpisodeSubtitle).mockReturnValue(['Test Series', 'Season 1']);
     vi.mocked(calculateConnectionDuration).mockReturnValue('5m 30s');
     vi.mocked(calculateConnectionStartTime).mockReturnValue('Jan 1 2024 10:00 AM');
+    vi.mocked(useIPAliasesStore).mockImplementation((selector) =>
+      selector({ aliasMap: {}, aliases: [] })
+    );
   });
 
   afterEach(() => {

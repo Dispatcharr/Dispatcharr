@@ -23,10 +23,13 @@ import {
 import {
   ChevronDown,
   HardDriveUpload,
+  Pencil,
   SquareX,
   Timer,
   Video,
 } from 'lucide-react';
+import useIPAliasesStore from '../../store/ipAliases';
+import IPAliasForm from '../forms/IPAliasForm';
 import {
   calculateConnectionDuration,
   calculateConnectionStartTime,
@@ -173,6 +176,12 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   const { fullDateTimeFormat } = useDateTimeFormat();
   const [isClientExpanded, setIsClientExpanded] = useState(false);
   const [, setUpdateTrigger] = useState(0); // Force re-renders for progress updates
+  const [aliasFormOpen, setAliasFormOpen] = useState(false);
+  const [aliasFormIp, setAliasFormIp] = useState('');
+  const [editingAliasObj, setEditingAliasObj] = useState(null);
+
+  const aliasMap = useIPAliasesStore((s) => s.aliasMap);
+  const aliases = useIPAliasesStore((s) => s.aliases);
 
   // Get metadata from the VOD content
   const metadata = vodContent.content_metadata || {};
@@ -405,9 +414,41 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
                 <Text size="sm" fw={500} color="dimmed">
                   Client:
                 </Text>
-                <Text size="sm" ff={'monospace'}>
-                  {connection.client_ip || 'Unknown IP'}
-                </Text>
+                {(() => {
+                  const ip = connection.client_ip || 'Unknown IP';
+                  const alias = aliasMap[ip];
+                  const existingAlias = aliases.find(
+                    (a) => a.ip_address === ip
+                  );
+                  return (
+                    <Group gap={4} wrap="nowrap">
+                      <Tooltip label={alias ? ip : 'No alias set'}>
+                        <Text
+                          size="sm"
+                          ff={alias ? undefined : 'monospace'}
+                          fw={alias ? 500 : 400}
+                        >
+                          {alias || ip}
+                        </Text>
+                      </Tooltip>
+                      <Tooltip label={alias ? 'Edit alias' : 'Add alias'}>
+                        <ActionIcon
+                          size="xs"
+                          variant="subtle"
+                          color="dimmed"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAliasFormIp(ip);
+                            setEditingAliasObj(existingAlias || null);
+                            setAliasFormOpen(true);
+                          }}
+                        >
+                          <Pencil size="12" />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  );
+                })()}
               </Group>
 
               <Group gap={8}>
@@ -436,6 +477,17 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
           </Stack>
         )}
       </Stack>
+
+      <IPAliasForm
+        ipAlias={editingAliasObj}
+        isOpen={aliasFormOpen}
+        onClose={() => {
+          setAliasFormOpen(false);
+          setEditingAliasObj(null);
+          setAliasFormIp('');
+        }}
+        defaultIp={aliasFormIp}
+      />
     </Card>
   );
 };

@@ -363,6 +363,31 @@ class CoreSettings(models.Model):
         return value
 
 
+class IPAlias(models.Model):
+    """
+    Maps IP addresses to user-friendly alias names for display
+    on the Stats dashboard.
+    """
+    ip_address = models.GenericIPAddressField(
+        unique=True,
+        help_text="The IP address to assign an alias to.",
+    )
+    alias = models.CharField(
+        max_length=100,
+        help_text="A friendly name for this IP address (e.g., 'Dad's House').",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['alias']
+        verbose_name = "IP Alias"
+        verbose_name_plural = "IP Aliases"
+
+    def __str__(self):
+        return f"{self.alias} ({self.ip_address})"
+
+
 class SystemEvent(models.Model):
     """
     Tracks system events like channel start/stop, buffering, failover, client connections.

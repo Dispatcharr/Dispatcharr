@@ -6,6 +6,7 @@ from .api_views import (
     UserAgentViewSet,
     StreamProfileViewSet,
     CoreSettingsViewSet,
+    IPAliasViewSet,
     SystemNotificationViewSet,
     environment,
     version,
@@ -18,6 +19,7 @@ router = DefaultRouter()
 router.register(r'useragents', UserAgentViewSet, basename='useragent')
 router.register(r'streamprofiles', StreamProfileViewSet, basename='streamprofile')
 router.register(r'settings', CoreSettingsViewSet, basename='coresettings')
+router.register(r'ip-aliases', IPAliasViewSet, basename='ipalias')
 router.register(r'notifications', SystemNotificationViewSet, basename='systemnotification')
 urlpatterns = [
     path('settings/env/', environment, name='token_refresh'),

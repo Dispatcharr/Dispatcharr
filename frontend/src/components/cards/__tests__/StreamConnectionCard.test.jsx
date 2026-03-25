@@ -16,6 +16,12 @@ vi.mock('../../../store/settings.jsx', () => ({
 vi.mock('../../../store/useVideoStore', () => ({
   default: vi.fn(),
 }));
+vi.mock('../../../store/ipAliases', () => ({
+  default: vi.fn(),
+}));
+vi.mock('../../forms/IPAliasForm', () => ({
+  default: () => null,
+}));
 
 // ── dateTimeUtils ─────────────────────────────────────────────────────────────
 vi.mock('../../../utils/dateTimeUtils.js', () => ({
@@ -145,6 +151,7 @@ vi.mock('lucide-react', () => ({
   Gauge: () => <svg data-testid="icon-gauge" />,
   HardDriveDownload: () => <svg data-testid="icon-hdd-download" />,
   HardDriveUpload: () => <svg data-testid="icon-hdd-upload" />,
+  Pencil: () => <svg data-testid="icon-pencil" />,
   Radio: () => <svg data-testid="icon-radio" />,
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
@@ -157,6 +164,7 @@ import { useLocation } from 'react-router-dom';
 import usePlaylistsStore from '../../../store/playlists.jsx';
 import useSettingsStore from '../../../store/settings.jsx';
 import useVideoStore from '../../../store/useVideoStore';
+import useIPAliasesStore from '../../../store/ipAliases';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import {
   getChannelStreams,
@@ -247,6 +255,9 @@ const setupStores = () => {
   );
   vi.mocked(useVideoStore).mockImplementation((selector) =>
     selector({ showVideo: vi.fn() })
+  );
+  vi.mocked(useIPAliasesStore).mockImplementation((selector) =>
+    selector({ aliasMap: {}, aliases: [] })
   );
 };
 
