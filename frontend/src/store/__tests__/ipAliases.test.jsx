@@ -210,7 +210,7 @@ describe('useIPAliasesStore', () => {
       await result.current.fetchAliases();
     });
 
-    expect(result.current.aliases).toEqual(null);
+    expect(result.current.aliases).toEqual([]);
     expect(result.current.aliasMap).toEqual({});
     expect(result.current.isLoading).toBe(false);
   });
