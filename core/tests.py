@@ -1,6 +1,11 @@
 from django.test import TestCase
+from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
+from rest_framework import status
 
-from core.models import CoreSettings, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
+from core.models import CoreSettings, IPAlias, DVR_SETTINGS_KEY, EPG_SETTINGS_KEY
+
+User = get_user_model()
 
 
 class GetDvrSeriesRulesTest(TestCase):
@@ -148,3 +153,105 @@ class EpgIgnoreListsTest(TestCase):
         ]:
             self._set_epg_field_raw(field, "not a list")
             self.assertEqual(getter(), [])
+
+
+class IPAliasModelTest(TestCase):
+    """Verify IPAlias model behavior."""
+
+    def test_create_alias(self):
+        alias = IPAlias.objects.create(ip_address="192.168.1.100", alias="Dad's House")
+        self.assertEqual(alias.ip_address, "192.168.1.100")
+        self.assertEqual(alias.alias, "Dad's House")
+        self.assertIsNotNone(alias.created_at)
+        self.assertIsNotNone(alias.updated_at)
+
+    def test_str_representation(self):
+        alias = IPAlias.objects.create(ip_address="10.0.0.1", alias="Home")
+        self.assertEqual(str(alias), "Home (10.0.0.1)")
+
+    def test_ip_address_unique(self):
+        IPAlias.objects.create(ip_address="192.168.1.1", alias="First")
+        with self.assertRaises(Exception):
+            IPAlias.objects.create(ip_address="192.168.1.1", alias="Duplicate")
+
+    def test_ordering_by_alias(self):
+        IPAlias.objects.create(ip_address="10.0.0.3", alias="Charlie")
+        IPAlias.objects.create(ip_address="10.0.0.1", alias="Alpha")
+        IPAlias.objects.create(ip_address="10.0.0.2", alias="Bravo")
+        aliases = list(IPAlias.objects.values_list("alias", flat=True))
+        self.assertEqual(aliases, ["Alpha", "Bravo", "Charlie"])
+
+    def test_ipv6_address(self):
+        alias = IPAlias.objects.create(ip_address="::1", alias="IPv6 Localhost")
+        self.assertEqual(alias.ip_address, "::1")
+
+
+class IPAliasAPITest(TestCase):
+    """Verify IPAlias CRUD API endpoints."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="testadmin", password="testpass123")
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.url = "/api/core/ip-aliases/"
+
+    def test_list_empty(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_create_alias(self):
+        data = {"ip_address": "192.168.1.100", "alias": "Dad's House"}
+        response = self.client.post(self.url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["ip_address"], "192.168.1.100")
+        self.assertEqual(response.data["alias"], "Dad's House")
+        self.assertIn("id", response.data)
+        self.assertEqual(IPAlias.objects.count(), 1)
+
+    def test_list_aliases(self):
+        IPAlias.objects.create(ip_address="10.0.0.1", alias="Alpha")
+        IPAlias.objects.create(ip_address="10.0.0.2", alias="Bravo")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_update_alias(self):
+        alias = IPAlias.objects.create(ip_address="192.168.1.1", alias="Old Name")
+        data = {"ip_address": "192.168.1.1", "alias": "New Name"}
+        response = self.client.put(f"{self.url}{alias.id}/", data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["alias"], "New Name")
+        alias.refresh_from_db()
+        self.assertEqual(alias.alias, "New Name")
+
+    def test_partial_update_alias(self):
+        alias = IPAlias.objects.create(ip_address="192.168.1.1", alias="Old Name")
+        response = self.client.patch(f"{self.url}{alias.id}/", {"alias": "Patched"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        alias.refresh_from_db()
+        self.assertEqual(alias.alias, "Patched")
+
+    def test_delete_alias(self):
+        alias = IPAlias.objects.create(ip_address="192.168.1.1", alias="ToDelete")
+        response = self.client.delete(f"{self.url}{alias.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(IPAlias.objects.count(), 0)
+
+    def test_create_duplicate_ip_rejected(self):
+        IPAlias.objects.create(ip_address="192.168.1.1", alias="First")
+        data = {"ip_address": "192.168.1.1", "alias": "Second"}
+        response = self.client.post(self.url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_invalid_ip_rejected(self):
+        data = {"ip_address": "not-an-ip", "alias": "Bad"}
+        response = self.client.post(self.url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_missing_alias_rejected(self):
+        data = {"ip_address": "192.168.1.1"}
+        response = self.client.post(self.url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
