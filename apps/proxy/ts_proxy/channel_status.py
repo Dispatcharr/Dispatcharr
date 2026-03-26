@@ -6,6 +6,7 @@ from .redis_keys import RedisKeys
 from .constants import TS_PACKET_SIZE, ChannelMetadataField
 from redis.exceptions import ConnectionError, TimeoutError
 from .utils import get_logger
+from .client_manager import ClientManager
 from django.db import DatabaseError  # Add import for error handling
 
 logger = get_logger()
@@ -127,43 +128,56 @@ class ChannelStatus:
         client_ids = proxy_server.redis_client.smembers(client_set_key)
         clients = []
 
+        stale_client_ids = []
         for client_id in client_ids:
             client_id_str = client_id
             client_key = RedisKeys.client_metadata(channel_id, client_id_str)
             client_data = proxy_server.redis_client.hgetall(client_key)
 
-            if client_data:
-                client_info = {
-                    'client_id': client_id_str,
-                    'user_agent': client_data.get('user_agent', 'unknown'),
-                    'worker_id': client_data.get('worker_id', 'unknown'),
-                }
+            if not client_data:
+                # Metadata hash expired but SET entry persists (ghost client).
+                stale_client_ids.append(client_id)
+                continue
 
-                if 'connected_at' in client_data:
-                    connected_at = float(client_data['connected_at'])
-                    client_info['connected_at'] = connected_at
-                    client_info['connection_duration'] = time.time() - connected_at
+            client_info = {
+                'client_id': client_id_str,
+                'user_agent': client_data.get('user_agent', 'unknown'),
+                'worker_id': client_data.get('worker_id', 'unknown'),
+            }
 
-                if 'last_active' in client_data:
-                    last_active = float(client_data['last_active'])
-                    client_info['last_active'] = last_active
-                    client_info['last_active_ago'] = time.time() - last_active
+            if 'connected_at' in client_data:
+                connected_at = float(client_data['connected_at'])
+                client_info['connected_at'] = connected_at
+                client_info['connection_duration'] = time.time() - connected_at
 
-                # Add transfer rate statistics
-                if 'bytes_sent' in client_data:
-                    client_info['bytes_sent'] = int(client_data['bytes_sent'])
+            if 'last_active' in client_data:
+                last_active = float(client_data['last_active'])
+                client_info['last_active'] = last_active
+                client_info['last_active_ago'] = time.time() - last_active
 
-                # Add average transfer rate
-                if 'avg_rate_KBps' in client_data:
-                    client_info['avg_rate_KBps'] = float(client_data['avg_rate_KBps'])
-                elif 'transfer_rate_KBps' in client_data:  # For backward compatibility
-                    client_info['avg_rate_KBps'] = float(client_data['transfer_rate_KBps'])
+            # Add transfer rate statistics
+            if 'bytes_sent' in client_data:
+                client_info['bytes_sent'] = int(client_data['bytes_sent'])
 
-                # Add current transfer rate
-                if 'current_rate_KBps' in client_data:
-                    client_info['current_rate_KBps'] = float(client_data['current_rate_KBps'])
+            # Add average transfer rate
+            if 'avg_rate_KBps' in client_data:
+                client_info['avg_rate_KBps'] = float(client_data['avg_rate_KBps'])
+            elif 'transfer_rate_KBps' in client_data:  # For backward compatibility
+                client_info['avg_rate_KBps'] = float(client_data['transfer_rate_KBps'])
 
-                clients.append(client_info)
+            # Add current transfer rate
+            if 'current_rate_KBps' in client_data:
+                client_info['current_rate_KBps'] = float(client_data['current_rate_KBps'])
+
+            clients.append(client_info)
+
+        # Clean up stale SET entries so SCARD stays accurate.
+        if stale_client_ids:
+            proxy_server.redis_client.srem(client_set_key, *stale_client_ids)
+            logger.info(
+                f"Removed {len(stale_client_ids)} ghost client(s) from "
+                f"channel {channel_id} client set"
+            )
 
         info['clients'] = clients
         info['client_count'] = len(clients)
@@ -427,18 +441,26 @@ class ChannelStatus:
             clients = []
             client_ids = proxy_server.redis_client.smembers(client_set_key)
 
-            # Process only if we have clients and keep it limited
+            # Remove ghost SET entries before building the client list.
+            # Pass the already-fetched client_ids to avoid a redundant SMEMBERS.
+            stale_client_ids = ClientManager.remove_ghost_clients(
+                proxy_server.redis_client, channel_id, client_ids=client_ids
+            )
+            if stale_client_ids:
+                client_count = max(0, client_count - len(stale_client_ids))
+
+            # Build concise client list (up to 10) from remaining live clients.
             if client_ids:
-                # Get up to 10 clients for the basic view
                 for client_id in list(client_ids)[:10]:
+                    if client_id in stale_client_ids:
+                        continue
+
                     client_key = RedisKeys.client_metadata(channel_id, client_id)
 
-                    # Efficient way - just retrieve the essentials
                     client_info = {
                         'client_id': client_id,
                     }
 
-                    # Safely get user_agent and ip_address
                     user_agent_bytes = proxy_server.redis_client.hget(client_key, 'user_agent')
                     client_info['user_agent'] = user_agent_bytes
 
@@ -446,7 +468,6 @@ class ChannelStatus:
                     if ip_address_bytes:
                         client_info['ip_address'] = ip_address_bytes
 
-                    # Just get connected_at for client age
                     connected_at_bytes = proxy_server.redis_client.hget(client_key, 'connected_at')
                     if connected_at_bytes:
                         connected_at = float(connected_at_bytes)
@@ -456,6 +477,7 @@ class ChannelStatus:
 
             # Add clients to info
             info['clients'] = clients
+            info['client_count'] = client_count
 
             # Add M3U profile information
             m3u_profile_id = metadata.get(ChannelMetadataField.M3U_PROFILE)

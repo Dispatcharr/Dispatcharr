@@ -401,24 +401,44 @@ class StreamManager:
             # Close all connections
             self._close_all_connections()
 
-            # Update channel state in Redis to prevent clients from waiting indefinitely
+            # Transition to ERROR so clients stop waiting. Ownership may have
+            # expired during retries, so fall back to a state guard when no
+            # owner exists — but never clobber a new owner's active stream.
             if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 try:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
-
-                    # Check if we're the owner before updating state
                     owner_key = RedisKeys.channel_owner(self.channel_id)
                     current_owner = self.buffer.redis_client.get(owner_key)
 
-                    # Use the worker_id that was passed in during initialization
-                    if current_owner and self.worker_id and current_owner == self.worker_id:
-                        # Determine the appropriate error message based on retry failures
+                    is_owner = (
+                        current_owner
+                        and self.worker_id
+                        and current_owner == self.worker_id
+                    )
+                    no_owner = current_owner is None
+
+                    should_update = is_owner
+                    if not should_update and no_owner:
+                        current_state_bytes = self.buffer.redis_client.hget(
+                            metadata_key, ChannelMetadataField.STATE
+                        )
+                        current_state = (
+                            current_state_bytes
+                            if current_state_bytes else None
+                        )
+                        should_update = current_state in ChannelState.PRE_ACTIVE
+                        if not should_update and current_state:
+                            logger.info(
+                                f"Channel {self.channel_id} has no owner but "
+                                f"state is {current_state} — skipping ERROR update"
+                            )
+
+                    if should_update:
                         if self.tried_stream_ids and len(self.tried_stream_ids) > 0:
                             error_message = f"All {len(self.tried_stream_ids)} stream options failed"
                         else:
                             error_message = f"Connection failed after {self.max_retries} attempts"
 
-                        # Update metadata to indicate error state
                         update_data = {
                             ChannelMetadataField.STATE: ChannelState.ERROR,
                             ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
@@ -426,9 +446,13 @@ class StreamManager:
                             ChannelMetadataField.ERROR_TIME: str(time.time())
                         }
                         self.buffer.redis_client.hset(metadata_key, mapping=update_data)
-                        logger.info(f"Updated channel {self.channel_id} state to ERROR in Redis after stream failure")
+                        logger.info(
+                            f"Updated channel {self.channel_id} state to ERROR "
+                            f"in Redis after stream failure "
+                            f"(owner={'self' if is_owner else 'expired'})"
+                        )
 
-                        # Also set stopping key to ensure clients disconnect
+                        # Signal clients to disconnect
                         stop_key = RedisKeys.channel_stopping(self.channel_id)
                         self.buffer.redis_client.setex(stop_key, 60, "true")
                 except Exception as e:

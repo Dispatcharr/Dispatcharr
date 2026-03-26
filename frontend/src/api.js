@@ -1286,6 +1286,7 @@ export default class API {
 
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -1545,6 +1546,16 @@ export default class API {
     }
   }
 
+  static async getProgramDetail(programId) {
+    try {
+      const response = await request(`${host}/api/epg/programs/${programId}/`);
+      return response;
+    } catch (e) {
+      console.warn('Failed to retrieve program detail', e);
+      return null;
+    }
+  }
+
   static async addM3UProfile(accountId, values) {
     try {
       const response = await request(
@@ -1590,9 +1601,7 @@ export default class API {
       });
 
       const playlist = await API.getPlaylist(accountId);
-      usePlaylistsStore
-        .getState()
-        .updateProfiles(playlist.id, playlist.profiles);
+      usePlaylistsStore.getState().updatePlaylist(playlist);
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }

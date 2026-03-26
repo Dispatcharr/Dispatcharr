@@ -56,7 +56,8 @@ class ClientManager:
             from django.conf import settings
 
             redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True, **ssl_params)
             all_channels = []
             cursor = 0
 
@@ -156,9 +157,8 @@ class ClientManager:
                                 if time_since_heartbeat < self.heartbeat_interval * 0.5:  # Only heartbeat at half interval minimum
                                     continue
 
-                            # Only update clients that remain
+                            # Only refresh TTL - do NOT update last_active
                             client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
-                            pipe.hset(client_key, "last_active", str(current_time))
                             pipe.expire(client_key, self.client_ttl)
 
                             # Keep client in the set with TTL
@@ -406,3 +406,42 @@ class ClientManager:
             self.redis_client.expire(self.client_set_key, self.client_ttl)
         except Exception as e:
             logger.error(f"Error refreshing client TTL: {e}")
+
+    @staticmethod
+    def remove_ghost_clients(redis_client, channel_id, client_ids=None):
+        """Remove client SET entries whose metadata hash has expired.
+
+        Returns the list of removed (stale) client IDs, or an empty list
+        if none were found. Uses a pipelined EXISTS check for efficiency.
+
+        Args:
+            client_ids: Optional pre-fetched result of SMEMBERS for this
+                        channel. Pass this to avoid a redundant SMEMBERS
+                        call when the caller has already fetched it.
+        """
+        client_set_key = RedisKeys.clients(channel_id)
+        if client_ids is None:
+            client_ids = redis_client.smembers(client_set_key)
+        if not client_ids:
+            return []
+
+        client_id_list = list(client_ids)
+        pipe = redis_client.pipeline()
+        for cid in client_id_list:
+            cid_str = cid.decode('utf-8')
+            pipe.exists(RedisKeys.client_metadata(channel_id, cid_str))
+        results = pipe.execute()
+
+        stale_ids = [
+            cid for cid, exists in zip(client_id_list, results)
+            if not exists
+        ]
+
+        if stale_ids:
+            redis_client.srem(client_set_key, *stale_ids)
+            logger.info(
+                f"Removed {len(stale_ids)} ghost client(s) from "
+                f"channel {channel_id} client set"
+            )
+
+        return stale_ids

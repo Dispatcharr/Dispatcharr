@@ -7,7 +7,7 @@ from apps.proxy.ts_proxy.redis_keys import RedisKeys
 from apps.proxy.ts_proxy.constants import ChannelMetadataField
 import logging
 import uuid
-from datetime import datetime
+from django.utils import timezone
 import hashlib
 import json
 from apps.epg.models import EPGData
@@ -95,7 +95,7 @@ class Stream(models.Model):
         help_text="Unique hash for this stream from the M3U account",
         db_index=True,
     )
-    last_seen = models.DateTimeField(db_index=True, default=datetime.now)
+    last_seen = models.DateTimeField(db_index=True, default=timezone.now)
     is_stale = models.BooleanField(
         default=False,
         db_index=True,
@@ -888,7 +888,7 @@ class ChannelGroupM3UAccount(models.Model):
         help_text='Starting channel number for auto-created channels in this group'
     )
     last_seen = models.DateTimeField(
-        default=datetime.now,
+        default=timezone.now,
         db_index=True,
         help_text='Last time this group was seen in the M3U source during a refresh'
     )

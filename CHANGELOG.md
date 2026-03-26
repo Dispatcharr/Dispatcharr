@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
+
+### Changed
+
+- M3U table **Max Streams** column now reflects the combined limit across all active profiles. When a playlist has multiple active profiles, the column displays their summed total (or ∞ if any profile is unlimited) and a hover tooltip lists each profile's individual limit by name. (Closes #816)
+- Toggling an M3U profile's active state now immediately updates the playlist store (including the `playlists` array), so the **Max Streams** total in the M3U table reflects the change without a page reload.
+- M3U account form: **Max Streams** field changed from a plain text input to a number input with increment/decrement controls, consistent with other integer fields.
+- M3U account form: removed unused `useMantineTheme` import and `theme` variable.
+- Moved `guideUtils.js` from `frontend/src/pages/` to `frontend/src/utils/` to be consistent with other utility modules (e.g. `networkUtils.js`). Updated all imports across `GuideRow.jsx`, `HourTimeline.jsx`, `ProgramDetailModal.jsx`, `RecordingCardUtils.js`, `Guide.jsx`, and related test files.
+- Frontend cleanup: removed unused imports from `M3UGroupFilter`, `LiveGroupFilter`, and `VODCategoryFilter` (`Yup`, `M3UProfiles`, several unused Mantine components, dead `OptionWithTooltip` component, duplicate lucide-react imports, and `Divider` in `VODCategoryFilter`). No behaviour changes.
+- Network Access settings: leaving a field blank no longer shows a validation error. The default CIDR range for that field is saved automatically and a "Defaults Restored" warning is displayed listing which fields were reset. (Closes #726)
+
+### Fixed
+
+- HTML named entities in XMLTV EPG files are now resolved to Unicode characters before lxml parsing. Some EPG providers (particularly French and other European sources) use HTML named entities like `&eacute;`, `&icirc;`, `&uuml;` in channel names, program titles, and metadata. These are not valid XML entities — lxml 6.0.2 with `recover=True` silently drops them, causing characters to go missing (e.g., "Chaîne Télé" becomes "Chane Tl"). A preprocessing step in `fetch_xmltv()` now resolves HTML named entities while preserving the 5 XML-predefined entities, detecting encoding from the XML declaration (falling back to UTF-8), and processing line-by-line to a temp file before atomically replacing the original. (Closes #1095) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Duplicate recordings created when EPG sources refresh and re-evaluate series rules — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - **Program ID instability**: `parse_programs_for_source()` deletes and recreates all `ProgramData` rows with new auto-increment IDs on every EPG refresh. The dedup set used these IDs, so it never matched after a refresh. Deduplication now uses a stable `(tvg_id, start_time, end_time)` composite key sourced from `Recording.custom_properties.program`.
+  - **Secondary guard using wrong times**: The DB guard compared unadjusted program times against offset-adjusted `Recording.start_time`/`end_time`, so it never matched when any DVR pre/post offset was configured. It now queries `custom_properties__program__start_time/end_time` (the original, unadjusted program times stored at recording creation).
+  - **No concurrency guard**: Each EPG source refresh fired `evaluate_series_rules.delay()` independently. Concurrent tasks loaded the dedup set before others committed, allowing races. Evaluation is now serialized with `acquire_task_lock` (reusing the existing EPG task pattern). Gracefully degrades if Redis is unavailable — the primary and secondary dedup guards still protect. (Fixes #940)
+
+## [0.21.1] - 2026-03-18
+
+### Fixed
+
+- Docker container initialization fixes for PUID/PGID handling — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - Backups failing on previous installations where `/data/backups` already existed: `/data/backups` was missing from the `DATA_DIRS` list in the init script, causing the PUID/PGID ownership migration to skip the directory and leave it with incorrect permissions.
+  - Container startup failure on upgrade when data directories reside on external mounts (NFS, SMB/CIFS, FUSE): `chown` failures under `set -e` were crashing the container, breaking setups that worked fine on the previous image. Failures are now collected per-directory and reported as a consolidated warning; the container continues to start and Django reports at runtime if it cannot write a specific directory.
+  - Upgrading users running as UID 102 (the internal PostgreSQL system user) instead of the expected UID 1000: the PUID/PGID auto-detect introduced in v0.21.0 read ownership from `/data/db`, which was UID 102 in pre-PUID images, causing Django, file creation, and comskip to all run as the wrong user. PUID/PGID now default to 1000 (matching the original Django UID) rather than auto-detecting from data directory ownership.
+
+## [0.21.0] - 2026-03-17
+
+### Security
+
+- Updated frontend npm dependencies to resolve 1 high-severity vulnerability:
+  - Updated `flatted` to 3.4.1, resolving **high** unbounded recursion DoS in the `parse()` revive phase ([GHSA-25h7-pfq9-p65f](https://github.com/advisories/GHSA-25h7-pfq9-p65f))
+- Updated `Django` to 6.0.3 and `django-celery-beat` to 2.9.0, resolving new security vulnerabilities:
+  - [CVE-2026-25673](https://www.cve.org/CVERecord?id=CVE-2026-25673): Potential denial-of-service vulnerability in URLField via Unicode normalization on Windows (March 3, 2026)
+  - [CVE-2026-25674](https://www.cve.org/CVERecord?id=CVE-2026-25674): Potential incorrect permissions on newly created file system objects (March 3, 2026)
+
+### Added
+
 - Configurable sidebar navigation ordering and visibility — Thanks [@jcasimir](https://github.com/jcasimir)
   - Sidebar nav items can be reordered via drag-and-drop in Settings → UI Settings → Navigation.
   - Individual nav items can be hidden from the sidebar using the eye toggle. Hiding an item preserves its position in the order.
@@ -16,13 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Order and visibility are saved per-user with optimistic updates and automatic rollback on failure. Changes appear in the sidebar immediately without a page reload.
   - Admin users see a grouped navigation: flat items (`Channels`, `VODs`, `M3U & EPG Manager`, `TV Guide`, `DVR`, `Stats`, `Plugins`) plus collapsible `Integrations` (Connections, Logs) and `System` (Users, Logo Manager, Settings) groups. The `System` group cannot be hidden.
   - Non-admin users see `Channels`, `TV Guide`, and `Settings`, with the `Settings` item not hideable.
-- Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components. — Thanks [@nick4810](https://github.com/nick4810)
+- Unit tests for `NotificationCenter`, `NotificationCenterUtils`, and `M3URefreshNotification` components, and for settings form components `DvrSettingsForm`, `NetworkAccessForm`, `ProxySettingsForm`, `StreamSettingsForm`, `SystemSettingsForm`, `UiSettingsForm`. — Thanks [@nick4810](https://github.com/nick4810)
 - Unit tests for DVR port resolution (`build_dvr_candidates`) and selective Redis flush behavior in modular mode. — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Floating video player improvements
   - **Title display**: The channel, stream, or VOD title is now shown in the player header bar. Title is passed through from all preview entry points: channel table, stream table, stream connection card, guide, DVR, recording cards, recording details modal, VOD modal, and series modal.
   - **Persistent state**: Size, position, volume level, and mute state are now saved across sessions using a single `dispatcharr-player-prefs` localStorage key. Size and position are restored on next open (clamped to the current viewport); volume and mute are restored when the player initialises.
 - New Client Buffer proxy setting: new clients joining an active channel are now positioned a configurable number of seconds behind live rather than a fixed chunk count. The start position is determined by wall-clock chunk receive time (stored as a Redis sorted set alongside the buffer), so the buffer depth is consistent in seconds regardless of stream bitrate. Setting the value to `0` starts clients at live with no buffer. Defaults to 5 seconds. Existing chunk-count gating for the first client connecting to a channel is unchanged. The setting is exposed in Settings → Proxy as "New Client Buffer (seconds)".
 - Channel table filter for channels that have stale streams: A new "Has Stale Streams" filter option in the channel table header menu highlights and filters channels containing at least one stale stream. Channels with stale streams are visually distinguished with an orange tint. The filter is mutually exclusive with "Only Empty Channels". - Thanks [@JCBird1012](https://github.com/JCBird1012)
+- "Next Highest Channel" numbering mode when creating channels from streams: A new `Next Highest` option is available alongside `Provider`, `Auto`, and `Custom` when creating channels from the Streams table. Selecting it assigns channel numbers starting one above the current highest channel number; the next available number is fetched from the backend at selection time. (Closes #1000) — Thanks [@JCBird1012](https://github.com/JCBird1012)
+- TV Guide program cards now display richer metadata — Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - **Season/episode badges** (e.g. `S12E06`) extracted from EPG `<episode-num>` elements, `onscreen` episode strings (e.g. `S12 E6`, `S3E21`, `S8 E8 P2/2`), and as a last-resort fallback from description text patterns at parse time (3-tier pipeline). (Closes #1065)
+  - **Episode subtitle** shown below the program title on guide cards; falls back to the short description when no subtitle is available.
+  - **Status badges**: `LIVE`, `NEW`, `PREMIERE`, and `FINALE` surfaced from EPG flags on both compact cards and the detail modal.
+  - **Program detail modal**: Clicking any guide program opens a modal with full program details — poster/icon image, season/episode, subtitle, duration, categories, cast/director/writer credits, content rating, star ratings, production date, original air date, video quality, and external links to IMDb and TMDB where available. Detail data is fetched from a new `GET /api/epg/programs/{id}/` endpoint backed by the new `ProgramDetailSerializer`. Dummy/placeholder programs skip the fetch.
+  - **Real-time progress bars**: Currently-airing programs show a green progress bar on their guide card that updates every second via direct DOM manipulation (no React re-renders).
+  - **Channel name tooltip**: Hovering the channel logo column shows the channel name.
 - Sort icons added to the Group and EPG column headers in the Channels table, and to the Group column header in the Streams table. Clicking a sort icon cycles through ascending/descending/unsorted states. EPG sorting required a backend change (`epg_data__name` added to `ChannelViewSet.ordering_fields`); Group sorting was already supported by the API in both tables. (Closes #854) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - DVR enhancements — Thanks [@CodeBormen](https://github.com/CodeBormen)
   - **Stop Recording**: A new Stop button (distinct from Cancel) cleanly ends an in-progress recording early and keeps the partial file available for playback. The API returns immediately; stream teardown and task revocation happen in a background thread to prevent 504 timeouts. When multiple recordings run simultaneously, stopping one only terminates that recording's proxy client by ID, leaving all others unaffected. (Closes #454)
@@ -34,9 +84,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Search and filter controls**: Added search and filter controls to the recordings list.
   - **Stream generator throttling**: Cached the `ProxyServer` singleton reference per client and throttled Redis resource checks (1 s) and non-owner health checks (2 s), eliminating 3+ Redis round-trips per stream loop iteration.
   - **Automatic crash recovery on worker restart**: A `worker_ready` Celery signal now fires `recover_recordings_on_startup` automatically when the worker starts, so recordings stuck in "recording" status are recovered without manual intervention.
+- Account expiration tracking and notifications for M3U profiles
+  - A new `exp_date` field on `M3UAccountProfile` stores the account expiration date as a proper `DateTimeField`. For Xtream Codes accounts the field is auto-synced from `custom_properties.user_info.exp_date` on every save (supports both Unix timestamps and ISO date strings). For non-XC M3U accounts the date can be entered manually via the account or profile form.
+  - The M3U accounts table now shows an **Expiration** column displaying the earliest expiration date across all profiles for that account (color-coded: red = expired, orange = expiring soon, green = OK). Hovering the cell shows a tooltip with per-profile expiration details including inactive-profile labels.
+  - A daily Celery Beat task (`check_xc_account_expirations`) checks all active profiles with an expiration date and manages system notifications: a normal-priority warning is raised for profiles expiring within 7 days; a high-priority alert is raised once the profile has already expired. Warning and expired notifications use separate keys so dismissing the 7-day warning does not suppress the expiration alert.
+  - Notifications are also updated immediately when a profile is saved: if the expiration date is cleared or pushed beyond the 7-day window, any existing warning/expired notifications are deleted; if the date falls within the window or is already past, the matching notification is updated in place.
+  - Non-XC accounts expose a `DateTimePicker` on both the M3U account form and the profile form.
 
 ### Changed
 
+- Dependency updates:
+  - `Django` 5.2.11 → 6.0.3 (security patch + major version upgrade; see Security section)
+  - `django-celery-beat` ≥2.8.1 → ≥2.9.0 (adds explicit Django 6.0 support)
+- When selecting an EPG source for a channel, the EPG source dropdown now only lists enabled (active) EPGs, sorted alphabetically.
 - Channels page default splitter ratio changed from 50/50 to 60/40 (channels/streams) so all channel action buttons are visible without scrolling on 1080p displays.
 - Frontend component refactoring and cleanup — Thanks [@nick4810](https://github.com/nick4810)
   - `FloatingVideo`, `SeriesModal`, `VODModal`, `SystemEvents`, `M3URefreshNotification`, and `NotificationCenter` significantly reduced in size by separating business logic into dedicated utility modules under `utils/components/` (`FloatingVideoUtils.js`, `SeriesModalUtils.js`, `VODModalUtils.js`, `NotificationCenterUtils.js`).
@@ -50,11 +110,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Single-stream channel creation modal not opening correctly when clicking the channel-creation button on an individual stream row in the Streams table. — Thanks [@JCBird1012](https://github.com/JCBird1012)
+- DVR series rule creation failing with a 500 error when the stored `series_rules` data contained corrupted (non-dict) entries. Added type guards on the getter, setter, and generic settings serializer to filter invalid entries on read and write. Hardened the EPG ignore list getters (`prefixes`, `suffixes`, `custom`) with the same pattern. Frontend settings parse and save now validate `series_rules` with `Array.isArray()`, matching the existing EPG field pattern, preventing corrupted data from being round-tripped back to the database. (Fixes #1059) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+- TS proxy clients stuck indefinitely in keepalive mode when a stream fails and never recovers (Fixes #1102, #1103) — Thanks [@cmcpherson274](https://github.com/cmcpherson274) & [@CodeBormen](https://github.com/CodeBormen)
+  - **Keepalive duration cap**: Non-owner worker clients sending keepalive packets to hold a connection open during failover can now be held at most `MAX_KEEPALIVE_DURATION` seconds (default 300 s). If no real stream data has been received within that window, the client is disconnected with a warning log. The timer resets each time real data resumes, so independent stalls do not accumulate.
+  - **`last_active` tracking**: `last_active` is now updated on every keepalive packet and on every real data chunk, so clients actively waiting during a failover are not incorrectly evicted as ghost clients by the heartbeat thread. The heartbeat thread now only refreshes the Redis TTL rather than updating `last_active`, ensuring the ghost-detection check reflects true client activity rather than heartbeat activity.
+  - **Buffer reset on stream transition**: A new `reset_buffer_position()` method on `StreamBuffer` clears the in-memory write buffer and partial-packet accumulator when switching between FFmpeg processes. Without this, a partial 188-byte TS packet from the dying FFmpeg process was being prepended to the first bytes from the new FFmpeg process, producing a corrupted TS packet boundary that broke audio decoder sync on the client side. Redis-stored chunks already consumed by clients are unaffected.
+  - **`add_chunk()` locking hardened**: The lock scope in `add_chunk()` was expanded to cover the entire partial-packet merge and write-buffer accumulation phase, preventing a race condition between `add_chunk()` and the new `reset_buffer_position()` call.
+- uWSGI segfaults caused by mixing threading and gevent concurrency models. The dev and debug uWSGI configs had `threads` and `enable-threads = true` set alongside gevent, which triggers segmentation faults particularly on ARM64/Python 3.13. Removed those options to match the already-correct production config. — Thanks [@jcasimir](https://github.com/jcasimir)
+- `Stream.last_seen` and `ChannelGroupM3UAccount.last_seen` model defaults now use `django.utils.timezone.now` instead of `datetime.datetime.now`, eliminating spurious `RuntimeWarning: DateTimeField received a naive datetime` warnings emitted during test database creation and on new record creation when `USE_TZ=True`.
+- EPG programme parsing crash when an XMLTV source contains programme titles exceeding 255 characters. Previously, a single oversized title would cause the entire `bulk_create` batch to fail with a database truncation error, silently dropping all programmes in that batch. Titles are now truncated to 255 characters before being saved. (Fixes #1039)
+- Container startup failure when `PUID`/`PGID` is set, caused by `/data/db` ownership conflicts between the `postgres` system user (UID 102) and the configured PUID/PGID. PostgreSQL now runs as the PUID/PGID user in AIO mode, eliminating all `chown`-to-UID-102 operations and unifying `/data` ownership. (Fixes #1078) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - Existing installations where PUID/PGID differs from the current `/data/db` owner are migrated automatically on first startup; a sentinel file prevents redundant recursive `chown` on subsequent boots.
+  - PUID/PGID auto-detected from existing data ownership when not explicitly set, avoiding cross-UID `chown` failures on restricted filesystems (NFS `root_squash`, CIFS).
+  - PUID/PGID validated as positive non-zero integers before any user/group operations.
+  - UID collisions with the `postgres` system user (e.g. PUID=102) are now handled gracefully.
+  - Ensured proper variable quoting in the /docker/ directory to guard from inappropriate input
 - Floating video player bug fixes
   - **Resize stuck after releasing mouse outside window**: The `mouseup` event is not delivered when the pointer leaves the viewport, leaving the `mousemove` listener active indefinitely. Fixed by checking `event.buttons === 0` at the top of `handleResizeMove`; when no button is held the resize session is torn down immediately.
   - **Drag stuck after releasing mouse outside window**: Same root cause as the resize bug. Fixed by detecting `event.buttons === 0` in the `onDrag` handler and dispatching a synthetic `mouseup` event so react-draggable cleanly ends the drag session.
   - **Player draggable off screen**: The player could be dragged off any edge, making the header (and drag handle) unreachable. The player is now fully bounded: left and top edges are clamped to `x ≥ 0` / `y ≥ 0` so the header is always reachable, and right/bottom edges are clamped to the viewport. Size and position are also re-clamped automatically when the browser window is resized, with proportional scale-down if the saved size exceeds the new viewport.
-- **Security**: Any authenticated user could self-escalate privileges by sending `user_level`, `is_staff`, or `is_superuser` in a `PATCH /api/accounts/users/me/` request. The `/me/` endpoint now enforces an allowlist (`custom_properties`, `first_name`, `last_name`, `email`, `password`); any other fields return HTTP 400. Privilege-sensitive fields can only be changed via the admin-only `PATCH /api/accounts/users/{id}/` endpoint.
 - Double error notification when saving user preferences: `API.updateMe` was catching errors internally and displaying a notification before re-throwing, causing callers to display a second notification for the same failure.
 - Navigation preference saves from concurrent sessions could overwrite each other due to a double-merge race: the frontend was pre-merging `custom_properties` before sending, then the backend merged again against the DB value, causing the second session's write to silently drop keys set by the first. The frontend now sends only the delta; the backend merges authoritatively against the stored value.
 - Stale nav item IDs (e.g. from a previous nav structure) are now scrubbed from `navOrder` and `hiddenNav` on the next preference save, preventing unbounded growth of the `custom_properties` JSON field.
@@ -84,6 +159,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`update_stream_profile()` uses a Redis pipeline** for the old-profile DECR + key update + new-profile INCR sequence, preventing counter drift if the process crashes between operations.
   - **`stream_generator._cleanup()`** now falls back to `Stream.objects.get()` when the channel UUID resolves to a preview flow rather than a normal channel, rather than silently skipping the slot release.
   - **VOD `cleanup_persistent_connection()`** fallback DECR is now conditional: it only decrements the profile counter when the connection tracking key had already expired by TTL (i.e., `remove_connection()` would have skipped the DECR), preventing double-decrements when the key is still present.
+- Ghost clients and channels stuck in `INITIALIZING` state in the TS proxy (Fixes #695, #669) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+  - **`INITIALIZING` added to cleanup grace period monitoring**: channels stuck in `INITIALIZING` are now surfaced by the cleanup task and torn down, preventing indefinite hangs when stream startup fails.
+  - **Orphaned channel cleanup validates client SET entries**: the cleanup task now cross-checks client SET members against actual metadata hashes; ghost SET entries are removed and the channel is torn down cleanly when no real clients remain.
+  - **Stats page self-heals**: ghost client SET entries are detected and removed when reading channel stats, preventing stale entries from inflating the active-client count.
+  - **`remove_ghost_clients()` extracted to `ClientManager`**: ghost-detection logic is now a single authoritative helper, callable with an optional pre-fetched `client_ids` set to eliminate a redundant Redis `SMEMBERS` round-trip when the caller already holds the set.
+  - **Ownership TTL fallback**: the error-state writer now triggers via ownership check _or_ state guard fallback, so a channel stuck in a pre-active state is correctly marked `ERROR` even when the ownership TTL expired during retries.
+  - **Missing `SOURCE_BITRATE` / `FFMPEG_BITRATE` metadata constants** added to `ChannelMetadataField`, preventing `AttributeError` on detailed channel stats reads.
 - TS proxy client stream lag recovery now only bumps clients forward when their next required chunk has genuinely expired from Redis (TTL), rather than unconditionally jumping if they fell more than 50 chunks behind. Clients are repositioned to the oldest available chunk (minimum data loss) using an atomic server-side Lua binary search, falling back to near the buffer head if nothing is available.
 - TS proxy streams dying after 30–200 seconds in multi-worker uWSGI/Celery deployments, caused by three interrelated bugs. (Fixes #992, #980) - Thanks [@PFalko](https://github.com/PFalko)
   - **Double ProxyServer instantiation**: `ProxyConfig.ready()` called `TSProxyServer()` directly while `TSProxyConfig.ready()` also called `TSProxyServer.get_instance()`, creating two instances per worker — each with its own cleanup thread. The orphaned thread could not extend ownership because it had no entries in `stream_managers`. Fixed by using `TSProxyServer.get_instance()` in `ProxyConfig.ready()`.

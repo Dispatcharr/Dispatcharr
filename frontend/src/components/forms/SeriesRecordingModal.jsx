@@ -5,7 +5,7 @@ import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
 import {
   evaluateSeriesRulesByTvgId,
   fetchRules,
-} from '../../pages/guideUtils.js';
+} from '../../utils/guideUtils.js';
 import { showNotification } from '../../utils/notificationUtils.js';
 
 export default function SeriesRecordingModal({

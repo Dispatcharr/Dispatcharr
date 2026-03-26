@@ -1,8 +1,11 @@
 # apps/epg/tasks.py
 
+import codecs
 import logging
 import gzip
+import html as html_module
 import os
+import re
 import uuid
 import requests
 import time  # Add import for tracking download progress
@@ -27,6 +30,89 @@ from .models import EPGSource, EPGData, ProgramData
 from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
+
+# Regex and helpers for resolving HTML named entities in XMLTV files.
+# lxml only recognises the 5 XML-predefined entities; HTML entities like
+# &eacute; are silently dropped in recovery mode.  This substitution
+# converts them to Unicode before the file reaches the parser.
+_XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
+_XML_SPECIAL_CHARS = frozenset('&<>\'"')
+_NAMED_ENTITY_RE = re.compile(r'&([a-zA-Z][a-zA-Z0-9]*);')
+
+
+def _replace_html_entity(match):
+    """Replace a single HTML named entity, preserving XML-special ones.
+
+    Skips lowercase XML entities (fast path) and any entity whose resolved
+    output contains XML-special characters that would break parsing.  This
+    also guards against html.unescape partially matching sub-patterns
+    (e.g. &ampersand; being split into &amp + ersand;).
+    """
+    original = match.group(0)
+    name = match.group(1)
+    if name in _XML_ENTITIES:
+        return original
+    resolved = html_module.unescape(original)
+    if resolved == original:
+        return original
+    # If the resolved output contains any XML-special character, replacing
+    # it would produce invalid XML (bare &, <, >, etc.)
+    if _XML_SPECIAL_CHARS.intersection(resolved):
+        return original
+    return resolved
+
+
+def _detect_xml_encoding(header):
+    """Detect encoding from raw XML header bytes, defaulting to UTF-8.
+
+    Falls back to UTF-8 if the declared encoding is not recognized by Python.
+    """
+    m = re.match(rb'<\?xml[^>]*encoding=["\']([^"\']+)["\']', header)
+    if m:
+        declared = m.group(1).decode('ascii')
+        try:
+            codecs.lookup(declared)
+            return declared
+        except LookupError:
+            logger.warning(f"Unknown encoding '{declared}', falling back to UTF-8")
+            return 'utf-8'
+    return 'utf-8'
+
+
+def _resolve_html_entities(file_path):
+    """Replace HTML named entities in an XMLTV file with Unicode characters.
+
+    Processes line-by-line to keep memory usage low, writes to a temp file,
+    then atomically replaces the original.  Honors the encoding declared
+    in the XML declaration.
+
+    This function is strictly additive — on any error the original file is
+    left untouched so lxml can handle it as it always did.
+    """
+    # Read the first 200 bytes to detect encoding from the XML declaration
+    with open(file_path, 'rb') as f:
+        header = f.read(200)
+    encoding = _detect_xml_encoding(header)
+
+    temp_path = file_path + '.entity_tmp'
+    success = False
+    try:
+        with open(file_path, 'r', encoding=encoding) as src, \
+             open(temp_path, 'w', encoding=encoding) as dst:
+            for line in src:
+                dst.write(_NAMED_ENTITY_RE.sub(_replace_html_entity, line))
+        os.replace(temp_path, file_path)
+        success = True
+        logger.debug(f"Resolved HTML entities in {file_path} (encoding: {encoding})")
+    except Exception as e:
+        # On any error, leave the original file untouched for lxml to
+        # handle with its own encoding detection and recovery mode.
+        # This ensures the preprocessing step never breaks a previously
+        # working EPG refresh.
+        logger.debug(f"Skipping entity resolution for {file_path}: {e}")
+    finally:
+        if not success and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 def validate_icon_url_fast(icon_url, max_length=None):
@@ -280,6 +366,9 @@ def fetch_xmltv(source):
         # Send a download complete notification
         send_epg_update(source.id, "downloading", 100, status="success")
 
+        # Resolve HTML named entities so lxml doesn't drop them during parsing
+        _resolve_html_entities(source.extracted_file_path or source.file_path)
+
         # Return True to indicate successful fetch, processing will continue with parse_channels_only
         return True
 
@@ -526,6 +615,10 @@ def fetch_xmltv(source):
             source.save(update_fields=['status'])
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
+
+            # Resolve HTML named entities so lxml doesn't drop them during parsing
+            _resolve_html_entities(source.extracted_file_path or source.file_path)
+
             return True
 
     except requests.exceptions.HTTPError as e:
@@ -1305,11 +1398,28 @@ def parse_programs_for_tvg_id(epg_id):
                             logger.trace(f"Number of custom properties: {len(custom_props)}")
                             custom_properties_json = custom_props
 
+                        # Fallback: extract S/E from description when episode-num
+                        # elements didn't provide them
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
+
                         programs_to_create.append(ProgramData(
                             epg=epg,
                             start_time=start_time,
                             end_time=end_time,
-                            title=title,
+                            title=title[:255],
                             description=desc,
                             sub_title=sub_title,
                             tvg_id=epg.tvg_id,
@@ -1566,12 +1676,29 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                     custom_props = extract_custom_properties(elem)
                     custom_properties_json = custom_props if custom_props else None
 
+                    # Fallback: extract S/E from description when episode-num
+                    # elements didn't provide them
+                    if desc:
+                        has_season = (custom_properties_json or {}).get('season') is not None
+                        has_episode = (custom_properties_json or {}).get('episode') is not None
+                        if not has_season or not has_episode:
+                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                            if d_season is not None and d_episode is not None:
+                                if custom_properties_json is None:
+                                    custom_properties_json = {}
+                                if not has_season:
+                                    custom_properties_json['season'] = d_season
+                                if not has_episode:
+                                    custom_properties_json['episode'] = d_episode
+                                custom_properties_json['season_episode_source'] = 'description'
+                                desc = cleaned_desc
+
                     epg_id = tvg_id_to_epg_id[channel_id]
                     all_programs_to_create.append(ProgramData(
                         epg_id=epg_id,
                         start_time=start_time,
                         end_time=end_time,
-                        title=title,
+                        title=title[:255],
                         description=desc,
                         sub_title=sub_title,
                         tvg_id=channel_id,
@@ -1857,6 +1984,10 @@ def parse_schedules_direct_time(time_str):
         raise
 
 
+# Re-export from utils to preserve backward compatibility for any callers
+from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: F401
+
+
 # Helper function to extract custom properties - moved to a separate function to clean up the code
 def extract_custom_properties(prog):
     # Create a new dictionary for each call
@@ -1892,8 +2023,16 @@ def extract_custom_properties(prog):
                     except ValueError:
                         pass
         elif system == 'onscreen' and ep_num.text:
-            # Just store the raw onscreen format
-            custom_props['onscreen_episode'] = ep_num.text.strip()
+            onscreen_text = ep_num.text.strip()
+            custom_props['onscreen_episode'] = onscreen_text
+            # Extract season/episode from onscreen format if not already set by xmltv_ns
+            if 'season' not in custom_props or 'episode' not in custom_props:
+                match = _ONSCREEN_RE.search(onscreen_text)
+                if match:
+                    if 'season' not in custom_props:
+                        custom_props['season'] = int(match.group(1))
+                    if 'episode' not in custom_props:
+                        custom_props['episode'] = int(match.group(2))
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()

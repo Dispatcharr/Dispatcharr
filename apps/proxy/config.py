@@ -99,7 +99,7 @@ class TSConfig(BaseConfig):
     CLIENT_RECORD_TTL = 60  # How long client records persist in Redis (seconds). Client will be considered MIA after this time.
     CLEANUP_CHECK_INTERVAL = 1  # How often to check for disconnected clients (seconds)
     CLIENT_HEARTBEAT_INTERVAL = 5  # How often to send client heartbeats (seconds)
-    GHOST_CLIENT_MULTIPLIER = 6.0  # How many heartbeat intervals before client considered ghost (6 would mean 36 seconds if heartbeat interval is 6)
+    GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 30  # Seconds to wait for client to connect
 
     # Stream health and recovery settings
@@ -108,6 +108,7 @@ class TSConfig(BaseConfig):
     MIN_STABLE_TIME_BEFORE_RECONNECT = 30  # Minimum seconds a stream must be stable to try reconnect
     FAILOVER_GRACE_PERIOD = 20           # Extra time (seconds) to allow for stream switching before disconnecting clients
     URL_SWITCH_TIMEOUT = 20   # Max time allowed for a stream switch operation
+    MAX_KEEPALIVE_DURATION = 300         # Keepalive packets prevent _is_timeout() from firing, so without this a permanently failed stream holds clients open indefinitely.
 
 
 

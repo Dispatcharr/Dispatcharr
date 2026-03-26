@@ -11,7 +11,7 @@ from celery.result import AsyncResult
 from celery import shared_task, current_app, group
 from django.conf import settings
 from django.core.cache import cache
-from django.db import transaction
+from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from asgiref.sync import async_to_sync
@@ -3185,3 +3185,163 @@ def send_m3u_update(account_id, action, progress, **kwargs):
 
     # Explicitly clear data reference to help garbage collection
     data = None
+
+
+def evaluate_profile_expiration_notification(profile):
+    """
+    Evaluate a single M3UAccountProfile's expiration date and create, update,
+    or delete the corresponding SystemNotification accordingly.
+
+    Returns the notification key that should remain active (warning or expired),
+    or None if the profile is not expiring soon and any stale notifications were removed.
+    This return value is used by the bulk task to track active keys for stale cleanup.
+    """
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification, send_notification_dismissed
+
+    exp = profile.exp_date
+    if not exp:
+        return None
+
+    now = timezone.now()
+    warning_threshold = now + timezone.timedelta(days=7)
+    warning_key = f"xc-exp-warning-{profile.id}"
+    expired_key = f"xc-exp-expired-{profile.id}"
+
+    if exp <= now:
+        # Already expired — delete warning, create/update expired notification
+        deleted_warning = list(
+            SystemNotification.objects.filter(notification_key=warning_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=warning_key).delete()
+        for key in deleted_warning:
+            send_notification_dismissed(key)
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=expired_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.HIGH,
+                "title": f"Account Expired: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" has expired '
+                    f"(expired {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return expired_key
+
+    elif exp <= warning_threshold:
+        # Expiring within 7 days — delete expired notification, create/update warning
+        deleted_expired = list(
+            SystemNotification.objects.filter(notification_key=expired_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=expired_key).delete()
+        for key in deleted_expired:
+            send_notification_dismissed(key)
+
+        days_left = (exp - now).days
+        if days_left == 0:
+            expires_in_str = "today"
+        elif days_left == 1:
+            expires_in_str = "in 1 day"
+        else:
+            expires_in_str = f"in {days_left} days"
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=warning_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.NORMAL,
+                "title": f"Account Expiring: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" expires {expires_in_str} '
+                    f"(expires {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return warning_key
+
+    else:
+        # Not expiring soon — delete any stale notifications
+        deleted_keys = list(
+            SystemNotification.objects.filter(
+                notification_key__in=[warning_key, expired_key]
+            ).values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(
+            notification_key__in=[warning_key, expired_key]
+        ).delete()
+        for key in deleted_keys:
+            send_notification_dismissed(key)
+        return None
+
+
+@shared_task
+def check_account_expirations():
+    """
+    Daily task: check all account profiles for upcoming expirations.
+    Creates/updates SystemNotifications for profiles expiring within 7 days.
+    Uses separate notification keys for warning vs expired so users can
+    dismiss the 7-day warning and still receive the expired notification.
+    """
+    from apps.m3u.models import M3UAccountProfile
+    from core.models import SystemNotification
+    from core.utils import send_notification_dismissed
+
+    # Find all active profiles with an exp_date that is set
+    expiring_profiles = (
+        M3UAccountProfile.objects.filter(
+            m3u_account__is_active=True,
+            is_active=True,
+            exp_date__isnull=False,
+        )
+        .select_related("m3u_account")
+    )
+
+    active_notification_keys = set()
+
+    for profile in expiring_profiles:
+        active_key = evaluate_profile_expiration_notification(profile)
+        if active_key:
+            active_notification_keys.add(active_key)
+
+    # Delete stale notifications for profiles whose expiration was extended
+    stale = SystemNotification.objects.filter(
+        is_active=True,
+    ).filter(
+        models.Q(notification_key__startswith="xc-exp-warning-") |
+        models.Q(notification_key__startswith="xc-exp-expired-")
+    ).exclude(notification_key__in=active_notification_keys)
+    stale_keys = list(stale.values_list("notification_key", flat=True))
+    stale.delete()
+    for key in stale_keys:
+        send_notification_dismissed(key)
+
+    logger.info(
+        f"Account expiration check complete: {len(active_notification_keys)} active notifications"
+    )

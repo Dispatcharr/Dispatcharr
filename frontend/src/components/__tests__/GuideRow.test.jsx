@@ -4,10 +4,9 @@ import '@testing-library/jest-dom';
 import GuideRow from '../GuideRow';
 import {
   CHANNEL_WIDTH,
-  EXPANDED_PROGRAM_HEIGHT,
   HOUR_WIDTH,
   PROGRAM_HEIGHT,
-} from '../../pages/guideUtils';
+} from '../../utils/guideUtils';
 
 // Mock logo import
 vi.mock('../../images/logo.png', () => ({
@@ -29,6 +28,7 @@ vi.mock('@mantine/core', async () => {
     Box: ({ children, ...props }) => <div {...props}>{children}</div>,
     Flex: ({ children, ...props }) => <div {...props}>{children}</div>,
     Text: ({ children, ...props }) => <div {...props}>{children}</div>,
+    Tooltip: ({ children }) => children,
   };
 });
 
@@ -68,7 +68,6 @@ describe('GuideRow', () => {
   const mockData = {
     filteredChannels: [mockChannel],
     programsByChannelId: new Map([[mockChannel.id, [mockProgram]]]),
-    expandedProgramId: null,
     rowHeights: {},
     logos: mockLogos,
     hoveredChannelId: null,
@@ -145,18 +144,6 @@ describe('GuideRow', () => {
 
       const row = screen.getByTestId('guide-row');
       expect(row).toHaveStyle({ height: `${PROGRAM_HEIGHT}px` });
-    });
-
-    it('should use EXPANDED_PROGRAM_HEIGHT when program is expanded', () => {
-      const data = {
-        ...mockData,
-        expandedProgramId: mockProgram.id,
-      };
-
-      render(<GuideRow index={0} style={mockStyle} data={data} />);
-
-      const row = screen.getByTestId('guide-row');
-      expect(row).toHaveStyle({ height: `${EXPANDED_PROGRAM_HEIGHT}px` });
     });
 
     it('should use pre-calculated row height from rowHeights array', () => {
@@ -324,7 +311,7 @@ describe('GuideRow', () => {
       );
 
       const imageContainer = container.querySelector('img').parentElement;
-      expect(imageContainer).toHaveAttribute('h', `${customHeight - 32}px`);
+      expect(imageContainer).toHaveAttribute('h', `${customHeight - 12}px`);
     });
   });
 

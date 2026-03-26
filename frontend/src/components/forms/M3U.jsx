@@ -12,7 +12,6 @@ import {
   Flex,
   Select,
   FileInput,
-  useMantineTheme,
   NumberInput,
   Divider,
   Stack,
@@ -29,6 +28,7 @@ import useEPGsStore from '../../store/epgs';
 import useVODStore from '../../store/useVODStore';
 import M3UFilters from './M3UFilters';
 import ScheduleInput from './ScheduleInput';
+import { DateTimePicker } from '@mantine/dates';
 
 const M3U = ({
   m3uAccount = null,
@@ -36,8 +36,6 @@ const M3U = ({
   onClose,
   playlistCreated = false,
 }) => {
-  const theme = useMantineTheme();
-
   const userAgents = useUserAgentsStore((s) => s.userAgents);
   const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
@@ -45,6 +43,7 @@ const M3U = ({
 
   const [playlist, setPlaylist] = useState(null);
   const [file, setFile] = useState(null);
+  const [expDate, setExpDate] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [groupFilterModalOpen, setGroupFilterModalOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
@@ -102,6 +101,7 @@ const M3U = ({
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
       });
+      setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
       // Determine schedule type from existing data
       setScheduleType(
@@ -119,6 +119,7 @@ const M3U = ({
       setPlaylist(null);
       form.reset();
       setScheduleType('interval');
+      setExpDate(null);
     }
   }, [m3uAccount]);
 
@@ -130,6 +131,16 @@ const M3U = ({
 
   const onSubmit = async () => {
     const { create_epg, ...values } = form.getValues();
+
+    // Convert exp_date (from controlled state) to ISO string for the API
+    if (values.account_type === 'XC') {
+      // XC accounts have exp_date auto-managed server-side; don't send it
+      delete values.exp_date;
+    } else if (expDate instanceof Date) {
+      values.exp_date = expDate.toISOString();
+    } else {
+      values.exp_date = null;
+    }
 
     // Determine which schedule type is active based on field values
     const hasCronExpression =
@@ -359,26 +370,39 @@ const M3U = ({
               )}
 
               {form.getValues().account_type != 'XC' && (
-                <FileInput
-                  id="file"
-                  label="Upload files"
-                  placeholder="Upload files"
-                  description="Upload a local M3U file instead of using URL"
-                  onChange={setFile}
-                />
+                <>
+                  <FileInput
+                    id="file"
+                    label="Upload files"
+                    placeholder="Upload files"
+                    description="Upload a local M3U file instead of using URL"
+                    onChange={setFile}
+                  />
+
+                  <DateTimePicker
+                    label="Expiration Date"
+                    description="Set an expiration date to receive a warning notification"
+                    placeholder="No expiration"
+                    clearable
+                    valueFormat="MMM D, YYYY h:mm A"
+                    value={expDate}
+                    onChange={(v) => setExpDate(v ? new Date(v) : null)}
+                  />
+                </>
               )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />
 
             <Stack gap="5" style={{ flex: 1 }}>
-              <TextInput
+              <NumberInput
                 style={{ width: '100%' }}
                 id="max_streams"
                 name="max_streams"
                 label="Max Streams"
                 placeholder="0 = Unlimited"
                 description="Maximum number of concurrent streams (0 for unlimited)"
+                min={0}
                 {...form.getInputProps('max_streams')}
                 key={form.key('max_streams')}
               />

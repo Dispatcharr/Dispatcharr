@@ -42,12 +42,14 @@ def stream_view(request, channel_uuid):
         redis_db = int(getattr(settings, "REDIS_DB", "0"))
         redis_password = getattr(settings, "REDIS_PASSWORD", "")
         redis_user = getattr(settings, "REDIS_USER", "")
+        ssl_params = getattr(settings, "REDIS_SSL_PARAMS", {})
         redis_client = redis.Redis(
             host=redis_host,
             port=redis_port,
             db=redis_db,
             password=redis_password if redis_password else None,
-            username=redis_user if redis_user else None
+            username=redis_user if redis_user else None,
+            **ssl_params
         )
 
         # Retrieve the channel by the provided stream_id.

@@ -15,12 +15,15 @@ import {
 import API from '../api.js';
 
 export const PROGRAM_HEIGHT = 90;
-export const EXPANDED_PROGRAM_HEIGHT = 180;
 /** Layout constants */
 export const CHANNEL_WIDTH = 120; // Width of the channel/logo column
 export const HOUR_WIDTH = 450; // Increased from 300 to 450 to make each program wider
 export const MINUTE_INCREMENT = 15; // For positioning programs every 15 min
 export const MINUTE_BLOCK_WIDTH = HOUR_WIDTH / (60 / MINUTE_INCREMENT);
+/** Pixels per millisecond on the guide timeline. */
+export const PX_PER_MS = MINUTE_BLOCK_WIDTH / (MINUTE_INCREMENT * 60000);
+/** Gap in pixels between adjacent program cards. */
+export const PROGRAM_GAP_PX = 2;
 
 export function buildChannelIdMap(channels, tvgsById, epgs = {}) {
   const map = new Map();
@@ -78,11 +81,11 @@ export const mapProgramsByChannel = (programs, channelIdByTvgId) => {
       ...program,
       startMs,
       endMs,
-      programStart: initializeTime(program.startMs),
-      programEnd: initializeTime(program.endMs),
+      programStart: initializeTime(startMs),
+      programEnd: initializeTime(endMs),
       // Precompute live/past status
-      isLive: nowMs >= program.startMs && nowMs < program.endMs,
-      isPast: nowMs >= program.endMs,
+      isLive: nowMs >= startMs && nowMs < endMs,
+      isPast: nowMs >= endMs,
     };
 
     // Add this program to all channels that share the same TVG ID
@@ -103,22 +106,13 @@ export const mapProgramsByChannel = (programs, channelIdByTvgId) => {
 
 export function computeRowHeights(
   filteredChannels,
-  programsByChannelId,
-  expandedProgramId,
-  defaultHeight = PROGRAM_HEIGHT,
-  expandedHeight = EXPANDED_PROGRAM_HEIGHT
+  defaultHeight = PROGRAM_HEIGHT
 ) {
   if (!filteredChannels?.length) {
     return [];
   }
 
-  return filteredChannels.map((channel) => {
-    const channelPrograms = programsByChannelId.get(channel.id) || [];
-    const expanded = channelPrograms.some(
-      (program) => program.id === expandedProgramId
-    );
-    return expanded ? expandedHeight : defaultHeight;
-  });
+  return filteredChannels.map(() => defaultHeight);
 }
 
 export const fetchPrograms = async () => {
@@ -214,7 +208,12 @@ export const mapChannelsById = (guideChannels) => {
   return map;
 };
 
-const _terminalStatuses = new Set(['stopped', 'completed', 'interrupted', 'failed']);
+const _terminalStatuses = new Set([
+  'stopped',
+  'completed',
+  'interrupted',
+  'failed',
+]);
 
 export const mapRecordingsByProgramId = (recordings) => {
   const map = new Map();
@@ -404,6 +403,21 @@ export const getProfileOptions = (profiles) => {
   }
 
   return options;
+};
+
+export const calcProgressPct = (nowMs, startMs, durationMs) => {
+  const elapsedPx = (nowMs - startMs) * PX_PER_MS;
+  const durationPx = durationMs * PX_PER_MS;
+  const cardWidth = durationPx - PROGRAM_GAP_PX * 2;
+  return Math.min(1, Math.max(0, (elapsedPx - PROGRAM_GAP_PX) / cardWidth));
+};
+
+export const formatSeasonEpisode = (season, episode) => {
+  if (season != null && episode != null)
+    return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  if (season != null) return `S${String(season).padStart(2, '0')}`;
+  if (episode != null) return `E${String(episode).padStart(2, '0')}`;
+  return null;
 };
 
 export const deleteSeriesRuleByTvgId = async (tvg_id) => {
