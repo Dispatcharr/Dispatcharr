@@ -14,7 +14,7 @@ describe('useSettingsStore', () => {
         public_ip: '',
         country_code: '',
         country_name: '',
-        env_mode: 'prod',
+        env_mode: 'aio',
       },
       version: {
         version: '',
@@ -33,7 +33,7 @@ describe('useSettingsStore', () => {
       public_ip: '',
       country_code: '',
       country_name: '',
-      env_mode: 'prod',
+      env_mode: 'aio',
     });
     expect(result.current.isLoading).toBe(false);
     expect(result.current.error).toBe(null);
@@ -87,7 +87,7 @@ describe('useSettingsStore', () => {
       public_ip: '',
       country_code: '',
       country_name: '',
-      env_mode: 'prod',
+      env_mode: 'aio',
     });
   });
 

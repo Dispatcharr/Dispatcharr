@@ -66,7 +66,7 @@ import {
   PX_PER_MS,
   calcProgressPct,
   sortChannels,
-} from './guideUtils';
+} from '../utils/guideUtils';
 import API from '../api';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils.js';
 import {
@@ -388,7 +388,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
   // Pixel offset for the "now" vertical line
@@ -864,7 +865,8 @@ export default function TVChannelGuide({ startDate, endDate }) {
         (startOffsetMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH;
 
       const widthPx =
-        (durationMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH - PROGRAM_GAP_PX * 2;
+        (durationMinutes / MINUTE_INCREMENT) * MINUTE_BLOCK_WIDTH -
+        PROGRAM_GAP_PX * 2;
 
       const recording = recordingsByProgramId.get(program.id);
 
@@ -961,14 +963,25 @@ export default function TVChannelGuide({ startDate, endDate }) {
               </Text>
 
               {/* Row 2: S/E badge + Subtitle or description fallback */}
-              {(seasonEpisodeLabel || program.sub_title || program.description) && (
-                <Group gap={4} wrap="nowrap" style={{ overflow: 'hidden', minWidth: 0 }}>
+              {(seasonEpisodeLabel ||
+                program.sub_title ||
+                program.description) && (
+                <Group
+                  gap={4}
+                  wrap="nowrap"
+                  style={{ overflow: 'hidden', minWidth: 0 }}
+                >
                   {seasonEpisodeLabel && (
                     <Badge
                       size="xs"
                       variant="light"
                       color="cyan"
-                      styles={{ root: { backgroundColor: 'rgba(20,90,110,0.55)', flexShrink: 0 } }}
+                      styles={{
+                        root: {
+                          backgroundColor: 'rgba(20,90,110,0.55)',
+                          flexShrink: 0,
+                        },
+                      }}
                     >
                       {seasonEpisodeLabel}
                     </Badge>
@@ -1008,7 +1021,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
                     size="xs"
                     variant="light"
                     color="red"
-                    styles={{ root: { backgroundColor: 'rgba(120,20,20,0.55)', flexShrink: 0 } }}
+                    styles={{
+                      root: {
+                        backgroundColor: 'rgba(120,20,20,0.55)',
+                        flexShrink: 0,
+                      },
+                    }}
                   >
                     LIVE
                   </Badge>
@@ -1018,7 +1036,12 @@ export default function TVChannelGuide({ startDate, endDate }) {
                     size="xs"
                     variant="light"
                     color="green"
-                    styles={{ root: { backgroundColor: 'rgba(20,100,20,0.55)', flexShrink: 0 } }}
+                    styles={{
+                      root: {
+                        backgroundColor: 'rgba(20,100,20,0.55)',
+                        flexShrink: 0,
+                      },
+                    }}
                   >
                     NEW
                   </Badge>
@@ -1027,39 +1050,44 @@ export default function TVChannelGuide({ startDate, endDate }) {
             </Box>
 
             {/* Progress bar for currently-airing programs — updated every second via DOM */}
-            {isLive && (() => {
-              const durationMs = programEndMs - programStartMs;
-              if (durationMs <= 0) return null;
-              const initialPct = calcProgressPct(Date.now(), programStartMs, durationMs);
-              return (
-                <Box
-                  pos="absolute"
-                  bottom={0}
-                  left={0}
-                  right={0}
-                  h={4}
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                    borderRadius: '0 0 8px 8px',
-                    overflow: 'hidden',
-                  }}
-                >
+            {isLive &&
+              (() => {
+                const durationMs = programEndMs - programStartMs;
+                if (durationMs <= 0) return null;
+                const initialPct = calcProgressPct(
+                  Date.now(),
+                  programStartMs,
+                  durationMs
+                );
+                return (
                   <Box
-                    className="guide-progress-fill"
-                    data-start-ms={programStartMs}
-                    data-end-ms={programEndMs}
-                    h="100%"
+                    pos="absolute"
+                    bottom={0}
+                    left={0}
+                    right={0}
+                    h={4}
                     style={{
-                      width: '100%',
-                      backgroundColor: 'rgba(255, 255, 255, 0.5)',
-                      borderRadius: '0 0 0 8px',
-                      transformOrigin: 'left',
-                      transform: `scaleX(${initialPct})`,
+                      backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                      borderRadius: '0 0 8px 8px',
+                      overflow: 'hidden',
                     }}
-                  />
-                </Box>
-              );
-            })()}
+                  >
+                    <Box
+                      className="guide-progress-fill"
+                      data-start-ms={programStartMs}
+                      data-end-ms={programEndMs}
+                      h="100%"
+                      style={{
+                        width: '100%',
+                        backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                        borderRadius: '0 0 0 8px',
+                        transformOrigin: 'left',
+                        transform: `scaleX(${initialPct})`,
+                      }}
+                    />
+                  </Box>
+                );
+              })()}
           </Paper>
         </Box>
       );
@@ -1355,7 +1383,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
                 />
               </Box>
             </Box>
-
           </Box>
         </Box>
 

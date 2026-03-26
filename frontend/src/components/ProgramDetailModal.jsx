@@ -16,7 +16,7 @@ import API from '../api';
 import useVideoStore from '../store/useVideoStore';
 import useSettingsStore from '../store/settings';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils';
-import { formatSeasonEpisode } from '../pages/guideUtils';
+import { formatSeasonEpisode } from '../utils/guideUtils';
 import {
   format,
   initializeTime,

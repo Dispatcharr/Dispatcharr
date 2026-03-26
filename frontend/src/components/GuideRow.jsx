@@ -5,7 +5,7 @@ import {
   MINUTE_BLOCK_WIDTH,
   MINUTE_INCREMENT,
   PROGRAM_HEIGHT,
-} from '../pages/guideUtils.js';
+} from '../utils/guideUtils.js';
 import { Box, Flex, Text, Tooltip } from '@mantine/core';
 import { Play } from 'lucide-react';
 import logo from '../images/logo.png';

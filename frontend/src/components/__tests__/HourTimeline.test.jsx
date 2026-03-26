@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import HourTimeline from '../HourTimeline';
 import { format } from '../../utils/dateTimeUtils';
-import { HOUR_WIDTH } from '../../pages/guideUtils';
+import { HOUR_WIDTH } from '../../utils/guideUtils';
 
 // Mock date utilities
 vi.mock('../../utils/dateTimeUtils', () => ({
@@ -108,7 +108,9 @@ describe('HourTimeline', () => {
         />
       );
 
-      const hourBlocks = container.querySelectorAll('[style*="cursor: pointer"]');
+      const hourBlocks = container.querySelectorAll(
+        '[style*="cursor: pointer"]'
+      );
       hourBlocks.forEach((block) => {
         expect(block).toHaveAttribute('w', `${HOUR_WIDTH}`);
         expect(block).toHaveAttribute('h', '40px');
@@ -126,16 +128,16 @@ describe('HourTimeline', () => {
         />
       );
 
-      const hourBlocks = container.querySelectorAll('[style*="cursor: pointer"]');
+      const hourBlocks = container.querySelectorAll(
+        '[style*="cursor: pointer"]'
+      );
       expect(hourBlocks[0]).toHaveStyle({
         backgroundColor: '#1B2421',
       });
     });
 
     it('should apply special styling for new day blocks', () => {
-      const newDayTimeline = [
-        { time: mockTime3, isNewDay: true },
-      ];
+      const newDayTimeline = [{ time: mockTime3, isNewDay: true }];
 
       const { container } = render(
         <HourTimeline
@@ -154,9 +156,7 @@ describe('HourTimeline', () => {
     });
 
     it('should apply bold font weight to day label on new day', () => {
-      const newDayTimeline = [
-        { time: mockTime3, isNewDay: true },
-      ];
+      const newDayTimeline = [{ time: mockTime3, isNewDay: true }];
 
       const { container } = render(
         <HourTimeline
@@ -198,7 +198,9 @@ describe('HourTimeline', () => {
         />
       );
 
-      const markers = container.querySelectorAll('[style*="background-color: rgb(113, 128, 150);"]');
+      const markers = container.querySelectorAll(
+        '[style*="background-color: rgb(113, 128, 150);"]'
+      );
       expect(markers.length).toBe(3); // 15, 30, 45 minute markers
     });
 
@@ -212,7 +214,9 @@ describe('HourTimeline', () => {
         />
       );
 
-      const markers = container.querySelectorAll('[style*="backgroundColor: #718096"]');
+      const markers = container.querySelectorAll(
+        '[style*="backgroundColor: #718096"]'
+      );
       const positions = ['25%', '50%', '75%'];
 
       markers.forEach((marker, index) => {
@@ -238,10 +242,15 @@ describe('HourTimeline', () => {
         />
       );
 
-      const hourBlocks = container.querySelectorAll('[style*="cursor: pointer"]');
+      const hourBlocks = container.querySelectorAll(
+        '[style*="cursor: pointer"]'
+      );
       fireEvent.click(hourBlocks[0]);
 
-      expect(mockHandleTimeClick).toHaveBeenCalledWith(mockTime1, expect.any(Object));
+      expect(mockHandleTimeClick).toHaveBeenCalledWith(
+        mockTime1,
+        expect.any(Object)
+      );
     });
 
     it('should call handleTimeClick with correct time for each block', () => {
@@ -254,13 +263,21 @@ describe('HourTimeline', () => {
         />
       );
 
-      const hourBlocks = container.querySelectorAll('[style*="cursor: pointer"]');
+      const hourBlocks = container.querySelectorAll(
+        '[style*="cursor: pointer"]'
+      );
 
       fireEvent.click(hourBlocks[0]);
-      expect(mockHandleTimeClick).toHaveBeenCalledWith(mockTime1, expect.any(Object));
+      expect(mockHandleTimeClick).toHaveBeenCalledWith(
+        mockTime1,
+        expect.any(Object)
+      );
 
       fireEvent.click(hourBlocks[1]);
-      expect(mockHandleTimeClick).toHaveBeenCalledWith(mockTime2, expect.any(Object));
+      expect(mockHandleTimeClick).toHaveBeenCalledWith(
+        mockTime2,
+        expect.any(Object)
+      );
     });
   });
 

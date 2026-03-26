@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950)
+- Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
+
+### Changed
+
+- M3U table **Max Streams** column now reflects the combined limit across all active profiles. When a playlist has multiple active profiles, the column displays their summed total (or ∞ if any profile is unlimited) and a hover tooltip lists each profile's individual limit by name. (Closes #816)
+- Toggling an M3U profile's active state now immediately updates the playlist store (including the `playlists` array), so the **Max Streams** total in the M3U table reflects the change without a page reload.
+- M3U account form: **Max Streams** field changed from a plain text input to a number input with increment/decrement controls, consistent with other integer fields.
+- M3U account form: removed unused `useMantineTheme` import and `theme` variable.
+- Moved `guideUtils.js` from `frontend/src/pages/` to `frontend/src/utils/` to be consistent with other utility modules (e.g. `networkUtils.js`). Updated all imports across `GuideRow.jsx`, `HourTimeline.jsx`, `ProgramDetailModal.jsx`, `RecordingCardUtils.js`, `Guide.jsx`, and related test files.
+- Frontend cleanup: removed unused imports from `M3UGroupFilter`, `LiveGroupFilter`, and `VODCategoryFilter` (`Yup`, `M3UProfiles`, several unused Mantine components, dead `OptionWithTooltip` component, duplicate lucide-react imports, and `Divider` in `VODCategoryFilter`). No behaviour changes.
+- Network Access settings: leaving a field blank no longer shows a validation error. The default CIDR range for that field is saved automatically and a "Defaults Restored" warning is displayed listing which fields were reset. (Closes #726)
+
+### Fixed
+
+- Duplicate recordings created when EPG sources refresh and re-evaluate series rules — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - **Program ID instability**: `parse_programs_for_source()` deletes and recreates all `ProgramData` rows with new auto-increment IDs on every EPG refresh. The dedup set used these IDs, so it never matched after a refresh. Deduplication now uses a stable `(tvg_id, start_time, end_time)` composite key sourced from `Recording.custom_properties.program`.
+  - **Secondary guard using wrong times**: The DB guard compared unadjusted program times against offset-adjusted `Recording.start_time`/`end_time`, so it never matched when any DVR pre/post offset was configured. It now queries `custom_properties__program__start_time/end_time` (the original, unadjusted program times stored at recording creation).
+  - **No concurrency guard**: Each EPG source refresh fired `evaluate_series_rules.delay()` independently. Concurrent tasks loaded the dedup set before others committed, allowing races. Evaluation is now serialized with `acquire_task_lock` (reusing the existing EPG task pattern). Gracefully degrades if Redis is unavailable — the primary and secondary dedup guards still protect. (Fixes #940)
+
 ## [0.21.1] - 2026-03-18
 
 ### Fixed
