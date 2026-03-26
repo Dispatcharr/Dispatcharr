@@ -16,11 +16,22 @@ from dispatcharr.utils import network_access_allowed
 from .models import User
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 logger = logging.getLogger(__name__)
 
 
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Ensure password is not trimmed to allow passwords with leading/trailing spaces
+        if 'password' in self.fields:
+            self.fields['password'].trim_whitespace = False
+
+
 class TokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
