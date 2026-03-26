@@ -428,8 +428,7 @@ class ClientManager:
         client_id_list = list(client_ids)
         pipe = redis_client.pipeline()
         for cid in client_id_list:
-            cid_str = cid.decode('utf-8')
-            pipe.exists(RedisKeys.client_metadata(channel_id, cid_str))
+            pipe.exists(RedisKeys.client_metadata(channel_id, cid))
         results = pipe.execute()
 
         stale_ids = [

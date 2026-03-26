@@ -382,8 +382,8 @@ class ChannelService:
             metadata = proxy_server.redis_client.hgetall(metadata_key)
 
             # Extract state and owner
-            state = metadata.get(ChannelMetadataField.STATE.encode(), 'unknown')
-            owner = metadata.get(ChannelMetadataField.OWNER.encode(), 'unknown')
+            state = metadata.get(ChannelMetadataField.STATE, 'unknown')
+            owner = metadata.get(ChannelMetadataField.OWNER, 'unknown')
 
             # Valid states indicate channel is running properly
             valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS, ChannelState.CONNECTING]
@@ -432,13 +432,13 @@ class ChannelService:
         try:
             # Use factory to parse the line based on stream type
             parsed_data = LogParserFactory.parse(stream_type, stream_info_line)
-            
+
             if not parsed_data:
                 return
 
             # Update Redis and database with parsed data
             ChannelService._update_stream_info_in_redis(
-                channel_id, 
+                channel_id,
                 parsed_data.get('video_codec'),
                 parsed_data.get('resolution'),
                 parsed_data.get('width'),

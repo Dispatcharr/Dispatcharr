@@ -127,7 +127,7 @@ def stream_ts(request, channel_id, user=None):
                         )
                     # Unknown/empty state - check if owner is alive
                     else:
-                        owner_field = ChannelMetadataField.OWNER.encode("utf-8")
+                        owner_field = ChannelMetadataField.OWNER
                         if owner_field in metadata:
                             owner = metadata[owner_field]
                             owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"

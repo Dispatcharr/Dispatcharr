@@ -2494,7 +2494,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 md = r.hgetall(metadata_key)
                 if md:
                     def _d(bkey, cast=str):
-                        v = md.get(key)
+                        v = md.get(bkey)
                         try:
                             if v is None:
                                 return None

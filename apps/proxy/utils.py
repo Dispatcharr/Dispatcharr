@@ -11,7 +11,7 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
     try:
         logger.info("[stream limits]" f"[{requesting_client_id}] User {user_id} has {len(active_connections)} active connections, checking termination candidates")
 
-        user_limit_settings = CoreSettings.get_user_limit_settings()
+        user_limit_settings = CoreSettings.get_user_limits_settings()
         terminate_oldest = user_limit_settings.get("terminate_oldest", True)
         prioritize_single = user_limit_settings.get("prioritize_single_client_channels", True)
         ignore_same_channel = user_limit_settings.get("ignore_same_channel_connections", False)
@@ -79,74 +79,58 @@ def get_user_active_connections(user_id):
     connections = []
 
     try:
-        cursor = 0
-
         # Grab live streams
-        while True:
-            cursor, keys = redis_client.scan(cursor=cursor, match="ts_proxy:channel:*:clients:*", count=1000)
+        for key in redis_client.scan_iter(match="ts_proxy:channel:*:clients:*", count=1000):
+            parts = key.split(':')
+            if len(parts) >= 5:
+                channel_id = parts[2]
+                client_id = parts[4]
 
-            for key in keys:
-                parts = key.split(':')
-                if len(parts) >= 5:
-                    channel_id = parts[2]
-                    client_id = parts[4]
+                client_user_id = redis_client.hget(key, 'user_id')
+                connected_at = redis_client.hget(key, 'connected_at')
 
-                    client_user_id = redis_client.hget(key, 'user_id')
-                    connected_at = redis_client.hget(key, 'connected_at')
+                logger.info(f"[stream limits] user_id = {user_id}")
+                logger.info(f"[stream limits] channel_id = {channel_id}")
+                logger.info(f"[stream limits] client_id = {client_id}")
 
-                    logger.info(f"[stream limits] user_id = {user_id}")
-                    logger.info(f"[stream limits] channel_id = {channel_id}")
-                    logger.info(f"[stream limits] client_id = {client_id}")
-
-                    if client_user_id and int(client_user_id) == user_id:
-                        try:
-                            logger.info(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
-                            connected_at = float(connected_at) if connected_at else 0
-                            connections.append({
-                                'media_id': channel_id,
-                                'client_id': client_id,
-                                'connected_at': connected_at,
-                                'type': 'live',
-                            })
-                        except (ValueError, TypeError):
-                            pass
-
-            if cursor == 0:
-                break
-
-
-        cursor = 0
+                if client_user_id and int(client_user_id) == user_id:
+                    try:
+                        logger.info(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        connected_at = float(connected_at) if connected_at else 0
+                        connections.append({
+                            'media_id': channel_id,
+                            'client_id': client_id,
+                            'connected_at': connected_at,
+                            'type': 'live',
+                        })
+                    except (ValueError, TypeError):
+                        pass
 
         # Grab VOD
-        while True:
-            cursor, keys = redis_client.scan(cursor=cursor, match="vod_persistent_connections:*", count=1000)
+        for key in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):
+            parts = key.split(':')
+            if len(parts) >= 2:
+                client_id = parts[1]
 
-            for key in keys:
-                parts = key.split(':')
-                if len(parts) >= 2:
-                    client_id = parts[1]
+                client_user_id = redis_client.hget(key, 'user_id')
+                connected_at = redis_client.hget(key, 'created_at')
+                content_uuid = redis_client.hget(key, 'content_uuid')
 
-                    client_user_id = redis_client.hget(key, 'user_id')
-                    connected_at = redis_client.hget(key, 'created_at')
+                logger.info(f"[stream limits] user_id = {user_id}")
+                logger.info(f"[stream limits] client_id = {client_id}")
 
-                    logger.info(f"[stream limits] user_id = {user_id}")
-                    logger.info(f"[stream limits] client_id = {client_id}")
-
-                    if client_user_id and int(client_user_id) == user_id:
-                        try:
-                            logger.info(f"[stream limits] Found VOD connection for user {user_id} on channel {channel_id} with client ID {client_id}")
-                            connected_at = float(connected_at) if connected_at else 0
-                            connections.append({
-                                'media_id': channel_id,
-                                'client_id': client_id,
-                                'connected_at': connected_at,
-                                'type': 'vod',
-                            })
-                        except (ValueError, TypeError):
-                            pass
-
-            if cursor == 0:
-                break
+                if client_user_id and int(client_user_id) == user_id:
+                    try:
+                        logger.info(f"[stream limits] Found VOD connection for user {user_id} on content {content_uuid} with client ID {client_id}")
+                        connected_at = float(connected_at) if connected_at else 0
+                        connections.append({
+                            'media_id': content_uuid or client_id,
+                            'client_id': client_id,
+                            'connected_at': connected_at,
+                            'type': 'vod',
+                        })
+                    except (ValueError, TypeError):
+                        pass
 
         return connections
 
@@ -159,13 +143,11 @@ def check_user_stream_limits(user, client_id):
     # Check user stream limits
     if user and user.stream_limit > 0:
         logger.info("[stream limits]" f"[{client_id}] User {user.username} (ID: {user.id}) is requesting a stream (stream_limit: {user.stream_limit})")
-        user_limit_settings = CoreSettings.get_user_limit_settings()
+        user_limit_settings = CoreSettings.get_user_limits_settings()
 
         active_connections = get_user_active_connections(user.id)
         unique_channel_count = set([conn['media_id'] for conn in active_connections])
         user_stream_count = len(unique_channel_count) if user_limit_settings.get("ignore_same_channel_connections", False) else len(active_connections)
-
-        print(active_connections)
 
         logger.info(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if user_limit_settings.get('ignore_same_channel_connections', False) else 'total connections'})")
 

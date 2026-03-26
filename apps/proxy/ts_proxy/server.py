@@ -940,14 +940,14 @@ class ProxyServer:
                         metadata = self.redis_client.hgetall(metadata_key)
                         if metadata:
                             # Calculate runtime from init_time
-                            if b'init_time' in metadata:
+                            if 'init_time' in metadata:
                                 try:
                                     init_time = float(metadata['init_time'])
                                     runtime = round(time.time() - init_time, 2)
                                 except Exception:
                                     pass
                             # Get total bytes transferred
-                            if b'total_bytes' in metadata:
+                            if 'total_bytes' in metadata:
                                 try:
                                     total_bytes = int(metadata['total_bytes'])
                                 except Exception:
@@ -1113,9 +1113,9 @@ class ProxyServer:
 
                                     # Also get init time as a fallback
                                     init_time = None
-                                    if metadata and b'init_time' in metadata:
+                                    if metadata and 'init_time' in metadata:
                                         try:
-                                            init_time = float(metadata[b'init_time'])
+                                            init_time = float(metadata['init_time'])
                                         except (ValueError, TypeError):
                                             pass
 
@@ -1400,7 +1400,7 @@ class ProxyServer:
                         real_count = max(0, client_count - len(stale_ids))
                         if real_count <= 0:
                             # No real clients remain — safe to clean up.
-                            state = metadata.get(b'state', b'unknown').decode('utf-8') if b'state' in metadata else 'unknown'
+                            state = metadata.get('state', 'unknown')
                             logger.warning(
                                 f"Orphaned channel {channel_id} (state: {state}, "
                                 f"owner: {owner}) had {client_count} ghost client(s) "
