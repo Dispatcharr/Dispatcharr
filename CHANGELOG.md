@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `torch` 2.10.0+cpu → 2.11.0+cpu
   - `sentence-transformers` 5.2.3 → 5.3.0
   - `yt-dlp` 2026.3.13 → 2026.3.17
+- Docker base image cleanup: removed `python-is-python3`, `python3-pip`, and `streamlink` from the apt package list in `DispatcharrBase`. `python3-pip` and `streamlink` were pulling outdated system Python packages (e.g. `requests 2.31.0`, `cryptography 41.0.7`, `lxml 5.2.1`) into the system Python's site-packages despite the app running entirely in the uv-managed venv at `/dispatcharrpy`. `streamlink` is already installed in the venv via `pyproject.toml`. `python-is-python3` is unnecessary as `PATH` resolves bare `python` to the venv binary.
 - M3U table **Max Streams** column now reflects the combined limit across all active profiles. When a playlist has multiple active profiles, the column displays their summed total (or ∞ if any profile is unlimited) and a hover tooltip lists each profile's individual limit by name. (Closes #816)
 - Toggling an M3U profile's active state now immediately updates the playlist store (including the `playlists` array), so the **Max Streams** total in the M3U table reflects the change without a page reload.
 - M3U account form: **Max Streams** field changed from a plain text input to a number input with increment/decrement controls, consistent with other integer fields.
