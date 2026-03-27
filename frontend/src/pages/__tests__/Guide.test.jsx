@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import API from '../../api';
 import dayjs from 'dayjs';
 import Guide from '../Guide';
 import useChannelsStore from '../../store/channels';
@@ -21,6 +22,7 @@ vi.mock('../../store/epgs');
 vi.mock('../../store/settings');
 vi.mock('../../store/useVideoStore');
 vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../api');
 
 vi.mock('@mantine/hooks', () => ({
   useElementSize: () => ({
@@ -124,6 +126,11 @@ vi.mock('@mantine/core', async () => {
         ))}
       </select>
     ),
+    Badge: ({ children, size, variant, color, style }) => (
+      <span data-size={size} data-variant={variant} data-color={color} style={style}>
+        {children}
+      </span>
+    ),
     ActionIcon: ({ children, onClick, variant, size, color }) => (
       <button
         onClick={onClick}
@@ -186,6 +193,17 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
       <div data-testid="series-recording-modal">
         <div>Series Rules: {rules.length}</div>
         <button onClick={onClose}>Close</button>
+      </div>
+    ) : null,
+}));
+vi.mock('../../components/ProgramDetailModal', () => ({
+  __esModule: true,
+  default: ({ program, channel, opened, onClose, onRecord }) =>
+    opened ? (
+      <div data-testid="program-detail-modal">
+        <div>{program?.title}</div>
+        <button onClick={onClose}>Close</button>
+        <button onClick={() => onRecord?.(program)}>Record</button>
       </div>
     ) : null,
 }));
@@ -261,7 +279,13 @@ describe('Guide', () => {
       },
       recordings: [],
       channelGroups: {
-        'group-1': { id: 'group-1', name: 'News', channels: ['channel-1'] },
+        // hasChannels is required: Guide.jsx filters groups by this property
+        'group-1': {
+          id: 'group-1',
+          name: 'News',
+          channels: ['channel-1'],
+          hasChannels: true,
+        },
       },
       profiles: {
         'profile-1': { id: 'profile-1', name: 'HD Profile' },
@@ -317,7 +341,14 @@ describe('Guide', () => {
         id: 'prog-1',
         tvg_id: 'tvg-1',
         title: 'Test Program 1',
+        sub_title: 'The Pilot',
         description: 'Description 1',
+        season: 1,
+        episode: 3,
+        is_new: false,
+        is_live: false,
+        is_premiere: false,
+        is_finale: false,
         start_time: now.toISOString(),
         end_time: now.add(1, 'hour').toISOString(),
         programStart: now,
@@ -346,6 +377,14 @@ describe('Guide', () => {
     ]);
 
     recordingCardUtils.getShowVideoUrl.mockReturnValue('http://video.test');
+
+    // Guide.jsx now fetches channels from the API rather than reading them
+    // from the channel store.  Mock both calls so guideChannels gets populated.
+    const mockChannelsArray = Object.values(mockChannelsState.channels);
+    API.getAllChannelIds.mockResolvedValue(
+      Object.keys(mockChannelsState.channels)
+    );
+    API.getChannelsSummary.mockResolvedValue(mockChannelsArray);
   });
 
   afterEach(() => {
@@ -367,9 +406,14 @@ describe('Guide', () => {
     });
 
     it('renders channel rows when channels are available', async () => {
+      vi.useRealTimers();
+
       render(<Guide />);
 
-      expect(screen.getAllByTestId('guide-row')).toHaveLength(2);
+      // Channels are now fetched asynchronously from the API
+      await waitFor(() => {
+        expect(screen.getAllByTestId('guide-row')).toHaveLength(2);
+      });
     });
 
     it('shows no channels message when filters exclude all channels', async () => {
@@ -385,11 +429,14 @@ describe('Guide', () => {
     });
 
     it('displays channel count', async () => {
+      vi.useRealTimers();
+
       render(<Guide />);
 
-      // await waitFor(() => {
-      expect(screen.getByText(/2 channels/)).toBeInTheDocument();
-      // });
+      // Channels are now fetched asynchronously from the API
+      await waitFor(() => {
+        expect(screen.getByText(/2 channels/)).toBeInTheDocument();
+      });
     });
   });
 
@@ -416,7 +463,9 @@ describe('Guide', () => {
       await user.type(searchInput, 'Test');
       expect(searchInput).toHaveValue('Test');
 
-      await user.click(screen.getByText('Clear Filters'));
+      // Use getAllByText to safely handle the brief window where both the
+      // filter-bar and the empty-state buttons are in the DOM simultaneously.
+      await user.click(screen.getAllByText('Clear Filters')[0]);
       expect(searchInput).toHaveValue('');
     });
 
@@ -495,8 +544,10 @@ describe('Guide', () => {
       await user.type(searchInput, 'Test');
 
       // Clear them
-      const clearButton = await screen.findByText('Clear Filters');
-      await user.click(clearButton);
+      // Use findAllByText + [0] to target the filter-bar button specifically
+      // in case the empty-state also shows a Clear Filters button.
+      const clearButtons = await screen.findAllByText('Clear Filters');
+      await user.click(clearButtons[0]);
 
       expect(searchInput).toHaveValue('');
     });
@@ -572,22 +623,19 @@ describe('Guide', () => {
   });
 
   describe('Error Handling', () => {
-    it('shows notification when no channels are available', async () => {
-      useChannelsStore.mockImplementation((selector) => {
-        const state = {
-          channels: {},
-          recordings: [],
-          channelGroups: {},
-          profiles: {},
-        };
-        return selector ? selector(state) : state;
-      });
+    it('shows empty state when the API returns no channels', async () => {
+      vi.useRealTimers();
+
+      // Guide.jsx no longer emits a notification for an empty channel list;
+      // instead it renders an empty-state message directly in the UI.
+      API.getChannelsSummary.mockResolvedValue([]);
 
       render(<Guide />);
 
-      expect(showNotification).toHaveBeenCalledWith({
-        title: 'No channels available',
-        color: 'red.5',
+      await waitFor(() => {
+        expect(
+          screen.getByText('No channels match your filters')
+        ).toBeInTheDocument();
       });
     });
   });

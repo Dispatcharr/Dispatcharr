@@ -9,13 +9,18 @@ services:
   web:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_web
+    restart: unless-stopped
     ports:
       - 9191:9191
     volumes:
       - ./data:/data
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # --- Environment Configuration ---
     environment:
@@ -80,10 +85,14 @@ services:
   celery:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_celery
+    restart: unless-stopped
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - ./data:/data
     extra_hosts:
@@ -94,6 +103,10 @@ services:
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+
+      # Internal Service Communication
+      # Must match the web service port for DVR recording and internal API calls
+      - DISPATCHARR_PORT=9191
 
       # PostgreSQL Connection
       - POSTGRES_HOST=db
@@ -117,6 +130,11 @@ services:
       # Process Priority Configuration (Optional)
       #- CELERY_NICE_LEVEL=5  # Celery/EPG/Background tasks (default: 5, low priority; Range: -20 to 19)
 
+      # Legacy CPU Support (Optional)
+      # Uncomment to enable legacy NumPy build for older CPUs (circa 2009)
+      # that lack support for newer baseline CPU features:
+      #- USE_LEGACY_NUMPY=true
+
       # Django Configuration
       - DJANGO_SETTINGS_MODULE=dispatcharr.settings
       - PYTHONUNBUFFERED=1
@@ -132,6 +150,7 @@ services:
   db:
     image: postgres:17
     container_name: dispatcharr_db
+    restart: unless-stopped
     ports:
       - "5436:5432"
     environment:
@@ -152,6 +171,7 @@ services:
   redis:
     image: redis:latest
     container_name: dispatcharr_redis
+    restart: unless-stopped
 
     # --- Authentication Configuration (Optional) ---
     # By default, Redis runs without authentication.

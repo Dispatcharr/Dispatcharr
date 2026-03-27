@@ -107,11 +107,13 @@ describe('useAuthStore', () => {
       setState({
         isAuthenticated: false,
         isInitialized: false,
+        isInitializing: false,
         needsSuperuser: false,
         user: {
           username: '',
           email: '',
           user_level: '',
+          custom_properties: {},
         },
         isLoading: false,
         error: null,
@@ -134,6 +136,7 @@ describe('useAuthStore', () => {
         username: '',
         email: '',
         user_level: '',
+        custom_properties: {},
       });
       expect(result.current.isLoading).toBe(false);
       expect(result.current.error).toBeNull();
@@ -371,10 +374,12 @@ describe('useAuthStore', () => {
 
     // Mock getState for each store
     useSettingsStore.getState = () => ({ fetchSettings });
+    const fetchChannelIds = vi.fn().mockResolvedValue();
     useChannelsStore.getState = () => ({
       fetchChannels,
       fetchChannelGroups,
       fetchChannelProfiles,
+      fetchChannelIds,
     });
     usePlaylistsStore.getState = () => ({ fetchPlaylists });
     useEPGsStore.getState = () => ({ fetchEPGs, fetchEPGData });
@@ -401,7 +406,7 @@ describe('useAuthStore', () => {
       expect(result.current.user).toEqual(mockUser);
       expect(result.current.isAuthenticated).toBe(true);
       expect(fetchSettings).toHaveBeenCalled();
-      expect(fetchChannels).toHaveBeenCalled();
+      expect(fetchChannelIds).toHaveBeenCalled();
       expect(fetchUsers).toHaveBeenCalled();
     });
 
@@ -458,6 +463,7 @@ describe('useAuthStore', () => {
         fetchChannels,
         fetchChannelGroups: vi.fn().mockResolvedValue(),
         fetchChannelProfiles: vi.fn().mockResolvedValue(),
+        fetchChannelIds: vi.fn().mockResolvedValue(),
       }));
 
       const { result } = renderHook(() => useAuthStore());
@@ -645,10 +651,12 @@ describe('useAuthStore', () => {
       };
 
       const fetchChannels = vi.fn().mockResolvedValue();
+      const fetchChannelIdsSpy = vi.fn().mockResolvedValue();
       useChannelsStore.getState = () => ({
         fetchChannels,
         fetchChannelGroups: vi.fn().mockResolvedValue(),
         fetchChannelProfiles: vi.fn().mockResolvedValue(),
+        fetchChannelIds: fetchChannelIdsSpy,
       });
 
       API.me.mockResolvedValue(mockUser);
@@ -666,7 +674,7 @@ describe('useAuthStore', () => {
 
       // The background fetchChannels is called synchronously without await
       // so we just need to verify it was called
-      expect(fetchChannels).toHaveBeenCalled();
+      expect(fetchChannelIdsSpy).toHaveBeenCalled();
     });
   });
 });

@@ -4,6 +4,7 @@ const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
   totalCount: 0,
+  hasUnassignedEPGChannels: false,
   sorting: [{ id: 'channel_number', desc: false }],
   pagination: {
     pageIndex: 0,
@@ -14,14 +15,15 @@ const useChannelsTableStore = create((set, get) => ({
   allQueryIds: [],
   isUnlocked: false,
 
-  queryChannels: ({ results, count }, params) => {
-    set((state) => {
-      return {
-        channels: results,
-        totalCount: count,
-        pageCount: Math.ceil(count / params.get('page_size')),
-      };
-    });
+  queryChannels: ({ results, count, has_unassigned_epg_channels }, params) => {
+    set((state) => ({
+      channels: results,
+      totalCount: count,
+      pageCount: Math.ceil(count / params.get('page_size')),
+      ...(has_unassigned_epg_channels !== undefined && {
+        hasUnassignedEPGChannels: has_unassigned_epg_channels,
+      }),
+    }));
   },
 
   setAllQueryIds: (allQueryIds) => {

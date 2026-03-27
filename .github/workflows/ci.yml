@@ -25,7 +25,7 @@ jobs:
       timestamp: ${{ steps.timestamp.outputs.timestamp }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -83,7 +83,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # no per-job outputs here; shared metadata comes from the `prepare` job
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -103,17 +103,18 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -121,7 +122,7 @@ jobs:
 
       - name: Extract metadata for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}
@@ -142,7 +143,7 @@ jobs:
             build_version=Dispatcharr version: ${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -155,8 +156,8 @@ jobs:
           tags: |
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.branch_tag }}-${{ matrix.platform }}
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
+            ${{ github.event_name != 'pull_request' && format('docker.io/{0}/{1}:{2}-{3}', secrets.DOCKERHUB_ORGANIZATION, needs.prepare.outputs.repo_name, needs.prepare.outputs.branch_tag, matrix.platform) || '' }}
+            ${{ github.event_name != 'pull_request' && format('docker.io/{0}/{1}:{2}-{3}-{4}', secrets.DOCKERHUB_ORGANIZATION, needs.prepare.outputs.repo_name, needs.prepare.outputs.version, needs.prepare.outputs.timestamp, matrix.platform) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
@@ -174,17 +175,17 @@ jobs:
     if: ${{ github.event_name != 'pull_request' }}
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -201,13 +202,15 @@ jobs:
 
           echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
 
-          # branch tag (e.g. latest or dev)
+          # ghcr.io: both the branch tag (e.g. dev) and the version+timestamp tag
+          # point to the same manifest by using multiple --tag flags in one call,
+          # which prevents orphaned untagged images on each new build
           docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
             --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
             --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=${BRANCH_TAG}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}-${TIMESTAMP}" \
             --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
             --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
             --annotation "index:org.opencontainers.image.licenses=See repository" \
@@ -217,33 +220,16 @@ jobs:
             --annotation "index:maintainer=${{ github.actor }}" \
             --annotation "index:build_version=Dispatcharr version: ${VERSION}-${TIMESTAMP}" \
             --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG} \
+            --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
             ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-arm64
 
-          # version + timestamp tag
+          # Docker Hub: same single call with both tags
           docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
             --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
             --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.version=${VERSION}-${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "index:org.opencontainers.image.licenses=See repository" \
-            --annotation "index:org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/" \
-            --annotation "index:org.opencontainers.image.vendor=${OWNER}" \
-            --annotation "index:org.opencontainers.image.authors=${{ github.actor }}" \
-            --annotation "index:maintainer=${{ github.actor }}" \
-            --annotation "index:build_version=Dispatcharr version: ${VERSION}-${TIMESTAMP}" \
-            --tag ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP} \
-            ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
-
-          # also create Docker Hub manifests using the same username
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
-            --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
-            --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=${BRANCH_TAG}" \
             --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
             --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
             --annotation "index:org.opencontainers.image.licenses=See repository" \
@@ -253,21 +239,5 @@ jobs:
             --annotation "index:maintainer=${{ github.actor }}" \
             --annotation "index:build_version=Dispatcharr version: ${VERSION}-${TIMESTAMP}" \
             --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG} \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64
-
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}" \
-            --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
-            --annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.version=${VERSION}-${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.created=${TIMESTAMP}" \
-            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "index:org.opencontainers.image.licenses=See repository" \
-            --annotation "index:org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/" \
-            --annotation "index:org.opencontainers.image.vendor=${OWNER}" \
-            --annotation "index:org.opencontainers.image.authors=${{ github.actor }}" \
-            --annotation "index:maintainer=${{ github.actor }}" \
-            --annotation "index:build_version=Dispatcharr version: ${VERSION}-${TIMESTAMP}" \
             --tag docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP} \
-            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${VERSION}-${TIMESTAMP}-arm64
+            docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-amd64 docker.io/${{ secrets.DOCKERHUB_ORGANIZATION }}/${REPO}:${BRANCH_TAG}-arm64

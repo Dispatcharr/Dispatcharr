@@ -99,31 +99,35 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
-# Global variables, stored so other users inherit them
-if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
-    # Define all variables to process
-    variables=(
-        PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
-        POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-        DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
-        DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
-        CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
-    )
+# Global variables, stored so other users inherit them.
+# Rewritten every startup so that container restarts with changed env vars
+# pick up the new values (not stale ones from a previous run).
+# Define all variables to process
+variables=(
+    PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
+    POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
+    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
+    REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
+    DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
+    CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+)
 
-    # Process each variable for both profile.d and environment
-    for var in "${variables[@]}"; do
-        # Check if the variable is set in the environment
-        if [ -n "${!var+x}" ]; then
-            # Add to profile.d
-            echo "export ${var}=${!var}" >> /etc/profile.d/dispatcharr.sh
-            # Add to /etc/environment if not already there
-            grep -q "^${var}=" /etc/environment || echo "${var}=${!var}" >> /etc/environment
-        else
-            echo "Warning: Environment variable $var is not set"
-        fi
-    done
-fi
+# Truncate files before rewriting
+> /etc/profile.d/dispatcharr.sh
+
+# Process each variable for both profile.d and environment
+for var in "${variables[@]}"; do
+    # Check if the variable is set in the environment
+    if [ -n "${!var+x}" ]; then
+        # Add to profile.d (quoted to handle special characters in values)
+        echo "export ${var}='${!var}'" >> /etc/profile.d/dispatcharr.sh
+        # Add/update in /etc/environment
+        sed -i "/^${var}=/d" /etc/environment
+        echo "${var}='${!var}'" >> /etc/environment
+    else
+        echo "Warning: Environment variable $var is not set"
+    fi
+done
 
 chmod +x /etc/profile.d/dispatcharr.sh
 
@@ -152,31 +156,26 @@ echo "Starting init process..."
 # Start PostgreSQL if NOT in modular mode (using external database)
 if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     echo "Starting Postgres..."
-    su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    prepare_pg_socket_dir
+    su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
     # Wait for PostgreSQL to be ready
-    until su - postgres -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL to be ready..."
         sleep 1
     done
-    postgres_pid=$(su - postgres -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
+    postgres_pid=$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
     echo "✅ Postgres started with PID $postgres_pid"
     pids+=("$postgres_pid")
+
+    # Unconditional startup guarantees — run on every AIO startup.
+    # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
+    promote_app_role
+    ensure_app_database
 else
     echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
-    # Wait for external PostgreSQL to be ready using Python (no pg_isready needed)
+    # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
     echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until python3 -c "
-import socket
-import sys
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2)
-    s.connect(('${POSTGRES_HOST}', ${POSTGRES_PORT}))
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
         echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
         sleep 1
     done
@@ -186,26 +185,17 @@ except Exception:
     check_external_postgres_version || exit 1
 fi
 
-# Wait for Redis to be ready (modular mode uses external Redis)
+# Wait for Redis to be ready and flush stale state.
+# In modular mode Redis is external — call wait_for_redis.py here
+# because uWSGI's exec-pre runs under 'su -' which strips env vars
+# (DISPATCHARR_ENV, REDIS_HOST, etc.).
+# In AIO mode Redis is started by uWSGI (attach-daemon), so the
+# exec-pre in uwsgi.ini handles the wait + flush there instead.
 if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
     echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
-    echo_with_timestamp "Waiting for external Redis to be ready..."
-    until python3 -c "
-import socket
-import sys
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(2)
-    s.connect(('${REDIS_HOST}', ${REDIS_PORT}))
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
-        echo_with_timestamp "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
-        sleep 1
-    done
-    echo "✅ External Redis is ready"
+    echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
 fi
 
 # Ensure database encoding is UTF8 (handles both internal and external databases)
@@ -214,7 +204,7 @@ ensure_utf8_encoding
 if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     . /app/docker/init/99-init-dev.sh
     echo "Starting frontend dev environment"
-    su - $POSTGRES_USER -c "cd /app/frontend && npm run dev &"
+    su - "$POSTGRES_USER" -c "cd /app/frontend && npm run dev &"
     npm_pid=$(pgrep vite | sort | head -n1)
     echo "✅ vite started with PID $npm_pid"
     pids+=("$npm_pid")
@@ -230,9 +220,9 @@ fi
 # --- NumPy version switching for legacy hardware ---
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     # Check if NumPy was compiled with baseline support
-    if $VIRTUAL_ENV/bin/python -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
+    if "$VIRTUAL_ENV/bin/python" -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
         echo_with_timestamp "🔧 Switching to legacy NumPy (no CPU baseline)..."
-        uv pip install --python $VIRTUAL_ENV/bin/python --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
+        uv pip install --python "$VIRTUAL_ENV/bin/python" --no-cache --force-reinstall --no-deps /opt/numpy-*.whl
         echo_with_timestamp "✅ Legacy NumPy installed"
     else
         echo_with_timestamp "✅ Legacy NumPy (no baseline) already installed, skipping reinstallation"
@@ -240,8 +230,8 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
 fi
 
 # Run Django commands as non-root user to prevent permission issues
-su - $POSTGRES_USER -c "cd /app && python manage.py migrate --noinput"
-su - $POSTGRES_USER -c "cd /app && python manage.py collectstatic --noinput"
+su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
+su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
@@ -270,18 +260,18 @@ fi
 # Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
 # Start with nice as root, then use setpriv to drop privileges to dispatch user
 # This preserves both the nice value and environment variables
-nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 
 # sed -i 's/protected-mode yes/protected-mode no/g' /etc/redis/redis.conf
-# su - $POSTGRES_USER -c "redis-server --protected-mode no &"
+# su - "$POSTGRES_USER" -c "redis-server --protected-mode no &"
 # redis_pid=$(pgrep redis)
 # echo "✅ redis started with PID $redis_pid"
 # pids+=("$redis_pid")
 
 # echo "🚀 Starting gunicorn..."
-# su - $POSTGRES_USER -c "cd /app && gunicorn dispatcharr.asgi:application \
+# su - "$POSTGRES_USER" -c "cd /app && gunicorn dispatcharr.asgi:application \
 #   --bind 0.0.0.0:5656 \
 #   --worker-class uvicorn.workers.UvicornWorker \
 #   --workers 2 \
@@ -295,12 +285,12 @@ pids+=("$uwsgi_pid")
 # pids+=("$gunicorn_pid")
 
 # echo "Starting celery and beat..."
-# su - $POSTGRES_USER -c "cd /app && celery -A dispatcharr worker -l info --autoscale=8,2 &"
+# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr worker -l info --autoscale=8,2 &"
 # celery_pid=$(pgrep celery | sort | head -n1)
 # echo "✅ celery started with PID $celery_pid"
 # pids+=("$celery_pid")
 
-# su - $POSTGRES_USER -c "cd /app && celery -A dispatcharr beat -l info &"
+# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr beat -l info &"
 # beat_pid=$(pgrep beat | sort | head -n1)
 # echo "✅ celery beat started with PID $beat_pid"
 # pids+=("$beat_pid")

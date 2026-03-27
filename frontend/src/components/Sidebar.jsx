@@ -1,24 +1,15 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
 import {
-  ListOrdered,
-  Play,
-  Database,
-  SlidersHorizontal,
-  LayoutGrid,
-  Settings as LucideSettings,
   Copy,
-  ChartLine,
-  Video,
-  PlugZap,
   LogOut,
-  User,
-  FileImage,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
+import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
-  AppShell,
   Group,
   Stack,
   Box,
@@ -26,9 +17,9 @@ import {
   UnstyledButton,
   TextInput,
   ActionIcon,
-  Menu,
+  AppShellNavbar,
+  ScrollArea,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
 import './sidebar.css';
@@ -39,6 +30,7 @@ import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
 
 const NavLink = ({ item, isActive, collapsed }) => {
+  const IconComponent = item.icon;
   return (
     <UnstyledButton
       key={item.path}
@@ -46,7 +38,7 @@ const NavLink = ({ item, isActive, collapsed }) => {
       to={item.path}
       className={`navlink ${isActive ? 'navlink-active' : ''} ${collapsed ? 'navlink-collapsed' : ''}`}
     >
-      {item.icon}
+      {IconComponent && <IconComponent size={20} />}
       {!collapsed && (
         <Text
           sx={{
@@ -70,15 +62,85 @@ const NavLink = ({ item, isActive, collapsed }) => {
   );
 };
 
+function NavGroup({ label, icon: IconComponent, paths, location, collapsed }) {
+  const [open, setOpen] = useState(() =>
+    paths.some((p) => location.pathname.startsWith(p.path))
+  );
+
+  const parentActive = paths
+    .map((path) => path.path)
+    .includes(location.pathname);
+
+  return (
+    <Box
+      style={{ width: '100%', paddingRight: 2 }}
+      className={open ? 'navgroup-open' : ''}
+    >
+      <UnstyledButton
+        onClick={() => setOpen((o) => !o)}
+        className={`navlink ${parentActive ? 'navlink-parent-active' : ''} ${open ? 'navlink-collapsed' : ''}`}
+        style={{ width: '100%' }}
+      >
+        {IconComponent && <IconComponent size={20} />}
+        {!collapsed && (
+          <Group justify="space-between" style={{ width: '100%' }}>
+            <Text
+              sx={{
+                opacity: open ? 0 : 1,
+                transition: 'opacity 0.2s ease-in-out',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: open ? 0 : 150,
+              }}
+            >
+              {label}
+            </Text>
+
+            <Box alignItems="center" style={{ display: 'flex' }}>
+              {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </Box>
+          </Group>
+        )}
+      </UnstyledButton>
+
+      {open && (
+        <Box style={{ paddingTop: 10 }}>
+          <Stack gap="xs" pl={open ? 0 : 'lg'}>
+            {paths.map((child) => {
+              const active = location.pathname === child.path;
+              return (
+                <Box
+                  style={{ paddingLeft: collapsed ? 0 : 35 }}
+                  key={child.path}
+                >
+                  <NavLink
+                    key={child.path}
+                    item={child}
+                    isActive={active}
+                    collapsed={collapsed}
+                  />
+                </Box>
+              );
+            })}
+          </Stack>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const location = useLocation();
 
-  const channels = useChannelsStore((s) => s.channels);
+  const channelIds = useChannelsStore((s) => s.channelIds);
   const environment = useSettingsStore((s) => s.environment);
   const appVersion = useSettingsStore((s) => s.version);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const authUser = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const getNavOrder = useAuthStore((s) => s.getNavOrder);
+  const getHiddenNav = useAuthStore((s) => s.getHiddenNav);
 
   const publicIPRef = useRef(null);
 
@@ -86,60 +148,15 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
 
   const closeUserForm = () => setUserFormOpen(false);
 
-  // Navigation Items
-  const navItems =
-    authUser && authUser.user_level == USER_LEVELS.ADMIN
-      ? [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          {
-            label: 'VODs',
-            path: '/vods',
-            icon: <Video size={20} />,
-          },
-          {
-            label: 'M3U & EPG Manager',
-            icon: <Play size={20} />,
-            path: '/sources',
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
-          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
-          {
-            label: 'Users',
-            icon: <User size={20} />,
-            path: '/users',
-          },
-          {
-            label: 'Logo Manager',
-            icon: <FileImage size={20} />,
-            path: '/logos',
-          },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ]
-      : [
-          {
-            label: 'Channels',
-            icon: <ListOrdered size={20} />,
-            path: '/channels',
-            badge: `(${Object.keys(channels).length})`,
-          },
-          { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          {
-            label: 'Settings',
-            icon: <LucideSettings size={20} />,
-            path: '/settings',
-          },
-        ];
+  const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
+
+  // Navigation Items - computed from user's saved order, filtered by visibility
+  const navOrder = getNavOrder();
+  const hiddenNav = getHiddenNav();
+  const navItems = useMemo(() => {
+    const orderedItems = getOrderedNavItems(navOrder, isAdmin, channelIds);
+    return orderedItems.filter((item) => !hiddenNav.includes(item.id));
+  }, [navOrder, hiddenNav, isAdmin, channelIds]);
 
   // Environment settings and version are loaded by the settings store during initData()
   // No need to fetch them again here - just use the store values
@@ -151,13 +168,8 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
     });
   };
 
-  const onLogout = async () => {
-    await logout();
-    window.location.reload();
-  };
-
   return (
-    <AppShell.Navbar
+    <AppShellNavbar
       width={{ base: collapsed ? miniDrawerWidth : drawerWidth }}
       p="xs"
       style={{
@@ -205,20 +217,44 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       </Group>
 
       {/* Navigation Links */}
-      <Stack gap="xs" mt="lg">
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+      <ScrollArea h="100%" type="scroll" scrollbars="y">
+        <Stack
+          gap="xs"
+          mt="lg"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
+          {navItems.map((item) => {
+            if (item.paths) {
+              return (
+                <NavGroup
+                  key={item.label}
+                  label={item.label}
+                  paths={item.paths}
+                  location={location}
+                  collapsed={collapsed}
+                  icon={item.icon}
+                />
+              );
+            }
 
-          return (
-            <NavLink
-              key={item.path}
-              item={item}
-              collapsed={collapsed}
-              isActive={isActive}
-            />
-          );
-        })}
-      </Stack>
+            const isActive = location.pathname === item.path;
+
+            return (
+              <NavLink
+                key={item.path}
+                item={item}
+                collapsed={collapsed}
+                isActive={isActive}
+              />
+            );
+          })}
+        </Stack>
+      </ScrollArea>
 
       {/* Profile Section */}
       <Box
@@ -314,7 +350,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       )}
 
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
-    </AppShell.Navbar>
+    </AppShellNavbar>
   );
 };
 

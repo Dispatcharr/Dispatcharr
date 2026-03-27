@@ -15,9 +15,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-dev python3.13-venv libpython3.13 \
-    python-is-python3 python3-pip \
     libpcre3 libpcre3-dev libpq-dev procps pciutils \
-    nginx streamlink comskip \
+    nginx comskip \
     vlc-bin vlc-plugin-base \
     build-essential gcc g++ gfortran libopenblas-dev libopenblas0 ninja-build
 

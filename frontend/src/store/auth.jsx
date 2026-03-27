@@ -8,6 +8,7 @@ import useUserAgentsStore from './userAgents';
 import useUsersStore from './users';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
+import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
 
 const decodeToken = (token) => {
   if (!token) return null;
@@ -30,11 +31,68 @@ const useAuthStore = create((set, get) => ({
     username: '',
     email: '',
     user_level: '',
+    custom_properties: {},
   },
   isLoading: false,
   error: null,
 
   setUser: (user) => set({ user }),
+
+  updateUserPreferences: async (preferences) => {
+    const currentUser = get().user;
+
+    // Optimistic update
+    set({
+      user: {
+        ...currentUser,
+        custom_properties: {
+          ...currentUser.custom_properties,
+          ...preferences,
+        },
+      },
+    });
+
+    try {
+      // Send only the delta - backend merges with DB value authoritatively
+      const response = await API.updateMe({
+        custom_properties: preferences,
+      });
+      set({ user: response });
+      return response;
+    } catch (error) {
+      // Revert on failure
+      set({ user: currentUser });
+      throw error;
+    }
+  },
+
+  getNavOrder: () => {
+    const user = get().user;
+    return user?.custom_properties?.navOrder || null;
+  },
+
+  setNavOrder: async (navOrder) => {
+    return await get().updateUserPreferences({ navOrder });
+  },
+
+  getHiddenNav: () => {
+    const user = get().user;
+    const hiddenNav = user?.custom_properties?.hiddenNav || [];
+    // Filter out stale IDs that are no longer valid for this user's role
+    const isAdmin = user?.user_level >= USER_LEVELS.ADMIN;
+    const validIds = new Set(
+      isAdmin ? DEFAULT_ADMIN_ORDER : DEFAULT_USER_ORDER
+    );
+    return hiddenNav.filter((id) => validIds.has(id));
+  },
+
+  toggleNavVisibility: async (itemId) => {
+    const hiddenNav = get().getHiddenNav();
+    const newHiddenNav = hiddenNav.includes(itemId)
+      ? hiddenNav.filter((id) => id !== itemId)
+      : [...hiddenNav, itemId];
+    return await get().updateUserPreferences({ hiddenNav: newHiddenNav });
+  },
 
   initData: async () => {
     // Prevent multiple simultaneous initData calls
@@ -56,8 +114,6 @@ const useAuthStore = create((set, get) => ({
       await useSettingsStore.getState().fetchSettings();
 
       // Fetch essential data needed for initial render
-      // Note: fetchChannels() is intentionally NOT awaited here - it's slow (~3s)
-      // and only needed for delete modal details. It loads in background after UI renders.
       await Promise.all([
         useChannelsStore.getState().fetchChannelGroups(),
         useChannelsStore.getState().fetchChannelProfiles(),
@@ -66,6 +122,7 @@ const useAuthStore = create((set, get) => ({
         useEPGsStore.getState().fetchEPGData(),
         useStreamProfilesStore.getState().fetchProfiles(),
         useUserAgentsStore.getState().fetchUserAgents(),
+        useChannelsStore.getState().fetchChannelIds(),
       ]);
 
       if (user.user_level >= USER_LEVELS.ADMIN) {
@@ -79,9 +136,6 @@ const useAuthStore = create((set, get) => ({
         isInitialized: true,
         isInitializing: false,
       });
-
-      // Load channels data in background (not blocking) - needed for delete modal details
-      useChannelsStore.getState().fetchChannels();
 
       // Note: Logos are loaded after the Channels page tables finish loading
       // This is handled by the tables themselves signaling completion

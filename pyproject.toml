@@ -2,16 +2,16 @@
 name = "dispatcharr"
 description = "Dispatcharr - Stream dispatching and management"
 readme = "README.md"
-license = "CC-BY-NC-SA-4.0"
+license = "AGPL-3.0-only"
 requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
-    "Django==5.2.9",
+    "Django==6.0.3",
     "psycopg2-binary==2.9.11",
-    "celery[redis]==5.6.0",
+    "celery[redis]==5.6.3",
     "djangorestframework==3.16.1",
-    "requests==2.32.5",
-    "psutil==7.1.3",
+    "requests==2.33.0",
+    "psutil==7.2.2",
     "pillow",
     "drf-spectacular>=0.29.0",
     "streamlink",
@@ -27,12 +27,12 @@ dependencies = [
     "regex",
     "tzlocal",
     "pytz",
-    "torch==2.9.1+cpu",
-    "sentence-transformers==5.2.0",
+    "torch==2.11.0+cpu",
+    "sentence-transformers==5.3.0",
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
-    "django-celery-beat",
+    "django-celery-beat>=2.9.0",
     "lxml==6.0.2",
     "packaging",
 ]

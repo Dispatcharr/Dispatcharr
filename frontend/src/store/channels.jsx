@@ -104,6 +104,7 @@ const showNotificationIfClientStopped = (
 
 const useChannelsStore = create((set, get) => ({
   channels: [],
+  channelIds: [],
   channelsByUUID: {},
   channelGroups: {},
   profiles: {},
@@ -120,6 +121,19 @@ const useChannelsStore = create((set, get) => ({
 
   triggerUpdate: () => {
     set({ forceUpdate: new Date() });
+  },
+
+  fetchChannelIds: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const channelIds = await api.getAllChannelIds();
+      set({
+        channelIds,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ error: error.message, isLoading: false });
+    }
   },
 
   fetchChannels: async () => {
@@ -263,8 +277,10 @@ const useChannelsStore = create((set, get) => ({
     set((state) => {
       const updatedChannels = { ...state.channels };
       const channelsByUUID = { ...state.channelsByUUID };
+      const channelIdsSet = new Set(state.channelIds); // Convert to Set for O(1) lookups
       for (const id of channelIds) {
         delete updatedChannels[id];
+        channelIdsSet.delete(id);
 
         for (const uuid in channelsByUUID) {
           if (channelsByUUID[uuid] == id) {
@@ -274,7 +290,12 @@ const useChannelsStore = create((set, get) => ({
         }
       }
 
-      return { channels: updatedChannels, channelsByUUID };
+      console.log(channelIdsSet);
+      return {
+        channels: updatedChannels,
+        channelsByUUID,
+        channelIds: Array.from(channelIdsSet),
+      };
     });
   },
 
@@ -438,15 +459,10 @@ const useChannelsStore = create((set, get) => ({
   },
 
   fetchRecordings: async () => {
-    set({ isLoading: true, error: null });
     try {
-      set({
-        recordings: await api.getRecordings(),
-        isLoading: false,
-      });
+      set({ recordings: await api.getRecordings() });
     } catch (error) {
       console.error('Failed to fetch recordings:', error);
-      set({ error: 'Failed to load recordings.', isLoading: false });
     }
   },
 
@@ -473,11 +489,16 @@ const useChannelsStore = create((set, get) => ({
       const target = String(id);
       const current = state.recordings;
       if (Array.isArray(current)) {
+        // Early return if item doesn't exist — avoids a new array reference
+        // (and thus a needless re-render) when called redundantly, e.g. both
+        // the optimistic API delete and the WS recording_cancelled handler.
+        if (!current.some((r) => String(r?.id) === target)) return {};
         return {
           recordings: current.filter((r) => String(r?.id) !== target),
         };
       }
       if (current && typeof current === 'object') {
+        if (!Object.values(current).some((r) => String(r?.id) === target)) return {};
         const next = { ...current };
         for (const k of Object.keys(next)) {
           try {

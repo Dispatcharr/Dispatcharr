@@ -174,11 +174,12 @@ export const saveChangedSettings = async (settings, changedSettings) => {
 export const getChangedSettings = (values, settings) => {
   const changedSettings = {};
 
-  // EPG fields that should be kept as arrays
-  const epgFields = [
+  // Fields that must remain as arrays and not be stringified
+  const arrayFields = [
     'epg_match_ignore_prefixes',
     'epg_match_ignore_suffixes',
     'epg_match_ignore_custom',
+    'series_rules',
   ];
 
   for (const settingKey in values) {
@@ -199,12 +200,11 @@ export const getChangedSettings = (values, settings) => {
       continue;
     }
 
-    // Handle EPG fields specially - keep as arrays, don't skip empty arrays
-    if (epgFields.includes(settingKey)) {
+    // Handle array fields - keep as arrays, don't skip empty arrays
+    if (arrayFields.includes(settingKey)) {
       if (!Array.isArray(actualValue)) {
         actualValue = [];
       }
-      // Always include EPG fields in changes (even if empty)
       changedSettings[settingKey] = actualValue;
       continue;
     }
@@ -299,7 +299,9 @@ export const parseSettings = (settings) => {
       typeof dvrSettings.post_offset_minutes === 'number'
         ? dvrSettings.post_offset_minutes
         : parseInt(dvrSettings.post_offset_minutes, 10) || 0;
-    parsed.series_rules = dvrSettings.series_rules;
+    parsed.series_rules = Array.isArray(dvrSettings.series_rules)
+      ? dvrSettings.series_rules
+      : [];
   }
 
   // Backup settings - direct mapping with underscore keys

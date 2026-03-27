@@ -3,7 +3,7 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, NETWORK_ACCESS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -64,6 +64,19 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     }
                 )
 
+        # Sanitize series_rules when DVR settings are saved through the
+        # generic settings API (e.g. Settings page round-trip) to prevent
+        # corrupted non-dict entries from persisting.
+        if instance.key == DVR_SETTINGS_KEY:
+            value = validated_data.get("value")
+            if isinstance(value, dict) and "series_rules" in value:
+                rules = value["series_rules"]
+                value["series_rules"] = (
+                    [r for r in rules if isinstance(r, dict)]
+                    if isinstance(rules, list)
+                    else []
+                )
+
         result = super().update(instance, validated_data)
 
         # Note: Cache invalidation and notification sync is handled by post_save signal
@@ -78,6 +91,7 @@ class ProxySettingsSerializer(serializers.Serializer):
     redis_chunk_ttl = serializers.IntegerField(min_value=10, max_value=3600)
     channel_shutdown_delay = serializers.IntegerField(min_value=0, max_value=300)
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=60)
+    new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:
@@ -102,6 +116,11 @@ class ProxySettingsSerializer(serializers.Serializer):
     def validate_channel_init_grace_period(self, value):
         if value < 0 or value > 60:
             raise serializers.ValidationError("Channel init grace period must be between 0 and 60 seconds")
+        return value
+
+    def validate_new_client_behind_seconds(self, value):
+        if value < 0 or value > 120:
+            raise serializers.ValidationError("New client buffer must be between 0 and 120 seconds")
         return value
 
 

@@ -1,6 +1,5 @@
 import React from 'react';
 import { Modal, Flex, Button } from '@mantine/core';
-import useChannelsStore from '../../store/channels.jsx';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesRuleByTvgId } from '../../pages/guideUtils.js';
@@ -22,11 +21,7 @@ export default function ProgramRecordingModal({
     } catch (error) {
       console.warn('Failed to delete recording', error);
     }
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (error) {
-      console.warn('Failed to refresh recordings after delete', error);
-    }
+    // recording_cancelled WS event triggers the debounced fetchRecordings()
     onClose();
   };
 
@@ -35,11 +30,7 @@ export default function ProgramRecordingModal({
       tvg_id: program.tvg_id,
       title: program.title,
     });
-    try {
-      await useChannelsStore.getState().fetchRecordings();
-    } catch (error) {
-      console.warn('Failed to refresh recordings after series delete', error);
-    }
+    // recordings_refreshed WS event triggers the debounced fetchRecordings()
     onClose();
   };
 

@@ -34,18 +34,32 @@ logger = get_logger()
 class ProxyServer:
     """Manages TS proxy server instance with worker coordination"""
     _instance = None
+    _INITIALIZING = object()  # sentinel for gevent-safe singleton
 
     @classmethod
     def get_instance(cls):
-        if cls._instance is None:
-            from .server import ProxyServer
-            from .stream_manager import StreamManager
-            from .stream_buffer import StreamBuffer
-            from .client_manager import ClientManager
-
-            cls._instance = ProxyServer()
-
-        return cls._instance
+        inst = cls._instance
+        if inst is not None and inst is not cls._INITIALIZING:
+            return inst
+        if inst is None:
+            cls._instance = cls._INITIALIZING
+            try:
+                from .server import ProxyServer
+                from .stream_manager import StreamManager
+                from .stream_buffer import StreamBuffer
+                from .client_manager import ClientManager
+                real_instance = ProxyServer()
+                cls._instance = real_instance
+                return real_instance
+            except Exception:
+                cls._instance = None  # Reset so next call can retry
+                raise
+        # Another greenlet is initializing — wait for completion
+        while True:
+            inst = cls._instance
+            if inst is not None and inst is not cls._INITIALIZING:
+                return inst
+            gevent.sleep(0.05)
 
     def __init__(self):
         """Initialize proxy server with worker identification"""
@@ -353,9 +367,16 @@ class ProxyServer:
 
         try:
             lock_key = RedisKeys.channel_owner(channel_id)
-            return self._execute_redis_command(
-                lambda: self.redis_client.get(lock_key).decode('utf-8') if self.redis_client.get(lock_key) else None
+            result = self._execute_redis_command(
+                lambda: self.redis_client.get(lock_key)
             )
+            if result is None:
+                return None
+            try:
+                return result.decode('utf-8')
+            except (AttributeError, UnicodeDecodeError) as e:
+                logger.error(f"Error decoding channel owner for {channel_id}: {e}, raw={result!r}")
+                return None
         except Exception as e:
             logger.error(f"Error getting channel owner: {e}")
             return None
@@ -374,20 +395,16 @@ class ProxyServer:
             # Create a lock key with proper namespace
             lock_key = RedisKeys.channel_owner(channel_id)
 
-            # Use Redis SETNX for atomic locking with error handling
+            # Use atomic SET NX EX for locking with error handling
             acquired = self._execute_redis_command(
-                lambda: self.redis_client.setnx(lock_key, self.worker_id)
+                lambda: self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
             )
 
             if acquired is None:  # Redis command failed
                 logger.warning(f"Redis command failed during ownership acquisition - assuming ownership")
                 return True
 
-            # If acquired, set expiry to prevent orphaned locks
             if acquired:
-                self._execute_redis_command(
-                    lambda: self.redis_client.expire(lock_key, ttl)
-                )
                 logger.info(f"Worker {self.worker_id} acquired ownership of channel {channel_id}")
                 return True
 
@@ -433,7 +450,7 @@ class ProxyServer:
             logger.error(f"Error releasing channel ownership: {e}")
 
     def extend_ownership(self, channel_id, ttl=30):
-        """Extend ownership lease with grace period"""
+        """Extend ownership lease, re-acquiring if key expired"""
         if not self.redis_client:
             return False
 
@@ -441,10 +458,23 @@ class ProxyServer:
             lock_key = RedisKeys.channel_owner(channel_id)
             current = self.redis_client.get(lock_key)
 
-            # Only extend if we're still the owner
-            if current and current.decode('utf-8') == self.worker_id:
+            if current is None:
+                # Key expired — re-acquire if we have the stream_manager
+                if channel_id in self.stream_managers:
+                    acquired = self.redis_client.set(lock_key, self.worker_id, nx=True, ex=ttl)
+                    if acquired:
+                        logger.warning(f"Re-acquired expired ownership for channel {channel_id}")
+                        return True
+                    else:
+                        new_owner = self.redis_client.get(lock_key)
+                        logger.warning(f"Could not re-acquire ownership for {channel_id}, new owner: {new_owner}")
+                        return False
+                return False
+
+            if current.decode('utf-8') == self.worker_id:
                 self.redis_client.expire(lock_key, ttl)
                 return True
+
             return False
         except Exception as e:
             logger.error(f"Error extending ownership: {e}")
@@ -766,7 +796,10 @@ class ProxyServer:
                 if self.redis_client.exists(key):
                     # Found orphaned keys without metadata - clean them up
                     logger.warning(f"Found orphaned keys for channel {channel_id} without metadata - cleaning up")
-                    self._clean_redis_keys(channel_id)
+                    try:
+                        self._clean_redis_keys(channel_id)
+                    except Exception as e:
+                        logger.error(f"Error cleaning redis keys for channel {channel_id}: {e}")
                     return False
 
         return False
@@ -788,13 +821,17 @@ class ProxyServer:
             # Force release resources in the Channel model
             try:
                 channel = Channel.objects.get(uuid=channel_id)
-                channel.release_stream()
-                logger.info(f"Released stream allocation for zombie channel {channel_id}")
+                if not channel.release_stream():
+                    logger.warning(f"Failed to release stream for zombie channel {channel_id}")
+                else:
+                    logger.info(f"Released stream allocation for zombie channel {channel_id}")
             except Exception as e:
                 try:
                     stream = Stream.objects.get(stream_hash=channel_id)
-                    stream.release_stream()
-                    logger.info(f"Released stream allocation for zombie channel {channel_id}")
+                    if not stream.release_stream():
+                        logger.warning(f"Failed to release stream for zombie channel {channel_id}")
+                    else:
+                        logger.info(f"Released stream allocation for zombie channel {channel_id}")
                 except Exception as e:
                     logger.error(f"Error releasing stream for zombie channel {channel_id}: {e}")
 
@@ -1043,7 +1080,7 @@ class ProxyServer:
                                 logger.info(f"Channel {channel_id} has {total_clients} clients, state: {channel_state}")
 
                             # If in connecting or waiting_for_clients state, check grace period
-                            if channel_state in [ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
+                            if channel_state in [ChannelState.INITIALIZING, ChannelState.CONNECTING, ChannelState.WAITING_FOR_CLIENTS]:
                                 # Check if channel is already stopping
                                 if self.redis_client:
                                     stop_key = RedisKeys.channel_stopping(channel_id)
@@ -1173,6 +1210,33 @@ class ProxyServer:
 
                         else:
                             # === NON-OWNER CHANNEL HANDLING ===
+                            # Safety: if we have a stream_manager, we ARE the real owner
+                            # but the Redis key may have expired. Try to re-acquire.
+                            if channel_id in self.stream_managers:
+                                logger.warning(
+                                    f"Ownership gap for {channel_id}: this worker has stream_manager "
+                                    f"but am_i_owner returned False. Attempting re-acquisition."
+                                )
+                                reacquired = self.extend_ownership(channel_id)
+                                if reacquired:
+                                    logger.info(f"Successfully re-acquired ownership for {channel_id}")
+                                    continue
+                                else:
+                                    # Defer cleanup if we still have active clients — give the
+                                    # new owner time to spin up its own stream before we tear
+                                    # ours down, so viewers don't get disconnected.
+                                    has_clients = (
+                                        channel_id in self.client_managers
+                                        and self.client_managers[channel_id].get_client_count() > 0
+                                    )
+                                    if has_clients:
+                                        logger.warning(
+                                            f"Ownership lost for {channel_id} but {self.client_managers[channel_id].get_client_count()} "
+                                            f"client(s) still connected — deferring cleanup to next cycle"
+                                        )
+                                        continue
+                                    logger.error(f"Failed to re-acquire ownership for {channel_id}, will clean up")
+
                             # For channels we don't own, check if they've been stopped/cleaned up in Redis
                             if self.redis_client:
                                 # Method 1: Check for stopping key
@@ -1325,8 +1389,30 @@ class ProxyServer:
                             # Just clean up Redis keys for remote channels
                             self._clean_redis_keys(channel_id)
                     elif not owner_alive and client_count > 0:
-                        # Owner is gone but clients remain - just log for now
-                        logger.warning(f"Found orphaned channel {channel_id} with {client_count} clients but no owner - may need ownership takeover")
+                        # SCARD may include ghost entries from a dead worker's
+                        # expired metadata hashes. Validate before deciding.
+                        stale_ids = ClientManager.remove_ghost_clients(
+                            self.redis_client, channel_id
+                        )
+                        real_count = max(0, client_count - len(stale_ids))
+                        if real_count <= 0:
+                            # No real clients remain — safe to clean up.
+                            state = metadata.get(b'state', b'unknown').decode('utf-8') if b'state' in metadata else 'unknown'
+                            logger.warning(
+                                f"Orphaned channel {channel_id} (state: {state}, "
+                                f"owner: {owner}) had {client_count} ghost client(s) "
+                                f"- cleaning up"
+                            )
+                            if channel_id in self.stream_managers or channel_id in self.client_managers:
+                                self.stop_channel(channel_id)
+                            else:
+                                self._clean_redis_keys(channel_id)
+                        else:
+                            logger.warning(
+                                f"Orphaned channel {channel_id} still has "
+                                f"{real_count} live client(s) after ghost removal "
+                                f"- may need ownership takeover"
+                            )
 
                 except Exception as e:
                     logger.error(f"Error processing metadata key {key}: {e}", exc_info=True)
@@ -1339,10 +1425,15 @@ class ProxyServer:
         # Release the channel, stream, and profile keys from the channel
         try:
             channel = Channel.objects.get(uuid=channel_id)
-            channel.release_stream()
-        except:
-            stream = Stream.objects.get(stream_hash=channel_id)
-            stream.release_stream()
+            if not channel.release_stream():
+                logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
+        except (Channel.DoesNotExist, Exception):
+            try:
+                stream = Stream.objects.get(stream_hash=channel_id)
+                if not stream.release_stream():
+                    logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
+            except (Stream.DoesNotExist, Exception):
+                logger.debug(f"No Channel or Stream found for {channel_id}")
 
         if not self.redis_client:
             return 0

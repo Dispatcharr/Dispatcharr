@@ -23,7 +23,7 @@ class ClientManager:
         self.channel_id = channel_id
         self.redis_client = redis_client
         self.clients = set()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.last_active_time = time.time()
         self.worker_id = worker_id  # Store worker ID as instance variable
         self._heartbeat_running = True  # Flag to control heartbeat thread
@@ -43,14 +43,20 @@ class ClientManager:
         self._registered_clients = set()  # Track already registered client IDs
 
     def _trigger_stats_update(self):
-        """Trigger a channel stats update via WebSocket"""
+        """Trigger a channel stats update via WebSocket in a background thread.
+
+        Offloaded so the caller is not blocked. send_websocket_update is
+        gevent-safe (offloads async_to_sync to a native OS thread).
+        """
+        threading.Thread(target=self._do_stats_update, daemon=True).start()
+
+    def _do_stats_update(self):
+        """Perform the stats update in the background."""
         try:
-            # Import here to avoid potential import issues
             from apps.proxy.ts_proxy.channel_status import ChannelStatus
             import redis
             from django.conf import settings
 
-            # Get all channels from Redis using settings
             redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
             redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
             all_channels = []
@@ -59,7 +65,6 @@ class ClientManager:
             while True:
                 cursor, keys = redis_client.scan(cursor, match="ts_proxy:channel:*:clients", count=100)
                 for key in keys:
-                    # Extract channel ID from key
                     parts = key.split(':')
                     if len(parts) >= 4:
                         ch_id = parts[2]
@@ -70,7 +75,6 @@ class ClientManager:
                 if cursor == 0:
                     break
 
-            # Send WebSocket update using existing infrastructure
             send_websocket_update(
                 "updates",
                 "update",
@@ -154,9 +158,8 @@ class ClientManager:
                                 if time_since_heartbeat < self.heartbeat_interval * 0.5:  # Only heartbeat at half interval minimum
                                     continue
 
-                            # Only update clients that remain
+                            # Only refresh TTL - do NOT update last_active
                             client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
-                            pipe.hset(client_key, "last_active", str(current_time))
                             pipe.expire(client_key, self.client_ttl)
 
                             # Keep client in the set with TTL
@@ -409,3 +412,42 @@ class ClientManager:
             self.redis_client.expire(self.client_set_key, self.client_ttl)
         except Exception as e:
             logger.error(f"Error refreshing client TTL: {e}")
+
+    @staticmethod
+    def remove_ghost_clients(redis_client, channel_id, client_ids=None):
+        """Remove client SET entries whose metadata hash has expired.
+
+        Returns the list of removed (stale) client IDs, or an empty list
+        if none were found. Uses a pipelined EXISTS check for efficiency.
+
+        Args:
+            client_ids: Optional pre-fetched result of SMEMBERS for this
+                        channel. Pass this to avoid a redundant SMEMBERS
+                        call when the caller has already fetched it.
+        """
+        client_set_key = RedisKeys.clients(channel_id)
+        if client_ids is None:
+            client_ids = redis_client.smembers(client_set_key)
+        if not client_ids:
+            return []
+
+        client_id_list = list(client_ids)
+        pipe = redis_client.pipeline()
+        for cid in client_id_list:
+            cid_str = cid.decode('utf-8')
+            pipe.exists(RedisKeys.client_metadata(channel_id, cid_str))
+        results = pipe.execute()
+
+        stale_ids = [
+            cid for cid, exists in zip(client_id_list, results)
+            if not exists
+        ]
+
+        if stale_ids:
+            redis_client.srem(client_set_key, *stale_ids)
+            logger.info(
+                f"Removed {len(stale_ids)} ghost client(s) from "
+                f"channel {channel_id} client set"
+            )
+
+        return stale_ids
