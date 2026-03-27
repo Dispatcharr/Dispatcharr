@@ -37,10 +37,10 @@ const UserLimitsForm = React.memo(({ active }) => {
 
   useEffect(() => {
     if (settings) {
-      if (settings['user_limits']?.value) {
+      if (settings['user_limit_settings']?.value) {
         userLimitSettingsForm.setValues({
           ...USER_LIMIT_DEFAULTS,
-          ...settings['user_limits'].value,
+          ...settings['user_limit_settings'].value,
         });
       }
     }
@@ -55,7 +55,7 @@ const UserLimitsForm = React.memo(({ active }) => {
 
     try {
       const result = await updateSetting({
-        ...settings['user_limits'],
+        ...settings['user_limit_settings'],
         value: userLimitSettingsForm.getValues(),
       });
       if (result) {

@@ -7,8 +7,8 @@ from django.utils.text import slugify
 def preload_user_limit_settings(apps, schema_editor):
     CoreSettings = apps.get_model("core", "CoreSettings")
     CoreSettings.objects.create(
-        key="user_limits",
-        name="User Limits",
+        key="user_limit_settings",
+        name="User Limit Settings",
         value={},
     )
 
