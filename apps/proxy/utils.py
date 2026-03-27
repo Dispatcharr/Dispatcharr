@@ -89,13 +89,13 @@ def get_user_active_connections(user_id):
                 client_user_id = redis_client.hget(key, 'user_id')
                 connected_at = redis_client.hget(key, 'connected_at')
 
-                logger.info(f"[stream limits] user_id = {user_id}")
-                logger.info(f"[stream limits] channel_id = {channel_id}")
-                logger.info(f"[stream limits] client_id = {client_id}")
+                logger.debug(f"[stream limits] user_id = {user_id}")
+                logger.debug(f"[stream limits] channel_id = {channel_id}")
+                logger.debug(f"[stream limits] client_id = {client_id}")
 
                 if client_user_id and int(client_user_id) == user_id:
                     try:
-                        logger.info(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        logger.debug(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
                         connections.append({
                             'media_id': channel_id,
@@ -116,12 +116,12 @@ def get_user_active_connections(user_id):
                 connected_at = redis_client.hget(key, 'created_at')
                 content_uuid = redis_client.hget(key, 'content_uuid')
 
-                logger.info(f"[stream limits] user_id = {user_id}")
-                logger.info(f"[stream limits] client_id = {client_id}")
+                logger.debug(f"[stream limits] user_id = {user_id}")
+                logger.debug(f"[stream limits] client_id = {client_id}")
 
                 if client_user_id and int(client_user_id) == user_id:
                     try:
-                        logger.info(f"[stream limits] Found VOD connection for user {user_id} on content {content_uuid} with client ID {client_id}")
+                        logger.debug(f"[stream limits] Found VOD connection for user {user_id} on content {content_uuid} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
                         connections.append({
                             'media_id': content_uuid or client_id,
@@ -142,7 +142,7 @@ def get_user_active_connections(user_id):
 def check_user_stream_limits(user, client_id, media_id=None):
     # Check user stream limits
     if user and user.stream_limit > 0:
-        logger.info("[stream limits]" f"[{client_id}] User {user.username} (ID: {user.id}) is requesting a stream (stream_limit: {user.stream_limit})")
+        logger.debug("[stream limits]" f"[{client_id}] User {user.username} (ID: {user.id}) is requesting a stream (stream_limit: {user.stream_limit})")
         user_limit_settings = CoreSettings.get_user_limits_settings()
         ignore_same_channel = user_limit_settings.get("ignore_same_channel_connections", False)
 
@@ -150,7 +150,7 @@ def check_user_stream_limits(user, client_id, media_id=None):
         unique_channel_count = set([conn['media_id'] for conn in active_connections])
         user_stream_count = len(unique_channel_count) if ignore_same_channel else len(active_connections)
 
-        logger.info(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if ignore_same_channel else 'total connections'})")
+        logger.debug(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if ignore_same_channel else 'total connections'})")
 
         # If ignore_same_channel is enabled and this request is for a live channel the user
         # is already watching, allow it through without counting against the limit.
@@ -158,7 +158,7 @@ def check_user_stream_limits(user, client_id, media_id=None):
         # same content would mean multiple upstream connections.
         live_channel_ids = {str(conn['media_id']) for conn in active_connections if conn['type'] == 'live'}
         if ignore_same_channel and media_id and str(media_id) in live_channel_ids:
-            logger.info(f"[stream limits][{client_id}] Same-channel reconnect for {media_id} allowed (ignore_same_channel=True)")
+            logger.debug(f"[stream limits][{client_id}] Same-channel reconnect for {media_id} allowed (ignore_same_channel=True)")
             return True
 
         if user_stream_count >= user.stream_limit:
