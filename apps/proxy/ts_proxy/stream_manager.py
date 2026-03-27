@@ -90,7 +90,7 @@ class StreamManager:
                     # Try to get stream_id specifically
                     stream_id_bytes = buffer.redis_client.hget(metadata_key, "stream_id")
                     if stream_id_bytes:
-                        self.current_stream_id = int(stream_id_bytes.decode('utf-8'))
+                        self.current_stream_id = int(stream_id_bytes)
                         self.tried_stream_ids.add(self.current_stream_id)
                         logger.info(f"Loaded stream ID {self.current_stream_id} from Redis for channel {buffer.channel_id}")
                     else:
@@ -413,7 +413,7 @@ class StreamManager:
                     is_owner = (
                         current_owner
                         and self.worker_id
-                        and current_owner.decode('utf-8') == self.worker_id
+                        and current_owner == self.worker_id
                     )
                     no_owner = current_owner is None
 
@@ -423,7 +423,7 @@ class StreamManager:
                             metadata_key, ChannelMetadataField.STATE
                         )
                         current_state = (
-                            current_state_bytes.decode('utf-8')
+                            current_state_bytes
                             if current_state_bytes else None
                         )
                         should_update = current_state in ChannelState.PRE_ACTIVE
@@ -1503,9 +1503,9 @@ class StreamManager:
                     current_state = None
                     try:
                         metadata = redis_client.hgetall(metadata_key)
-                        state_field = ChannelMetadataField.STATE.encode('utf-8')
+                        state_field = ChannelMetadataField.STATE
                         if metadata and state_field in metadata:
-                            current_state = metadata[state_field].decode('utf-8')
+                            current_state = metadata[state_field]
                     except Exception as e:
                         logger.error(f"Error checking current state: {e}")
 

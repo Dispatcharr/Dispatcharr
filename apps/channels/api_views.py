@@ -2674,7 +2674,49 @@ class RecordingViewSet(viewsets.ModelViewSet):
         recording_id = instance.pk
         channel_name = instance.channel.name
 
-        # Capture state before the DB row is deleted
+        # Attempt to close the DVR client connection for this channel if active
+        try:
+            channel_uuid = str(instance.channel.uuid)
+            # Lazy imports to avoid module overhead if proxy isn't used
+            from core.utils import RedisClient
+            from apps.proxy.ts_proxy.redis_keys import RedisKeys
+            from apps.proxy.ts_proxy.services.channel_service import ChannelService
+
+            r = RedisClient.get_client()
+            if r:
+                client_set_key = RedisKeys.clients(channel_uuid)
+                client_ids = r.smembers(client_set_key) or []
+                stopped = 0
+                for cid in client_ids:
+                    try:
+                        meta_key = RedisKeys.client_metadata(channel_uuid, cid)
+                        ua = r.hget(meta_key, "user_agent")
+                        # Identify DVR recording client by its user agent
+                        if ua and "Dispatcharr-DVR" in ua:
+                            try:
+                                ChannelService.stop_client(channel_uuid, cid)
+                                stopped += 1
+                            except Exception as inner_e:
+                                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
+                    except Exception as inner:
+                        logger.debug(f"Error while checking client metadata: {inner}")
+                if stopped:
+                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
+                # If no clients remain after stopping DVR clients, proactively stop the channel
+                try:
+                    remaining = r.scard(client_set_key) or 0
+                except Exception:
+                    remaining = 0
+                if remaining == 0:
+                    try:
+                        ChannelService.stop_channel(channel_uuid)
+                        logger.info(f"Stopped channel {channel_uuid} (no clients remain)")
+                    except Exception as sc_e:
+                        logger.debug(f"Unable to stop channel {channel_uuid}: {sc_e}")
+        except Exception as e:
+            logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
+
+        # Capture paths before deletion
         cp = instance.custom_properties or {}
         rec_status = cp.get("status", "")
         file_path = cp.get("file_path")

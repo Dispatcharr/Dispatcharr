@@ -17,6 +17,7 @@ import {
   Tooltip,
   Grid,
   SimpleGrid,
+  NumberInput,
   useMantineTheme,
 } from '@mantine/core';
 import { RotateCcwKey, RotateCw, X } from 'lucide-react';
@@ -48,6 +49,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       last_name: '',
       email: '',
       user_level: '0',
+      stream_limit: 0,
       password: '',
       xc_password: '',
       channel_profiles: [],
@@ -117,7 +119,11 @@ const User = ({ user = null, isOpen, onClose }) => {
         delete values.password;
       }
 
-      const response = await API.updateUser(user.id, values);
+      const response = await API.updateUser(
+        user.id,
+        values,
+        isAdmin ? false : authUser.id === user.id
+      );
 
       if (user.id == authUser.id) {
         setUser(response);
@@ -139,6 +145,7 @@ const User = ({ user = null, isOpen, onClose }) => {
         last_name: user.last_name || '',
         email: user.email,
         user_level: `${user.user_level}`,
+        stream_limit: user.stream_limit || 0,
         channel_profiles:
           user.channel_profiles.length > 0
             ? user.channel_profiles.map((id) => `${id}`)
@@ -236,6 +243,7 @@ const User = ({ user = null, isOpen, onClose }) => {
               id="username"
               name="username"
               label="Username"
+              disabled={!isAdmin}
               {...form.getInputProps('username')}
               key={form.key('username')}
             />
@@ -257,19 +265,26 @@ const User = ({ user = null, isOpen, onClose }) => {
             />
 
             {showPermissions && (
-              <Select
-                label="User Level"
-                data={Object.entries(USER_LEVELS).map(([, value]) => {
-                  return {
-                    label: USER_LEVEL_LABELS[value],
-                    value: `${value}`,
-                  };
-                })}
-                {...form.getInputProps('user_level')}
-                key={form.key('user_level')}
-              />
-            )}
+              <>
+                <Select
+                  label="User Level"
+                  data={Object.entries(USER_LEVELS).map(([, value]) => {
+                    return {
+                      label: USER_LEVEL_LABELS[value],
+                      value: `${value}`,
+                    };
+                  })}
+                  {...form.getInputProps('user_level')}
+                  key={form.key('user_level')}
+                />
 
+                <NumberInput
+                  label="Stream Limit (0 = unlimited)"
+                  {...form.getInputProps('stream_limit')}
+                  key={form.key('stream_limit')}
+                />
+              </>
+            )}
           </Stack>
 
           <Stack gap="xs" style={{ flex: 1 }}>
@@ -289,26 +304,23 @@ const User = ({ user = null, isOpen, onClose }) => {
               key={form.key('last_name')}
             />
 
-            <Group align="flex-end">
-              <TextInput
-                label="XC Password"
-                description="Clear to disable XC API"
-                {...form.getInputProps('xc_password')}
-                key={form.key('xc_password')}
-                style={{ flex: 1 }}
-                rightSectionWidth={30}
-                rightSection={
-                  <ActionIcon
-                    variant="transparent"
-                    size="sm"
-                    color="white"
-                    onClick={generateXCPassword}
-                  >
-                    <RotateCcwKey />
-                  </ActionIcon>
-                }
-              />
-            </Group>
+            <TextInput
+              label="XC Password"
+              description="Clear to disable XC API"
+              {...form.getInputProps('xc_password')}
+              key={form.key('xc_password')}
+              rightSectionWidth={30}
+              rightSection={
+                <ActionIcon
+                  variant="transparent"
+                  size="sm"
+                  color="white"
+                  onClick={generateXCPassword}
+                >
+                  <RotateCcwKey />
+                </ActionIcon>
+              }
+            />
 
             {showPermissions && (
               <MultiSelect
