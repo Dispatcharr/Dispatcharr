@@ -578,13 +578,15 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 "series.id IN (SELECT DISTINCT series_id FROM vod_m3useriesrelation msr JOIN m3u_m3uaccount ma ON msr.m3u_account_id = ma.id WHERE ma.is_active = true)"
             ]
 
-            params = []
+            movie_params = []
+            series_params = []
 
             if search:
                 where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
                 where_conditions[1] += " AND LOWER(series.name) LIKE %s"
                 search_param = f"%{search.lower()}%"
-                params.extend([search_param, search_param])
+                movie_params.append(search_param)
+                series_params.append(search_param)
 
             if category:
                 if '|' in category:
@@ -592,15 +594,20 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     if cat_type == 'movie':
                         where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
                         where_conditions[1] = "1=0"  # Exclude series
-                        params.append(cat_name)
+                        movie_params.append(cat_name)
+                        series_params = []  # no params needed for "1=0"
                     elif cat_type == 'series':
                         where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
                         where_conditions[0] = "1=0"  # Exclude movies
-                        params.append(cat_name)
+                        series_params.append(cat_name)
+                        movie_params = []  # no params needed for "1=0"
                 else:
                     where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
                     where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                    params.extend([category, category])
+                    movie_params.append(category)
+                    series_params.append(category)
+
+            params = movie_params + series_params
 
             # Use UNION ALL with ORDER BY and LIMIT/OFFSET for true unified pagination
             # This is much more efficient than Python sorting
@@ -896,4 +903,3 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-

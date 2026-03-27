@@ -2998,12 +2998,15 @@ export default class API {
     }
   }
 
-  static async updateUser(id, body) {
+  static async updateUser(id, body, self = false) {
     try {
-      const response = await request(`${host}/api/accounts/users/${id}/`, {
-        method: 'PATCH',
-        body,
-      });
+      const response = await request(
+        `${host}/api/accounts/users/${self ? 'me' : id}/`,
+        {
+          method: 'PATCH',
+          body,
+        }
+      );
 
       useUsersStore.getState().updateUser(response);
 

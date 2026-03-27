@@ -7,14 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `requests` 2.32.5 → 2.33.0, resolving the following CVE:
+  - **CVE-2026-25645** (moderate): Insecure temp file reuse in `extract_zipped_paths()` utility function.
+- Updated frontend npm dependencies to resolve 4 audit vulnerabilities (2 moderate, 2 high):
+  - Updated `brace-expansion` 5.0.2 → 5.0.5, resolving **moderate** zero-step sequence causing process hang and memory exhaustion ([GHSA-f886-m6hf-6m8v](https://github.com/advisories/GHSA-f886-m6hf-6m8v))
+  - Updated `flatted` 3.4.1 → 3.4.2, resolving **high** Prototype Pollution via `parse()` in NodeJS flatted ([GHSA-rf6f-7fwh-wjgh](https://github.com/advisories/GHSA-rf6f-7fwh-wjgh))
+  - Updated `picomatch` 4.0.3 → 4.0.4, resolving **high** method injection in POSIX character classes causing incorrect glob matching ([GHSA-3v7f-55p6-f55p](https://github.com/advisories/GHSA-3v7f-55p6-f55p)) and a ReDoS vulnerability via extglob quantifiers ([GHSA-c2c7-rcm5-vvqj](https://github.com/advisories/GHSA-c2c7-rcm5-vvqj))
+  - Updated `yaml` 1.10.2 → 1.10.3, resolving **moderate** stack overflow via deeply nested YAML collections ([GHSA-48c2-rrv3-qjmp](https://github.com/advisories/GHSA-48c2-rrv3-qjmp))
+
 ### Added
 
 - Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
+- User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
+  - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
+  - Global enforcement behaviour is configurable in Settings → User Limits:
+    - **Terminate on Limit Exceeded**: automatically stop an existing stream when the user's limit is reached (vs. rejecting the new connection).
+    - **Terminate Oldest**: prefer terminating the oldest stream when freeing a slot; disable to prefer the newest.
+    - **Prioritize Single-Client Channels**: prefer terminating streams on channels that only this user is watching.
+    - **Ignore Same-Channel Connections**: count multiple connections to the same live channel as one stream toward the limit. Same-channel reconnects are always allowed through. When this is enabled and a channel must be freed, all connections to the chosen channel are terminated together so that the unique-channel count actually decreases. VOD is explicitly excluded from this bypass since VOD connections are not shared upstream.
 - TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
 
 ### Changed
 
+- Dependency updates:
+  - `requests` 2.32.5 → 2.33.0 (security patch; see Security section)
+  - `celery` 5.6.2 → 5.6.3
+  - `torch` 2.10.0+cpu → 2.11.0+cpu
+  - `sentence-transformers` 5.2.3 → 5.3.0
+  - `yt-dlp` 2026.3.13 → 2026.3.17
+- Docker base image cleanup: removed `python-is-python3`, `python3-pip`, and `streamlink` from the apt package list in `DispatcharrBase`. `python3-pip` and `streamlink` were pulling outdated system Python packages (e.g. `requests 2.31.0`, `cryptography 41.0.7`, `lxml 5.2.1`) into the system Python's site-packages despite the app running entirely in the uv-managed venv at `/dispatcharrpy`. `streamlink` is already installed in the venv via `pyproject.toml`. `python-is-python3` is unnecessary as `PATH` resolves bare `python` to the venv binary.
 - M3U table **Max Streams** column now reflects the combined limit across all active profiles. When a playlist has multiple active profiles, the column displays their summed total (or ∞ if any profile is unlimited) and a hover tooltip lists each profile's individual limit by name. (Closes #816)
 - Toggling an M3U profile's active state now immediately updates the playlist store (including the `playlists` array), so the **Max Streams** total in the M3U table reflects the change without a page reload.
 - M3U account form: **Max Streams** field changed from a plain text input to a number input with increment/decrement controls, consistent with other integer fields.

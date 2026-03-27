@@ -204,7 +204,7 @@ class Stream(models.Model):
 
         return stream_profile
 
-    def get_stream(self):
+    def get_stream(self, requester=None):
         """
         Finds an available profile for this stream and reserves a connection slot.
 
@@ -400,6 +400,144 @@ class Channel(models.Model):
 
         return stream_profile
 
+    def _pick_channel_to_preempt(
+        self,
+        profile_id,
+        requester_level,
+        redis_client,
+        exclude_channel_ids=None,
+        cooldown_seconds=30,
+    ):
+        """
+        Pick the lowest-impact channel to terminate on the given profile.
+        Returns: Optional[int] channel_id to preempt
+        """
+        exclude_channel_ids = set(exclude_channel_ids or [])
+        candidates = []
+
+        # 1) Try to get active channel IDs for this profile from an index set if available
+        ch_set_key = f"ts_proxy:profile:{profile_id}:channels"
+        try:
+            ch_ids = { (int(x) if not isinstance(x, int) else x) for x in (redis_client.smembers(ch_set_key) or set()) }
+        except Exception:
+            ch_ids = set()
+
+        logger.debug("Candidate channels for preemption:")
+        logger.debug(ch_ids)
+
+        # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
+        if not ch_ids:
+            cursor = 0
+            pattern = "ts_proxy:channel:*:metadata"
+            while True:
+                cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=500)
+                if keys:
+                    # Prefer HGET m3u_profile if metadata is a hash
+                    pipe = redis_client.pipeline()
+                    for k in keys:
+                        pipe.hget(k, "m3u_profile")
+                    prof_vals = pipe.execute()
+                    for k, prof_val in zip(keys, prof_vals):
+                        try:
+                            pid = int(prof_val) if prof_val is not None else None
+                        except Exception:
+                            pid = None
+
+                        if pid == profile_id:
+                            parts = k.split(":")  # ts_proxy:channel:{id}:metadata
+                            if len(parts) >= 4:
+                                try:
+                                    ch_ids.add(int(parts[2]))
+                                except Exception:
+                                    pass
+                if cursor == 0:
+                    break
+
+        logger.debug("Candidate channels for preemption:")
+        logger.debug(ch_ids)
+
+        if not ch_ids:
+            return None
+
+        # 3) Score candidates
+        for ch_id in ch_ids:
+            if ch_id in exclude_channel_ids:
+                continue
+
+            # Skip if recently preempted
+            last_preempt_key = f"ts_proxy:channel:{ch_id}:last_preempt"
+            try:
+                last_preempt = float(redis_client.get(last_preempt_key) or 0.0)
+            except Exception:
+                last_preempt = 0.0
+            if last_preempt and (time.time() - last_preempt) < cooldown_seconds:
+                continue
+
+            # Clients and their levels
+            clients_key = f"ts_proxy:channel:{ch_id}:clients"
+            member_ids = list(redis_client.smembers(clients_key) or [])
+            viewer_count = len(member_ids)
+            max_viewer_level = 0
+            if viewer_count:
+                pipe = redis_client.pipeline()
+                for cid in member_ids:
+                    pipe.hget(f"ts_proxy:channel:{ch_id}:clients:{cid}", "user_level")
+                levels_raw = pipe.execute()
+                levels = []
+                for lv in levels_raw:
+                    try:
+                        levels.append(int(lv or 0))
+                    except Exception:
+                        levels.append(0)
+                max_viewer_level = max(levels or [0])
+
+            # Only preempt if requester strictly outranks this channel's viewers
+            if requester_level <= max_viewer_level:
+                continue
+
+            # Metadata (protected/recording/started_at_ts)
+            meta_key = f"ts_proxy:channel:{ch_id}:metadata"
+            try:
+                protected, recording, started_at_ts = redis_client.hmget(
+                    meta_key, "protected", "recording", "started_at_ts"
+                )
+            except Exception:
+                protected = recording = started_at_ts = None
+
+            protected = str(protected or "0") in ("1", "true", "True")
+            recording = str(recording or "0") in ("1", "true", "True")
+            if protected or recording:
+                continue
+
+            try:
+                started_at_ts = float(started_at_ts) if started_at_ts is not None else None
+            except Exception:
+                started_at_ts = None
+            if started_at_ts is None:
+                started_at_ts = time.time()  # treat unknown as newest
+
+            # Score: lower is safer to terminate
+            has_viewers = 1 if viewer_count > 0 else 0
+            score = (has_viewers, max_viewer_level, viewer_count, started_at_ts)
+            candidates.append((score, ch_id))
+
+        logger.debug("Candidate channels after scoring:")
+        logger.debug(candidates)
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        victim_id = candidates[0][1]
+
+        # Mark preempt timestamp to avoid thrashing
+        try:
+            redis_client.set(f"ts_proxy:channel:{victim_id}:last_preempt", str(time.time()), ex=3600)
+        except Exception:
+            pass
+
+        return victim_id
+
     def _check_and_reserve_profile_slot(self, profile, redis_client):
         """
         Atomically check and reserve a connection slot for the given profile.
@@ -432,7 +570,7 @@ class Channel(models.Model):
         redis_client.decr(profile_connections_key)
         return (False, new_count - 1)
 
-    def get_stream(self):
+    def get_stream(self, requester=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
@@ -513,6 +651,17 @@ class Channel(models.Model):
                         None,
                     )  # Return newly assigned stream and matched profile
                 else:
+                    # At capacity: try to preempt a lower-impact channel on this profile
+                    victim_channel_id = self._pick_channel_to_preempt(
+                        profile_id=profile.id,
+                        requester_level=requester.user_level if requester else 100,
+                        redis_client=redis_client,
+                        exclude_channel_ids=None,
+                    )
+                    if victim_channel_id:
+                        logger.info(f"Preempting channel {victim_channel_id} for new stream on profile {profile.id}")
+                        # return self.id, profile.id, victim_channel_id
+
                     # This profile is at max connections
                     has_streams_but_maxed_out = True
                     logger.debug(

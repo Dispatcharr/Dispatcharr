@@ -156,6 +156,7 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 
 
 class CoreSettings(models.Model):
@@ -361,6 +362,15 @@ class CoreSettings(models.Model):
         value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
         cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
         return value
+
+    @classmethod
+    def get_user_limits_settings(cls):
+        return cls._get_group(USER_LIMITS_SETTINGS_KEY, {
+            "terminate_on_limit_exceeded": True,
+            "prioritize_single_client_channels": True,
+            "ignore_same_channel_connections": False,
+            "terminate_oldest": True,
+        })
 
 
 class SystemEvent(models.Model):

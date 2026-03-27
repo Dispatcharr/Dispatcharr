@@ -93,7 +93,7 @@ class SerializableConnectionState:
                  content_name: str = None, client_ip: str = None,
                  client_user_agent: str = None, utc_start: str = None,
                  utc_end: str = None, offset: str = None,
-                 worker_id: str = None, connection_type: str = "redis_backed"):
+                 worker_id: str = None, connection_type: str = "redis_backed", user_id: str = "unknown"):
         self.session_id = session_id
         self.stream_url = stream_url
         self.headers = headers
@@ -104,6 +104,7 @@ class SerializableConnectionState:
         self.last_activity = time.time()
         self.request_count = 0
         self.active_streams = 0
+        self.user_id = user_id
 
         # Session metadata (consolidated from vod_session key)
         self.content_obj_type = content_obj_type
@@ -160,7 +161,8 @@ class SerializableConnectionState:
             'last_seek_byte': str(self.last_seek_byte),
             'last_seek_percentage': str(self.last_seek_percentage),
             'total_content_size': str(self.total_content_size),
-            'last_seek_timestamp': str(self.last_seek_timestamp)
+            'last_seek_timestamp': str(self.last_seek_timestamp),
+            'user_id': str(self.user_id),
         }
 
     @classmethod
@@ -184,7 +186,8 @@ class SerializableConnectionState:
             utc_end=data.get('utc_end') or '',
             offset=data.get('offset') or '',
             worker_id=data.get('worker_id') or None,
-            connection_type=data.get('connection_type', 'redis_backed')
+            connection_type=data.get('connection_type', 'redis_backed'),
+            user_id=data.get('user_id', 'unknown')
         )
         obj.last_activity = float(data.get('last_activity', time.time()))
         obj.request_count = int(data.get('request_count', 0))
@@ -224,7 +227,7 @@ class RedisBackedVODConnection:
 
             # Convert bytes keys/values to strings if needed
             if isinstance(list(data.keys())[0], bytes):
-                data = {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()}
+                data = {k: v for k, v in data.items()}
 
             return SerializableConnectionState.from_dict(data)
         except Exception as e:
@@ -281,7 +284,7 @@ class RedisBackedVODConnection:
                          content_name: str = None, client_ip: str = None,
                          client_user_agent: str = None, utc_start: str = None,
                          utc_end: str = None, offset: str = None,
-                         worker_id: str = None) -> bool:
+                         worker_id: str = None, user=None) -> bool:
         """Create a new connection state in Redis with consolidated session metadata"""
         if not self._acquire_lock():
             logger.warning(f"[{self.session_id}] Could not acquire lock for connection creation")
@@ -309,7 +312,8 @@ class RedisBackedVODConnection:
                 utc_start=utc_start,
                 utc_end=utc_end,
                 offset=offset,
-                worker_id=worker_id
+                worker_id=worker_id,
+                user_id=user.id if user else "unknown"
             )
             success = self._save_connection_state(state)
 
@@ -365,6 +369,24 @@ class RedisBackedVODConnection:
                 timeout=(10, 10),
                 allow_redirects=allow_redirects
             )
+
+            # If the cached final_url returned an error (e.g. an ephemeral dispatcharr session
+            # that has since expired), clear it and retry from the original stream_url.
+            if response.status_code >= 400 and state.final_url:
+                logger.warning(
+                    f"[{self.session_id}] Cached final_url returned {response.status_code}, "
+                    f"clearing and retrying from stream_url"
+                )
+                response.close()
+                state.final_url = None
+                response = self.local_session.get(
+                    state.stream_url,
+                    headers=headers,
+                    stream=True,
+                    timeout=(10, 10),
+                    allow_redirects=True
+                )
+
             response.raise_for_status()
 
             # Update state with response info on first request
@@ -761,7 +783,7 @@ class MultiWorkerVODConnectionManager:
 
     def stream_content_with_session(self, session_id, content_obj, stream_url, m3u_profile,
                                   client_ip, client_user_agent, request,
-                                  utc_start=None, utc_end=None, offset=None, range_header=None):
+                                  utc_start=None, utc_end=None, offset=None, range_header=None, user=None):
         """Stream content with Redis-backed persistent connection"""
 
         # Generate client ID
@@ -858,7 +880,8 @@ class MultiWorkerVODConnectionManager:
                     utc_start=utc_start,
                     utc_end=utc_end,
                     offset=str(offset) if offset else None,
-                    worker_id=self.worker_id
+                    worker_id=self.worker_id,
+                    user=user
                 ):
                     logger.error(f"[{client_id}] Worker {self.worker_id} - Failed to create Redis connection")
                     # Roll back the profile slot reservation since connection failed
@@ -1272,14 +1295,14 @@ class MultiWorkerVODConnectionManager:
 
                         # Convert bytes to strings if needed
                         if isinstance(list(data.keys())[0], bytes):
-                            data = {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()}
+                            data = {k: v for k, v in data.items()}
 
                         last_activity = float(data.get('last_activity', 0))
                         active_streams = int(data.get('active_streams', 0))
 
                         # Clean up if stale and no active streams
                         if (current_time - last_activity > max_age_seconds) and active_streams == 0:
-                            session_id = key.decode('utf-8').replace('vod_persistent_connection:', '')
+                            session_id = key.replace('vod_persistent_connection:', '')
                             logger.info(f"Cleaning up stale connection: {session_id}")
 
                             # Clean up connection and related keys
@@ -1376,7 +1399,7 @@ class MultiWorkerVODConnectionManager:
             if connection_data:
                 # Convert bytes to strings if needed
                 if isinstance(list(connection_data.keys())[0], bytes):
-                    connection_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in connection_data.items()}
+                    connection_data = {k: v for k, v in connection_data.items()}
 
                 profile_id = connection_data.get('m3u_profile_id')
                 if profile_id:
@@ -1438,7 +1461,7 @@ class MultiWorkerVODConnectionManager:
 
                         # Convert bytes keys/values to strings if needed
                         if isinstance(list(connection_data.keys())[0], bytes):
-                            connection_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in connection_data.items()}
+                            connection_data = {k: v for k, v in connection_data.items()}
 
                         # Check if content matches (using consolidated data)
                         stored_content_type = connection_data.get('content_obj_type', '')
@@ -1448,7 +1471,7 @@ class MultiWorkerVODConnectionManager:
                             continue
 
                         # Extract session ID
-                        session_id = key.decode('utf-8').replace('vod_persistent_connection:', '')
+                        session_id = key.replace('vod_persistent_connection:', '')
 
                         # Check if Redis-backed connection exists and has no active streams
                         redis_connection = RedisBackedVODConnection(session_id, self.redis_client)
