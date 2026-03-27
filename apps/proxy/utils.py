@@ -164,4 +164,4 @@ def check_user_stream_limits(user, client_id):
                 if not attempt_stream_termination(user.id, client_id, active_connections):
                     return False
 
-        return True
+    return True
