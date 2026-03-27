@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
 - User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
   - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
   - Global enforcement behaviour is configurable in Settings → User Limits:

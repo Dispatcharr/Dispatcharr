@@ -56,6 +56,7 @@ vi.mock('lucide-react', () => ({
   ChevronRight: () => <div data-testid="chevron-right-icon" />,
   MonitorCog: () => <div data-testid="monitor-cog-icon" />,
   Blocks: () => <div data-testid="blocks-icon" />,
+  Heart: () => <div data-testid="heart-icon" />,
 }));
 
 // Mock UserForm component
@@ -114,6 +115,7 @@ vi.mock('@mantine/core', async () => {
       </nav>
     ),
     ScrollArea: ({ children }) => <div>{children}</div>,
+    Tooltip: ({ children }) => <>{children}</>,
   };
 });
 

@@ -1,12 +1,7 @@
 import React, { useRef, useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils';
-import {
-  Copy,
-  LogOut,
-  ChevronDown,
-  ChevronRight,
-} from 'lucide-react';
+import { Copy, LogOut, ChevronDown, ChevronRight, Heart } from 'lucide-react';
 import { getOrderedNavItems } from '../config/navigation';
 import {
   Avatar,
@@ -19,6 +14,7 @@ import {
   ActionIcon,
   AppShellNavbar,
   ScrollArea,
+  Tooltip,
 } from '@mantine/core';
 import logo from '../images/logo.png';
 import useChannelsStore from '../store/channels';
@@ -28,6 +24,21 @@ import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
+
+const DonateButton = ({ tooltipPosition = 'top' }) => (
+  <Tooltip label="Support Dispatcharr" position={tooltipPosition}>
+    <ActionIcon
+      component="a"
+      href="https://opencollective.com/dispatcharr/contribute"
+      target="_blank"
+      rel="noopener noreferrer"
+      variant="transparent"
+      color="pink"
+    >
+      <Heart size={20} />
+    </ActionIcon>
+  </Tooltip>
+);
 
 const NavLink = ({ item, isActive, collapsed }) => {
   const IconComponent = item.icon;
@@ -328,24 +339,56 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       {!collapsed && (
         <Group
           gap="xs"
+          wrap="nowrap"
           style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
         >
-          <Text size="xs" c="dimmed">
-            v{appVersion?.version || '0.0.0'}
-            {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-          </Text>
-          {isAuthenticated && <NotificationCenter />}
+          <Tooltip
+            label={`v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`}
+            position="top"
+          >
+            <Text
+              size="xs"
+              c="dimmed"
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+                flex: 1,
+                cursor: 'pointer',
+              }}
+              onClick={() =>
+                copyToClipboard(
+                  `v${appVersion?.version || '0.0.0'}${appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}`,
+                  {
+                    successTitle: 'Copied',
+                    successMessage: 'Version copied to clipboard',
+                  }
+                )
+              }
+            >
+              v{appVersion?.version || '0.0.0'}
+              {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
+            </Text>
+          </Tooltip>
+          <Group gap="xs" wrap="nowrap">
+            <DonateButton />
+            {isAuthenticated && <NotificationCenter />}
+          </Group>
         </Group>
       )}
-      {collapsed && isAuthenticated && (
+      {collapsed && (
         <Box
           style={{
             padding: '0 16px 16px',
             display: 'flex',
-            justifyContent: 'center',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 8,
           }}
         >
-          <NotificationCenter />
+          {isAuthenticated && <NotificationCenter />}
+          <DonateButton tooltipPosition="right" />
         </Box>
       )}
 
