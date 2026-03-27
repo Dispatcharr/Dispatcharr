@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated frontend npm dependencies to resolve 4 vulnerabilities (2 high, 2 moderate):
+  - Updated `brace-expansion` to 5.0.5, resolving **moderate** zero-step sequence causing process hang and memory exhaustion ([GHSA-f886-m6hf-6m8v](https://github.com/advisories/GHSA-f886-m6hf-6m8v))
+  - Updated `flatted` to 3.4.2, resolving **high** Prototype Pollution via `parse()` in NodeJS flatted ([GHSA-rf6f-7fwh-wjgh](https://github.com/advisories/GHSA-rf6f-7fwh-wjgh))
+  - Updated `picomatch` to 4.0.4, resolving **high** method injection in POSIX character classes causing incorrect glob matching ([GHSA-3v7f-55p6-f55p](https://github.com/advisories/GHSA-3v7f-55p6-f55p)) and a ReDoS vulnerability via extglob quantifiers ([GHSA-c2c7-rcm5-vvqj](https://github.com/advisories/GHSA-c2c7-rcm5-vvqj))
+  - Updated `yaml` to 1.10.3, resolving **moderate** stack overflow via deeply nested YAML collections ([GHSA-48c2-rrv3-qjmp](https://github.com/advisories/GHSA-48c2-rrv3-qjmp))
+
 ### Added
 
 - TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
