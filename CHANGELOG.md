@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
 - TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
 
