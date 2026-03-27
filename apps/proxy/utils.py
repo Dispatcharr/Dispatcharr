@@ -47,27 +47,35 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
             f"on media {target['media_id']} (connected_at={target['connected_at']})"
         )
 
-        if target['type'] == 'live':
-            result = ChannelService.stop_client(target['media_id'], target['client_id'])
-            if result.get("status") == "error":
-                return False
-        else:
-            connection_manager = MultiWorkerVODConnectionManager.get_instance()
-            redis_client = connection_manager.redis_client
+        # When counting by unique channel, freeing one connection from a multi-connection
+        # channel doesn't free a slot — terminate all connections to that channel so the
+        # unique-channel count actually drops by one.
+        targets = (
+            [c for c in active_connections if c['media_id'] == target['media_id']]
+            if ignore_same_channel
+            else [target]
+        )
 
-            if not redis_client:
-                return False
+        for t in targets:
+            if t['type'] == 'live':
+                result = ChannelService.stop_client(t['media_id'], t['client_id'])
+                if result.get("status") == "error":
+                    logger.warning(f"[stream limits][{requesting_client_id}] Failed to stop client {t['client_id']} on channel {t['media_id']}")
+            else:
+                connection_manager = MultiWorkerVODConnectionManager.get_instance()
+                redis_client = connection_manager.redis_client
 
-            # Check if connection exists
-            connection_key = f"vod_persistent_connection:{target['client_id']}"
-            connection_data = redis_client.hgetall(connection_key)
-            if not connection_data:
-                logger.warning(f"VOD connection not found: {target['client_id']}")
-                return False
+                if not redis_client:
+                    return False
 
-            # Set a stop signal key that the worker will check
-            stop_key = get_vod_client_stop_key(target['client_id'])
-            redis_client.setex(stop_key, 60, "true")  # 60 second TTL
+                connection_key = f"vod_persistent_connection:{t['client_id']}"
+                connection_data = redis_client.hgetall(connection_key)
+                if not connection_data:
+                    logger.warning(f"VOD connection not found: {t['client_id']}")
+                    continue
+
+                stop_key = get_vod_client_stop_key(t['client_id'])
+                redis_client.setex(stop_key, 60, "true")  # 60 second TTL
 
         return True
     except Exception as e:
