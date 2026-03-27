@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
+  - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
+  - Global enforcement behaviour is configurable in Settings → User Limits:
+    - **Terminate on Limit Exceeded**: automatically stop an existing stream when the user's limit is reached (vs. rejecting the new connection).
+    - **Terminate Oldest**: prefer terminating the oldest stream when freeing a slot; disable to prefer the newest.
+    - **Prioritize Single-Client Channels**: prefer terminating streams on channels that only this user is watching.
+    - **Ignore Same-Channel Connections**: count multiple connections to the same live channel as one stream toward the limit. Same-channel reconnects are always allowed through. When this is enabled and a channel must be freed, all connections to the chosen channel are terminated together so that the unique-channel count actually decreases. VOD is explicitly excluded from this bypass since VOD connections are not shared upstream.
 - TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
 
