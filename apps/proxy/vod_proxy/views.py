@@ -411,7 +411,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             )
 
         if user:
-            if not check_user_stream_limits(user, session_id):
+            if not check_user_stream_limits(user, session_id, media_id=content_id):
                 return JsonResponse(
                     {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
                     status=429

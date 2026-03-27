@@ -139,26 +139,36 @@ def get_user_active_connections(user_id):
         return []
 
 
-def check_user_stream_limits(user, client_id):
+def check_user_stream_limits(user, client_id, media_id=None):
     # Check user stream limits
     if user and user.stream_limit > 0:
         logger.info("[stream limits]" f"[{client_id}] User {user.username} (ID: {user.id}) is requesting a stream (stream_limit: {user.stream_limit})")
         user_limit_settings = CoreSettings.get_user_limits_settings()
+        ignore_same_channel = user_limit_settings.get("ignore_same_channel_connections", False)
 
         active_connections = get_user_active_connections(user.id)
         unique_channel_count = set([conn['media_id'] for conn in active_connections])
-        user_stream_count = len(unique_channel_count) if user_limit_settings.get("ignore_same_channel_connections", False) else len(active_connections)
+        user_stream_count = len(unique_channel_count) if ignore_same_channel else len(active_connections)
 
-        logger.info(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if user_limit_settings.get('ignore_same_channel_connections', False) else 'total connections'})")
+        logger.info(f"[stream limits]" f"[{client_id}] User {user.username} currently has {len(active_connections)} active connections across {len(unique_channel_count)} unique channels (counting method: {'unique channels' if ignore_same_channel else 'total connections'})")
 
-        if user.stream_limit > 0 and user_stream_count >= user.stream_limit:
+        # If ignore_same_channel is enabled and this request is for a live channel the user
+        # is already watching, allow it through without counting against the limit.
+        # VOD is excluded: connections aren't shared so multiple VOD connections to the
+        # same content would mean multiple upstream connections.
+        live_channel_ids = {str(conn['media_id']) for conn in active_connections if conn['type'] == 'live'}
+        if ignore_same_channel and media_id and str(media_id) in live_channel_ids:
+            logger.info(f"[stream limits][{client_id}] Same-channel reconnect for {media_id} allowed (ignore_same_channel=True)")
+            return True
+
+        if user_stream_count >= user.stream_limit:
             if user_limit_settings.get("terminate_on_limit_exceeded", True) == False:
                 return False
 
-            if len(active_connections) >= user.stream_limit:
+            if user_stream_count >= user.stream_limit:
                 logger.warning("[stream limits]"
                     f"[{client_id}] User {user.username} (ID: {user.id}) has reached stream limit "
-                    f"({len(active_connections)}/{user.stream_limit} channels), attempting to free up slot"
+                    f"({user_stream_count}/{user.stream_limit} streams), attempting to free up slot"
                 )
 
                 if not attempt_stream_termination(user.id, client_id, active_connections):

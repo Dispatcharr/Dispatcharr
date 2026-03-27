@@ -156,7 +156,7 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
-USER_LIMITS_SETTINGS_KEY = "user_limits_settings"
+USER_LIMITS_SETTINGS_KEY = "user_limits"
 
 
 class CoreSettings(models.Model):

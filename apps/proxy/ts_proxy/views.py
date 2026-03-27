@@ -73,7 +73,7 @@ def stream_ts(request, channel_id, user=None):
                 break
 
         if user:
-            if not check_user_stream_limits(user, client_id):
+            if not check_user_stream_limits(user, client_id, media_id=channel_id):
                 return JsonResponse(
                     {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
                     status=429
@@ -565,7 +565,6 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    print(f"Fetchin channel with ID: {channel_id}")
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
