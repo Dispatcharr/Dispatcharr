@@ -94,6 +94,15 @@ def _resolve_html_entities(file_path):
         header = f.read(200)
     encoding = _detect_xml_encoding(header)
 
+    # Capture the original mtime before modifying the file so that os.replace()
+    # does not update the file's mtime.  The file watcher in core/tasks.py uses
+    # mtime to detect changes; if we let mtime advance it would trigger an
+    # infinite refresh loop for local file-based EPG sources.
+    try:
+        original_stat = os.stat(file_path)
+    except OSError:
+        original_stat = None
+
     temp_path = file_path + '.entity_tmp'
     success = False
     try:
@@ -102,6 +111,10 @@ def _resolve_html_entities(file_path):
             for line in src:
                 dst.write(_NAMED_ENTITY_RE.sub(_replace_html_entity, line))
         os.replace(temp_path, file_path)
+        # Restore the original mtime (and atime) so the file watcher does not
+        # mistake the rewrite for an external update.
+        if original_stat is not None:
+            os.utime(file_path, (original_stat.st_atime, original_stat.st_mtime))
         success = True
         logger.debug(f"Resolved HTML entities in {file_path} (encoding: {encoding})")
     except Exception as e:
