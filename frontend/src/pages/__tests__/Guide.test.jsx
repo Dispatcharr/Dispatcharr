@@ -158,7 +158,7 @@ vi.mock('react-window', () => ({
           {children({
             index: i,
             style: {},
-            data: itemData.filteredChannels[i],
+            data: itemData,
           })}
         </div>
       ))}
@@ -167,10 +167,42 @@ vi.mock('react-window', () => ({
 }));
 
 vi.mock('../../components/GuideRow', () => ({
-  default: ({ data }) => (
-    <div data-testid="guide-row">GuideRow for {data?.name}</div>
-  ),
+  default: ({ index, data }) => {
+    const channel = data?.filteredChannels?.[index];
+    const channelPrograms = data?.programsByChannelId?.get(channel?.id) || [];
+    const program = channelPrograms[0] || {
+      id: 'prog-1',
+      tvg_id: 'tvg-1',
+      title: 'Test Program 1',
+      channel_id: channel?.id,
+      start_time: '2024-01-15T12:00:00Z',
+      end_time: '2024-01-15T13:00:00Z',
+      programStart: dayjs('2024-01-15T12:00:00Z'),
+      programEnd: dayjs('2024-01-15T13:00:00Z'),
+      startMs: dayjs('2024-01-15T12:00:00Z').valueOf(),
+      endMs: dayjs('2024-01-15T13:00:00Z').valueOf(),
+    };
+
+    return (
+      <div data-testid="guide-row">
+        GuideRow for {channel?.name}
+        <button
+          data-testid="guide-row-select"
+          onClick={() => {
+            // renderProgram embeds the click handler — call it directly
+            const fakeEvent = { stopPropagation: () => {}, preventDefault: () => {} };
+            // renderProgram returns a Box with onClick — extract and call it
+            const rendered = data?.renderProgram?.(program, undefined, channel);
+            rendered?.props?.onClick?.(fakeEvent);
+          }}
+        >
+          Select program
+        </button>
+      </div>
+    );
+  },
 }));
+
 vi.mock('../../components/HourTimeline', () => ({
   default: ({ hourTimeline }) => (
     <div data-testid="hour-timeline">
@@ -559,43 +591,85 @@ describe('Guide', () => {
   });
 
   describe('Recording Functionality', () => {
-    it('opens Series Rules modal when button is clicked', async () => {
+    it('opens Program Recording modal when Record One is clicked', async () => {
       vi.useRealTimers();
 
       const user = userEvent.setup();
       render(<Guide />);
 
-      const rulesButton = await screen.findByText('Series Rules');
-      await user.click(rulesButton);
+      const selectButtons = await screen.findAllByTestId('guide-row-select');
+      await user.click(selectButtons[0]);
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-detail-modal')).toBeInTheDocument()
+      );
+
+      fireEvent.click(screen.getByText('Record'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-recording-modal')).toBeInTheDocument()
+      );
+
+      fireEvent.click(screen.getByText('Record One'));
 
       await waitFor(() => {
-        expect(
-          screen.getByTestId('series-recording-modal')
-        ).toBeInTheDocument();
+        expect(guideUtils.createRecording).toHaveBeenCalled();
       });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
     });
 
-    it('fetches rules when opening Series Rules modal', async () => {
+    it('uses selected channel for recordOne instead of tvg_id fallback', async () => {
       vi.useRealTimers();
 
-      const mockRules = [{ id: 1, title: 'Test Rule' }];
-      guideUtils.fetchRules.mockResolvedValue(mockRules);
+      API.getAllChannelIds.mockResolvedValue(['channel-1']);
+      API.getChannelsSummary.mockResolvedValue([mockChannelsState.channels['channel-1']]);
+      guideUtils.filterGuideChannels.mockImplementation((channels) =>
+        Array.isArray(channels) ? channels : Object.values(channels)
+      );
 
-      const user = userEvent.setup();
+      const program = {
+        id: 'prog-1',
+        tvg_id: 'tvg-1',
+        title: 'Test Program 1',
+        channel_id: 'channel-1',
+        start_time: now.toISOString(),
+        end_time: now.add(1, 'hour').toISOString(),
+        programStart: now,
+        programEnd: now.add(1, 'hour'),
+        startMs: now.valueOf(),
+        endMs: now.add(1, 'hour').valueOf(),
+      };
+
+      guideUtils.fetchPrograms.mockResolvedValue([program]);
+
       render(<Guide />);
 
-      const rulesButton = await screen.findByText('Series Rules');
-      await user.click(rulesButton);
+      await waitFor(() =>
+        expect(screen.getAllByTestId('guide-row').length).toBeGreaterThan(0)
+      );
+
+      // Use userEvent instead of fireEvent so microtasks (Suspense lazy resolution) are flushed
+      const user = userEvent.setup({ delay: null });
+
+      await user.click(screen.getByTestId('guide-row-select'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-detail-modal')).toBeInTheDocument()
+      );
+
+      await user.click(screen.getByText('Record'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-recording-modal')).toBeInTheDocument()
+      );
+
+      await user.click(screen.getByText('Record One'));
 
       await waitFor(() => {
-        expect(guideUtils.fetchRules).toHaveBeenCalled();
+        expect(guideUtils.createRecording).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'channel-1' }),
+          expect.objectContaining({ id: 'prog-1' })
+        );
       });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
     });
   });
 
