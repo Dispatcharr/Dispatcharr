@@ -1132,11 +1132,10 @@ export default function MediaServersPage() {
             <Stack gap="xs">
               <Group gap="xs">
                 <ArrowDownToLine size={16} />
-                <Text fw={600}>Ingest Media Into Dispatcharr</Text>
+                <Text fw={600}>Import Media into Dispatcharr</Text>
               </Group>
               <Text size="sm" c="dimmed">
-                Connect Plex, Emby, Jellyfin, or Local folders so Dispatcharr can
-                import titles into VOD.
+                Bring your existing media (Plex, Emby, Jellyfin, or folders) into Dispatcharr to create VOD content.
               </Text>
               <Flex justify="flex-end">
                 <Button size="xs" variant="light" onClick={startImportIntegration}>
@@ -1150,10 +1149,10 @@ export default function MediaServersPage() {
             <Stack gap="xs">
               <Group gap="xs">
                 <ArrowUpFromLine size={16} />
-                <Text fw={600}>Publish Dispatcharr VODs</Text>
+                <Text fw={600}>Export VOD to Media Server</Text>
               </Group>
               <Text size="sm" c="dimmed">
-                Export VOD files as STRM/NFO output for Jellyfin or Emby.
+                Export VOD files as STRM/NFO output for Jellyfin or Emby. (Not currently available for plex)
               </Text>
               <Flex justify="flex-end">
                 <Button size="xs" variant="light" onClick={openExportSetup}>
