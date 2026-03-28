@@ -116,16 +116,35 @@ vi.mock('@mantine/core', () => ({
   ),
 }));
 
+// ── useUsersStore ─────────────────────────────────────────────────────────────
+vi.mock('../../../store/users.jsx', () => ({
+  default: vi.fn((selector) => selector({ users: [] })),
+}));
+
 // ── lucide-react ──────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  // navigation.js icons (all must be present for the auth→navigation import chain)
   ListOrdered: () => <svg data-testid="icon-list-ordered" />,
+  Play: () => <svg data-testid="icon-play" />,
+  Database: () => <svg data-testid="icon-database" />,
+  LayoutGrid: () => <svg data-testid="icon-layout-grid" />,
+  Settings: () => <svg data-testid="icon-settings" />,
+  ChartLine: () => <svg data-testid="icon-chart-line" />,
+  Video: () => <svg data-testid="icon-video" />,
+  PlugZap: () => <svg data-testid="icon-plug-zap" />,
+  User: () => <svg data-testid="icon-user" />,
+  FileImage: () => <svg data-testid="icon-file-image" />,
+  Webhook: () => <svg data-testid="icon-webhook" />,
+  Logs: () => <svg data-testid="icon-logs" />,
+  Blocks: () => <svg data-testid="icon-blocks" />,
+  MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
+  // VodConnectionCard-specific icons
   ChevronDown: ({ size, style }) => (
     <svg data-testid="icon-chevron-down" data-size={size} style={style} />
   ),
   HardDriveUpload: () => <svg data-testid="icon-hdd-upload" />,
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
-  Video: () => <svg data-testid="icon-video" />,
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────
