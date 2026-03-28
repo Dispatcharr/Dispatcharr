@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `CustomTable` column layout now supports flexible (`grow`) columns alongside fixed-width ones:
+  - Column definitions accept a `grow` property (boolean or number) to opt into flex layout. A numeric value sets the flex-grow weight, allowing relative sizing between grow columns (e.g. `grow: 2` gives a column twice the share of spare space as `grow: 1`).
+  - `maxSize` is now respected on grow columns, capping how wide they expand via `maxWidth`.
+  - The wrapper's `minWidth` calculation now uses `minSize` (not TanStack's 150px default) for grow columns, preventing the table from overflowing its container when columns would otherwise be sized larger than available space.
 - Dependency updates:
   - `requests` 2.32.5 → 2.33.0 (security patch; see Security section)
   - `celery` 5.6.2 → 5.6.3
