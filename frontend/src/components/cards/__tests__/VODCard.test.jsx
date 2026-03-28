@@ -10,12 +10,22 @@ vi.mock('../../../utils/cards/VODCardUtils.js', () => ({
 // ── Mantine core ──────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
   ActionIcon: ({ children, onClick, variant, size }) => (
-    <button data-testid="action-icon" data-variant={variant} data-size={size} onClick={onClick}>
+    <button
+      data-testid="action-icon"
+      data-variant={variant}
+      data-size={size}
+      onClick={onClick}
+    >
       {children}
     </button>
   ),
   Badge: ({ children, color, variant, size }) => (
-    <span data-testid="badge" data-color={color} data-variant={variant} data-size={size}>
+    <span
+      data-testid="badge"
+      data-color={color}
+      data-variant={variant}
+      data-size={size}
+    >
       {children}
     </span>
   ),
@@ -37,14 +47,27 @@ vi.mock('@mantine/core', () => ({
       {children}
     </div>
   ),
-  CardSection: ({ children }) => <div data-testid="card-section">{children}</div>,
+  CardSection: ({ children }) => (
+    <div data-testid="card-section">{children}</div>
+  ),
   Group: ({ children, justify, gap, wrap }) => (
-    <div data-testid="group" data-justify={justify} data-gap={gap} data-wrap={wrap}>
+    <div
+      data-testid="group"
+      data-justify={justify}
+      data-gap={gap}
+      data-wrap={wrap}
+    >
       {children}
     </div>
   ),
   Image: ({ src, alt, height, fallbackSrc, fit }) => (
-    <img src={src} alt={alt} data-height={height} data-fallback={fallbackSrc} data-fit={fit} />
+    <img
+      src={src}
+      alt={alt}
+      data-height={height}
+      data-fallback={fallbackSrc}
+      data-fit={fit}
+    />
   ),
   Stack: ({ children, spacing, gap, p }) => (
     <div data-testid="stack" data-spacing={spacing} data-gap={gap} data-p={p}>
@@ -68,6 +91,7 @@ vi.mock('@mantine/core', () => ({
 
 // ── lucide-react ──────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <svg data-testid="icon-list-ordered" />,
   Calendar: () => <svg data-testid="icon-calendar" />,
   Clock: () => <svg data-testid="icon-clock" />,
   Play: () => <svg data-testid="icon-play" />,
@@ -75,7 +99,10 @@ vi.mock('lucide-react', () => ({
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────
-import { formatDuration, getSeasonLabel } from '../../../utils/cards/VODCardUtils.js';
+import {
+  formatDuration,
+  getSeasonLabel,
+} from '../../../utils/cards/VODCardUtils.js';
 import VODCard from '../VODCard';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,7 +140,9 @@ const makeEpisode = (overrides = {}) => ({
 describe('VODCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(formatDuration).mockImplementation((mins) => (mins ? `${mins}m` : null));
+    vi.mocked(formatDuration).mockImplementation((mins) =>
+      mins ? `${mins}m` : null
+    );
     vi.mocked(getSeasonLabel).mockReturnValue('S01E02');
   });
 
@@ -193,7 +222,9 @@ describe('VODCard', () => {
 
     it('renders the season label via getSeasonLabel', () => {
       render(<VODCard vod={makeEpisode()} onClick={vi.fn()} />);
-      expect(getSeasonLabel).toHaveBeenCalledWith(expect.objectContaining({ type: 'episode' }));
+      expect(getSeasonLabel).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'episode' })
+      );
       expect(screen.getByText(/S01E02/)).toBeInTheDocument();
     });
 
@@ -230,7 +261,9 @@ describe('VODCard', () => {
     });
 
     it('does not render an img tag when logo.url is empty string', () => {
-      render(<VODCard vod={makeMovie({ logo: { url: '' } })} onClick={vi.fn()} />);
+      render(
+        <VODCard vod={makeMovie({ logo: { url: '' } })} onClick={vi.fn()} />
+      );
       expect(screen.queryByRole('img')).not.toBeInTheDocument();
     });
   });
@@ -257,8 +290,9 @@ describe('VODCard', () => {
     it('does not render genre when absent', () => {
       render(<VODCard vod={makeMovie({ genre: null })} onClick={vi.fn()} />);
       const badges = screen.queryAllByTestId('badge');
-      const dimmedBadges = badges.filter((badge) =>
-        badge.getAttribute('data-color') === 'dimmed');
+      const dimmedBadges = badges.filter(
+        (badge) => badge.getAttribute('data-color') === 'dimmed'
+      );
       expect(dimmedBadges.length).toBe(0);
     });
   });

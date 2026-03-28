@@ -33,8 +33,12 @@ vi.mock('@mantine/core', async () => {
         {children}
       </div>
     ),
-    PopoverTarget: ({ children }) => <div data-testid="popover-target">{children}</div>,
-    PopoverDropdown: ({ children }) => <div data-testid="popover-dropdown">{children}</div>,
+    PopoverTarget: ({ children }) => (
+      <div data-testid="popover-target">{children}</div>
+    ),
+    PopoverDropdown: ({ children }) => (
+      <div data-testid="popover-dropdown">{children}</div>
+    ),
     Indicator: ({ children, label, disabled, processing }) => (
       <div
         data-testid="indicator"
@@ -46,18 +50,53 @@ vi.mock('@mantine/core', async () => {
       </div>
     ),
     ActionIcon: ({ children, onClick, 'aria-label': ariaLabel, ...props }) => (
-      <button onClick={onClick} aria-label={ariaLabel} data-testid={`action-icon-${ariaLabel}`} {...props}>
+      <button
+        onClick={onClick}
+        aria-label={ariaLabel}
+        data-testid={`action-icon-${ariaLabel}`}
+        {...props}
+      >
         {children}
       </button>
     ),
-    ScrollAreaAutosize: ({ children }) => <div data-testid="scroll-area">{children}</div>,
-    Badge: ({ children, ...props }) => <span data-testid="badge" {...props}>{children}</span>,
-    Card: ({ children, ...props }) => <div data-testid="notification-card" {...props}>{children}</div>,
-    ThemeIcon: ({ children, ...props }) => <div data-testid="theme-icon" {...props}>{children}</div>,
-    Group: ({ children, ...props }) => <div data-testid="group" {...props}>{children}</div>,
-    Stack: ({ children, ...props }) => <div data-testid="stack" {...props}>{children}</div>,
-    Box: ({ children, ...props }) => <div data-testid="box" {...props}>{children}</div>,
-    Text: ({ children, ...props }) => <span data-testid="text" {...props}>{children}</span>,
+    ScrollAreaAutosize: ({ children }) => (
+      <div data-testid="scroll-area">{children}</div>
+    ),
+    Badge: ({ children, ...props }) => (
+      <span data-testid="badge" {...props}>
+        {children}
+      </span>
+    ),
+    Card: ({ children, ...props }) => (
+      <div data-testid="notification-card" {...props}>
+        {children}
+      </div>
+    ),
+    ThemeIcon: ({ children, ...props }) => (
+      <div data-testid="theme-icon" {...props}>
+        {children}
+      </div>
+    ),
+    Group: ({ children, ...props }) => (
+      <div data-testid="group" {...props}>
+        {children}
+      </div>
+    ),
+    Stack: ({ children, ...props }) => (
+      <div data-testid="stack" {...props}>
+        {children}
+      </div>
+    ),
+    Box: ({ children, ...props }) => (
+      <div data-testid="box" {...props}>
+        {children}
+      </div>
+    ),
+    Text: ({ children, ...props }) => (
+      <span data-testid="text" {...props}>
+        {children}
+      </span>
+    ),
     Button: ({ children, onClick, ...props }) => (
       <button onClick={onClick} data-testid="button" {...props}>
         {children}
@@ -84,14 +123,19 @@ vi.mock('@mantine/core', async () => {
 
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <span data-testid="icon-list-ordered">ListOrdered</span>,
   Bell: () => <span data-testid="bell-icon">Bell</span>,
   Check: () => <span data-testid="check-icon">Check</span>,
   CheckCheck: () => <span data-testid="checkcheck-icon">CheckCheck</span>,
   Download: () => <span data-testid="download-icon">Download</span>,
-  ExternalLink: () => <span data-testid="external-link-icon">ExternalLink</span>,
+  ExternalLink: () => (
+    <span data-testid="external-link-icon">ExternalLink</span>
+  ),
   Info: () => <span data-testid="info-icon">Info</span>,
   Settings: () => <span data-testid="settings-icon">Settings</span>,
-  AlertTriangle: () => <span data-testid="alert-triangle-icon">AlertTriangle</span>,
+  AlertTriangle: () => (
+    <span data-testid="alert-triangle-icon">AlertTriangle</span>
+  ),
   Megaphone: () => <span data-testid="megaphone-icon">Megaphone</span>,
   X: () => <span data-testid="x-icon">X</span>,
   Eye: () => <span data-testid="eye-icon">Eye</span>,
@@ -279,8 +323,12 @@ describe('NotificationCenter', () => {
     });
 
     it('should handle API errors gracefully', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      NotificationUtils.getNotifications.mockRejectedValue(new Error('Network error'));
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      NotificationUtils.getNotifications.mockRejectedValue(
+        new Error('Network error')
+      );
 
       renderComponent();
 
@@ -311,7 +359,7 @@ describe('NotificationCenter', () => {
       fireEvent.click(screen.getByLabelText('Notifications'));
 
       const eyeButtons = screen.getAllByTestId(/action-icon-/);
-      const toggleButton = eyeButtons.find(btn =>
+      const toggleButton = eyeButtons.find((btn) =>
         btn.querySelector('[data-testid="eye-icon"]')
       );
       fireEvent.click(toggleButton);
@@ -376,7 +424,10 @@ describe('NotificationCenter', () => {
       fireEvent.click(xIcons[0].closest('button'));
 
       await waitFor(() => {
-        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(1, 'dismissed');
+        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(
+          1,
+          'dismissed'
+        );
       });
     });
 
@@ -445,7 +496,10 @@ describe('NotificationCenter', () => {
       fireEvent.click(applyButton);
 
       await waitFor(() => {
-        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(2, 'applied');
+        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(
+          2,
+          'applied'
+        );
         expect(onSettingAction).toHaveBeenCalledWith(mockNotifications[1]);
       });
     });
@@ -458,7 +512,10 @@ describe('NotificationCenter', () => {
       fireEvent.click(ignoreButton);
 
       await waitFor(() => {
-        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(2, 'dismissed');
+        expect(NotificationUtils.dismissNotification).toHaveBeenCalledWith(
+          2,
+          'dismissed'
+        );
       });
     });
 
@@ -520,7 +577,7 @@ describe('NotificationCenter', () => {
       fireEvent.click(screen.getByLabelText('Notifications'));
 
       const eyeButtons = screen.getAllByTestId(/action-icon-/);
-      const toggleButton = eyeButtons.find(btn =>
+      const toggleButton = eyeButtons.find((btn) =>
         btn.querySelector('[data-testid="eye-icon"]')
       );
       fireEvent.click(toggleButton);
@@ -599,7 +656,7 @@ describe('NotificationCenter', () => {
       fireEvent.click(screen.getByLabelText('Notifications'));
 
       const eyeButtons = screen.getAllByTestId(/action-icon-/);
-      const toggleButton = eyeButtons.find(btn =>
+      const toggleButton = eyeButtons.find((btn) =>
         btn.querySelector('[data-testid="eye-icon"]')
       );
       fireEvent.click(toggleButton);
@@ -610,8 +667,12 @@ describe('NotificationCenter', () => {
 
   describe('Error Handling', () => {
     it('should handle dismiss notification errors', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      NotificationUtils.dismissNotification.mockRejectedValue(new Error('API error'));
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      NotificationUtils.dismissNotification.mockRejectedValue(
+        new Error('API error')
+      );
 
       renderComponent();
       fireEvent.click(screen.getByLabelText('Notifications'));
@@ -630,8 +691,12 @@ describe('NotificationCenter', () => {
     });
 
     it('should handle dismiss all notifications errors', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      NotificationUtils.dismissAllNotifications.mockRejectedValue(new Error('API error'));
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      NotificationUtils.dismissAllNotifications.mockRejectedValue(
+        new Error('API error')
+      );
 
       renderComponent();
       fireEvent.click(screen.getByLabelText('Notifications'));
@@ -655,7 +720,9 @@ describe('NotificationCenter', () => {
       renderComponent();
       fireEvent.click(screen.getByLabelText('Notifications'));
 
-      const expectedDate = new Date('2024-01-01T10:00:00Z').toLocaleDateString();
+      const expectedDate = new Date(
+        '2024-01-01T10:00:00Z'
+      ).toLocaleDateString();
       expect(screen.getByText(expectedDate)).toBeInTheDocument();
     });
   });
