@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Connection cards on the Stats page now show the **username** of the connected user in a new User column (between IP Address and Connected). The username is resolved from the user store using the `user_id` stored in Redis client metadata; unauthenticated connections display "Anonymous". (Closes #766)
+- `ip_address` and `user_id` were not included in the client info returned by `get_detailed_channel_info()` despite being available in the Redis hash. Both fields are now extracted and returned. (Closes #586)
 - Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
 - User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
   - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
