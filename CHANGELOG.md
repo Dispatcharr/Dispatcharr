@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- XtreamCodes VOD endpoints (`/movie/` and `/series/`) no longer redirect clients to a UUID-based proxy URL. Requests are now handled directly in the proxy layer via `stream_xc_movie` and `stream_xc_episode`, which call `stream_vod()` internally. The original XC path is preserved for the client throughout the stream.
 - `CustomTable` column layout now supports flexible (`grow`) columns alongside fixed-width ones:
   - Column definitions accept a `grow` property (boolean or number) to opt into flex layout. A numeric value sets the flex-grow weight, allowing relative sizing between grow columns (e.g. `grow: 2` gives a column twice the share of spare space as `grow: 1`).
   - `maxSize` is now respected on grow columns, capping how wide they expand via `maxWidth`.
