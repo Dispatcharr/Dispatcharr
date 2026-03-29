@@ -7,6 +7,8 @@ import {
   ChartLine,
   Video,
   PlugZap,
+  Package,
+  Download,
   User,
   FileImage,
   Webhook,
@@ -63,8 +65,11 @@ export const NAV_ITEMS = {
     id: 'plugins',
     label: 'Plugins',
     icon: PlugZap,
-    path: '/plugins',
     adminOnly: true,
+    paths: [
+      { label: 'My Plugins', icon: Package, path: '/plugins' },
+      { label: 'Find Plugins', icon: Download, path: '/plugins/browse' },
+    ],
   },
   integrations: {
     id: 'integrations',

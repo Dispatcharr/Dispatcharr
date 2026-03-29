@@ -168,6 +168,9 @@ vi.mock('lucide-react', () => ({
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
   Users: () => <svg data-testid="icon-users" />,
+  Video: () => <svg data-testid="icon-video" />,
+  Package: () => <svg data-testid="icon-package" />,
+  Download: () => <svg data-testid="icon-download" />,
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────

@@ -10,15 +10,20 @@ import {
   Card,
   Divider,
   Group,
+  Loader,
   Stack,
   Switch,
   Text,
+  Tooltip,
   UnstyledButton,
   Badge,
 } from '@mantine/core';
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, RefreshCw, Trash2 } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 import { SUBSCRIPTION_EVENTS } from '../../constants.js';
+import useSettingsStore from '../../store/settings.jsx';
+import { usePluginStore } from '../../store/plugins.jsx';
+import AvailablePluginCard from './AvailablePluginCard.jsx';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
   return plugin.fields.map((f) => (
@@ -109,12 +114,15 @@ const PluginCard = ({
   onRequestDelete,
   onRequestConfirm,
 }) => {
+  const appVersion = useSettingsStore((s) => s.version?.version || '');
   const [settings, setSettings] = useState(plugin.settings || {});
   const [saving, setSaving] = useState(false);
   const [runningActionId, setRunningActionId] = useState(null);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
   const [lastResult, setLastResult] = useState(null);
   const [expanded, setExpanded] = useState(!!plugin.enabled);
+  const [detailPlugin, setDetailPlugin] = useState(null);
+  const [detailFetching, setDetailFetching] = useState(false);
 
   // Keep local enabled state in sync with props (e.g., after import + enable)
   React.useEffect(() => {
@@ -129,6 +137,28 @@ const PluginCard = ({
   React.useEffect(() => {
     setSettings(plugin.settings || {});
   }, [plugin.key, plugin.settings]);
+
+  const openPluginDetail = async () => {
+    if (!plugin.slug || !plugin.source_repo) return;
+    // Try the store cache first to avoid an unnecessary network call
+    const cached = usePluginStore.getState().availablePlugins.find(
+      (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+    );
+    if (cached) {
+      setDetailPlugin(cached);
+      return;
+    }
+    setDetailFetching(true);
+    try {
+      await usePluginStore.getState().fetchAvailablePlugins();
+      const match = usePluginStore.getState().availablePlugins.find(
+        (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+      );
+      if (match) setDetailPlugin(match);
+    } finally {
+      setDetailFetching(false);
+    }
+  };
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
@@ -183,7 +213,7 @@ const PluginCard = ({
           setEnabled(previous);
           return;
         }
-      } catch (e) {
+      } catch {
         setEnabled(previous);
       }
     };
@@ -210,7 +240,7 @@ const PluginCard = ({
       // Save settings before running to ensure backend uses latest values
       try {
         await onSaveSettings(plugin.key, settings);
-      } catch (e) {
+      } catch {
         /* ignore, run anyway */
       }
       const resp = await onRunAction(plugin.key, a.id);
@@ -272,11 +302,11 @@ const PluginCard = ({
           )}
           <UnstyledButton
             onClick={toggleExpanded}
-            style={{ minWidth: 0, flex: 1, textAlign: 'left' }}
+            style={{ minWidth: 0, flex: 1, textAlign: 'left', overflow: 'hidden' }}
           >
             <Box style={{ minWidth: 0, flex: 1 }}>
-              <Text fw={600}>{plugin.name}</Text>
-              <Text size="sm" c="dimmed">
+              <Text fw={600} truncate>{plugin.name}</Text>
+              <Text size="sm" c="dimmed" truncate>
                 {plugin.description}
               </Text>
               {(plugin.author || plugin.help_url) && (
@@ -311,6 +341,54 @@ const PluginCard = ({
           >
             <Trash2 size={16} />
           </ActionIcon>
+          {plugin.update_available ? (
+            <Tooltip label={`Update available: v${plugin.latest_version}`}>
+              <Badge
+                size="xs"
+                variant="light"
+                color="yellow"
+                leftSection={detailFetching ? <Loader size={8} /> : <RefreshCw size={8} />}
+                style={{ cursor: 'pointer' }}
+                onClick={openPluginDetail}
+              >
+                Update
+              </Badge>
+            </Tooltip>
+          ) : plugin.is_managed ? (
+            <Tooltip label="View plugin details">
+              <Badge
+                size="xs"
+                variant="light"
+                color="green"
+                leftSection={detailFetching ? <Loader size={8} /> : <Check size={8} />}
+                style={{ cursor: 'pointer' }}
+                onClick={openPluginDetail}
+              >
+                Up to Date
+              </Badge>
+            </Tooltip>
+          ) : (
+            <Badge size="xs" variant="light" color="gray">
+              Unmanaged
+            </Badge>
+          )}
+          {detailPlugin && (
+            <div style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+              <AvailablePluginCard
+                plugin={detailPlugin}
+                appVersion={appVersion}
+                autoOpenDetail
+                key={detailPlugin.slug}
+                onDetailClose={() => setDetailPlugin(null)}
+                onInstalled={() => {
+                  const fresh = usePluginStore.getState().availablePlugins.find(
+                    (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+                  );
+                  if (fresh) setDetailPlugin(fresh);
+                }}
+              />
+            </div>
+          )}
           <Text size="xs" c="dimmed">
             v{plugin.version || '1.0.0'}
           </Text>

@@ -57,6 +57,8 @@ vi.mock('lucide-react', () => ({
   MonitorCog: () => <div data-testid="monitor-cog-icon" />,
   Blocks: () => <div data-testid="blocks-icon" />,
   Heart: () => <div data-testid="heart-icon" />,
+  Package: () => <div data-testid="package-icon" />,
+  Download: () => <div data-testid="download-icon" />,
 }));
 
 // Mock UserForm component
