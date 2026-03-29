@@ -532,7 +532,7 @@ def stream_ts(request, channel_id, user=None):
 
         # Create a stream generator for this client
         generate = create_stream_generator(
-            channel_id, client_id, client_ip, client_user_agent, channel_initializing
+            channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user
         )
 
         # Return the StreamingHttpResponse from the main function
