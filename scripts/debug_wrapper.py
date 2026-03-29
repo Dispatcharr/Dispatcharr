@@ -2,6 +2,9 @@
 Debug wrapper for the WSGI application.
 This module initializes debugpy and then imports the actual application.
 """
+from gevent_patch import patch_if_needed
+patch_if_needed()
+
 import sys
 import os
 import time
