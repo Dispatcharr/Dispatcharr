@@ -134,6 +134,7 @@ If the name contains any of these, the repo will be rejected on add and skipped 
 | `manifest_url` | No | URL (or relative path) to the per-plugin manifest with full version history. See [Per-Plugin Manifest](#per-plugin-manifest). |
 | `latest_url` | No | Direct download URL (or relative path) to the latest release zip. |
 | `latest_sha256` | No | SHA256 checksum of the latest release zip (lowercase hex, 64 chars). |
+| `latest_md5` | No | MD5 checksum of the latest release zip. Informational only - not validated by Dispatcharr. |
 | `icon_url` | No | URL (or relative path) to a logo image (PNG recommended). |
 | `min_dispatcharr_version` | No | Minimum Dispatcharr version required. Install is blocked if the running version is older. |
 | `max_dispatcharr_version` | No | Maximum Dispatcharr version supported. Install is blocked if the running version is newer. |
@@ -177,8 +178,33 @@ The per-plugin manifest provides full version history. It is fetched on-demand w
 Include a per-plugin manifest if you want to:
 - Offer multiple downloadable versions
 - Show per-version compatibility ranges
-- Display release dates for each version
+- Display build timestamps and commit links for each version
 - Provide detailed author/license info beyond what's in the repo manifest
+
+### Accepted Formats
+
+Same as the root manifest - both flat and wrapped formats are accepted:
+
+**Flat (no signing):**
+```json
+{
+  "slug": "...",
+  "versions": [...]
+}
+```
+
+**Wrapped (supports signing):**
+```json
+{
+  "manifest": {
+    "slug": "...",
+    "versions": [...]
+  },
+  "signature": "-----BEGIN PGP SIGNATURE-----\n..."
+}
+```
+
+Use the wrapped format if you want to GPG-sign the per-plugin manifest.
 
 ### Example
 
@@ -194,25 +220,26 @@ Include a per-plugin manifest if you want to:
     {
       "version": "1.2.5",
       "url": "releases/weather_display-1.2.5.zip",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "released_at": "2025-01-20T15:30:00Z",
+      "checksum_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "build_timestamp": "2025-01-20T15:30:00Z",
+      "commit_sha": "4e8f1b108c1e84f60520710d13e54eb2fb519648",
+      "commit_sha_short": "4e8f1b1",
       "min_dispatcharr_version": "2.5.0",
       "max_dispatcharr_version": null
     },
     {
       "version": "1.2.4",
       "url": "releases/weather_display-1.2.4.zip",
-      "sha256": "d4d967a67a4947e55183308cece206b30dda3e1b4fe00aae60f45a49c83b7ed6",
-      "released_at": "2025-01-15T10:00:00Z",
+      "checksum_sha256": "d4d967a67a4947e55183308cece206b30dda3e1b4fe00aae60f45a49c83b7ed6",
+      "build_timestamp": "2025-01-15T10:00:00Z",
       "min_dispatcharr_version": "2.4.0"
     }
   ],
   "latest": {
     "version": "1.2.5",
     "url": "releases/weather_display-1.2.5.zip",
-    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "released_at": "2025-01-20T15:30:00Z",
+    "checksum_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "build_timestamp": "2025-01-20T15:30:00Z",
     "min_dispatcharr_version": "2.5.0"
   }
 }
@@ -237,9 +264,10 @@ Include a per-plugin manifest if you want to:
 |-------|----------|-------------|
 | `version` | **Yes** | Version string (`1.2.3` or `v1.2.3`). |
 | `url` | **Yes** | Download URL for the zip. Relative URLs are resolved against the repo's `root_url`. |
-| `sha256` | No | SHA256 hex checksum. **Strongly recommended.** Validated on install - mismatch blocks the install. |
-| `released_at` | No | ISO 8601 release timestamp. Shown in the version table. |
-| `build_timestamp` | No | ISO 8601 build timestamp. Shown as "Built" date. |
+| `checksum_sha256` | No | SHA256 hex checksum. **Strongly recommended.** Validated on install - mismatch blocks the install. |
+| `build_timestamp` | No | ISO 8601 build timestamp. Shown as "Built" in the version detail. |
+| `commit_sha` | No | Full Git commit SHA. Used to build a commit link if `registry_url` is set. |
+| `commit_sha_short` | No | Abbreviated commit SHA. Displayed in the version detail table as a clickable link. |
 | `min_dispatcharr_version` | No | Minimum compatible Dispatcharr version. |
 | `max_dispatcharr_version` | No | Maximum compatible Dispatcharr version. |
 
@@ -529,9 +557,10 @@ You can host release zips as GitHub Release assets and reference them with absol
     {
       "version": "string (required)",
       "url": "string (required, URL or relative path)",
-      "sha256": "string (64-char hex)",
-      "released_at": "string (ISO 8601)",
+      "checksum_sha256": "string (64-char hex)",
       "build_timestamp": "string (ISO 8601)",
+      "commit_sha": "string",
+      "commit_sha_short": "string",
       "min_dispatcharr_version": "string (semver)",
       "max_dispatcharr_version": "string (semver) or null"
     }
@@ -539,8 +568,8 @@ You can host release zips as GitHub Release assets and reference them with absol
   "latest": {
     "version": "string",
     "url": "string",
-    "sha256": "string",
-    "released_at": "string",
+    "checksum_sha256": "string",
+    "build_timestamp": "string",
     "min_dispatcharr_version": "string",
     "max_dispatcharr_version": "string or null"
   }
