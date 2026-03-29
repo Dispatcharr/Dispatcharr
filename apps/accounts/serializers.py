@@ -47,7 +47,9 @@ class GroupSerializer(serializers.ModelSerializer):
 
 # 🔹 Fix for User serialization
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=False)
+    password = serializers.CharField(
+        write_only=True, required=False, trim_whitespace=False
+    )
     channel_profiles = serializers.PrimaryKeyRelatedField(
         queryset=ChannelProfile.objects.all(), many=True, required=False
     )
