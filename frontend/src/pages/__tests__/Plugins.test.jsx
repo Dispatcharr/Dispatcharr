@@ -322,7 +322,7 @@ describe('PluginsPage', () => {
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
-        expect(importPlugin).toHaveBeenCalledWith(file);
+        expect(importPlugin).toHaveBeenCalledWith(file, false, true);
         expect(showNotification).toHaveBeenCalled();
         expect(updateNotification).toHaveBeenCalled();
       });
