@@ -1,6 +1,7 @@
 # apps/m3u/tasks.py
 import logging
 import re
+import regex
 import requests
 import os
 import gc
@@ -2399,11 +2400,13 @@ def get_transformed_credentials(account, profile=None):
         # Apply profile-specific transformations if profile is provided
         if profile and profile.search_pattern and profile.replace_pattern:
             try:
-                # Handle backreferences in the replacement pattern
-                safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', profile.replace_pattern)
+                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
+                # regex module accepts JS-style (?<name>...) named groups natively
+                safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
+                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
 
                 # Apply transformation to the complete URL
-                transformed_complete_url = re.sub(profile.search_pattern, safe_replace_pattern, complete_url)
+                transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
                 logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
 
                 # Extract components from the transformed URL

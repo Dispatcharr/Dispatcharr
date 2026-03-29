@@ -270,17 +270,20 @@ def _get_m3u_profile(m3u_account, profile_id, session_id=None):
 def _transform_url(original_url, m3u_profile):
     """Transform URL based on M3U profile settings"""
     try:
-        import re
+        import regex
 
         if not original_url:
             return None
 
         search_pattern = m3u_profile.search_pattern
         replace_pattern = m3u_profile.replace_pattern
-        safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace_pattern)
+        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
+        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
+        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
 
         if search_pattern and replace_pattern:
-            transformed_url = re.sub(search_pattern, safe_replace_pattern, original_url)
+            # regex module accepts JS-style (?<name>...) named groups natively
+            transformed_url = regex.sub(search_pattern, safe_replace_pattern, original_url)
             return transformed_url
 
         return original_url
