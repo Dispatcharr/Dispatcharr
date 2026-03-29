@@ -4,7 +4,7 @@ from shlex import split as shlex_split
 import sys
 import subprocess
 import logging
-import re
+import regex
 import redis
 
 from django.conf import settings
@@ -132,10 +132,13 @@ def stream_view(request, channel_uuid):
         # Prepare the pattern replacement.
         logger.debug("Executing the following pattern replacement:")
         logger.debug(f"  search: {active_profile.search_pattern}")
-        safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', active_profile.replace_pattern)
+        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
+        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', active_profile.replace_pattern)
+        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
         logger.debug(f"  replace: {active_profile.replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
-        stream_url = re.sub(active_profile.search_pattern, safe_replace_pattern, input_url)
+        # regex module accepts JS-style (?<name>...) named groups natively
+        stream_url = regex.sub(active_profile.search_pattern, safe_replace_pattern, input_url)
         logger.debug(f"Generated stream url: {stream_url}")
 
         # Get the stream profile set on the channel.

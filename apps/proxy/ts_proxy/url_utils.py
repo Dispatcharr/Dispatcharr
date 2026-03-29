@@ -3,7 +3,7 @@ Utilities for handling stream URLs and transformations.
 """
 
 import logging
-import re
+import regex
 from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
@@ -146,13 +146,14 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         logger.debug(f"  base URL: {input_url}")
         logger.debug(f"  search: {search_pattern}")
 
-        # Handle backreferences in the replacement pattern
-        safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace_pattern)
+        # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
+        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
+        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
         logger.debug(f"  replace: {replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
 
-        # Apply the transformation
-        stream_url = re.sub(search_pattern, safe_replace_pattern, input_url)
+        # Apply the transformation (regex module accepts JS-style (?<name>...) natively)
+        stream_url = regex.sub(search_pattern, safe_replace_pattern, input_url)
         logger.info(f"Generated stream url: {stream_url}")
 
         return stream_url

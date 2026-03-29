@@ -290,7 +290,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setXcMode(mode);
   };
 
-  // Local regex testing for immediate visual feedback
+  // Local regex for the live demo preview
   const getHighlightedSearchText = () => {
     if (!searchPattern || !sampleInput) return sampleInput;
     try {
