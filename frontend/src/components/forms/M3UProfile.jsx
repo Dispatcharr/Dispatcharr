@@ -167,7 +167,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     } catch (error) {
       console.error('Error sending WebSocket message:', error);
     }
-  }, [websocketReady, m3u, debouncedPatterns, streamUrl, sampleInput]);
+  }, [websocketReady, sendMessage, m3u, debouncedPatterns, streamUrl, sampleInput]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
