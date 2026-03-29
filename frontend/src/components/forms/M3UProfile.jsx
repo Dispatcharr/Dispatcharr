@@ -167,7 +167,14 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     } catch (error) {
       console.error('Error sending WebSocket message:', error);
     }
-  }, [websocketReady, sendMessage, m3u, debouncedPatterns, streamUrl, sampleInput]);
+  }, [
+    websocketReady,
+    sendMessage,
+    m3u,
+    debouncedPatterns,
+    streamUrl,
+    sampleInput,
+  ]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -237,6 +244,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       <form onSubmit={handleSubmit(onSubmit)}>
         <TextInput
           label="Name"
+          description="A label to identify this URL rewrite profile"
+          placeholder="e.g. Provider A - 2nd Connection"
           {...register('name')}
           error={errors.name?.message}
         />
@@ -245,6 +254,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         {!isDefaultProfile && (
           <NumberInput
             label="Max Streams"
+            description="Maximum concurrent streams allowed for this profile. Set to 0 for unlimited."
             {...register('max_streams')}
             value={watch('max_streams')}
             onChange={(value) => setValue('max_streams', value || 0)}
@@ -259,12 +269,16 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           <>
             <TextInput
               label="Search Pattern (Regex)"
+              description="A regular expression matching the part of the stream URL you want to replace. For most users, matching just the credentials is enough."
+              placeholder="e.g. username1/password1"
               value={searchPattern}
               onChange={onSearchPatternUpdate}
               error={errors.search_pattern?.message}
             />
             <TextInput
               label="Replace Pattern"
+              description="The value to substitute in place of the matched text. Use $1, $2, etc. to reference regex capture groups."
+              placeholder="e.g. username2/password2"
               value={replacePattern}
               onChange={onReplacePatternUpdate}
               error={errors.replace_pattern?.message}
