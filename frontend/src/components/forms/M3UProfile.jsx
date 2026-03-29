@@ -18,14 +18,9 @@ import {
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { useWebSocket } from '../../WebSocket';
-import usePlaylistsStore from '../../store/playlists';
 
 const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const [websocketReady, sendMessage] = useWebSocket();
-
-  const profileSearchPreview = usePlaylistsStore((s) => s.profileSearchPreview);
-  const profileResult = usePlaylistsStore((s) => s.profileResult);
-
   const [streamUrl, setStreamUrl] = useState('');
   const [searchPattern, setSearchPattern] = useState('');
   const [replacePattern, setReplacePattern] = useState('');
@@ -339,7 +334,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           <Grid gutter="xs">
             <Grid.Col span={12}>
               <Paper shadow="sm" p="xs" radius="md" withBorder>
-                <Text size="sm" weight={500} mb={3}>
+                <Text size="sm" weight={500} mb={3} component="div">
                   Matched Text{' '}
                   <Badge size="xs" color="yellow">
                     highlighted
