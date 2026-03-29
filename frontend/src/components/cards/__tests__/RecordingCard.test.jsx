@@ -109,13 +109,12 @@ vi.mock('@mantine/core', async () => ({
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
 }));
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <svg data-testid="icon-list-ordered" />,
   AlertTriangle: () => <svg data-testid="icon-alert-triangle" />,
   Plus: () => <svg data-testid="icon-plus" />,
   Square: () => <svg data-testid="icon-square" />,
@@ -140,8 +139,13 @@ vi.mock('../../../images/logo.png', () => ({ default: 'default-logo.png' }));
 import useChannelsStore from '../../../store/channels.jsx';
 import useSettingsStore from '../../../store/settings.jsx';
 import useVideoStore from '../../../store/useVideoStore.jsx';
-import { useDateTimeFormat, useTimeHelpers, format, isAfter, isBefore }
-  from '../../../utils/dateTimeUtils.js';
+import {
+  useDateTimeFormat,
+  useTimeHelpers,
+  format,
+  isAfter,
+  isBefore,
+} from '../../../utils/dateTimeUtils.js';
 import { notifications } from '@mantine/notifications';
 import * as RecordingCardUtils from '../../../utils/cards/RecordingCardUtils.js';
 import dayjs from 'dayjs';
@@ -187,7 +191,11 @@ const makeChannel = () => ({
 });
 
 /** Wire up all store/utility mocks with sensible defaults */
-const setupMocks = ({ now = NOW, recording = makeRecording(), channel = makeChannel() } = {}) => {
+const setupMocks = ({
+  now = NOW,
+  recording = makeRecording(),
+  channel = makeChannel(),
+} = {}) => {
   const nowMoment = makeMoment(now);
   const startMoment = makeMoment(recording.start_time);
   const endMoment = makeMoment(recording.end_time);
@@ -226,9 +234,13 @@ const setupMocks = ({ now = NOW, recording = makeRecording(), channel = makeChan
 
   vi.mocked(RecordingCardUtils.getPosterUrl).mockReturnValue('/poster.jpg');
   vi.mocked(RecordingCardUtils.getChannelLogoUrl).mockReturnValue('/logo.png');
-  vi.mocked(RecordingCardUtils.getRecordingUrl).mockReturnValue('/recordings/test.ts');
+  vi.mocked(RecordingCardUtils.getRecordingUrl).mockReturnValue(
+    '/recordings/test.ts'
+  );
   vi.mocked(RecordingCardUtils.getSeasonLabel).mockReturnValue('');
-  vi.mocked(RecordingCardUtils.getSeriesInfo).mockReturnValue({ seriesId: 's1' });
+  vi.mocked(RecordingCardUtils.getSeriesInfo).mockReturnValue({
+    seriesId: 's1',
+  });
   vi.mocked(RecordingCardUtils.getShowVideoUrl).mockReturnValue('/live/ch-1');
 
   return { mockShowVideo, mockFetchRecordings };
@@ -237,10 +249,18 @@ const setupMocks = ({ now = NOW, recording = makeRecording(), channel = makeChan
 describe('RecordingCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(RecordingCardUtils.stopRecordingById).mockResolvedValue(undefined);
-    vi.mocked(RecordingCardUtils.deleteRecordingById).mockResolvedValue(undefined);
-    vi.mocked(RecordingCardUtils.deleteSeriesAndRule).mockResolvedValue(undefined);
-    vi.mocked(RecordingCardUtils.extendRecordingById).mockResolvedValue(undefined);
+    vi.mocked(RecordingCardUtils.stopRecordingById).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(RecordingCardUtils.deleteRecordingById).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(RecordingCardUtils.deleteSeriesAndRule).mockResolvedValue(
+      undefined
+    );
+    vi.mocked(RecordingCardUtils.extendRecordingById).mockResolvedValue(
+      undefined
+    );
     vi.mocked(RecordingCardUtils.runComSkip).mockResolvedValue(undefined);
     vi.mocked(RecordingCardUtils.removeRecording).mockReturnValue(undefined);
   });
@@ -250,17 +270,23 @@ describe('RecordingCard', () => {
   describe('rendering', () => {
     it('renders the recording title', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('Test Show')).toBeInTheDocument();
     });
 
     it('renders "Custom Recording" when no program title', () => {
       setupMocks({
-        recording: makeRecording({ custom_properties: { status: 'completed', program: {} } }),
+        recording: makeRecording({
+          custom_properties: { status: 'completed', program: {} },
+        }),
       });
       render(
         <RecordingCard
-          recording={makeRecording({ custom_properties: { status: 'completed', program: {} } })}
+          recording={makeRecording({
+            custom_properties: { status: 'completed', program: {} },
+          })}
           channel={makeChannel()}
         />
       );
@@ -269,7 +295,9 @@ describe('RecordingCard', () => {
 
     it('renders channel info', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('501 • HBO')).toBeInTheDocument();
     });
 
@@ -281,27 +309,35 @@ describe('RecordingCard', () => {
 
     it('shows description via RecordingSynopsis for non-series completed recording', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByTestId('recording-synopsis')).toBeInTheDocument();
       expect(screen.getByText('A test description')).toBeInTheDocument();
     });
 
     it('shows sub_title when present', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('Pilot')).toBeInTheDocument();
     });
 
     it('shows season/episode label when getSeasonLabel returns a value', () => {
       setupMocks();
       vi.mocked(RecordingCardUtils.getSeasonLabel).mockReturnValue('S01E02');
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('S01E02')).toBeInTheDocument();
     });
 
     it('renders the poster image', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       const img = screen.getByAltText('Test Show');
       expect(img).toHaveAttribute('src', '/poster.jpg');
     });
@@ -312,7 +348,9 @@ describe('RecordingCard', () => {
   describe('status badge', () => {
     it('shows "Completed" badge for a completed recording', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('Completed')).toBeInTheDocument();
     });
 
@@ -320,7 +358,10 @@ describe('RecordingCard', () => {
       const recording = makeRecording({
         start_time: PAST,
         end_time: FUTURE,
-        custom_properties: { status: 'recording', program: { title: 'Live Show' } },
+        custom_properties: {
+          status: 'recording',
+          program: { title: 'Live Show' },
+        },
       });
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
@@ -331,7 +372,10 @@ describe('RecordingCard', () => {
       const recording = makeRecording({
         start_time: FUTURE,
         end_time: FUTURE,
-        custom_properties: { status: 'scheduled', program: { title: 'Future Show' } },
+        custom_properties: {
+          status: 'scheduled',
+          program: { title: 'Future Show' },
+        },
       });
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
@@ -373,8 +417,7 @@ describe('RecordingCard', () => {
   // ── Series group ───────────────────────────────────────────────────────────
 
   describe('series group', () => {
-    const makeSeriesRecording = () =>
-      makeRecording({ _group_count: 3 });
+    const makeSeriesRecording = () => makeRecording({ _group_count: 3 });
 
     it('shows "Series" badge when _group_count > 1', () => {
       const recording = makeSeriesRecording();
@@ -394,7 +437,9 @@ describe('RecordingCard', () => {
       const recording = makeSeriesRecording();
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
-      expect(screen.queryByTestId('recording-synopsis')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('recording-synopsis')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -500,7 +545,9 @@ describe('RecordingCard', () => {
 
     it('does not show "Watch Live" for a completed recording', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.queryByText('Watch Live')).not.toBeInTheDocument();
     });
 
@@ -523,7 +570,9 @@ describe('RecordingCard', () => {
 
     it('shows "Watch" button for a completed recording', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('Watch')).toBeInTheDocument();
     });
 
@@ -531,7 +580,10 @@ describe('RecordingCard', () => {
       const recording = makeRecording({
         start_time: FUTURE,
         end_time: FUTURE,
-        custom_properties: { status: 'scheduled', program: { title: 'Future' } },
+        custom_properties: {
+          status: 'scheduled',
+          program: { title: 'Future' },
+        },
       });
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
@@ -540,7 +592,9 @@ describe('RecordingCard', () => {
 
     it('calls showVideo with vod params when Watch is clicked', () => {
       const { mockShowVideo } = setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       fireEvent.click(screen.getByText('Watch'));
       expect(mockShowVideo).toHaveBeenCalledWith(
         '/recordings/test.ts',
@@ -552,7 +606,9 @@ describe('RecordingCard', () => {
     it('does not call showVideo when Watch is clicked but no file url', () => {
       const { mockShowVideo } = setupMocks();
       vi.mocked(RecordingCardUtils.getRecordingUrl).mockReturnValue(null);
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       fireEvent.click(screen.getByText('Watch'));
       expect(mockShowVideo).not.toHaveBeenCalled();
     });
@@ -575,7 +631,9 @@ describe('RecordingCard', () => {
   describe('"Remove commercials" button', () => {
     it('shows "Remove commercials" for a completed recording without comskip', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       expect(screen.getByText('Remove commercials')).toBeInTheDocument();
     });
 
@@ -597,7 +655,10 @@ describe('RecordingCard', () => {
       const recording = makeRecording({
         start_time: FUTURE,
         end_time: FUTURE,
-        custom_properties: { status: 'scheduled', program: { title: 'Future' } },
+        custom_properties: {
+          status: 'scheduled',
+          program: { title: 'Future' },
+        },
       });
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
@@ -606,20 +667,31 @@ describe('RecordingCard', () => {
 
     it('calls runComSkip and shows notification on success', async () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       fireEvent.click(screen.getByText('Remove commercials'));
       await waitFor(() => {
-        expect(RecordingCardUtils.runComSkip).toHaveBeenCalledWith(makeRecording());
+        expect(RecordingCardUtils.runComSkip).toHaveBeenCalledWith(
+          makeRecording()
+        );
         expect(notifications.show).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Removing commercials', color: 'blue.5' })
+          expect.objectContaining({
+            title: 'Removing commercials',
+            color: 'blue.5',
+          })
         );
       });
     });
 
     it('does not show notification when runComSkip throws', async () => {
-      vi.mocked(RecordingCardUtils.runComSkip).mockRejectedValue(new Error('fail'));
+      vi.mocked(RecordingCardUtils.runComSkip).mockRejectedValue(
+        new Error('fail')
+      );
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
       fireEvent.click(screen.getByText('Remove commercials'));
       await waitFor(() => {
         expect(notifications.show).not.toHaveBeenCalled();
@@ -634,7 +706,11 @@ describe('RecordingCard', () => {
       makeRecording({
         start_time: PAST,
         end_time: FUTURE,
-        custom_properties: { status: 'recording', program: { title: 'Live Show' }, file_url: '/f.ts' },
+        custom_properties: {
+          status: 'recording',
+          program: { title: 'Live Show' },
+          file_url: '/f.ts',
+        },
       });
 
     it('shows extend menu for in-progress recording', () => {
@@ -650,9 +726,15 @@ describe('RecordingCard', () => {
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
       fireEvent.click(screen.getByText('+15 minutes'));
       await waitFor(() => {
-        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith('rec-1', 15);
+        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith(
+          'rec-1',
+          15
+        );
         expect(notifications.show).toHaveBeenCalledWith(
-          expect.objectContaining({ title: 'Recording extended', color: 'teal' })
+          expect.objectContaining({
+            title: 'Recording extended',
+            color: 'teal',
+          })
         );
       });
     });
@@ -663,7 +745,10 @@ describe('RecordingCard', () => {
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
       fireEvent.click(screen.getByText('+30 minutes'));
       await waitFor(() => {
-        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith('rec-1', 30);
+        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith(
+          'rec-1',
+          30
+        );
       });
     });
 
@@ -673,12 +758,17 @@ describe('RecordingCard', () => {
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
       fireEvent.click(screen.getByText('+1 hour'));
       await waitFor(() => {
-        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith('rec-1', 60);
+        expect(RecordingCardUtils.extendRecordingById).toHaveBeenCalledWith(
+          'rec-1',
+          60
+        );
       });
     });
 
     it('shows error notification when extendRecordingById throws', async () => {
-      vi.mocked(RecordingCardUtils.extendRecordingById).mockRejectedValue(new Error('Network error'));
+      vi.mocked(RecordingCardUtils.extendRecordingById).mockRejectedValue(
+        new Error('Network error')
+      );
       const recording = makeInProgress();
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
@@ -698,7 +788,11 @@ describe('RecordingCard', () => {
       makeRecording({
         start_time: PAST,
         end_time: FUTURE,
-        custom_properties: { status: 'recording', program: { title: 'Live Show' }, file_url: '/f.ts' },
+        custom_properties: {
+          status: 'recording',
+          program: { title: 'Live Show' },
+          file_url: '/f.ts',
+        },
       });
 
     it('shows stop modal when stop button is clicked', () => {
@@ -711,7 +805,9 @@ describe('RecordingCard', () => {
       fireEvent.click(stopButton);
 
       expect(screen.getByTestId('modal')).toBeInTheDocument();
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Stop Recording');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Stop Recording'
+      );
     });
 
     it('closes stop modal when Go Back is clicked', () => {
@@ -736,7 +832,9 @@ describe('RecordingCard', () => {
       fireEvent.click(screen.getAllByText('Stop Recording')[1]);
 
       await waitFor(() => {
-        expect(RecordingCardUtils.stopRecordingById).toHaveBeenCalledWith('rec-1');
+        expect(RecordingCardUtils.stopRecordingById).toHaveBeenCalledWith(
+          'rec-1'
+        );
         expect(mockFetchRecordings).toHaveBeenCalled();
       });
     });
@@ -761,48 +859,71 @@ describe('RecordingCard', () => {
   describe('delete recording', () => {
     it('shows delete modal for a completed non-series recording', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
 
       expect(screen.getByTestId('modal')).toBeInTheDocument();
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Delete Recording');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Delete Recording'
+      );
     });
 
     it('shows "Cancel Recording" title for upcoming recording delete', () => {
       const recording = makeRecording({
         start_time: FUTURE,
         end_time: FUTURE,
-        custom_properties: { status: 'scheduled', program: { title: 'Future Show' } },
+        custom_properties: {
+          status: 'scheduled',
+          program: { title: 'Future Show' },
+        },
       });
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
 
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Cancel Recording');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Cancel Recording'
+      );
     });
 
     it('calls removeRecording when delete is confirmed', async () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Delete'));
 
       await waitFor(() => {
-        expect(RecordingCardUtils.removeRecording).toHaveBeenCalledWith('rec-1');
+        expect(RecordingCardUtils.removeRecording).toHaveBeenCalledWith(
+          'rec-1'
+        );
       });
     });
 
     it('closes delete modal after confirming', async () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Delete'));
 
@@ -813,9 +934,13 @@ describe('RecordingCard', () => {
 
     it('closes delete modal on Go Back click', () => {
       setupMocks();
-      render(<RecordingCard recording={makeRecording()} channel={makeChannel()} />);
+      render(
+        <RecordingCard recording={makeRecording()} channel={makeChannel()} />
+      );
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Go Back'));
 
@@ -842,10 +967,14 @@ describe('RecordingCard', () => {
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
 
-      expect(screen.getByTestId('modal-title')).toHaveTextContent('Cancel Series');
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        'Cancel Series'
+      );
     });
 
     it('calls deleteRecordingById when "Only this upcoming" is clicked', async () => {
@@ -853,12 +982,16 @@ describe('RecordingCard', () => {
       const { mockFetchRecordings } = setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Only this upcoming'));
 
       await waitFor(() => {
-        expect(RecordingCardUtils.deleteRecordingById).toHaveBeenCalledWith('rec-1');
+        expect(RecordingCardUtils.deleteRecordingById).toHaveBeenCalledWith(
+          'rec-1'
+        );
         expect(mockFetchRecordings).toHaveBeenCalled();
       });
     });
@@ -868,7 +1001,9 @@ describe('RecordingCard', () => {
       const { mockFetchRecordings } = setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Entire series + rule'));
 
@@ -883,7 +1018,9 @@ describe('RecordingCard', () => {
       setupMocks({ recording });
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
 
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
       fireEvent.click(screen.getByText('Only this upcoming'));
 
@@ -918,13 +1055,18 @@ describe('RecordingCard', () => {
         _group_count: 3,
         start_time: FUTURE,
         end_time: FUTURE,
-        custom_properties: { status: 'scheduled', program: { title: 'Series' } },
+        custom_properties: {
+          status: 'scheduled',
+          program: { title: 'Series' },
+        },
       });
       const { mockFetchRecordings } = setupMocks({ recording });
       mockFetchRecordings.mockRejectedValue(new Error('network'));
 
       render(<RecordingCard recording={recording} channel={makeChannel()} />);
-      const deleteButton = screen.getByTestId('icon-square-x').closest('button');
+      const deleteButton = screen
+        .getByTestId('icon-square-x')
+        .closest('button');
       fireEvent.click(deleteButton);
 
       await expect(

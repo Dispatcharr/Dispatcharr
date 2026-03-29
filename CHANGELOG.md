@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Connection cards on the Stats page now show the **username** of the connected user. For live channel connections a new User column appears between IP Address and Connected; for VOD connections the username is shown inline next to the IP address in the Client summary row. The username is resolved from the user store using the `user_id` stored in Redis client metadata. (Closes #766, Closes #586)
+- `ip_address` and `user_id` were not included in the client info returned by `get_detailed_channel_info()` despite being available in the Redis hash. Both fields are now extracted and returned. `user_id` is now also included in the VOD stats response.
+- Web UI stream preview now sends an `Authorization: Bearer` header with each mpegts.js request, identifying the logged-in user. Live channel previews initiated from the web UI now appear on the Stats page with the correct username rather than as unknown user.
+- `client_connect` and `client_disconnect` system events now include the **username** of the connected user. The username is stored alongside the client metadata in Redis and included in the event payload for `log_system_event` calls (making it available to webhook and script integrations).
 - Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
 - User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
   - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
@@ -32,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- M3U Profile form (XC accounts): added a **Simple / Advanced** mode toggle for credential-based URL rewriting. In Simple mode users enter just a new username and password; the search and replace patterns are built automatically from the account's current credentials. In Advanced mode the full regex fields are shown as before. The selected mode is saved to `custom_properties.xcMode` and auto-detected on existing profiles (a profile whose search pattern matches the account's current `username/password` is recognised as Simple automatically). The Live Regex Demonstration panel is hidden in Simple mode.
+- XtreamCodes VOD endpoints (`/movie/` and `/series/`) no longer redirect clients to a UUID-based proxy URL. Requests are now handled directly in the proxy layer via `stream_xc_movie` and `stream_xc_episode`, which call `stream_vod()` internally. The original XC path is preserved for the client throughout the stream.
+- `CustomTable` column layout now supports flexible (`grow`) columns alongside fixed-width ones:
+  - Column definitions accept a `grow` property (boolean or number) to opt into flex layout. A numeric value sets the flex-grow weight, allowing relative sizing between grow columns (e.g. `grow: 2` gives a column twice the share of spare space as `grow: 1`).
+  - `maxSize` is now respected on grow columns, capping how wide they expand via `maxWidth`.
+  - The wrapper's `minWidth` calculation now uses `minSize` (not TanStack's 150px default) for grow columns, preventing the table from overflowing its container when columns would otherwise be sized larger than available space.
 - Dependency updates:
   - `requests` 2.32.5 → 2.33.0 (security patch; see Security section)
   - `celery` 5.6.2 → 5.6.3
@@ -49,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web UI stream preview (`FloatingVideo`) was calling `mpegts.createPlayer()` with all `Config` options (e.g. `enableWorker`, `liveSync`, `headers`) merged into the first `MediaDataSource` argument. mpegts.js only reads `Config` from the optional second argument; unrecognised fields in the first are silently ignored. As a result all player configuration was effectively the library defaults — worker offloading was disabled, latency management had no effect, and the `Authorization: Bearer` header (required for user identification) was never sent. Fixed by splitting into the correct two-argument call. Both `liveBufferLatencyChasing` and `liveSync` have been disabled, eliminating playback-rate fluctuations that caused audible stuttering on live streams. SourceBuffer cleanup thresholds were also relaxed from 10s/5s to 120s/60s to prevent frequent SourceBuffer pauses.
 - HTML named entities in XMLTV EPG files are now resolved to Unicode characters before lxml parsing. Some EPG providers (particularly French and other European sources) use HTML named entities like `&eacute;`, `&icirc;`, `&uuml;` in channel names, program titles, and metadata. These are not valid XML entities — lxml 6.0.2 with `recover=True` silently drops them, causing characters to go missing (e.g., "Chaîne Télé" becomes "Chane Tl"). A preprocessing step in `fetch_xmltv()` now resolves HTML named entities while preserving the 5 XML-predefined entities, detecting encoding from the XML declaration (falling back to UTF-8), and processing line-by-line to a temp file before atomically replacing the original. (Closes #1095) — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - Duplicate recordings created when EPG sources refresh and re-evaluate series rules (Fixes #940) — Thanks [@CodeBormen](https://github.com/CodeBormen):
   - **Program ID instability**: `parse_programs_for_source()` deletes and recreates all `ProgramData` rows with new auto-increment IDs on every EPG refresh. The dedup set used these IDs, so it never matched after a refresh. Deduplication now uses a stable `(tvg_id, start_time, end_time)` composite key sourced from `Recording.custom_properties.program`.

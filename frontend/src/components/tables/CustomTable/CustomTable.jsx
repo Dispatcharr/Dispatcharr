@@ -6,17 +6,22 @@ import CustomTableBody from './CustomTableBody';
 const CustomTable = ({ table }) => {
   const tableSize = table?.tableSize ?? 'default';
 
-  // Get column sizing state for dependency tracking
+  // columnSizing is read here so the memo below re-runs when columns are resized.
   const columnSizing = table.getState().columnSizing;
 
-  // Calculate minimum table width reactively based on column sizes
+  // Calculate minimum table width reactively based on column sizes.
+  // Grow columns contribute only their minSize (not TanStack's default 150px)
+  // so the wrapper doesn't force the table wider than its container.
   const minTableWidth = useMemo(() => {
+    void columnSizing; // reactive trigger: recalculate when column sizes change
     const headerGroups = table.getHeaderGroups();
     if (!headerGroups || headerGroups.length === 0) return 0;
 
     const width =
       headerGroups[0]?.headers.reduce((total, header) => {
-        return total + header.getSize();
+        const colDef = header.column.columnDef;
+        const size = colDef.grow ? colDef.minSize || 0 : header.getSize();
+        return total + size;
       }, 0) || 0;
 
     return width;

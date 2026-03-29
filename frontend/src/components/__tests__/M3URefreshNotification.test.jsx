@@ -57,6 +57,7 @@ vi.mock('@mantine/core', async () => {
 
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <div data-testid="icon-list-ordered" />,
   CircleCheck: () => <div data-testid="circle-check-icon" />,
 }));
 

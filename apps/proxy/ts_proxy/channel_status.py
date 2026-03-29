@@ -143,6 +143,8 @@ class ChannelStatus:
                 'client_id': client_id_str,
                 'user_agent': client_data.get('user_agent', 'unknown'),
                 'worker_id': client_data.get('worker_id', 'unknown'),
+                'ip_address': client_data.get('ip_address', 'unknown'),
+                'user_id': client_data.get('user_id', '0'),
             }
 
             if 'connected_at' in client_data:
@@ -472,6 +474,10 @@ class ChannelStatus:
                     if connected_at_bytes:
                         connected_at = float(connected_at_bytes)
                         client_info['connected_since'] = time.time() - connected_at
+
+                    user_id_bytes = proxy_server.redis_client.hget(client_key, 'user_id')
+                    if user_id_bytes:
+                        client_info['user_id'] = user_id_bytes
 
                     clients.append(client_info)
 

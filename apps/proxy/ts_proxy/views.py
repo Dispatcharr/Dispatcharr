@@ -51,6 +51,9 @@ def stream_ts(request, channel_id, user=None):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
+    if user is None and hasattr(request, 'user') and request.user.is_authenticated:
+        user = request.user
+
     channel = get_stream_object(channel_id)
 
     client_user_agent = None
@@ -529,7 +532,7 @@ def stream_ts(request, channel_id, user=None):
 
         # Create a stream generator for this client
         generate = create_stream_generator(
-            channel_id, client_id, client_ip, client_user_agent, channel_initializing
+            channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user
         )
 
         # Return the StreamingHttpResponse from the main function

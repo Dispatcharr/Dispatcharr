@@ -278,7 +278,8 @@ class ClientManager:
                         "channel_id": self.channel_id,
                         "client_id": client_id,
                         "worker_id": self.worker_id or "unknown",
-                        "timestamp": time.time()
+                        "timestamp": time.time(),
+                        "username": user.username if user is not None else "unknown"
                     }
 
                     if user_agent:
@@ -319,8 +320,11 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
-                # Get client IP before removing the data
+                # Get client data before removing the data
                 client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
+                client_username = self.redis_client.hget(client_key, "username") or "unknown"
+                if isinstance(client_username, bytes):
+                    client_username = client_username.decode("utf-8")
 
                 # Remove from channel's client set
                 self.redis_client.srem(self.client_set_key, client_id)
@@ -361,7 +365,8 @@ class ClientManager:
                         "client_id": client_id,
                         "worker_id": self.worker_id or "unknown",
                         "timestamp": time.time(),
-                        "remaining_clients": remaining
+                        "remaining_clients": remaining,
+                        "username": client_username
                     })
                     self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
 

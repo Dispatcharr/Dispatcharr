@@ -1908,26 +1908,28 @@ export default class API {
     }
   }
 
-  static async importPlugin(file) {
+  static async importPlugin(file, overwrite = false, silent = false) {
     try {
       const form = new FormData();
       form.append('file', file);
+      if (overwrite) form.append('overwrite', 'true');
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,
       });
       return response;
     } catch (e) {
-      // Show only the concise error message for plugin import
-      const msg =
-        (e?.body && (e.body.error || e.body.detail)) ||
-        e?.message ||
-        'Failed to import plugin';
-      notifications.show({
-        title: 'Import failed',
-        message: msg,
-        color: 'red',
-      });
+      if (!silent) {
+        const msg =
+          (e?.body && (e.body.error || e.body.detail)) ||
+          e?.message ||
+          'Failed to import plugin';
+        notifications.show({
+          title: 'Import failed',
+          message: msg,
+          color: 'red',
+        });
+      }
       throw e;
     }
   }
@@ -1989,6 +1991,132 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update plugin enabled state', e);
+    }
+  }
+
+  // Plugin Repos API
+  static async getPluginRepos() {
+    try {
+      return await request(`${host}/api/plugins/repos/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin repos', e);
+      return [];
+    }
+  }
+
+  static async addPluginRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to add plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async deletePluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async updatePluginRepo(id, data) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update plugin repo', e);
+    }
+  }
+
+  static async refreshPluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/refresh/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh plugin repo', e);
+    }
+  }
+
+  static async getAvailablePlugins() {
+    try {
+      const response = await request(
+        `${host}/api/plugins/repos/available/`
+      );
+      return response.plugins || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve available plugins', e);
+      return [];
+    }
+  }
+
+  static async getPluginDetailManifest(repoId, manifestUrl) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/repos/plugin-detail/`,
+        {
+          method: 'POST',
+          body: { repo_id: repoId, manifest_url: manifestUrl },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin details', e);
+      return null;
+    }
+  }
+
+  static async getPluginRepoSettings() {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve repo settings', e);
+      return null;
+    }
+  }
+
+  static async updatePluginRepoSettings(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update repo settings', e);
+      return null;
+    }
+  }
+
+  static async installPluginFromRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/install/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to install plugin', e);
+      return null;
+    }
+  }
+
+  static async previewPluginRepo(url, publicKey) {
+    try {
+      return await request(`${host}/api/plugins/repos/preview/`, {
+        method: 'POST',
+        body: { url, public_key: publicKey || '' },
+      });
+    } catch {
+      return null;
     }
   }
 

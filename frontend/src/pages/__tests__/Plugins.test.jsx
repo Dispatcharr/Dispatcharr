@@ -166,10 +166,13 @@ describe('PluginsPage', () => {
   const mockPluginStoreState = {
     plugins: mockPlugins,
     loading: false,
+    repos: [],
     fetchPlugins: vi.fn(),
     updatePlugin: vi.fn(),
     removePlugin: vi.fn(),
     invalidatePlugins: vi.fn(),
+    refreshRepo: vi.fn(),
+    fetchAvailablePlugins: vi.fn(),
   };
 
   beforeEach(() => {
@@ -185,7 +188,7 @@ describe('PluginsPage', () => {
       render(<PluginsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Plugins')).toBeInTheDocument();
+        expect(screen.getByText('My Plugins')).toBeInTheDocument();
         expect(screen.getByText('Test Plugin 1')).toBeInTheDocument();
         expect(screen.getByText('Test Plugin 2')).toBeInTheDocument();
       });

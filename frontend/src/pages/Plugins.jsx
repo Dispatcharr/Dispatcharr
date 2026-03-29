@@ -128,6 +128,11 @@ export default function PluginsPage() {
   });
 
   const handleReload = async () => {
+    const { repos, refreshRepo, fetchAvailablePlugins } = usePluginStore.getState();
+    for (const repo of repos) {
+      try { await refreshRepo(repo.id); } catch {}
+    }
+    await fetchAvailablePlugins();
     await reloadPlugins();
     usePluginStore.getState().invalidatePlugins();
   };
@@ -160,55 +165,73 @@ export default function PluginsPage() {
 
   const handleImportPlugin = () => {
     return async () => {
-      setImporting(true);
-      const id = showNotification({
-        title: 'Uploading plugin',
-        message: 'Backend may restart; please wait…',
-        loading: true,
-        autoClose: false,
-        withCloseButton: false,
-      });
-      try {
-        const resp = await importPlugin(importFile);
-        if (resp?.success && resp.plugin) {
-          setImported(resp.plugin);
-          usePluginStore.getState().invalidatePlugins();
-
-          updateNotification({
-            id,
-            loading: false,
-            color: 'green',
-            title: 'Imported',
-            message:
-              'Plugin imported. If the app briefly disconnected, it should be back now.',
-            autoClose: 3000,
-          });
-        } else {
-          updateNotification({
-            id,
-            loading: false,
-            color: 'red',
-            title: 'Import failed',
-            message: resp?.error || 'Unknown error',
-            autoClose: 5000,
-          });
-        }
-      } catch (e) {
-        // API.importPlugin already showed a concise error; just update the loading notice
-        updateNotification({
-          id,
-          loading: false,
-          color: 'red',
-          title: 'Import failed',
-          message:
-            (e?.body && (e.body.error || e.body.detail)) ||
-            e?.message ||
-            'Failed',
-          autoClose: 5000,
+      const run = async (overwrite) => {
+        setImporting(true);
+        const notifId = showNotification({
+          title: 'Uploading plugin',
+          message: 'Backend may restart; please wait…',
+          loading: true,
+          autoClose: false,
+          withCloseButton: false,
         });
-      } finally {
-        setImporting(false);
-      }
+        try {
+          const resp = await importPlugin(importFile, overwrite, /* silent */ true);
+          if (resp?.success && resp.plugin) {
+            setImported({ ...resp.plugin, was_managed: resp.was_managed });
+            usePluginStore.getState().invalidatePlugins();
+            updateNotification({
+              id: notifId,
+              loading: false,
+              color: 'green',
+              title: 'Imported',
+              message:
+                'Plugin imported. If the app briefly disconnected, it should be back now.',
+              autoClose: 3000,
+            });
+          } else {
+            updateNotification({
+              id: notifId,
+              loading: false,
+              color: 'red',
+              title: 'Import failed',
+              message: resp?.error || 'Unknown error',
+              autoClose: 5000,
+            });
+          }
+        } catch (e) {
+          const msg =
+            (e?.body && (e.body.error || e.body.detail)) || e?.message || '';
+          if (!overwrite && /already exists/i.test(msg)) {
+            // Dismiss the loading toast before showing the confirm dialog
+            updateNotification({
+              id: notifId,
+              loading: false,
+              autoClose: 100,
+              withCloseButton: false,
+            });
+            const pluginName = msg.match(/'([^']+)'/)?.[1] || 'this plugin';
+            const confirmed = await requestConfirm(
+              'Plugin already exists',
+              `'${pluginName}' is already installed. Do you want to replace it?`
+            );
+            if (confirmed) {
+              await run(true);
+            }
+          } else {
+            updateNotification({
+              id: notifId,
+              loading: false,
+              color: 'red',
+              title: 'Import failed',
+              message: msg || 'Failed',
+              autoClose: 5000,
+            });
+          }
+        } finally {
+          setImporting(false);
+        }
+      };
+      await run(false);
     };
   };
 
@@ -273,7 +296,7 @@ export default function PluginsPage() {
     <AppShellMain p={16}>
       <Group justify="space-between" mb="md">
         <Text fw={700} size="lg">
-          Plugins
+          My Plugins
         </Text>
         <Group>
           <Button size="xs" variant="light" onClick={showImportForm}>
@@ -353,6 +376,13 @@ export default function PluginsPage() {
               <Text size="sm" c="dimmed">
                 {imported.description}
               </Text>
+              {imported.was_managed && (
+                <Alert color="orange" variant="light" mt="xs">
+                  This plugin was previously managed by a repo. Manual
+                  installation removes it from repo management, so it will no
+                  longer receive update checks or version tracking.
+                </Alert>
+              )}
               <Group justify="space-between" mt="sm" align="center">
                 <Text size="sm">Enable now</Text>
                 <Switch

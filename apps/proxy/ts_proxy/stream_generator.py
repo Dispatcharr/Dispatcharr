@@ -25,7 +25,7 @@ class StreamGenerator:
     data delivery, and cleanup.
     """
 
-    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False):
+    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
         """
         Initialize the stream generator with client and channel details.
 
@@ -35,12 +35,14 @@ class StreamGenerator:
             client_ip: Client's IP address
             client_user_agent: User agent string from client
             channel_initializing: Whether the channel is still initializing
+            user: Authenticated user making the request
         """
         self.channel_id = channel_id
         self.client_id = client_id
         self.client_ip = client_ip
         self.client_user_agent = client_user_agent
         self.channel_initializing = channel_initializing
+        self.user = user
 
         # Performance and state tracking
         self.stream_start_time = time.time()
@@ -112,7 +114,8 @@ class StreamGenerator:
                     channel_name=channel_obj.name,
                     client_ip=self.client_ip,
                     client_id=self.client_id,
-                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None
+                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
+                    username=self.user.username if self.user else None
                 )
             except Exception as e:
                 logger.error(f"Could not log client connect event: {e}")
@@ -593,7 +596,8 @@ class StreamGenerator:
                     client_id=self.client_id,
                     user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
                     duration=round(elapsed, 2),
-                    bytes_sent=self.bytes_sent
+                    bytes_sent=self.bytes_sent,
+                    username=self.user.username if self.user else None
                 )
             except Exception as e:
                 logger.error(f"Could not log client disconnect event: {e}")
@@ -628,10 +632,10 @@ class StreamGenerator:
 
             gevent.spawn(delayed_shutdown)
 
-def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False):
+def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
     """
     Factory function to create a new stream generator.
     Returns a function that can be passed to StreamingHttpResponse.
     """
-    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing)
+    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user)
     return generator.generate

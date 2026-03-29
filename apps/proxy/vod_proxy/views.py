@@ -949,6 +949,7 @@ class VODStatsView(View):
                                 'm3u_profile': m3u_profile_info,
                                 'client_id': client_id,
                                 'client_ip': combined_data.get('client_ip', 'Unknown'),
+                                'user_id': combined_data.get('user_id', '0'),
                                 'user_agent': combined_data.get('client_user_agent', 'Unknown'),
                                 'connected_at': combined_data.get('created_at'),
                                 'last_activity': combined_data.get('last_activity'),

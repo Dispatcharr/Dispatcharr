@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
+import useAuthStore from '../store/auth';
 import mpegts from 'mpegts.js';
 import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
 import {
@@ -117,6 +118,7 @@ export default function FloatingVideo() {
   const contentType = useVideoStore((s) => s.contentType);
   const metadata = useVideoStore((s) => s.metadata);
   const hideVideo = useVideoStore((s) => s.hideVideo);
+  const accessToken = useAuthStore((s) => s.accessToken);
 
   const videoRef = useRef(null);
   const playerRef = useRef(null);
@@ -300,7 +302,8 @@ export default function FloatingVideo() {
     setLoadError(null);
 
     console.log('Initializing live stream player for:', streamUrl);
-
+    console.log('Access token present:', !!accessToken);
+    console.log('Current access token from auth store:', accessToken);
     try {
       if (!mpegts.getFeatureList().mseLivePlayback) {
         setIsLoading(false);
@@ -310,20 +313,27 @@ export default function FloatingVideo() {
         return;
       }
 
-      const player = mpegts.createPlayer({
-        type: 'mpegts',
-        url: streamUrl,
-        isLive: true,
-        enableWorker: true,
-        enableStashBuffer: false,
-        liveBufferLatencyChasing: true,
-        liveSync: true,
-        cors: true,
-        autoCleanupSourceBuffer: true,
-        autoCleanupMaxBackwardDuration: 10,
-        autoCleanupMinBackwardDuration: 5,
-        reuseRedirectedURL: true,
-      });
+      const player = mpegts.createPlayer(
+        {
+          type: 'mpegts',
+          url: streamUrl,
+          isLive: true,
+          cors: true,
+        },
+        {
+          enableWorker: true,
+          enableStashBuffer: false,
+          liveBufferLatencyChasing: false,
+          liveSync: false,
+          autoCleanupSourceBuffer: true,
+          autoCleanupMaxBackwardDuration: 120,
+          autoCleanupMinBackwardDuration: 60,
+          reuseRedirectedURL: true,
+          headers: accessToken
+            ? { Authorization: `Bearer ${accessToken}` }
+            : undefined,
+        }
+      );
 
       player.attachMediaElement(videoRef.current);
 
