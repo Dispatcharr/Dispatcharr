@@ -31,7 +31,12 @@ echo_with_timestamp() {
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
 export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secret}
-export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+export DISPATCHARR_ENV=${DISPATCHARR_ENV:-aio}
+if [[ "$DISPATCHARR_ENV" == "aio" ]]; then
+    export POSTGRES_HOST=${POSTGRES_HOST:-/var/run/postgresql}
+else
+    export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+fi
 export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
