@@ -18,7 +18,7 @@ import zipfile
 
 from celery import shared_task
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from apps.channels.models import Channel
 from core.models import UserAgent, CoreSettings
@@ -36,8 +36,11 @@ logger = logging.getLogger(__name__)
 # &eacute; are silently dropped in recovery mode.  This substitution
 # converts them to Unicode before the file reaches the parser.
 _XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
+_XML_ENTITIES_BYTES = frozenset(n.encode() for n in _XML_ENTITIES)
 _XML_SPECIAL_CHARS = frozenset('&<>\'"')
 _NAMED_ENTITY_RE = re.compile(r'&([a-zA-Z][a-zA-Z0-9]*);')
+# Binary version used by the fast pre-scan (no text decoding needed)
+_BINARY_ENTITY_RE = re.compile(rb'&([a-zA-Z][a-zA-Z0-9]*);')
 
 
 def _replace_html_entity(match):
@@ -79,6 +82,32 @@ def _detect_xml_encoding(header):
     return 'utf-8'
 
 
+def _file_needs_entity_resolution(file_path):
+    """Binary pre-scan: return True only if file contains non-XML named HTML entities.
+
+    Reads in 4 MB chunks with a small overlap to catch entities that straddle
+    a chunk boundary.  Avoids all text-decode overhead — this is effectively a
+    raw memory scan and exits as soon as the first HTML entity is found.
+    """
+    CHUNK = 4 * 1024 * 1024  # 4 MB
+    OVERLAP = 32              # longer than any valid entity name + surrounding &;
+    try:
+        with open(file_path, 'rb') as f:
+            prev = b''
+            while True:
+                chunk = f.read(CHUNK)
+                if not chunk:
+                    return False
+                data = prev + chunk
+                for m in _BINARY_ENTITY_RE.finditer(data):
+                    if m.group(1).lower() not in _XML_ENTITIES_BYTES:
+                        return True
+                prev = data[-OVERLAP:]
+    except OSError:
+        return False
+    return False
+
+
 def _resolve_html_entities(file_path):
     """Replace HTML named entities in an XMLTV file with Unicode characters.
 
@@ -89,6 +118,14 @@ def _resolve_html_entities(file_path):
     This function is strictly additive — on any error the original file is
     left untouched so lxml can handle it as it always did.
     """
+    # Fast binary pre-scan: if the file contains no non-XML named entities
+    # there is nothing to do and we can skip the full read+write entirely.
+    # For large files (e.g. 2.5 GB) this avoids significant I/O time when
+    # the EPG source is already clean (the common case).
+    if not _file_needs_entity_resolution(file_path):
+        logger.debug(f"No HTML entities found in {file_path}, skipping entity resolution")
+        return
+    logger.info(f"HTML entities detected in {file_path}, resolving...")
     # Read the first 200 bytes to detect encoding from the XML declaration
     with open(file_path, 'rb') as f:
         header = f.read(200)
@@ -245,7 +282,7 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task(time_limit=1800, soft_time_limit=1700)
+@shared_task(time_limit=14400)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
@@ -499,42 +536,41 @@ def fetch_xmltv(source):
 
             # Download to temporary file
             with open(temp_download_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=16384):  # Increased chunk size for better performance
-                    if chunk:
-                        f.write(chunk)
+                for chunk in response.iter_content(chunk_size=16384):
+                    f.write(chunk)
 
-                        downloaded += len(chunk)
-                        elapsed_time = time.time() - start_time
+                    downloaded += len(chunk)
+                    elapsed_time = time.time() - start_time
 
-                        # Calculate download speed in KB/s
-                        speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
+                    # Calculate download speed in KB/s
+                    speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-                        # Calculate progress percentage
-                        if total_size and total_size > 0:
-                            progress = min(100, int((downloaded / total_size) * 100))
-                        else:
-                            # If no content length header, estimate progress
-                            progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
+                    # Calculate progress percentage
+                    if total_size and total_size > 0:
+                        progress = min(100, int((downloaded / total_size) * 100))
+                    else:
+                        # If no content length header, estimate progress
+                        progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
 
-                        # Time remaining (in seconds)
-                        time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
+                    # Time remaining (in seconds)
+                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
 
-                        # Only send updates at specified intervals to avoid flooding
-                        current_time = time.time()
-                        if current_time - last_update_time >= update_interval and progress > 0:
-                            last_update_time = current_time
-                            send_epg_update(
-                                source.id,
-                                "downloading",
-                                progress,
-                                speed=round(speed, 2),
-                                elapsed_time=round(elapsed_time, 1),
-                                time_remaining=round(time_remaining, 1),
-                                downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
-                            )
+                    # Only send updates at specified intervals to avoid flooding
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval and progress > 0:
+                        last_update_time = current_time
+                        send_epg_update(
+                            source.id,
+                            "downloading",
+                            progress,
+                            speed=round(speed, 2),
+                            elapsed_time=round(elapsed_time, 1),
+                            time_remaining=round(time_remaining, 1),
+                            downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
+                        )
 
-                        # Explicitly delete the chunk to free memory immediately
-                        del chunk
+                    # Explicitly delete the chunk to free memory immediately
+                    del chunk
 
             # Send completion notification
             send_epg_update(source.id, "downloading", 100)
@@ -1763,6 +1799,10 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         batch_size = 1000
         try:
             with transaction.atomic():
+                # Kill any individual statement that hangs longer than 10 minutes.
+                # SET LOCAL automatically resets when this transaction ends (commit or rollback).
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '10min'")
                 # Delete existing programs for mapped EPGs
                 deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
                 logger.debug(f"Deleted {deleted_count} existing programs")
