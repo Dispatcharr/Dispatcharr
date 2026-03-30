@@ -1,11 +1,9 @@
 # apps/epg/tasks.py
 
-import codecs
 import logging
 import gzip
-import html as html_module
+import html.entities
 import os
-import re
 import uuid
 import requests
 import time  # Add import for tracking download progress
@@ -31,138 +29,102 @@ from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, se
 
 logger = logging.getLogger(__name__)
 
-# Regex and helpers for resolving HTML named entities in XMLTV files.
-# lxml only recognises the 5 XML-predefined entities; HTML entities like
-# &eacute; are silently dropped in recovery mode.  This substitution
-# converts them to Unicode before the file reaches the parser.
+# DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
+# entities so lxml/libxml2 can resolve references like &eacute; correctly
+# instead of silently dropping them in recovery mode.
+# The 5 XML-predefined entities (amp, lt, gt, quot, apos) are always
+# recognised by the XML spec and must not be redeclared.
 _XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
-_XML_ENTITIES_BYTES = frozenset(n.encode() for n in _XML_ENTITIES)
-_XML_SPECIAL_CHARS = frozenset('&<>\'"')
-_NAMED_ENTITY_RE = re.compile(r'&([a-zA-Z][a-zA-Z0-9]*);')
-# Binary version used by the fast pre-scan (no text decoding needed)
-_BINARY_ENTITY_RE = re.compile(rb'&([a-zA-Z][a-zA-Z0-9]*);')
 
 
-def _replace_html_entity(match):
-    """Replace a single HTML named entity, preserving XML-special ones.
+def _build_html_entity_doctype() -> bytes:
+    """Build a DOCTYPE internal subset declaring all HTML 4 named entities."""
+    lines = [b'<!DOCTYPE tv [\n']
+    for name, codepoint in sorted(html.entities.name2codepoint.items()):
+        if name not in _XML_ENTITIES:
+            # Numeric character references are always valid XML regardless of codepoint.
+            lines.append(f'<!ENTITY {name} "&#x{codepoint:X};">\n'.encode('ascii'))
+    lines.append(b']>\n')
+    return b''.join(lines)
 
-    Skips lowercase XML entities (fast path) and any entity whose resolved
-    output contains XML-special characters that would break parsing.  This
-    also guards against html.unescape partially matching sub-patterns
-    (e.g. &ampersand; being split into &amp + ersand;).
+
+_HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
+
+
+class _PrependStream:
+    """Wraps an open binary file and prepends a bytes prefix to its content.
+
+    Used by _open_xmltv_file to inject a DOCTYPE entity block before the
+    file content reaches lxml's iterparse, with zero disk I/O.
     """
-    original = match.group(0)
-    name = match.group(1)
-    if name in _XML_ENTITIES:
-        return original
-    resolved = html_module.unescape(original)
-    if resolved == original:
-        return original
-    # If the resolved output contains any XML-special character, replacing
-    # it would produce invalid XML (bare &, <, >, etc.)
-    if _XML_SPECIAL_CHARS.intersection(resolved):
-        return original
-    return resolved
+
+    __slots__ = ('_prefix', '_prefix_pos', '_file')
+
+    def __init__(self, prefix: bytes, file_obj):
+        self._prefix = prefix
+        self._prefix_pos = 0
+        self._file = file_obj
+
+    def read(self, size=-1):
+        prefix_len = len(self._prefix)
+        if self._prefix_pos >= prefix_len:
+            return self._file.read(size)
+        remaining = prefix_len - self._prefix_pos
+        if size < 0:
+            chunk = self._prefix[self._prefix_pos:] + self._file.read()
+            self._prefix_pos = prefix_len
+            return chunk
+        if size <= remaining:
+            chunk = self._prefix[self._prefix_pos:self._prefix_pos + size]
+            self._prefix_pos += size
+            return chunk
+        chunk = self._prefix[self._prefix_pos:]
+        self._prefix_pos = prefix_len
+        return chunk + self._file.read(size - remaining)
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
 
-def _detect_xml_encoding(header):
-    """Detect encoding from raw XML header bytes, defaulting to UTF-8.
+def _open_xmltv_file(file_path: str):
+    """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
 
-    Falls back to UTF-8 if the declared encoding is not recognized by Python.
+    Prepends a <!DOCTYPE tv [...]> block that declares all 252 HTML 4 named
+    entities so lxml/libxml2 resolves references like &eacute; correctly
+    instead of silently dropping them in recovery mode.  This involves zero
+    disk I/O — the DOCTYPE is streamed in-memory before the file content.
+
+    If the file already contains a <!DOCTYPE> declaration the file is returned
+    unchanged; a second DOCTYPE would be invalid XML.
+
+    The caller is responsible for closing the returned object.
     """
-    m = re.match(rb'<\?xml[^>]*encoding=["\']([^"\']+)["\']', header)
-    if m:
-        declared = m.group(1).decode('ascii')
-        try:
-            codecs.lookup(declared)
-            return declared
-        except LookupError:
-            logger.warning(f"Unknown encoding '{declared}', falling back to UTF-8")
-            return 'utf-8'
-    return 'utf-8'
+    f = open(file_path, 'rb')
+    start = f.read(512)
 
+    # Do not inject if the file already declares a DOCTYPE.
+    if b'<!DOCTYPE' in start or b'<!doctype' in start.lower():
+        f.seek(0)
+        return f
 
-def _file_needs_entity_resolution(file_path):
-    """Binary pre-scan: return True only if file contains non-XML named HTML entities.
+    # Insert the DOCTYPE after the XML declaration if one is present.
+    stripped = start.lstrip()
+    if stripped.startswith(b'<?xml'):
+        decl_end = start.find(b'?>')
+        if decl_end >= 0:
+            xml_decl = start[:decl_end + 2]
+            f.seek(decl_end + 2)
+            return _PrependStream(xml_decl + b'\n' + _HTML_ENTITY_DOCTYPE, f)
 
-    Reads in 4 MB chunks with a small overlap to catch entities that straddle
-    a chunk boundary.  Avoids all text-decode overhead — this is effectively a
-    raw memory scan and exits as soon as the first HTML entity is found.
-    """
-    CHUNK = 4 * 1024 * 1024  # 4 MB
-    OVERLAP = 32              # longer than any valid entity name + surrounding &;
-    try:
-        with open(file_path, 'rb') as f:
-            prev = b''
-            while True:
-                chunk = f.read(CHUNK)
-                if not chunk:
-                    return False
-                data = prev + chunk
-                for m in _BINARY_ENTITY_RE.finditer(data):
-                    if m.group(1).lower() not in _XML_ENTITIES_BYTES:
-                        return True
-                prev = data[-OVERLAP:]
-    except OSError:
-        return False
-    return False
-
-
-def _resolve_html_entities(file_path):
-    """Replace HTML named entities in an XMLTV file with Unicode characters.
-
-    Processes line-by-line to keep memory usage low, writes to a temp file,
-    then atomically replaces the original.  Honors the encoding declared
-    in the XML declaration.
-
-    This function is strictly additive — on any error the original file is
-    left untouched so lxml can handle it as it always did.
-    """
-    # Fast binary pre-scan: if the file contains no non-XML named entities
-    # there is nothing to do and we can skip the full read+write entirely.
-    # For large files (e.g. 2.5 GB) this avoids significant I/O time when
-    # the EPG source is already clean (the common case).
-    if not _file_needs_entity_resolution(file_path):
-        logger.debug(f"No HTML entities found in {file_path}, skipping entity resolution")
-        return
-    logger.info(f"HTML entities detected in {file_path}, resolving...")
-    # Read the first 200 bytes to detect encoding from the XML declaration
-    with open(file_path, 'rb') as f:
-        header = f.read(200)
-    encoding = _detect_xml_encoding(header)
-
-    # Capture the original mtime before modifying the file so that os.replace()
-    # does not update the file's mtime.  The file watcher in core/tasks.py uses
-    # mtime to detect changes; if we let mtime advance it would trigger an
-    # infinite refresh loop for local file-based EPG sources.
-    try:
-        original_stat = os.stat(file_path)
-    except OSError:
-        original_stat = None
-
-    temp_path = file_path + '.entity_tmp'
-    success = False
-    try:
-        with open(file_path, 'r', encoding=encoding) as src, \
-             open(temp_path, 'w', encoding=encoding) as dst:
-            for line in src:
-                dst.write(_NAMED_ENTITY_RE.sub(_replace_html_entity, line))
-        os.replace(temp_path, file_path)
-        # Restore the original mtime (and atime) so the file watcher does not
-        # mistake the rewrite for an external update.
-        if original_stat is not None:
-            os.utime(file_path, (original_stat.st_atime, original_stat.st_mtime))
-        success = True
-        logger.debug(f"Resolved HTML entities in {file_path} (encoding: {encoding})")
-    except Exception as e:
-        # On any error, leave the original file untouched for lxml to
-        # handle with its own encoding detection and recovery mode.
-        # This ensures the preprocessing step never breaks a previously
-        # working EPG refresh.
-        logger.debug(f"Skipping entity resolution for {file_path}: {e}")
-    finally:
-        if not success and os.path.exists(temp_path):
-            os.unlink(temp_path)
+    # No XML declaration — insert DOCTYPE at the very start of the file.
+    f.seek(0)
+    return _PrependStream(_HTML_ENTITY_DOCTYPE, f)
 
 
 def validate_icon_url_fast(icon_url, max_length=None):
@@ -416,9 +378,6 @@ def fetch_xmltv(source):
         # Send a download complete notification
         send_epg_update(source.id, "downloading", 100, status="success")
 
-        # Resolve HTML named entities so lxml doesn't drop them during parsing
-        _resolve_html_entities(source.extracted_file_path or source.file_path)
-
         # Return True to indicate successful fetch, processing will continue with parse_channels_only
         return True
 
@@ -664,9 +623,6 @@ def fetch_xmltv(source):
             source.save(update_fields=['status'])
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
-
-            # Resolve HTML named entities so lxml doesn't drop them during parsing
-            _resolve_html_entities(source.extracted_file_path or source.file_path)
 
             return True
 
@@ -1030,7 +986,7 @@ def parse_channels_only(source):
 
             # Open the file - no need to check file type since it's always XML now
             logger.debug(f"Opening file for channel parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             if process:
                 logger.debug(f"[parse_channels_only] Memory after opening file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -1413,7 +1369,7 @@ def parse_programs_for_tvg_id(epg_id):
         try:
             # Open the file directly - no need to check compression
             logger.debug(f"Opening file for parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
@@ -1686,7 +1642,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
         try:
             logger.debug(f"Opening file for single-pass parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
