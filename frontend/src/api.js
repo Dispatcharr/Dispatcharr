@@ -1448,6 +1448,67 @@ export default class API {
     }
   }
 
+  static async searchSDLineups(sourceId, country, postalCode) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/search/`,
+        {
+          method: 'POST',
+          body: { country, postal_code: postalCode },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to search lineups', e);
+      return [];
+    }
+  }
+
+  static async getSDLineups(sourceId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        { method: 'GET' }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to fetch lineups', e);
+      return [];
+    }
+  }
+
+  static async addSDLineup(sourceId, lineupId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'POST',
+          body: { lineup: lineupId },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to add lineup', e);
+      return null;
+    }
+  }
+
+  static async removeSDLineup(sourceId, lineupId) {
+    try {
+      const response = await request(
+        `${host}/api/epg/sources/${sourceId}/sd-lineups/`,
+        {
+          method: 'DELETE',
+          body: { lineup: lineupId },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to remove lineup', e);
+      return null;
+    }
+  }
+
   static async refreshEPG(id) {
     try {
       const response = await request(`${host}/api/epg/import/`, {

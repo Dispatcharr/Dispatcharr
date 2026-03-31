@@ -217,16 +217,18 @@ const EPGsTable = () => {
         size: 100,
       },
       {
-        header: 'URL / API Key / File Path',
+        header: 'Source',
         accessorKey: 'url',
         enableSorting: false,
         minSize: 250,
         cell: ({ cell, row }) => {
-          const value =
-            cell.getValue() ||
-            row.original.api_key ||
-            row.original.file_path ||
-            '';
+          const source = row.original;
+          let value = '';
+          if (source.source_type === 'schedules_direct') {
+            value = source.username ? `SD: ${source.username}` : 'Schedules Direct';
+          } else {
+            value = cell.getValue() || source.file_path || '';
+          }
           return (
             <Tooltip label={value} disabled={!value}>
               <div
@@ -437,9 +439,17 @@ const EPGsTable = () => {
     });
   };
 
-  const closeEPGForm = () => {
+  const closeEPGForm = (createdSource = null) => {
     setEPG(null);
     setEPGModalOpen(false);
+
+    // If a new SD source was just created, reopen in edit mode for lineup management
+    if (createdSource?.id && createdSource.source_type === 'schedules_direct') {
+      setTimeout(() => {
+        setEPG(createdSource);
+        setEPGModalOpen(true);
+      }, 300);
+    }
   };
 
   const closeDummyEPGForm = () => {
@@ -691,10 +701,10 @@ const EPGsTable = () => {
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
 ${
-  epgToDelete.url
-    ? `URL: ${epgToDelete.url}`
-    : epgToDelete.api_key
-      ? `API Key: ${epgToDelete.api_key}`
+  epgToDelete.source_type === 'schedules_direct'
+    ? `Account: ${epgToDelete.username || 'Schedules Direct'}`
+    : epgToDelete.url
+      ? `URL: ${epgToDelete.url}`
       : epgToDelete.file_path
         ? `File Path: ${epgToDelete.file_path}`
         : ''

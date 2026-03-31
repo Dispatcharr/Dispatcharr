@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .api_views import EPGSourceViewSet, ProgramViewSet, EPGGridAPIView, EPGImportAPIView, EPGDataViewSet, CurrentProgramsAPIView
+from .api_views import EPGSourceViewSet, ProgramViewSet, EPGGridAPIView, EPGImportAPIView, EPGDataViewSet, CurrentProgramsAPIView, SDLineupsSearchView, SDLineupsView
 
 app_name = 'epg'
 
@@ -13,6 +13,8 @@ urlpatterns = [
     path('grid/', EPGGridAPIView.as_view(), name='epg_grid'),
     path('import/', EPGImportAPIView.as_view(), name='epg_import'),
     path('current-programs/', CurrentProgramsAPIView.as_view(), name='current_programs'),
+    path('sources/<int:pk>/sd-lineups/search/', SDLineupsSearchView.as_view(), name='sd_lineups_search'),
+    path('sources/<int:pk>/sd-lineups/', SDLineupsView.as_view(), name='sd_lineups'),
 ]
 
 urlpatterns += router.urls

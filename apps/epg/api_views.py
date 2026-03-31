@@ -1,4 +1,6 @@
+import hashlib
 import logging, os
+import requests as http_requests
 from rest_framework import viewsets, status, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -544,4 +546,170 @@ class CurrentProgramsAPIView(APIView):
                 current_programs.append(program_data)
 
         return Response(current_programs, status=status.HTTP_200_OK)
+
+
+class SDLineupsSearchView(APIView):
+    """Search Schedules Direct headends by country + postal code."""
+
+    def get_permissions(self):
+        return permission_classes_by_action.get('default', [Authenticated()])
+
+    def post(self, request, pk):
+        source = EPGSource.objects.filter(pk=pk, source_type='schedules_direct').first()
+        if not source:
+            return Response({"error": "EPG source not found"}, status=404)
+        if not source.username or not source.api_key:
+            return Response({"error": "Username and password are required"}, status=400)
+
+        country = request.data.get("country", "USA")
+        postal_code = request.data.get("postal_code", "")
+        if not postal_code:
+            return Response({"error": "Postal code is required"}, status=400)
+
+        try:
+            token = self._authenticate(source.username, source.api_key)
+            resp = http_requests.get(
+                f"https://json.schedulesdirect.org/20141201/headends?country={country}&postalcode={postal_code}",
+                headers={"token": token},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            headends = resp.json()
+
+            # Flatten into a simple list of lineups
+            lineups = []
+            for headend in headends:
+                for lineup in headend.get("lineups", []):
+                    lineups.append({
+                        "lineup": lineup.get("lineup"),
+                        "name": lineup.get("name"),
+                        "transport": headend.get("transport"),
+                        "location": headend.get("location"),
+                    })
+            return Response(lineups)
+        except http_requests.exceptions.HTTPError as e:
+            error_msg = str(e)
+            if e.response is not None:
+                try:
+                    error_msg = e.response.json().get("message", error_msg)
+                except Exception:
+                    pass
+            return Response({"error": error_msg}, status=502)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def _authenticate(self, username, password):
+        password_hash = hashlib.sha1(password.encode('utf-8')).hexdigest()
+        resp = http_requests.post(
+            "https://json.schedulesdirect.org/20141201/token",
+            json={"username": username, "password": password_hash},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"SD auth failed: {data.get('message', 'Unknown error')}")
+        return data["token"]
+
+
+class SDLineupsView(APIView):
+    """List currently added lineups, add a lineup, or remove a lineup."""
+
+    def get_permissions(self):
+        return permission_classes_by_action.get('default', [Authenticated()])
+
+    def _authenticate(self, username, password):
+        password_hash = hashlib.sha1(password.encode('utf-8')).hexdigest()
+        resp = http_requests.post(
+            "https://json.schedulesdirect.org/20141201/token",
+            json={"username": username, "password": password_hash},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise Exception(f"SD auth failed: {data.get('message', 'Unknown error')}")
+        return data["token"]
+
+    def get(self, request, pk):
+        """List currently added lineups on the SD account."""
+        source = EPGSource.objects.filter(pk=pk, source_type='schedules_direct').first()
+        if not source:
+            return Response({"error": "EPG source not found"}, status=404)
+        if not source.username or not source.api_key:
+            return Response({"error": "Username and password are required"}, status=400)
+
+        try:
+            token = self._authenticate(source.username, source.api_key)
+            resp = http_requests.get(
+                "https://json.schedulesdirect.org/20141201/status",
+                headers={"token": token},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            status_data = resp.json()
+            lineups = status_data.get("lineups", [])
+            return Response(lineups)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def post(self, request, pk):
+        """Add a lineup to the SD account."""
+        source = EPGSource.objects.filter(pk=pk, source_type='schedules_direct').first()
+        if not source:
+            return Response({"error": "EPG source not found"}, status=404)
+
+        lineup_id = request.data.get("lineup")
+        if not lineup_id:
+            return Response({"error": "lineup is required"}, status=400)
+
+        try:
+            token = self._authenticate(source.username, source.api_key)
+            resp = http_requests.put(
+                f"https://json.schedulesdirect.org/20141201/lineups/{lineup_id}",
+                headers={"token": token},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return Response(resp.json())
+        except http_requests.exceptions.HTTPError as e:
+            error_msg = str(e)
+            if e.response is not None:
+                try:
+                    error_msg = e.response.json().get("message", error_msg)
+                except Exception:
+                    pass
+            return Response({"error": error_msg}, status=502)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def delete(self, request, pk):
+        """Remove a lineup from the SD account."""
+        source = EPGSource.objects.filter(pk=pk, source_type='schedules_direct').first()
+        if not source:
+            return Response({"error": "EPG source not found"}, status=404)
+
+        lineup_id = request.data.get("lineup")
+        if not lineup_id:
+            return Response({"error": "lineup is required"}, status=400)
+
+        try:
+            token = self._authenticate(source.username, source.api_key)
+            resp = http_requests.delete(
+                f"https://json.schedulesdirect.org/20141201/lineups/{lineup_id}",
+                headers={"token": token},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return Response(resp.json())
+        except http_requests.exceptions.HTTPError as e:
+            error_msg = str(e)
+            if e.response is not None:
+                try:
+                    error_msg = e.response.json().get("message", error_msg)
+                except Exception:
+                    pass
+            return Response({"error": error_msg}, status=502)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
