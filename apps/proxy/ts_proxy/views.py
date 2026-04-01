@@ -595,7 +595,28 @@ def stream_xc(request, username, password, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
-    return stream_ts(request._request, str(channel.uuid), user)
+    response = stream_ts(request._request, str(channel.uuid), user)
+
+    # For redirect responses, rewrite provider credentials in the Location URL
+    # so each XC user connects with their own provider account instead of sharing
+    # the master account's connection pool.
+    if (
+        isinstance(response, HttpResponseRedirect)
+        and user.user_level < 10
+        and custom_properties.get("provider_username")
+        and custom_properties.get("provider_password")
+    ):
+        location = response["Location"]
+        rewritten = re.sub(
+            r"/live/[^/]+/[^/]+/",
+            f"/live/{custom_properties['provider_username']}/{custom_properties['provider_password']}/",
+            location,
+            count=1,
+        )
+        if rewritten != location:
+            response["Location"] = rewritten
+
+    return response
 
 
 @csrf_exempt
