@@ -26,7 +26,8 @@
 #    - Per-account proxy configuration
 #    - Works with FFmpeg, VLC, and HTTP streams
 #    - Files: apps/m3u/models.py, apps/m3u/serializers.py, core/models.py,
-#             apps/proxy/ts_proxy/stream_manager.py, apps/proxy/ts_proxy/http_streamer.py
+#             apps/proxy/ts_proxy/stream_manager.py, apps/proxy/ts_proxy/http_streamer.py,
+#             frontend/src/components/forms/M3U.jsx
 #    - Migration: apps/m3u/migrations/0020_m3uaccount_proxy.py
 #
 # 4. Extended Timeout Configuration
@@ -70,9 +71,9 @@
 # WEBUI COMPATIBILITY
 ################################################################################
 #
-# ✅ Proxy Field: Automatically displayed in M3U Account form (serializer includes 'proxy')
+# ✅ Proxy Field: Displayed in M3U Account form (frontend + serializer)
 # ✅ Timeout Settings: Displayed in Core Settings > Proxy Settings (JSON field)
-# ✅ All changes are WebUI-compatible without frontend modifications
+# ✅ All changes are WebUI-compatible
 #
 ################################################################################
 
@@ -678,6 +679,36 @@ class Migration(migrations.Migration):
                  if inactivity_duration > timeout_threshold and self.connected:
                      if self.healthy:
                          logger.warning(f"Stream unhealthy for channel {self.channel_id} - no data for {inactivity_duration:.1f}s")
+
+################################################################################
+# FEATURE 3b: HTTP Proxy - Frontend (M3U Account Form)
+################################################################################
+
+--- a/frontend/src/components/forms/M3U.jsx
++++ b/frontend/src/components/forms/M3U.jsx
+@@ initialValues
+-      priority: 0,
+-      enable_vod: false,
++      priority: 0,
++      enable_vod: false,
++      proxy: '',
+
+@@ setValues (when editing existing account)
+-        enable_vod: m3uAccount.enable_vod || false,
++        enable_vod: m3uAccount.enable_vod || false,
++        proxy: m3uAccount.proxy || '',
+
+@@ after VOD Priority NumberInput
++              <TextInput
++                style={{ width: '100%' }}
++                id="proxy"
++                name="proxy"
++                label="HTTP Proxy"
++                placeholder="http://proxy.example.com:8080"
++                description="Optional HTTP proxy URL for this M3U account"
++                {...form.getInputProps('proxy')}
++                key={form.key('proxy')}
++              />
 
 ################################################################################
 # END OF PATCH

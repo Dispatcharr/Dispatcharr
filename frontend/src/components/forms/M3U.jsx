@@ -71,6 +71,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      proxy: '',
     },
 
     validate: {
@@ -103,6 +104,7 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        proxy: m3uAccount.proxy || '',
       });
       setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
@@ -460,6 +462,17 @@ const M3U = ({
                 description="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content."
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
+              />
+
+              <TextInput
+                style={{ width: '100%' }}
+                id="proxy"
+                name="proxy"
+                label="HTTP Proxy"
+                placeholder="http://proxy.example.com:8080"
+                description="Optional HTTP proxy URL for this M3U account"
+                {...form.getInputProps('proxy')}
+                key={form.key('proxy')}
               />
 
               <Checkbox
