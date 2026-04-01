@@ -32,6 +32,7 @@ def get_total_viewers(channel_id):
 
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
+    sort_order = models.IntegerField(null=True, blank=True, default=None, db_index=True)
 
     def related_channels(self):
         # local import if needed to avoid cyc. Usually fine in a single file though

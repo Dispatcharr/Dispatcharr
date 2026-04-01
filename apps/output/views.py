@@ -2129,7 +2129,7 @@ def xc_xmltv(request):
 
 
 def xc_get_live_categories(user):
-    from django.db.models import Min
+    from django.db.models import F, Min
     response = []
 
     if user.user_level < 10:
@@ -2140,7 +2140,7 @@ def xc_get_live_categories(user):
             # No profile filtering - user sees all channel groups
             channel_groups = ChannelGroup.objects.filter(
                 channels__isnull=False, channels__user_level__lte=user.user_level
-            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by(F('sort_order').asc(nulls_last=True), 'min_channel_number')
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2148,11 +2148,11 @@ def xc_get_live_categories(user):
                 "channels__user_level": 0,
                 "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
             }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by(F('sort_order').asc(nulls_last=True), 'min_channel_number')
     else:
         channel_groups = ChannelGroup.objects.filter(
             channels__isnull=False, channels__user_level__lte=user.user_level
-        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by(F('sort_order').asc(nulls_last=True), 'min_channel_number')
 
     for group in channel_groups:
         response.append(
