@@ -40,20 +40,25 @@ from .utils import get_logger
 from uuid import UUID
 import gevent
 from dispatcharr.utils import network_access_allowed
+from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
 
 
 @api_view(["GET"])
-def stream_ts(request, channel_id):
+def stream_ts(request, channel_id, user=None):
     if not network_access_allowed(request, "STREAMS"):
         return JsonResponse({"error": "Forbidden"}, status=403)
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
+    if user is None and hasattr(request, 'user') and request.user.is_authenticated:
+        user = request.user
+
     channel = get_stream_object(channel_id)
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
+    connection_allocated = False  # Track if connection slot was allocated via get_stream()
 
     try:
         # Generate a unique client ID
@@ -70,6 +75,13 @@ def stream_ts(request, channel_id):
                 )
                 break
 
+        if user:
+            if not check_user_stream_limits(user, client_id, media_id=channel_id):
+                return JsonResponse(
+                    {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
+                    status=429
+                )
+
         # Check if we need to reinitialize the channel
         needs_initialization = True
         channel_state = None
@@ -80,9 +92,9 @@ def stream_ts(request, channel_id):
             metadata_key = RedisKeys.channel_metadata(channel_id)
             if proxy_server.redis_client.exists(metadata_key):
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
-                state_field = ChannelMetadataField.STATE.encode("utf-8")
+                state_field = ChannelMetadataField.STATE
                 if state_field in metadata:
-                    channel_state = metadata[state_field].decode("utf-8")
+                    channel_state = metadata[state_field]
 
                     # Active/running states - channel is operational, don't reinitialize
                     if channel_state in [
@@ -118,9 +130,9 @@ def stream_ts(request, channel_id):
                         )
                     # Unknown/empty state - check if owner is alive
                     else:
-                        owner_field = ChannelMetadataField.OWNER.encode("utf-8")
+                        owner_field = ChannelMetadataField.OWNER
                         if owner_field in metadata:
-                            owner = metadata[owner_field].decode("utf-8")
+                            owner = metadata[owner_field]
                             owner_heartbeat_key = f"ts_proxy:worker:{owner}:heartbeat"
                             if proxy_server.redis_client.exists(owner_heartbeat_key):
                                 # Owner is still active with unknown state - don't reinitialize
@@ -219,9 +231,10 @@ def stream_ts(request, channel_id):
                     )
 
             if stream_url is None:
-                # Release the channel's stream lock if one was acquired
-                # Note: Only call this if get_stream() actually assigned a stream
-                # In our case, if stream_url is None, no stream was ever assigned, so don't release
+                # Release any connection slot that may have been allocated
+                # by the error-checking get_stream() call during retries
+                if not channel.release_stream():
+                    logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                 # Get the specific error message if available
                 wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -237,8 +250,23 @@ def stream_ts(request, channel_id):
                     {"error": error_msg, "waited": wait_duration}, status=503
                 )  # 503 Service Unavailable is appropriate here
 
-            # Get the stream ID from the channel
-            stream_id, m3u_profile_id, _ = channel.get_stream()
+            # generate_stream_url() called get_stream() which allocated a connection
+            # slot (INCR'd profile_connections) - track this for cleanup on error
+            if needs_initialization:
+                connection_allocated = True
+
+            # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
+            # Avoid calling get_stream() again — (INCR profile counter)
+            # It could double-allocate if the keys were cleared by a concurrent release.
+            stream_id = None
+            m3u_profile_id = None
+            if proxy_server.redis_client:
+                stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                if stream_id_bytes:
+                    stream_id = int(stream_id_bytes)
+                    profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                    if profile_id_bytes:
+                        m3u_profile_id = int(profile_id_bytes)
             logger.info(
                 f"Channel {channel_id} using stream ID {stream_id}, m3u account profile ID {m3u_profile_id}"
             )
@@ -308,7 +336,9 @@ def stream_ts(request, channel_id):
                                 f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                             )
                 # Release stream lock before redirecting
-                channel.release_stream()
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream before redirect")
+                connection_allocated = False
                 # Final decision based on validation results
                 if is_valid:
                     logger.info(
@@ -344,9 +374,16 @@ def stream_ts(request, channel_id):
             )
 
             if not success:
+                if connection_allocated:
+                    if not channel.release_stream():
+                        logger.warning(f"[{client_id}] Failed to release stream after init failure")
+                    connection_allocated = False
                 return JsonResponse(
                     {"error": "Failed to initialize channel"}, status=500
                 )
+
+            # Channel initialized - cleanup lifecycle now owns the connection release
+            connection_allocated = False
 
             # If we're the owner, wait for connection to establish
             if proxy_server.am_i_owner(channel_id):
@@ -373,7 +410,7 @@ def stream_ts(request, channel_id):
                                         metadata_key, ChannelMetadataField.STATE
                                     )
                                     if state_bytes:
-                                        current_state = state_bytes.decode("utf-8")
+                                        current_state = state_bytes
                                         logger.debug(
                                             f"[{client_id}] Current state of channel {channel_id}: {current_state}"
                                         )
@@ -449,12 +486,12 @@ def stream_ts(request, channel_id):
                 )
 
                 if url_bytes:
-                    url = url_bytes.decode("utf-8")
+                    url = url_bytes
                 if ua_bytes:
-                    stream_user_agent = ua_bytes.decode("utf-8")
+                    stream_user_agent = ua_bytes
                 # Extract transcode setting from Redis
                 if profile_bytes:
-                    profile_str = profile_bytes.decode("utf-8")
+                    profile_str = profile_bytes
                     use_transcode = (
                         profile_str == PROXY_PROFILE_NAME or profile_str == "None"
                     )
@@ -490,12 +527,12 @@ def stream_ts(request, channel_id):
         # Register client
         buffer = proxy_server.stream_buffers[channel_id]
         client_manager = proxy_server.client_managers[channel_id]
-        client_manager.add_client(client_id, client_ip, client_user_agent)
+        client_manager.add_client(client_id, client_ip, client_user_agent, user)
         logger.info(f"[{client_id}] Client registered with channel {channel_id}")
 
         # Create a stream generator for this client
         generate = create_stream_generator(
-            channel_id, client_id, client_ip, client_user_agent, channel_initializing
+            channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user
         )
 
         # Return the StreamingHttpResponse from the main function
@@ -507,6 +544,12 @@ def stream_ts(request, channel_id):
 
     except Exception as e:
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
+        if connection_allocated:
+            try:
+                if not channel.release_stream():
+                    logger.warning(f"[{client_id}] Failed to release stream in exception handler")
+            except Exception:
+                pass
         return JsonResponse({"error": str(e)}, status=500)
 
 
@@ -525,7 +568,6 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    print(f"Fetchin channel with ID: {channel_id}")
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
@@ -553,7 +595,7 @@ def stream_xc(request, username, password, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
-    return stream_ts(request._request, str(channel.uuid))
+    return stream_ts(request._request, str(channel.uuid), user)
 
 
 @csrf_exempt
@@ -681,7 +723,7 @@ def channel_status(request, channel_id=None):
                 )
                 for key in keys:
                     channel_id_match = re.search(
-                        r"ts_proxy:channel:(.*):metadata", key.decode("utf-8")
+                        r"ts_proxy:channel:(.*):metadata", key
                     )
                     if channel_id_match:
                         ch_id = channel_id_match.group(1)
@@ -802,7 +844,7 @@ def next_stream(request, channel_id):
                     metadata_key, ChannelMetadataField.STREAM_ID
                 )
                 if stream_id_bytes:
-                    current_stream_id = int(stream_id_bytes.decode("utf-8"))
+                    current_stream_id = int(stream_id_bytes)
                     logger.info(
                         f"Found current stream ID {current_stream_id} in Redis for channel {channel_id}"
                     )
@@ -812,7 +854,7 @@ def next_stream(request, channel_id):
                         metadata_key, ChannelMetadataField.M3U_PROFILE
                     )
                     if profile_id_bytes:
-                        profile_id = int(profile_id_bytes.decode("utf-8"))
+                        profile_id = int(profile_id_bytes)
                         logger.info(
                             f"Found M3U profile ID {profile_id} in Redis for channel {channel_id}"
                         )

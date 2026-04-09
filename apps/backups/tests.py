@@ -15,6 +15,96 @@ from . import services
 User = get_user_model()
 
 
+class PgEnvTlsTestCase(TestCase):
+    """Test that _get_pg_env includes TLS and password env vars correctly."""
+    databases = []
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_includes_ssl_vars_when_tls_enabled(self, mock_settings):
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "testpass",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {
+                    "sslmode": "verify-full",
+                    "sslrootcert": "/certs/ca.crt",
+                    "sslcert": "/certs/client.crt",
+                    "sslkey": "/certs/client.key",
+                },
+            }
+        }
+        env = services._get_pg_env()
+        self.assertEqual(env["PGSSLMODE"], "verify-full")
+        self.assertEqual(env["PGSSLROOTCERT"], "/certs/ca.crt")
+        self.assertEqual(env["PGSSLCERT"], "/certs/client.crt")
+        self.assertEqual(env["PGSSLKEY"], "/certs/client.key")
+        self.assertEqual(env["PGPASSWORD"], "testpass")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_no_ssl_vars_when_tls_disabled(self, mock_settings):
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "testpass",
+                "HOST": "localhost",
+                "PORT": 5432,
+            }
+        }
+        env = services._get_pg_env()
+        self.assertNotIn("PGSSLMODE", env)
+        self.assertNotIn("PGSSLROOTCERT", env)
+        self.assertNotIn("PGSSLCERT", env)
+        self.assertNotIn("PGSSLKEY", env)
+        self.assertEqual(env["PGPASSWORD"], "testpass")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_no_password_when_empty(self, mock_settings):
+        """Cert-only auth: PGPASSWORD must not be set when password is empty."""
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {"sslmode": "verify-full"},
+            }
+        }
+        env = services._get_pg_env()
+        self.assertNotIn("PGPASSWORD", env)
+        self.assertEqual(env["PGSSLMODE"], "verify-full")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_partial_ssl_options(self, mock_settings):
+        """Server-only TLS: only sslmode and CA cert, no client cert/key."""
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "pass",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {
+                    "sslmode": "verify-ca",
+                    "sslrootcert": "/certs/ca.crt",
+                },
+            }
+        }
+        env = services._get_pg_env()
+        self.assertEqual(env["PGSSLMODE"], "verify-ca")
+        self.assertEqual(env["PGSSLROOTCERT"], "/certs/ca.crt")
+        self.assertNotIn("PGSSLCERT", env)
+        self.assertNotIn("PGSSLKEY", env)
+
+
 class BackupServicesTestCase(TestCase):
     """Test cases for backup services"""
 

@@ -955,10 +955,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       label="Source"
                       value={selectedEPG}
                       onChange={setSelectedEPG}
-                      data={Object.values(epgs).map((epg) => ({
-                        value: `${epg.id}`,
-                        label: epg.name,
-                      }))}
+                      data={Object.values(epgs)
+                        .filter((epg) => epg.is_active)
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((epg) => ({
+                          value: `${epg.id}`,
+                          label: epg.name,
+                        }))}
                       size="xs"
                       mb="xs"
                     />

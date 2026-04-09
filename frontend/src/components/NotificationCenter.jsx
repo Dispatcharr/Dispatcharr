@@ -10,7 +10,9 @@ import {
   Group,
   Indicator,
   Popover,
-  ScrollArea,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollAreaAutosize,
   Stack,
   Text,
   ThemeIcon,
@@ -33,7 +35,11 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import useNotificationsStore from '../store/notifications';
-import API from '../api';
+import {
+  dismissAllNotifications,
+  dismissNotification,
+  getNotifications,
+} from '../utils/components/NotificationCenterUtils.js';
 
 // Get icon for notification type
 const getNotificationIcon = (type) => {
@@ -249,7 +255,7 @@ const NotificationCenter = ({ onSettingAction }) => {
   // Fetch notifications on mount and periodically
   const fetchNotifications = useCallback(async () => {
     try {
-      await API.getNotifications(showDismissed);
+      await getNotifications(showDismissed);
     } catch (error) {
       console.error('Failed to fetch notifications:', error);
     }
@@ -265,7 +271,7 @@ const NotificationCenter = ({ onSettingAction }) => {
 
   const handleDismiss = async (notificationId, actionTaken = null) => {
     try {
-      await API.dismissNotification(notificationId, actionTaken);
+      await dismissNotification(notificationId, actionTaken);
     } catch (error) {
       console.error('Failed to dismiss notification:', error);
     }
@@ -273,7 +279,7 @@ const NotificationCenter = ({ onSettingAction }) => {
 
   const handleDismissAll = async () => {
     try {
-      await API.dismissAllNotifications();
+      await dismissAllNotifications();
     } catch (error) {
       console.error('Failed to dismiss all notifications:', error);
     }
@@ -302,7 +308,7 @@ const NotificationCenter = ({ onSettingAction }) => {
       shadow="lg"
       withArrow
     >
-      <Popover.Target>
+      <PopoverTarget>
         <Indicator
           color="red"
           size={16}
@@ -321,9 +327,9 @@ const NotificationCenter = ({ onSettingAction }) => {
             <Bell size={20} />
           </ActionIcon>
         </Indicator>
-      </Popover.Target>
+      </PopoverTarget>
 
-      <Popover.Dropdown p={0}>
+      <PopoverDropdown p={0}>
         {/* Header */}
         <Group justify="space-between" p="sm" pb="xs">
           <Group gap="xs">
@@ -367,7 +373,7 @@ const NotificationCenter = ({ onSettingAction }) => {
         <Divider />
 
         {/* Notification list */}
-        <ScrollArea.Autosize mah={400} type="auto" offsetScrollbars>
+        <ScrollAreaAutosize mah={400} type="auto" offsetScrollbars>
           {displayedNotifications.length === 0 ? (
             <Box p="lg" ta="center">
               <ThemeIcon
@@ -403,7 +409,7 @@ const NotificationCenter = ({ onSettingAction }) => {
               ))}
             </Stack>
           )}
-        </ScrollArea.Autosize>
+        </ScrollAreaAutosize>
 
         {/* Footer with info text */}
         {!showDismissed &&
@@ -421,7 +427,7 @@ const NotificationCenter = ({ onSettingAction }) => {
               </Box>
             </>
           )}
-      </Popover.Dropdown>
+      </PopoverDropdown>
     </Popover>
   );
 };

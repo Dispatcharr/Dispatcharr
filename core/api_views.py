@@ -3,6 +3,7 @@
 import json
 import ipaddress
 import logging
+from django.conf import settings as django_settings
 from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
@@ -183,6 +184,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+                "new_client_behind_seconds": 5,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
@@ -300,7 +302,9 @@ def environment(request):
             country_code = None
             country_name = None
 
-    # 4) Get environment mode from system environment variable
+    # 4) Get environment mode and TLS status from settings
+    postgres_ssl = getattr(django_settings, "POSTGRES_SSL", False)
+
     return Response(
         {
             "authenticated": True,
@@ -308,7 +312,17 @@ def environment(request):
             "local_ip": local_ip,
             "country_code": country_code,
             "country_name": country_name,
-            "env_mode": "dev" if os.getenv("DISPATCHARR_ENV") == "dev" else "prod",
+            "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
+            "redis_tls": {
+                "enabled": getattr(django_settings, "REDIS_SSL", False),
+                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
+                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
+            },
+            "postgres_tls": {
+                "enabled": postgres_ssl,
+                "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
+                "mtls": bool(getattr(django_settings, "POSTGRES_SSL_CERT", "") and getattr(django_settings, "POSTGRES_SSL_KEY", "")),
+            },
         }
     )
 

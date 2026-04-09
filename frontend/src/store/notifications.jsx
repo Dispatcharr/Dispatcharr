@@ -26,12 +26,15 @@ const useNotificationsStore = create((set, get) => ({
       );
       if (exists) {
         // Update existing notification
+        const updatedNotifications = state.notifications.map((n) =>
+          n.notification_key === notification.notification_key
+            ? { ...n, ...notification }
+            : n
+        );
         return {
-          notifications: state.notifications.map((n) =>
-            n.notification_key === notification.notification_key
-              ? { ...n, ...notification }
-              : n
-          ),
+          notifications: updatedNotifications,
+          unreadCount: updatedNotifications.filter((n) => !n.is_dismissed)
+            .length,
         };
       }
       // Add new notification

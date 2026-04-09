@@ -17,104 +17,379 @@ from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.proxy.vod_proxy.connection_manager import VODConnectionManager
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info, create_vod_response
+from rest_framework.decorators import api_view
+from apps.accounts.models import User
+from apps.proxy.utils import check_user_stream_limits
 
 logger = logging.getLogger(__name__)
 
+_request_times = {}
 
-@method_decorator(csrf_exempt, name='dispatch')
-class VODStreamView(View):
-    """Handle VOD streaming requests with M3U profile support"""
 
-    def get(self, request, content_type, content_id, session_id=None, profile_id=None):
-        """
-        Stream VOD content (movies or series episodes) with session-based connection reuse
+def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
+    """Get the content object and its M3U relation"""
+    try:
+        logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
+        if preferred_m3u_account_id:
+            logger.info(f"[CONTENT-LOOKUP] Preferred M3U account ID: {preferred_m3u_account_id}")
+        if preferred_stream_id:
+            logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
 
-        Args:
-            content_type: 'movie', 'series', or 'episode'
-            content_id: ID of the content
-            session_id: Optional session ID from URL path (for persistent connections)
-            profile_id: Optional M3U profile ID for authentication
-        """
-        logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
-        logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
-        logger.info(f"[VOD-REQUEST] Request method: {request.method}")
-        logger.info(f"[VOD-REQUEST] Request headers: {dict(request.headers)}")
+        if content_type == 'movie':
+            content_obj = get_object_or_404(Movie, uuid=content_id)
+            logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
 
-        try:
-            client_ip, client_user_agent = get_client_info(request)
+            # Filter by preferred stream ID first (most specific)
+            relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+            if preferred_stream_id:
+                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                if specific_relation:
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    return content_obj, specific_relation
+                else:
+                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
 
-            # Extract timeshift parameters from query string
-            # Support multiple timeshift parameter formats
-            utc_start = request.GET.get('utc_start') or request.GET.get('start') or request.GET.get('playliststart')
-            utc_end = request.GET.get('utc_end') or request.GET.get('end') or request.GET.get('playlistend')
-            offset = request.GET.get('offset') or request.GET.get('seek') or request.GET.get('t')
+            # Filter by preferred M3U account if specified
+            if preferred_m3u_account_id:
+                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                if specific_relation:
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    return content_obj, specific_relation
+                else:
+                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
-            # VLC specific timeshift parameters
-            if not utc_start and not offset:
-                # Check for VLC-style timestamp parameters
-                if 'timestamp' in request.GET:
-                    offset = request.GET.get('timestamp')
-                elif 'time' in request.GET:
-                    offset = request.GET.get('time')
+            # Get the highest priority active relation (fallback or default)
+            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
 
-            # Session ID now comes from URL path parameter
-            # Remove legacy query parameter extraction since we're using path-based routing
+            if relation:
+                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
-            # Extract Range header for seeking support
-            range_header = request.META.get('HTTP_RANGE')
+            return content_obj, relation
 
-            logger.info(f"[VOD-TIMESHIFT] Timeshift params - utc_start: {utc_start}, utc_end: {utc_end}, offset: {offset}")
-            logger.info(f"[VOD-SESSION] Session ID: {session_id}")
+        elif content_type == 'episode':
+            content_obj = get_object_or_404(Episode, uuid=content_id)
+            logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
 
-            # Log all query parameters for debugging
-            if request.GET:
-                logger.debug(f"[VOD-PARAMS] All query params: {dict(request.GET)}")
+            # Filter by preferred stream ID first (most specific)
+            relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
+            if preferred_stream_id:
+                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                if specific_relation:
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    return content_obj, specific_relation
+                else:
+                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
 
-            if range_header:
-                logger.info(f"[VOD-RANGE] Range header: {range_header}")
+            # Filter by preferred M3U account if specified
+            if preferred_m3u_account_id:
+                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                if specific_relation:
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    return content_obj, specific_relation
+                else:
+                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
 
-                # Parse the range to understand what position VLC is seeking to
-                try:
-                    if 'bytes=' in range_header:
-                        range_part = range_header.replace('bytes=', '')
-                        if '-' in range_part:
-                            start_byte, end_byte = range_part.split('-', 1)
-                            if start_byte:
-                                start_pos_mb = int(start_byte) / (1024 * 1024)
-                                logger.info(f"[VOD-SEEK] Seeking to byte position: {start_byte} (~{start_pos_mb:.1f} MB)")
-                                if int(start_byte) > 0:
-                                    logger.info(f"[VOD-SEEK] *** ACTUAL SEEK DETECTED *** Position: {start_pos_mb:.1f} MB")
-                            else:
-                                logger.info(f"[VOD-SEEK] Open-ended range request (from start)")
-                            if end_byte:
-                                end_pos_mb = int(end_byte) / (1024 * 1024)
-                                logger.info(f"[VOD-SEEK] End position: {end_byte} bytes (~{end_pos_mb:.1f} MB)")
-                except Exception as e:
-                    logger.warning(f"[VOD-SEEK] Could not parse range header: {e}")
+            # Get the highest priority active relation (fallback or default)
+            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
 
-                # Simple seek detection - track rapid requests
-                current_time = time.time()
-                request_key = f"{client_ip}:{content_type}:{content_id}"
+            if relation:
+                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
 
-                if not hasattr(self.__class__, '_request_times'):
-                    self.__class__._request_times = {}
+            return content_obj, relation
 
-                if request_key in self.__class__._request_times:
-                    time_diff = current_time - self.__class__._request_times[request_key]
-                    if time_diff < 5.0:
-                        logger.info(f"[VOD-SEEK] Rapid request detected ({time_diff:.1f}s) - likely seeking")
+        elif content_type == 'series':
+            # For series, get the first episode
+            series = get_object_or_404(Series, uuid=content_id)
+            logger.info(f"[CONTENT-FOUND] Series: {series.name} (ID: {series.id})")
+            episode = series.episodes.first()
+            if not episode:
+                logger.error(f"[CONTENT-ERROR] No episodes found for series {series.name}")
+                return None, None
 
-                self.__class__._request_times[request_key] = current_time
+            logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
+
+            # Filter by preferred stream ID first (most specific)
+            relations_query = episode.m3u_relations.filter(m3u_account__is_active=True)
+            if preferred_stream_id:
+                specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
+                if specific_relation:
+                    logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
+                    return episode, specific_relation
+                else:
+                    logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
+
+            # Filter by preferred M3U account if specified
+            if preferred_m3u_account_id:
+                specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
+                if specific_relation:
+                    logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
+                    return episode, specific_relation
+                else:
+                    logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
+
+            # Get the highest priority active relation (fallback or default)
+            relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+
+            if relation:
+                logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
+
+            return episode, relation
+        else:
+            logger.error(f"[CONTENT-ERROR] Invalid content type: {content_type}")
+            return None, None
+
+    except Exception as e:
+        logger.error(f"Error getting content object: {e}")
+        return None, None
+
+def _get_stream_url_from_relation(relation):
+    """Get stream URL from the M3U relation"""
+    try:
+        # Log the relation type and available attributes
+        logger.info(f"[VOD-URL] Relation type: {type(relation).__name__}")
+        logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
+        logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
+
+        # First try the get_stream_url method (this should build URLs dynamically)
+        if hasattr(relation, 'get_stream_url'):
+            url = relation.get_stream_url()
+            if url:
+                logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
+                return url
             else:
-                logger.info(f"[VOD-RANGE] No Range header - full content request")
+                logger.warning(f"[VOD-URL] get_stream_url() returned None")
 
-            logger.info(f"[VOD-CLIENT] Client info - IP: {client_ip}, User-Agent: {client_user_agent[:50]}...")
+        logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
+        return None
+    except Exception as e:
+        logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
+        return None
 
-            # If no session ID, create one and redirect to path-based URL
-            if not session_id:
-                new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-                logger.info(f"[VOD-SESSION] Creating new session: {new_session_id}")
+def _get_m3u_profile(m3u_account, profile_id, session_id=None):
+    """Get appropriate M3U profile for streaming using Redis-based viewer counts
 
+    Args:
+        m3u_account: M3UAccount instance
+        profile_id: Optional specific profile ID requested
+        session_id: Optional session ID to check for existing connections
+
+    Returns:
+        tuple: (M3UAccountProfile, current_connections) or None if no profile found
+    """
+    try:
+        from core.utils import RedisClient
+        redis_client = RedisClient.get_client()
+
+        if not redis_client:
+            logger.warning("Redis not available, falling back to default profile")
+            default_profile = M3UAccountProfile.objects.filter(
+                m3u_account=m3u_account,
+                is_active=True,
+                is_default=True
+            ).first()
+            return (default_profile, 0) if default_profile else None
+
+        # Check if this session already has an active connection
+        if session_id:
+            persistent_connection_key = f"vod_persistent_connection:{session_id}"
+            connection_data = redis_client.hgetall(persistent_connection_key)
+
+            if connection_data:
+                existing_profile_id = connection_data.get('m3u_profile_id')
+                if existing_profile_id:
+                    try:
+                        existing_profile = M3UAccountProfile.objects.get(
+                            id=int(existing_profile_id),
+                            m3u_account=m3u_account,
+                            is_active=True
+                        )
+                        # Get current connections for logging
+                        profile_connections_key = f"profile_connections:{existing_profile.id}"
+                        current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+                        logger.info(f"[PROFILE-SELECTION] Session {session_id} reusing existing profile {existing_profile.id}: {current_connections}/{existing_profile.max_streams} connections")
+                        return (existing_profile, current_connections)
+                    except (M3UAccountProfile.DoesNotExist, ValueError):
+                        logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid profile ID {existing_profile_id}, selecting new profile")
+                    except Exception as e:
+                        logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
+                else:
+                    logger.debug(f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored")            # If specific profile requested, try to use it
+        if profile_id:
+            try:
+                profile = M3UAccountProfile.objects.get(
+                    id=profile_id,
+                    m3u_account=m3u_account,
+                    is_active=True
+                )
+                # Check Redis-based current connections
+                profile_connections_key = f"profile_connections:{profile.id}"
+                current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+                if profile.max_streams == 0 or current_connections < profile.max_streams:
+                    logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
+                    return (profile, current_connections)
+                else:
+                    logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
+            except M3UAccountProfile.DoesNotExist:
+                logger.warning(f"[PROFILE-SELECTION] Requested profile {profile_id} not found")
+
+        # Get active profiles ordered by priority (default first)
+        m3u_profiles = M3UAccountProfile.objects.filter(
+            m3u_account=m3u_account,
+            is_active=True
+        )
+
+        default_profile = m3u_profiles.filter(is_default=True).first()
+        if not default_profile:
+            logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
+            return None
+
+        # Check profiles in order: default first, then others
+        profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
+
+        for profile in profiles:
+            profile_connections_key = f"profile_connections:{profile.id}"
+            current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+            # Check if profile has available connection slots
+            if profile.max_streams == 0 or current_connections < profile.max_streams:
+                logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
+                return (profile, current_connections)
+            else:
+                logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
+
+        # All profiles are at capacity - return None to trigger error response
+        logger.error(f"[PROFILE-SELECTION] All profiles at capacity for M3U account {m3u_account.id}, rejecting request")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting M3U profile: {e}")
+        return None
+
+def _transform_url(original_url, m3u_profile):
+    """Transform URL based on M3U profile settings"""
+    try:
+        import regex
+
+        if not original_url:
+            return None
+
+        search_pattern = m3u_profile.search_pattern
+        replace_pattern = m3u_profile.replace_pattern
+        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
+        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
+        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+
+        if search_pattern and replace_pattern:
+            # regex module accepts JS-style (?<name>...) named groups natively
+            transformed_url = regex.sub(search_pattern, safe_replace_pattern, original_url)
+            return transformed_url
+
+        return original_url
+
+    except Exception as e:
+        logger.error(f"Error transforming URL: {e}")
+        return original_url
+
+@api_view(["GET"])
+def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
+    """
+    Stream VOD content (movies or series episodes) with session-based connection reuse
+
+    Args:
+        content_type: 'movie', 'series', or 'episode'
+        content_id: ID of the content
+        session_id: Optional session ID from URL path (for persistent connections)
+        profile_id: Optional M3U profile ID for authentication
+    """
+    logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
+    logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
+    logger.info(f"[VOD-REQUEST] Request method: {request.method}")
+    logger.info(f"[VOD-REQUEST] Request headers: {dict(request.headers)}")
+
+    try:
+        client_ip, client_user_agent = get_client_info(request)
+
+        # Extract timeshift parameters from query string
+        # Support multiple timeshift parameter formats
+        utc_start = request.GET.get('utc_start') or request.GET.get('start') or request.GET.get('playliststart')
+        utc_end = request.GET.get('utc_end') or request.GET.get('end') or request.GET.get('playlistend')
+        offset = request.GET.get('offset') or request.GET.get('seek') or request.GET.get('t')
+
+        # VLC specific timeshift parameters
+        if not utc_start and not offset:
+            # Check for VLC-style timestamp parameters
+            if 'timestamp' in request.GET:
+                offset = request.GET.get('timestamp')
+            elif 'time' in request.GET:
+                offset = request.GET.get('time')
+
+        # Session ID now comes from URL path parameter
+        # Remove legacy query parameter extraction since we're using path-based routing
+
+        # Extract Range header for seeking support
+        range_header = request.META.get('HTTP_RANGE')
+
+        logger.info(f"[VOD-TIMESHIFT] Timeshift params - utc_start: {utc_start}, utc_end: {utc_end}, offset: {offset}")
+        logger.info(f"[VOD-SESSION] Session ID: {session_id}")
+
+        # Log all query parameters for debugging
+        if request.GET:
+            logger.debug(f"[VOD-PARAMS] All query params: {dict(request.GET)}")
+
+        if range_header:
+            logger.info(f"[VOD-RANGE] Range header: {range_header}")
+
+            # Parse the range to understand what position VLC is seeking to
+            try:
+                if 'bytes=' in range_header:
+                    range_part = range_header.replace('bytes=', '')
+                    if '-' in range_part:
+                        start_byte, end_byte = range_part.split('-', 1)
+                        if start_byte:
+                            start_pos_mb = int(start_byte) / (1024 * 1024)
+                            logger.info(f"[VOD-SEEK] Seeking to byte position: {start_byte} (~{start_pos_mb:.1f} MB)")
+                            if int(start_byte) > 0:
+                                logger.info(f"[VOD-SEEK] *** ACTUAL SEEK DETECTED *** Position: {start_pos_mb:.1f} MB")
+                        else:
+                            logger.info(f"[VOD-SEEK] Open-en`ded range request (from start)")
+                        if end_byte:
+                            end_pos_mb = int(end_byte) / (1024 * 1024)
+                            logger.info(f"[VOD-SEEK] End position: {end_byte} bytes (~{end_pos_mb:.1f} MB)")
+            except Exception as e:
+                logger.warning(f"[VOD-SEEK] Could not parse range header: {e}")
+
+            # Simple seek detection - track rapid requests
+            current_time = time.time()
+            request_key = f"{client_ip}:{content_type}:{content_id}"
+
+            if request_key in _request_times:
+                time_diff = current_time - _request_times[request_key]
+                if time_diff < 5.0:
+                    logger.info(f"[VOD-SEEK] Rapid request detected ({time_diff:.1f}s) - likely seeking")
+
+            _request_times[request_key] = current_time
+        else:
+            logger.info(f"[VOD-RANGE] No Range header - full content request")
+
+        logger.info(f"[VOD-CLIENT] Client info - IP: {client_ip}, User-Agent: {client_user_agent[:50]}...")
+
+        # If no session ID, create one and redirect to path-based URL
+        if not session_id:
+            new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+            logger.info(f"[VOD-SESSION] Creating new session: {new_session_id}")
+
+            # Preserve any query parameters (except session_id)
+            query_params = dict(request.GET)
+            query_params.pop('session_id', None)  # Remove if present
+
+            if user:
+                redirect_url = f"{request.path}?session_id={new_session_id}"
+                if query_params:
+                    query_string = urlencode(query_params, doseq=True)
+                    redirect_url = f"{redirect_url}&{query_string}"
+            else:
                 # Build redirect URL with session ID in path, preserve query parameters
                 path_parts = request.path.rstrip('/').split('/')
 
@@ -124,10 +399,6 @@ class VODStreamView(View):
                 else:
                     new_path = f"{'/'.join(path_parts)}/{new_session_id}"
 
-                # Preserve any query parameters (except session_id)
-                query_params = dict(request.GET)
-                query_params.pop('session_id', None)  # Remove if present
-
                 if query_params:
                     from urllib.parse import urlencode
                     query_string = urlencode(query_params, doseq=True)
@@ -135,534 +406,275 @@ class VODStreamView(View):
                 else:
                     redirect_url = new_path
 
-                logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
+            logger.info(f"[VOD-SESSION] Redirecting to path-based URL: {redirect_url}")
 
-                return HttpResponse(
-                    status=301,
-                    headers={'Location': redirect_url}
-                )
-
-            # Extract preferred M3U account ID and stream ID from query parameters
-            preferred_m3u_account_id = request.GET.get('m3u_account_id')
-            preferred_stream_id = request.GET.get('stream_id')
-
-            if preferred_m3u_account_id:
-                try:
-                    preferred_m3u_account_id = int(preferred_m3u_account_id)
-                except (ValueError, TypeError):
-                    logger.warning(f"[VOD-PARAM] Invalid m3u_account_id parameter: {preferred_m3u_account_id}")
-                    preferred_m3u_account_id = None
-
-            if preferred_stream_id:
-                logger.info(f"[VOD-PARAM] Preferred stream ID: {preferred_stream_id}")
-
-            # Get the content object and its relation
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
-            if not content_obj or not relation:
-                logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
-                raise Http404(f"Content not found: {content_type} {content_id}")
-
-            logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
-
-            # Get M3U account from relation
-            m3u_account = relation.m3u_account
-            logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
-
-            # Get stream URL from relation
-            stream_url = self._get_stream_url_from_relation(relation)
-            logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
-
-            if not stream_url:
-                logger.error(f"[VOD-ERROR] No stream URL available for {content_type} {content_id}")
-                return HttpResponse("No stream URL available", status=503)
-
-            # Get M3U profile (returns profile and current connection count)
-            profile_result = self._get_m3u_profile(m3u_account, profile_id, session_id)
-
-            if not profile_result or not profile_result[0]:
-                logger.error(f"[VOD-ERROR] No suitable M3U profile found for {content_type} {content_id}")
-                return HttpResponse("No available stream", status=503)
-
-            m3u_profile, current_connections = profile_result
-            logger.info(f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} (max_streams: {m3u_profile.max_streams}, current: {current_connections})")
-
-            # Connection tracking is handled by the connection manager
-            # Transform URL based on profile
-            final_stream_url = self._transform_url(stream_url, m3u_profile)
-            logger.info(f"[VOD-URL] Final stream URL: {final_stream_url}")
-
-            # Validate stream URL
-            if not final_stream_url or not final_stream_url.startswith(('http://', 'https://')):
-                logger.error(f"[VOD-ERROR] Invalid stream URL: {final_stream_url}")
-                return HttpResponse("Invalid stream URL", status=500)
-
-            # Get connection manager (Redis-backed for multi-worker support)
-            connection_manager = MultiWorkerVODConnectionManager.get_instance()
-
-            # Stream the content with session-based connection reuse
-            logger.info("[VOD-STREAM] Calling connection manager to stream content")
-            response = connection_manager.stream_content_with_session(
-                session_id=session_id,
-                content_obj=content_obj,
-                stream_url=final_stream_url,
-                m3u_profile=m3u_profile,
-                client_ip=client_ip,
-                client_user_agent=client_user_agent,
-                request=request,
-                utc_start=utc_start,
-                utc_end=utc_end,
-                offset=offset,
-                range_header=range_header
+            return HttpResponse(
+                status=301,
+                headers={'Location': redirect_url}
             )
 
-            logger.info(f"[VOD-SUCCESS] Stream response created successfully, type: {type(response)}")
-            return response
+        if user:
+            if not check_user_stream_limits(user, session_id, media_id=content_id):
+                return JsonResponse(
+                    {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
+                    status=429
+                )
 
-        except Exception as e:
-            logger.error(f"[VOD-EXCEPTION] Error streaming {content_type} {content_id}: {e}", exc_info=True)
-            return HttpResponse(f"Streaming error: {str(e)}", status=500)
+        # Extract preferred M3U account ID and stream ID from query parameters
+        preferred_m3u_account_id = request.GET.get('m3u_account_id')
+        preferred_stream_id = request.GET.get('stream_id')
 
-    def head(self, request, content_type, content_id, session_id=None, profile_id=None):
-        """
-        Handle HEAD requests for FUSE filesystem integration
-
-        Returns content length and session URL header for subsequent GET requests
-        """
-        logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
-
-        try:
-            # Get client info for M3U profile selection
-            client_ip, client_user_agent = get_client_info(request)
-            logger.info(f"[VOD-HEAD] Client info - IP: {client_ip}, User-Agent: {client_user_agent[:50] if client_user_agent else 'None'}...")
-
-            # If no session ID, create one (same logic as GET)
-            if not session_id:
-                new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
-                logger.info(f"[VOD-HEAD] Creating new session for HEAD: {new_session_id}")
-
-                # Build session URL for response header
-                path_parts = request.path.rstrip('/').split('/')
-                if profile_id:
-                    session_url = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
-                else:
-                    session_url = f"{'/'.join(path_parts)}/{new_session_id}"
-
-                session_id = new_session_id
-            else:
-                # Session already in URL, construct the current session URL
-                session_url = request.path
-                logger.info(f"[VOD-HEAD] Using existing session: {session_id}")
-
-            # Extract preferred M3U account ID and stream ID from query parameters
-            preferred_m3u_account_id = request.GET.get('m3u_account_id')
-            preferred_stream_id = request.GET.get('stream_id')
-
-            if preferred_m3u_account_id:
-                try:
-                    preferred_m3u_account_id = int(preferred_m3u_account_id)
-                except (ValueError, TypeError):
-                    logger.warning(f"[VOD-HEAD] Invalid m3u_account_id parameter: {preferred_m3u_account_id}")
-                    preferred_m3u_account_id = None
-
-            if preferred_stream_id:
-                logger.info(f"[VOD-HEAD] Preferred stream ID: {preferred_stream_id}")
-
-            # Get content and relation (same as GET)
-            content_obj, relation = self._get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
-            if not content_obj or not relation:
-                logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
-                return HttpResponse("Content not found", status=404)
-
-            # Get M3U account and stream URL
-            m3u_account = relation.m3u_account
-            stream_url = self._get_stream_url_from_relation(relation)
-            if not stream_url:
-                logger.error(f"[VOD-HEAD] No stream URL available for {content_type} {content_id}")
-                return HttpResponse("No stream URL available", status=503)
-
-            # Get M3U profile (returns profile and current connection count)
-            profile_result = self._get_m3u_profile(m3u_account, profile_id, session_id)
-            if not profile_result or not profile_result[0]:
-                logger.error(f"[VOD-HEAD] No M3U profile found or all profiles at capacity")
-                return HttpResponse("No available stream", status=503)
-
-            m3u_profile, current_connections = profile_result
-
-            # Transform URL if needed
-            final_stream_url = self._transform_url(stream_url, m3u_profile)
-
-            # Make a small range GET request to get content length since providers don't support HEAD
-            # We'll use a tiny range to minimize data transfer but get the headers we need
-            # Use M3U account's user agent as primary, client user agent as fallback
-            m3u_user_agent = m3u_account.get_user_agent().user_agent if m3u_account.get_user_agent() else None
-            headers = {
-                'User-Agent': m3u_user_agent or client_user_agent or 'Dispatcharr/1.0',
-                'Accept': '*/*',
-                'Range': 'bytes=0-1'  # Request only first 2 bytes
-            }
-
-            logger.info(f"[VOD-HEAD] Making small range GET request to provider: {final_stream_url}")
-            response = requests.get(final_stream_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
-
-            # Check for range support - should be 206 for partial content
-            if response.status_code == 206:
-                # Parse Content-Range header to get total file size
-                content_range = response.headers.get('Content-Range', '')
-                if content_range:
-                    # Content-Range: bytes 0-1/1234567890
-                    total_size = content_range.split('/')[-1]
-                    logger.info(f"[VOD-HEAD] Got file size from Content-Range: {total_size}")
-                else:
-                    logger.warning(f"[VOD-HEAD] No Content-Range header in 206 response")
-                    total_size = response.headers.get('Content-Length', '0')
-            elif response.status_code == 200:
-                # Server doesn't support range requests, use Content-Length from full response
-                total_size = response.headers.get('Content-Length', '0')
-                logger.info(f"[VOD-HEAD] Server doesn't support ranges, got Content-Length: {total_size}")
-            else:
-                logger.error(f"[VOD-HEAD] Provider GET request failed: {response.status_code}")
-                return HttpResponse("Provider error", status=response.status_code)
-
-            # Close the small range request - we don't need to keep this connection
-            response.close()
-
-            # Store the total content length in Redis for the persistent connection to use
+        if preferred_m3u_account_id:
             try:
-                import redis
-                from django.conf import settings
-                redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
-                redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
-                redis_db = int(getattr(settings, 'REDIS_DB', 0))
-                redis_password = getattr(settings, 'REDIS_PASSWORD', '')
-                redis_user = getattr(settings, 'REDIS_USER', '')
-                r = redis.StrictRedis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password=redis_password if redis_password else None,
-                    username=redis_user if redis_user else None,
-                    decode_responses=True
-                )
-                content_length_key = f"vod_content_length:{session_id}"
-                r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
-                logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")
-            except Exception as e:
-                logger.error(f"[VOD-HEAD] Failed to store content length in Redis: {e}")
+                preferred_m3u_account_id = int(preferred_m3u_account_id)
+            except (ValueError, TypeError):
+                logger.warning(f"[VOD-PARAM] Invalid m3u_account_id parameter: {preferred_m3u_account_id}")
+                preferred_m3u_account_id = None
 
-            # Now create a persistent connection for the session (if one doesn't exist)
-            # This ensures the FUSE GET requests will reuse the same connection
+        if preferred_stream_id:
+            logger.info(f"[VOD-PARAM] Preferred stream ID: {preferred_stream_id}")
 
-            connection_manager = MultiWorkerVODConnectionManager.get_instance()
+        # Get the content object and its relation
+        content_obj, relation = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        if not content_obj or not relation:
+            logger.error(f"[VOD-ERROR] Content or relation not found: {content_type} {content_id}")
+            raise Http404(f"Content not found: {content_type} {content_id}")
 
-            logger.info(f"[VOD-HEAD] Pre-creating persistent connection for session: {session_id}")
+        logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
 
-            # We don't actually stream content here, just ensure connection is ready
-            # The actual GET requests from FUSE will use the persistent connection
+        # Get M3U account from relation
+        m3u_account = relation.m3u_account
+        logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
 
-            # Use the total_size we extracted from the range response
-            provider_content_type = response.headers.get('Content-Type')
+        # Get stream URL from relation
+        stream_url = _get_stream_url_from_relation(relation)
+        logger.info(f"[VOD-CONTENT] Content URL: {stream_url or 'No URL found'}")
 
-            if provider_content_type:
-                content_type_header = provider_content_type
-                logger.info(f"[VOD-HEAD] Using provider Content-Type: {content_type_header}")
-            else:
-                # Provider didn't send Content-Type, infer from URL
-                inferred_content_type = infer_content_type_from_url(final_stream_url)
-                if inferred_content_type:
-                    content_type_header = inferred_content_type
-                    logger.info(f"[VOD-HEAD] Provider missing Content-Type, inferred from URL: {content_type_header}")
-                else:
-                    content_type_header = 'video/mp4'
-                    logger.info(f"[VOD-HEAD] No Content-Type from provider and could not infer from URL, using default: {content_type_header}")
+        if not stream_url:
+            logger.error(f"[VOD-ERROR] No stream URL available for {content_type} {content_id}")
+            return HttpResponse("No stream URL available", status=503)
 
-            logger.info(f"[VOD-HEAD] Provider response - Total Size: {total_size}, Type: {content_type_header}")
+        # Get M3U profile (returns profile and current connection count)
+        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
 
-            # Create response with content length and session URL header
-            head_response = HttpResponse()
-            head_response['Content-Length'] = total_size
-            head_response['Content-Type'] = content_type_header
-            head_response['Accept-Ranges'] = 'bytes'
+        if not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-ERROR] No suitable M3U profile found for {content_type} {content_id}")
+            return HttpResponse("No available stream", status=503)
 
-            # Custom header with session URL for FUSE
-            head_response['X-Session-URL'] = session_url
-            head_response['X-Dispatcharr-Session'] = session_id
+        m3u_profile, current_connections = profile_result
+        logger.info(f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} (max_streams: {m3u_profile.max_streams}, current: {current_connections})")
 
-            logger.info(f"[VOD-HEAD] Returning HEAD response with session URL: {session_url}")
-            return head_response
+        # Connection tracking is handled by the connection manager
+        # Transform URL based on profile
+        final_stream_url = _transform_url(stream_url, m3u_profile)
+        logger.info(f"[VOD-URL] Final stream URL: {final_stream_url}")
 
-        except Exception as e:
-            logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
-            return HttpResponse(f"HEAD error: {str(e)}", status=500)
+        # Validate stream URL
+        if not final_stream_url or not final_stream_url.startswith(('http://', 'https://')):
+            logger.error(f"[VOD-ERROR] Invalid stream URL: {final_stream_url}")
+            return HttpResponse("Invalid stream URL", status=500)
 
-    def _get_content_and_relation(self, content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
-        """Get the content object and its M3U relation"""
-        try:
-            logger.info(f"[CONTENT-LOOKUP] Looking up {content_type} with UUID {content_id}")
-            if preferred_m3u_account_id:
-                logger.info(f"[CONTENT-LOOKUP] Preferred M3U account ID: {preferred_m3u_account_id}")
-            if preferred_stream_id:
-                logger.info(f"[CONTENT-LOOKUP] Preferred stream ID: {preferred_stream_id}")
+        # Get connection manager (Redis-backed for multi-worker support)
+        connection_manager = MultiWorkerVODConnectionManager.get_instance()
 
-            if content_type == 'movie':
-                content_obj = get_object_or_404(Movie, uuid=content_id)
-                logger.info(f"[CONTENT-FOUND] Movie: {content_obj.name} (ID: {content_obj.id})")
+        # Stream the content with session-based connection reuse
+        logger.info("[VOD-STREAM] Calling connection manager to stream content")
+        response = connection_manager.stream_content_with_session(
+            session_id=session_id,
+            content_obj=content_obj,
+            stream_url=final_stream_url,
+            m3u_profile=m3u_profile,
+            client_ip=client_ip,
+            client_user_agent=client_user_agent,
+            request=request,
+            utc_start=utc_start,
+            utc_end=utc_end,
+            offset=offset,
+            range_header=range_header,
+            user=user,
+        )
 
-                # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
-                if preferred_stream_id:
-                    specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
-                    if specific_relation:
-                        logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                        return content_obj, specific_relation
-                    else:
-                        logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
+        logger.info(f"[VOD-SUCCESS] Stream response created successfully, type: {type(response)}")
+        return response
 
-                # Filter by preferred M3U account if specified
-                if preferred_m3u_account_id:
-                    specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
-                    if specific_relation:
-                        logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                        return content_obj, specific_relation
-                    else:
-                        logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
+    except Exception as e:
+        logger.error(f"[VOD-EXCEPTION] Error streaming {content_type} {content_id}: {e}", exc_info=True)
+        return HttpResponse(f"Streaming error: {str(e)}", status=500)
 
-                # Get the highest priority active relation (fallback or default)
-                relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+@api_view(["HEAD"])
+def head_vod(request, content_type, content_id, session_id=None, profile_id=None):
+    """
+    Handle HEAD requests for FUSE filesystem integration
 
-                if relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
+    Returns content length and session URL header for subsequent GET requests
+    """
+    logger.info(f"[VOD-HEAD] HEAD request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
 
-                return content_obj, relation
+    try:
+        # Get client info for M3U profile selection
+        client_ip, client_user_agent = get_client_info(request)
+        logger.info(f"[VOD-HEAD] Client info - IP: {client_ip}, User-Agent: {client_user_agent[:50] if client_user_agent else 'None'}...")
 
-            elif content_type == 'episode':
-                content_obj = get_object_or_404(Episode, uuid=content_id)
-                logger.info(f"[CONTENT-FOUND] Episode: {content_obj.name} (ID: {content_obj.id}, Series: {content_obj.series.name})")
+        # If no session ID, create one (same logic as GET)
+        if not session_id:
+            new_session_id = f"vod_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+            logger.info(f"[VOD-HEAD] Creating new session for HEAD: {new_session_id}")
 
-                # Filter by preferred stream ID first (most specific)
-                relations_query = content_obj.m3u_relations.filter(m3u_account__is_active=True)
-                if preferred_stream_id:
-                    specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
-                    if specific_relation:
-                        logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                        return content_obj, specific_relation
-                    else:
-                        logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
-
-                # Filter by preferred M3U account if specified
-                if preferred_m3u_account_id:
-                    specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
-                    if specific_relation:
-                        logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                        return content_obj, specific_relation
-                    else:
-                        logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
-
-                # Get the highest priority active relation (fallback or default)
-                relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
-
-                if relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
-
-                return content_obj, relation
-
-            elif content_type == 'series':
-                # For series, get the first episode
-                series = get_object_or_404(Series, uuid=content_id)
-                logger.info(f"[CONTENT-FOUND] Series: {series.name} (ID: {series.id})")
-                episode = series.episodes.first()
-                if not episode:
-                    logger.error(f"[CONTENT-ERROR] No episodes found for series {series.name}")
-                    return None, None
-
-                logger.info(f"[CONTENT-FOUND] First episode: {episode.name} (ID: {episode.id})")
-
-                # Filter by preferred stream ID first (most specific)
-                relations_query = episode.m3u_relations.filter(m3u_account__is_active=True)
-                if preferred_stream_id:
-                    specific_relation = relations_query.filter(stream_id=preferred_stream_id).first()
-                    if specific_relation:
-                        logger.info(f"[STREAM-SELECTED] Using specific stream: {specific_relation.stream_id} from provider: {specific_relation.m3u_account.name}")
-                        return episode, specific_relation
-                    else:
-                        logger.warning(f"[STREAM-FALLBACK] Preferred stream ID {preferred_stream_id} not found, falling back to account/priority selection")
-
-                # Filter by preferred M3U account if specified
-                if preferred_m3u_account_id:
-                    specific_relation = relations_query.filter(m3u_account__id=preferred_m3u_account_id).first()
-                    if specific_relation:
-                        logger.info(f"[PROVIDER-SELECTED] Using preferred provider: {specific_relation.m3u_account.name}")
-                        return episode, specific_relation
-                    else:
-                        logger.warning(f"[PROVIDER-FALLBACK] Preferred M3U account {preferred_m3u_account_id} not found, using highest priority")
-
-                # Get the highest priority active relation (fallback or default)
-                relation = relations_query.select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
-
-                if relation:
-                    logger.info(f"[PROVIDER-SELECTED] Using provider: {relation.m3u_account.name} (priority: {relation.m3u_account.priority})")
-
-                return episode, relation
-            else:
-                logger.error(f"[CONTENT-ERROR] Invalid content type: {content_type}")
-                return None, None
-
-        except Exception as e:
-            logger.error(f"Error getting content object: {e}")
-            return None, None
-
-    def _get_stream_url_from_relation(self, relation):
-        """Get stream URL from the M3U relation"""
-        try:
-            # Log the relation type and available attributes
-            logger.info(f"[VOD-URL] Relation type: {type(relation).__name__}")
-            logger.info(f"[VOD-URL] Account type: {relation.m3u_account.account_type}")
-            logger.info(f"[VOD-URL] Stream ID: {getattr(relation, 'stream_id', 'N/A')}")
-
-            # First try the get_stream_url method (this should build URLs dynamically)
-            if hasattr(relation, 'get_stream_url'):
-                url = relation.get_stream_url()
-                if url:
-                    logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
-                    return url
-                else:
-                    logger.warning(f"[VOD-URL] get_stream_url() returned None")
-
-            logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
-            return None
-        except Exception as e:
-            logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
-            return None
-
-    def _get_m3u_profile(self, m3u_account, profile_id, session_id=None):
-        """Get appropriate M3U profile for streaming using Redis-based viewer counts
-
-        Args:
-            m3u_account: M3UAccount instance
-            profile_id: Optional specific profile ID requested
-            session_id: Optional session ID to check for existing connections
-
-        Returns:
-            tuple: (M3UAccountProfile, current_connections) or None if no profile found
-        """
-        try:
-            from core.utils import RedisClient
-            redis_client = RedisClient.get_client()
-
-            if not redis_client:
-                logger.warning("Redis not available, falling back to default profile")
-                default_profile = M3UAccountProfile.objects.filter(
-                    m3u_account=m3u_account,
-                    is_active=True,
-                    is_default=True
-                ).first()
-                return (default_profile, 0) if default_profile else None
-
-            # Check if this session already has an active connection
-            if session_id:
-                persistent_connection_key = f"vod_persistent_connection:{session_id}"
-                connection_data = redis_client.hgetall(persistent_connection_key)
-
-                if connection_data:
-                    # Decode Redis hash data
-                    decoded_data = {}
-                    for k, v in connection_data.items():
-                        k_str = k.decode('utf-8') if isinstance(k, bytes) else k
-                        v_str = v.decode('utf-8') if isinstance(v, bytes) else v
-                        decoded_data[k_str] = v_str
-
-                    existing_profile_id = decoded_data.get('m3u_profile_id')
-                    if existing_profile_id:
-                        try:
-                            existing_profile = M3UAccountProfile.objects.get(
-                                id=int(existing_profile_id),
-                                m3u_account=m3u_account,
-                                is_active=True
-                            )
-                            # Get current connections for logging
-                            profile_connections_key = f"profile_connections:{existing_profile.id}"
-                            current_connections = int(redis_client.get(profile_connections_key) or 0)
-
-                            logger.info(f"[PROFILE-SELECTION] Session {session_id} reusing existing profile {existing_profile.id}: {current_connections}/{existing_profile.max_streams} connections")
-                            return (existing_profile, current_connections)
-                        except (M3UAccountProfile.DoesNotExist, ValueError):
-                            logger.warning(f"[PROFILE-SELECTION] Session {session_id} has invalid profile ID {existing_profile_id}, selecting new profile")
-                        except Exception as e:
-                            logger.warning(f"[PROFILE-SELECTION] Error checking existing profile for session {session_id}: {e}")
-                    else:
-                        logger.debug(f"[PROFILE-SELECTION] Session {session_id} exists but has no profile ID stored")            # If specific profile requested, try to use it
+            # Build session URL for response header
+            path_parts = request.path.rstrip('/').split('/')
             if profile_id:
-                try:
-                    profile = M3UAccountProfile.objects.get(
-                        id=profile_id,
-                        m3u_account=m3u_account,
-                        is_active=True
-                    )
-                    # Check Redis-based current connections
-                    profile_connections_key = f"profile_connections:{profile.id}"
-                    current_connections = int(redis_client.get(profile_connections_key) or 0)
+                session_url = f"{'/'.join(path_parts)}/{new_session_id}/{profile_id}/"
+            else:
+                session_url = f"{'/'.join(path_parts)}/{new_session_id}"
 
-                    if profile.max_streams == 0 or current_connections < profile.max_streams:
-                        logger.info(f"[PROFILE-SELECTION] Using requested profile {profile.id}: {current_connections}/{profile.max_streams} connections")
-                        return (profile, current_connections)
-                    else:
-                        logger.warning(f"[PROFILE-SELECTION] Requested profile {profile.id} is at capacity: {current_connections}/{profile.max_streams}")
-                except M3UAccountProfile.DoesNotExist:
-                    logger.warning(f"[PROFILE-SELECTION] Requested profile {profile_id} not found")
+            session_id = new_session_id
+        else:
+            # Session already in URL, construct the current session URL
+            session_url = request.path
+            logger.info(f"[VOD-HEAD] Using existing session: {session_id}")
 
-            # Get active profiles ordered by priority (default first)
-            m3u_profiles = M3UAccountProfile.objects.filter(
-                m3u_account=m3u_account,
-                is_active=True
-            )
+        # Extract preferred M3U account ID and stream ID from query parameters
+        preferred_m3u_account_id = request.GET.get('m3u_account_id')
+        preferred_stream_id = request.GET.get('stream_id')
 
-            default_profile = m3u_profiles.filter(is_default=True).first()
-            if not default_profile:
-                logger.error(f"[PROFILE-SELECTION] No default profile found for M3U account {m3u_account.id}")
-                return None
+        if preferred_m3u_account_id:
+            try:
+                preferred_m3u_account_id = int(preferred_m3u_account_id)
+            except (ValueError, TypeError):
+                logger.warning(f"[VOD-HEAD] Invalid m3u_account_id parameter: {preferred_m3u_account_id}")
+                preferred_m3u_account_id = None
 
-            # Check profiles in order: default first, then others
-            profiles = [default_profile] + list(m3u_profiles.filter(is_default=False))
+        if preferred_stream_id:
+            logger.info(f"[VOD-HEAD] Preferred stream ID: {preferred_stream_id}")
 
-            for profile in profiles:
-                profile_connections_key = f"profile_connections:{profile.id}"
-                current_connections = int(redis_client.get(profile_connections_key) or 0)
+        # Get content and relation (same as GET)
+        content_obj, relation = _get_content_and_relation(content_type, content_id, preferred_m3u_account_id, preferred_stream_id)
+        if not content_obj or not relation:
+            logger.error(f"[VOD-HEAD] Content or relation not found: {content_type} {content_id}")
+            return HttpResponse("Content not found", status=404)
 
-                # Check if profile has available connection slots
-                if profile.max_streams == 0 or current_connections < profile.max_streams:
-                    logger.info(f"[PROFILE-SELECTION] Selected profile {profile.id} ({profile.name}): {current_connections}/{profile.max_streams} connections")
-                    return (profile, current_connections)
-                else:
-                    logger.debug(f"[PROFILE-SELECTION] Profile {profile.id} at capacity: {current_connections}/{profile.max_streams}")
+        # Get M3U account and stream URL
+        m3u_account = relation.m3u_account
+        stream_url = _get_stream_url_from_relation(relation)
+        if not stream_url:
+            logger.error(f"[VOD-HEAD] No stream URL available for {content_type} {content_id}")
+            return HttpResponse("No stream URL available", status=503)
 
-            # All profiles are at capacity - return None to trigger error response
-            logger.error(f"[PROFILE-SELECTION] All profiles at capacity for M3U account {m3u_account.id}, rejecting request")
-            return None
+        # Get M3U profile (returns profile and current connection count)
+        profile_result = _get_m3u_profile(m3u_account, profile_id, session_id)
+        if not profile_result or not profile_result[0]:
+            logger.error(f"[VOD-HEAD] No M3U profile found or all profiles at capacity")
+            return HttpResponse("No available stream", status=503)
 
-        except Exception as e:
-            logger.error(f"Error getting M3U profile: {e}")
-            return None
+        m3u_profile, current_connections = profile_result
 
-    def _transform_url(self, original_url, m3u_profile):
-        """Transform URL based on M3U profile settings"""
+        # Transform URL if needed
+        final_stream_url = _transform_url(stream_url, m3u_profile)
+
+        # Make a small range GET request to get content length since providers don't support HEAD
+        # We'll use a tiny range to minimize data transfer but get the headers we need
+        # Use M3U account's user agent as primary, client user agent as fallback
+        m3u_user_agent = m3u_account.get_user_agent().user_agent if m3u_account.get_user_agent() else None
+        headers = {
+            'User-Agent': m3u_user_agent or client_user_agent or 'Dispatcharr/1.0',
+            'Accept': '*/*',
+            'Range': 'bytes=0-1'  # Request only first 2 bytes
+        }
+
+        logger.info(f"[VOD-HEAD] Making small range GET request to provider: {final_stream_url}")
+        response = requests.get(final_stream_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
+
+        # Check for range support - should be 206 for partial content
+        if response.status_code == 206:
+            # Parse Content-Range header to get total file size
+            content_range = response.headers.get('Content-Range', '')
+            if content_range:
+                # Content-Range: bytes 0-1/1234567890
+                total_size = content_range.split('/')[-1]
+                logger.info(f"[VOD-HEAD] Got file size from Content-Range: {total_size}")
+            else:
+                logger.warning(f"[VOD-HEAD] No Content-Range header in 206 response")
+                total_size = response.headers.get('Content-Length', '0')
+        elif response.status_code == 200:
+            # Server doesn't support range requests, use Content-Length from full response
+            total_size = response.headers.get('Content-Length', '0')
+            logger.info(f"[VOD-HEAD] Server doesn't support ranges, got Content-Length: {total_size}")
+        else:
+            logger.error(f"[VOD-HEAD] Provider GET request failed: {response.status_code}")
+            return HttpResponse("Provider error", status=response.status_code)
+
+        # Close the small range request - we don't need to keep this connection
+        response.close()
+
+        # Store the total content length in Redis for the persistent connection to use
         try:
-            import re
-
-            if not original_url:
-                return None
-
-            search_pattern = m3u_profile.search_pattern
-            replace_pattern = m3u_profile.replace_pattern
-            safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace_pattern)
-
-            if search_pattern and replace_pattern:
-                transformed_url = re.sub(search_pattern, safe_replace_pattern, original_url)
-                return transformed_url
-
-            return original_url
-
+            import redis
+            from django.conf import settings
+            redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
+            redis_port = int(getattr(settings, 'REDIS_PORT', 6379))
+            redis_db = int(getattr(settings, 'REDIS_DB', 0))
+            redis_password = getattr(settings, 'REDIS_PASSWORD', '')
+            redis_user = getattr(settings, 'REDIS_USER', '')
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+            r = redis.StrictRedis(
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                password=redis_password if redis_password else None,
+                username=redis_user if redis_user else None,
+                decode_responses=True,
+                **ssl_params
+            )
+            content_length_key = f"vod_content_length:{session_id}"
+            r.set(content_length_key, total_size, ex=1800)  # Store for 30 minutes
+            logger.info(f"[VOD-HEAD] Stored total content length {total_size} for session {session_id}")
         except Exception as e:
-            logger.error(f"Error transforming URL: {e}")
-            return original_url
+            logger.error(f"[VOD-HEAD] Failed to store content length in Redis: {e}")
+
+        # Now create a persistent connection for the session (if one doesn't exist)
+        # This ensures the FUSE GET requests will reuse the same connection
+
+        connection_manager = MultiWorkerVODConnectionManager.get_instance()
+
+        logger.info(f"[VOD-HEAD] Pre-creating persistent connection for session: {session_id}")
+
+        # We don't actually stream content here, just ensure connection is ready
+        # The actual GET requests from FUSE will use the persistent connection
+
+        # Use the total_size we extracted from the range response
+        provider_content_type = response.headers.get('Content-Type')
+
+        if provider_content_type:
+            content_type_header = provider_content_type
+            logger.info(f"[VOD-HEAD] Using provider Content-Type: {content_type_header}")
+        else:
+            # Provider didn't send Content-Type, infer from URL
+            inferred_content_type = infer_content_type_from_url(final_stream_url)
+            if inferred_content_type:
+                content_type_header = inferred_content_type
+                logger.info(f"[VOD-HEAD] Provider missing Content-Type, inferred from URL: {content_type_header}")
+            else:
+                content_type_header = 'video/mp4'
+                logger.info(f"[VOD-HEAD] No Content-Type from provider and could not infer from URL, using default: {content_type_header}")
+
+        logger.info(f"[VOD-HEAD] Provider response - Total Size: {total_size}, Type: {content_type_header}")
+
+        # Create response with content length and session URL header
+        head_response = HttpResponse()
+        head_response['Content-Length'] = total_size
+        head_response['Content-Type'] = content_type_header
+        head_response['Accept-Ranges'] = 'bytes'
+
+        # Custom header with session URL for FUSE
+        head_response['X-Session-URL'] = session_url
+        head_response['X-Dispatcharr-Session'] = session_id
+
+        logger.info(f"[VOD-HEAD] Returning HEAD response with session URL: {session_url}")
+        return head_response
+
+    except Exception as e:
+        logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
+        return HttpResponse(f"HEAD error: {str(e)}", status=500)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class VODPlaylistView(View):
@@ -783,19 +795,16 @@ class VODStatsView(View):
 
                 for key in keys:
                     try:
-                        key_str = key.decode('utf-8') if isinstance(key, bytes) else key
                         connection_data = redis_client.hgetall(key)
 
                         if connection_data:
                             # Extract session ID from key
-                            session_id = key_str.replace('vod_persistent_connection:', '')
+                            session_id = key.replace('vod_persistent_connection:', '')
 
                             # Decode Redis hash data
                             combined_data = {}
                             for k, v in connection_data.items():
-                                k_str = k.decode('utf-8') if isinstance(k, bytes) else k
-                                v_str = v.decode('utf-8') if isinstance(v, bytes) else v
-                                combined_data[k_str] = v_str
+                                combined_data[k] = v
 
                             # Get content info from the connection data (using correct field names)
                             content_type = combined_data.get('content_obj_type', 'unknown')
@@ -945,6 +954,7 @@ class VODStatsView(View):
                                 'm3u_profile': m3u_profile_info,
                                 'client_id': client_id,
                                 'client_ip': combined_data.get('client_ip', 'Unknown'),
+                                'user_id': combined_data.get('user_id', '0'),
                                 'user_agent': combined_data.get('client_user_agent', 'Unknown'),
                                 'connected_at': combined_data.get('created_at'),
                                 'last_activity': combined_data.get('last_activity'),
@@ -1079,4 +1089,59 @@ def stop_vod_client(request):
         logger.error(f"Error stopping VOD client: {e}", exc_info=True)
         return JsonResponse({'error': str(e)}, status=500)
 
+@api_view(["GET"])
+def stream_xc_movie(request, username, password, stream_id, extension):
+    from apps.vod.models import M3UMovieRelation
 
+    session_id = request.GET.get('session_id')
+    profile_id = request.GET.get('profile_id')
+
+    user = get_object_or_404(User, username=username)
+
+    custom_properties = user.custom_properties or {}
+
+    if "xc_password" not in custom_properties:
+        return Response({"error": "Invalid credentials"}, status=401)
+
+    if custom_properties["xc_password"] != password:
+        return Response({"error": "Invalid credentials"}, status=401)
+
+    # All authenticated users get access to VOD from all active M3U accounts
+    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
+
+    try:
+        # Order by account priority to get the best relation when multiple exist
+        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+        if not movie_relation:
+            return JsonResponse({"error": "Movie not found"}, status=404)
+    except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
+        return JsonResponse({"error": "Movie not found"}, status=404)
+
+    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+
+@api_view(["GET"])
+def stream_xc_episode(request, username, password, stream_id, extension):
+    from apps.vod.models import M3UEpisodeRelation
+
+    session_id = request.GET.get('session_id')
+    profile_id = request.GET.get('profile_id')
+
+    user = get_object_or_404(User, username=username)
+
+    custom_properties = user.custom_properties or {}
+
+    if "xc_password" not in custom_properties:
+        return Response({"error": "Invalid credentials"}, status=401)
+
+    if custom_properties["xc_password"] != password:
+        return Response({"error": "Invalid credentials"}, status=401)
+
+    # All authenticated users get access to series/episodes from all active M3U accounts
+    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
+
+    try:
+        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+    except M3UEpisodeRelation.DoesNotExist:
+        return JsonResponse({"error": "Episode not found"}, status=404)
+
+    return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)

@@ -107,11 +107,13 @@ describe('useAuthStore', () => {
       setState({
         isAuthenticated: false,
         isInitialized: false,
+        isInitializing: false,
         needsSuperuser: false,
         user: {
           username: '',
           email: '',
           user_level: '',
+          custom_properties: {},
         },
         isLoading: false,
         error: null,
@@ -134,6 +136,7 @@ describe('useAuthStore', () => {
         username: '',
         email: '',
         user_level: '',
+        custom_properties: {},
       });
       expect(result.current.isLoading).toBe(false);
       expect(result.current.error).toBeNull();

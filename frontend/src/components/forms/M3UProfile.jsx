@@ -15,22 +15,25 @@ import {
   Grid,
   Textarea,
   NumberInput,
+  SegmentedControl,
 } from '@mantine/core';
+import { DateTimePicker } from '@mantine/dates';
 import { useWebSocket } from '../../WebSocket';
-import usePlaylistsStore from '../../store/playlists';
 
 const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const [websocketReady, sendMessage] = useWebSocket();
-
-  const profileSearchPreview = usePlaylistsStore((s) => s.profileSearchPreview);
-  const profileResult = usePlaylistsStore((s) => s.profileResult);
-
   const [streamUrl, setStreamUrl] = useState('');
   const [searchPattern, setSearchPattern] = useState('');
   const [replacePattern, setReplacePattern] = useState('');
   const [debouncedPatterns, setDebouncedPatterns] = useState({});
   const [sampleInput, setSampleInput] = useState('');
+  const [xcMode, setXcMode] = useState('simple');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [simpleErrors, setSimpleErrors] = useState({});
   const isDefaultProfile = profile?.is_default;
+
+  const isXC = m3u?.account_type === 'XC';
 
   const defaultValues = useMemo(
     () => ({
@@ -39,6 +42,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       search_pattern: profile?.search_pattern || '',
       replace_pattern: profile?.replace_pattern || '',
       notes: profile?.custom_properties?.notes || '',
+      exp_date: profile?.exp_date ? new Date(profile.exp_date) : null,
     }),
     [profile]
   );
@@ -46,12 +50,12 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
   const schema = Yup.object({
     name: Yup.string().required('Name is required'),
     search_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile,
+      is: () => !isDefaultProfile && !isXC,
       then: (schema) => schema.required('Search pattern is required'),
       otherwise: (schema) => schema.notRequired(),
     }),
     replace_pattern: Yup.string().when([], {
-      is: () => !isDefaultProfile,
+      is: () => !isDefaultProfile && !isXC,
       then: (schema) => schema.required('Replace pattern is required'),
       otherwise: (schema) => schema.notRequired(),
     }),
@@ -65,6 +69,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     reset,
     setValue,
     watch,
+    setError,
   } = useForm({
     defaultValues,
     resolver: yupResolver(schema),
@@ -72,6 +77,43 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
 
   const onSubmit = async (values) => {
     console.log('submiting');
+
+    // Convert exp_date for submission
+    let expDateValue = values.exp_date;
+    if (isXC) {
+      // XC accounts have exp_date auto-managed; don't send it
+      expDateValue = undefined;
+    } else if (expDateValue instanceof Date) {
+      expDateValue = expDateValue.toISOString();
+    } else if (!expDateValue) {
+      expDateValue = null;
+    }
+
+    // For XC simple mode: validate simple inputs and build patterns from credentials
+    if (isXC && xcMode === 'simple' && !isDefaultProfile) {
+      const errs = {};
+      if (!newUsername.trim()) errs.newUsername = 'New username is required';
+      if (!newPassword.trim()) errs.newPassword = 'New password is required';
+      if (Object.keys(errs).length > 0) {
+        setSimpleErrors(errs);
+        return;
+      }
+      setSimpleErrors({});
+      values.search_pattern = `${m3u?.username || ''}/${m3u?.password || ''}`;
+      values.replace_pattern = `${newUsername.trim()}/${newPassword.trim()}`;
+    }
+
+    // For XC advanced mode: validate regex pattern fields
+    if (isXC && xcMode === 'advanced' && !isDefaultProfile) {
+      if (!searchPattern.trim()) {
+        setError('search_pattern', { message: 'Search pattern is required' });
+        return;
+      }
+      if (!replacePattern.trim()) {
+        setError('replace_pattern', { message: 'Replace pattern is required' });
+        return;
+      }
+    }
 
     // For default profiles, only send name and custom_properties (notes)
     let submitValues;
@@ -95,8 +137,14 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           // Preserve existing custom_properties and add/update notes
           ...(profile?.custom_properties || {}),
           notes: values.notes || '',
+          ...(isXC ? { xcMode } : {}),
         },
       };
+    }
+
+    // Add exp_date for non-XC accounts
+    if (expDateValue !== undefined) {
+      submitValues.exp_date = expDateValue;
     }
 
     if (profile?.id) {
@@ -152,7 +200,14 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     } catch (error) {
       console.error('Error sending WebSocket message:', error);
     }
-  }, [websocketReady, m3u, debouncedPatterns, streamUrl, sampleInput]);
+  }, [
+    websocketReady,
+    sendMessage,
+    m3u,
+    debouncedPatterns,
+    streamUrl,
+    sampleInput,
+  ]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -178,13 +233,64 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     reset(defaultValues);
     setSearchPattern(profile?.search_pattern || '');
     setReplacePattern(profile?.replace_pattern || '');
-  }, [defaultValues, profile, reset]);
+    if (isXC && !isDefaultProfile) {
+      const storedMode = profile?.custom_properties?.xcMode;
+      let detectedMode;
+      if (storedMode) {
+        detectedMode = storedMode;
+      } else if (
+        profile?.search_pattern &&
+        profile.search_pattern === `${m3u?.username}/${m3u?.password}`
+      ) {
+        detectedMode = 'simple';
+      } else if (profile?.search_pattern) {
+        detectedMode = 'advanced';
+      } else {
+        detectedMode = 'simple';
+      }
+      setXcMode(detectedMode);
+      if (detectedMode === 'simple') {
+        const rp = profile?.replace_pattern || '';
+        const idx = rp.indexOf('/');
+        setNewUsername(idx === -1 ? rp : rp.slice(0, idx));
+        setNewPassword(idx === -1 ? '' : rp.slice(idx + 1));
+      }
+    }
+  }, [
+    defaultValues,
+    isDefaultProfile,
+    isXC,
+    m3u?.password,
+    m3u?.username,
+    profile,
+    reset,
+  ]);
 
   const handleSampleInputChange = (e) => {
     setSampleInput(e.target.value);
   };
 
-  // Local regex testing for immediate visual feedback
+  const handleXcModeChange = (mode) => {
+    if (mode === 'advanced' && xcMode === 'simple') {
+      // Pre-populate regex fields from current simple values
+      const sp = `${m3u?.username || ''}/${m3u?.password || ''}`;
+      const rp = `${newUsername}/${newPassword}`;
+      setSearchPattern(sp);
+      setReplacePattern(rp);
+      setValue('search_pattern', sp);
+      setValue('replace_pattern', rp);
+    } else if (mode === 'simple' && xcMode === 'advanced') {
+      // Parse current replace pattern back into username/password
+      const idx = replacePattern.indexOf('/');
+      setNewUsername(
+        idx === -1 ? replacePattern : replacePattern.slice(0, idx)
+      );
+      setNewPassword(idx === -1 ? '' : replacePattern.slice(idx + 1));
+    }
+    setXcMode(mode);
+  };
+
+  // Local regex for the live demo preview
   const getHighlightedSearchText = () => {
     if (!searchPattern || !sampleInput) return sampleInput;
     try {
@@ -222,6 +328,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
       <form onSubmit={handleSubmit(onSubmit)}>
         <TextInput
           label="Name"
+          description="A label to identify this URL rewrite profile"
+          placeholder="e.g. Provider A - 2nd Connection"
           {...register('name')}
           error={errors.name?.message}
         />
@@ -230,6 +338,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         {!isDefaultProfile && (
           <NumberInput
             label="Max Streams"
+            description="Maximum concurrent streams allowed for this profile. Set to 0 for unlimited."
             {...register('max_streams')}
             value={watch('max_streams')}
             onChange={(value) => setValue('max_streams', value || 0)}
@@ -242,19 +351,78 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         {/* Only show search/replace fields for non-default profiles */}
         {!isDefaultProfile && (
           <>
-            <TextInput
-              label="Search Pattern (Regex)"
-              value={searchPattern}
-              onChange={onSearchPatternUpdate}
-              error={errors.search_pattern?.message}
-            />
-            <TextInput
-              label="Replace Pattern"
-              value={replacePattern}
-              onChange={onReplacePatternUpdate}
-              error={errors.replace_pattern?.message}
-            />
+            {isXC && (
+              <SegmentedControl
+                mt="xs"
+                mb="xs"
+                fullWidth
+                size="xs"
+                value={xcMode}
+                onChange={handleXcModeChange}
+                data={[
+                  { label: 'Simple', value: 'simple' },
+                  { label: 'Advanced (Regex)', value: 'advanced' },
+                ]}
+              />
+            )}
+            {isXC && xcMode === 'simple' ? (
+              <>
+                <TextInput
+                  label="New Username"
+                  description="Your updated XC account username. The current username in all stream URLs will be replaced with this."
+                  placeholder="e.g. username2"
+                  value={newUsername}
+                  onChange={(e) => {
+                    setNewUsername(e.target.value);
+                    setSimpleErrors((s) => ({ ...s, newUsername: undefined }));
+                  }}
+                  error={simpleErrors.newUsername}
+                />
+                <TextInput
+                  label="New Password"
+                  description="Your updated XC account password. The current password in all stream URLs will be replaced with this."
+                  placeholder="e.g. password2"
+                  value={newPassword}
+                  onChange={(e) => {
+                    setNewPassword(e.target.value);
+                    setSimpleErrors((s) => ({ ...s, newPassword: undefined }));
+                  }}
+                  error={simpleErrors.newPassword}
+                />
+              </>
+            ) : (
+              <>
+                <TextInput
+                  label="Search Pattern (Regex)"
+                  description="A regular expression matching the part of the stream URL you want to replace. For most users, matching just the credentials is enough."
+                  placeholder="e.g. username1/password1"
+                  value={searchPattern}
+                  onChange={onSearchPatternUpdate}
+                  error={errors.search_pattern?.message}
+                />
+                <TextInput
+                  label="Replace Pattern"
+                  description="The value to substitute in place of the matched text. Use $1, $2, etc. to reference regex capture groups."
+                  placeholder="e.g. username2/password2"
+                  value={replacePattern}
+                  onChange={onReplacePatternUpdate}
+                  error={errors.replace_pattern?.message}
+                />
+              </>
+            )}
           </>
+        )}
+
+        {!isXC && (
+          <DateTimePicker
+            label="Expiration Date"
+            description="Set an expiration date to receive a 7-day warning notification"
+            placeholder="No expiration"
+            clearable
+            valueFormat="MMM D, YYYY h:mm A"
+            value={watch('exp_date')}
+            onChange={(value) => setValue('exp_date', value)}
+          />
         )}
 
         <Textarea
@@ -285,8 +453,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
         </Flex>
       </form>
 
-      {/* Only show regex demonstration for non-default profiles */}
-      {!isDefaultProfile && (
+      {/* Only show regex demonstration for non-default profiles in advanced mode */}
+      {!isDefaultProfile && (!isXC || xcMode === 'advanced') && (
         <>
           <Title order={4} mt={15} mb={10}>
             Live Regex Demonstration
@@ -307,7 +475,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
           <Grid gutter="xs">
             <Grid.Col span={12}>
               <Paper shadow="sm" p="xs" radius="md" withBorder>
-                <Text size="sm" weight={500} mb={3}>
+                <Text size="sm" weight={500} mb={3} component="div">
                   Matched Text{' '}
                   <Badge size="xs" color="yellow">
                     highlighted

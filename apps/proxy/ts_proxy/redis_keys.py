@@ -80,6 +80,12 @@ class RedisKeys:
         return f"ts_proxy:worker:{worker_id}:heartbeat"
 
     @staticmethod
+    def chunk_timestamps(channel_id):
+        """Sorted set mapping chunk receive-timestamps (score) to chunk indices (member).
+        Used for time-based client positioning."""
+        return f"ts_proxy:channel:{channel_id}:buffer:chunk_timestamps"
+
+    @staticmethod
     def transcode_active(channel_id):
         """Key indicating active transcode process"""
         return f"ts_proxy:channel:{channel_id}:transcode_active"

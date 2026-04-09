@@ -110,8 +110,11 @@ const CustomTableHeader = ({
                 style={{
                   ...(header.column.columnDef.grow
                     ? {
-                        flex: '1 1 0%',
+                        flex: `${header.column.columnDef.grow === true ? 1 : header.column.columnDef.grow} 1 0%`,
                         minWidth: 0,
+                        ...(header.column.columnDef.maxSize && {
+                          maxWidth: `${header.column.columnDef.maxSize}px`,
+                        }),
                       }
                     : {
                         flex: `0 0 ${header.getSize ? header.getSize() : 150}px`,

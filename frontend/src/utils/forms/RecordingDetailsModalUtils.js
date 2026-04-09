@@ -30,8 +30,9 @@ const filterByUpcoming = (arr, tvid, titleKey, toUserTime, userNow) => {
 
     if ((pr.tvg_id || '') !== tvid) return false;
     if ((pr.title || '').toLowerCase() !== titleKey) return false;
-    const st = toUserTime(r.start_time);
-    return st.isAfter(userNow());
+    // Include episodes that haven't ended yet (currently-airing + future)
+    const et = toUserTime(r.end_time);
+    return et.isAfter(userNow());
   });
 };
 

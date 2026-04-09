@@ -269,6 +269,19 @@ const ChannelsTable = ({ onReady }) => {
   // store/channelsTable
   const data = useChannelsTableStore((s) => s.channels);
   const pageCount = useChannelsTableStore((s) => s.pageCount);
+
+  const rowClassMap = useMemo(() => {
+    const map = {};
+    for (const channel of data) {
+      const hasStreams = channel.streams?.length > 0;
+      if (!hasStreams) {
+        map[channel.id] = 'no-streams-row';
+      } else if (channel.streams.some((s) => s.is_stale)) {
+        map[channel.id] = 'has-stale-streams-row';
+      }
+    }
+    return map;
+  }, [data]);
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
@@ -324,6 +337,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
+  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -423,10 +437,21 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStreamlessChannels === true) {
       params.append('only_streamless', true);
     }
+    if (showOnlyStaleChannels === true) {
+      params.append('only_stale', true);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      let sortField = sorting[0].id;
+      // Map frontend column ids to backend ordering field names
+      const fieldMapping = {
+        channel_group: 'channel_group__name',
+        epg: 'epg_data__name',
+      };
+      if (fieldMapping[sortField]) {
+        sortField = fieldMapping[sortField];
+      }
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -510,6 +535,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -675,7 +701,7 @@ const ChannelsTable = ({ onReady }) => {
     );
     const url = getChannelURL(channel);
     console.log(`Stream URL: ${url}`);
-    showVideo(url);
+    showVideo(url, 'live', { name: channel.name });
   };
 
   const onRowSelectionChange = (newSelection) => {
@@ -918,7 +944,7 @@ const ChannelsTable = ({ onReady }) => {
           />
         ),
         size: columnSizing.epg || 200,
-        minSize: 80,
+        minSize: 120,
       },
       {
         id: 'channel_group',
@@ -929,8 +955,8 @@ const ChannelsTable = ({ onReady }) => {
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
-        size: columnSizing.channel_group || 175,
-        minSize: 100,
+        size: columnSizing.channel_group || 200,
+        minSize: 120,
       },
       {
         id: 'logo',
@@ -1012,6 +1038,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('epg');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
       case 'enabled':
@@ -1023,11 +1058,16 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'channel_number':
         return (
-          <Flex gap={2}>
+          <Flex gap={2} align="center">
             #
-            <Center>
+            <Center
+              onClick={(e) => {
+                e.stopPropagation();
+                onSortingChange('channel_number');
+              }}
+              style={{ cursor: 'pointer' }}
+            >
               {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('channel_number'),
                 size: 14,
               })}
             </Center>
@@ -1036,25 +1076,27 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'name':
         return (
-          <Flex gap="sm">
-            <TextInput
-              name="name"
-              placeholder="Name"
-              value={filters.name || ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={handleFilterChange}
-              size="xs"
-              variant="unstyled"
-              className="table-input-header"
-              leftSection={<Search size={14} opacity={0.5} />}
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
-                size: 14,
-              })}
-            </Center>
-          </Flex>
+          <TextInput
+            name="name"
+            placeholder="Name"
+            value={filters.name || ''}
+            onClick={(e) => e.stopPropagation()}
+            onChange={handleFilterChange}
+            size="xs"
+            variant="unstyled"
+            className="table-input-header"
+            leftSection={<Search size={14} opacity={0.5} />}
+            style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('name');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
+          />
         );
 
       case 'channel_group':
@@ -1077,6 +1119,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('channel_group');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
     }
@@ -1125,13 +1176,8 @@ const ChannelsTable = ({ onReady }) => {
       epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
-      const hasStreams =
-        row.original.streams && row.original.streams.length > 0;
-      return hasStreams
-        ? {} // Default style for channels with streams
-        : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+      const cls = rowClassMap[row.original.id];
+      return cls ? { className: cls } : {};
     },
   });
 
@@ -1434,6 +1480,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            showOnlyStaleChannels={showOnlyStaleChannels}
+            setShowOnlyStaleChannels={setShowOnlyStaleChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}

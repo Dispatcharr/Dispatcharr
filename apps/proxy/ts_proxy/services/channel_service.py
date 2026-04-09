@@ -61,7 +61,7 @@ class ChannelService:
             # Verify the stream_id was set
             stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
             if stream_id_value:
-                logger.debug(f"Verified stream_id {stream_id_value.decode('utf-8')} is now set in Redis")
+                logger.debug(f"Verified stream_id {stream_id_value} is now set in Redis")
             else:
                 logger.error(f"Failed to set stream_id {stream_id} in Redis before initialization")
 
@@ -131,7 +131,7 @@ class ChannelService:
             try:
                 # This is inefficient but used for diagnostics - in production would use more targeted checks
                 redis_keys = proxy_server.redis_client.keys(f"ts_proxy:*:{channel_id}*")
-                redis_keys = [k.decode('utf-8') for k in redis_keys] if redis_keys else []
+                redis_keys = [k for k in redis_keys] if redis_keys else []
             except Exception as e:
                 logger.error(f"Error checking Redis keys: {e}")
 
@@ -236,8 +236,8 @@ class ChannelService:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             try:
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
-                if metadata and b'state' in metadata:
-                    state = metadata[b'state'].decode('utf-8')
+                if metadata and 'state' in metadata:
+                    state = metadata['state']
                     channel_info = {"state": state}
 
                     # Immediately mark as stopping in metadata so clients detect it faster
@@ -265,18 +265,23 @@ class ChannelService:
         # Release the channel in the channel model if applicable
         try:
             channel = Channel.objects.get(uuid=channel_id)
-            channel.release_stream()
-            logger.info(f"Released channel {channel_id} stream allocation")
-            model_released = True
-        except Channel.DoesNotExist:
+            model_released = channel.release_stream()
+            if model_released:
+                logger.info(f"Released channel {channel_id} stream allocation")
+            else:
+                logger.warning(f"Channel {channel_id}: release_stream found no keys to clean")
+        except (Channel.DoesNotExist, Exception):
             logger.warning(f"Could not find Channel model for UUID {channel_id}, attempting stream hash")
-            stream = Stream.objects.get(stream_hash=channel_id)
-            stream.release_stream()
-            logger.info(f"Released stream {channel_id} stream allocation")
-            model_released = True
-        except Exception as e:
-            logger.error(f"Error releasing channel stream: {e}")
-            model_released = False
+            try:
+                stream = Stream.objects.get(stream_hash=channel_id)
+                model_released = stream.release_stream()
+                if model_released:
+                    logger.info(f"Released stream {channel_id} stream allocation")
+                else:
+                    logger.warning(f"Stream {channel_id}: release_stream found no keys to clean")
+            except (Stream.DoesNotExist, Exception) as e:
+                logger.error(f"No Channel or Stream found for {channel_id}: {e}")
+                model_released = False
 
         return {
             'status': 'success',
@@ -377,8 +382,8 @@ class ChannelService:
             metadata = proxy_server.redis_client.hgetall(metadata_key)
 
             # Extract state and owner
-            state = metadata.get(ChannelMetadataField.STATE.encode(), b'unknown').decode('utf-8')
-            owner = metadata.get(ChannelMetadataField.OWNER.encode(), b'unknown').decode('utf-8')
+            state = metadata.get(ChannelMetadataField.STATE, 'unknown')
+            owner = metadata.get(ChannelMetadataField.OWNER, 'unknown')
 
             # Valid states indicate channel is running properly
             valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS, ChannelState.CONNECTING]
@@ -404,7 +409,7 @@ class ChannelService:
             }
 
             if last_data:
-                last_data_time = float(last_data.decode('utf-8'))
+                last_data_time = float(last_data)
                 data_age = time.time() - last_data_time
                 details["last_data_age"] = data_age
 
@@ -427,13 +432,13 @@ class ChannelService:
         try:
             # Use factory to parse the line based on stream type
             parsed_data = LogParserFactory.parse(stream_type, stream_info_line)
-            
+
             if not parsed_data:
                 return
 
             # Update Redis and database with parsed data
             ChannelService._update_stream_info_in_redis(
-                channel_id, 
+                channel_id,
                 parsed_data.get('video_codec'),
                 parsed_data.get('resolution'),
                 parsed_data.get('width'),
@@ -574,7 +579,7 @@ class ChannelService:
         metadata_key = RedisKeys.channel_metadata(channel_id)
 
         # First check if the key exists and what type it is
-        key_type = proxy_server.redis_client.type(metadata_key).decode('utf-8')
+        key_type = proxy_server.redis_client.type(metadata_key)
         logger.debug(f"Redis key {metadata_key} is of type: {key_type}")
 
         # Build metadata update dict

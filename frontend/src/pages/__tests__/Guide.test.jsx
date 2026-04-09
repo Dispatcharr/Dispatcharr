@@ -10,7 +10,7 @@ import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
-import * as guideUtils from '../guideUtils';
+import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
@@ -126,6 +126,16 @@ vi.mock('@mantine/core', async () => {
         ))}
       </select>
     ),
+    Badge: ({ children, size, variant, color, style }) => (
+      <span
+        data-size={size}
+        data-variant={variant}
+        data-color={color}
+        style={style}
+      >
+        {children}
+      </span>
+    ),
     ActionIcon: ({ children, onClick, variant, size, color }) => (
       <button
         onClick={onClick}
@@ -191,9 +201,20 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
       </div>
     ) : null,
 }));
+vi.mock('../../components/ProgramDetailModal', () => ({
+  __esModule: true,
+  default: ({ program, channel, opened, onClose, onRecord }) =>
+    opened ? (
+      <div data-testid="program-detail-modal">
+        <div>{program?.title}</div>
+        <button onClick={onClose}>Close</button>
+        <button onClick={() => onRecord?.(program)}>Record</button>
+      </div>
+    ) : null,
+}));
 
-vi.mock('../guideUtils', async () => {
-  const actual = await vi.importActual('../guideUtils');
+vi.mock('../../utils/guideUtils', async () => {
+  const actual = await vi.importActual('../../utils/guideUtils');
   return {
     ...actual,
     fetchPrograms: vi.fn(),
@@ -325,7 +346,14 @@ describe('Guide', () => {
         id: 'prog-1',
         tvg_id: 'tvg-1',
         title: 'Test Program 1',
+        sub_title: 'The Pilot',
         description: 'Description 1',
+        season: 1,
+        episode: 3,
+        is_new: false,
+        is_live: false,
+        is_premiere: false,
+        is_finale: false,
         start_time: now.toISOString(),
         end_time: now.add(1, 'hour').toISOString(),
         programStart: now,

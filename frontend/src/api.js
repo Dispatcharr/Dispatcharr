@@ -1286,6 +1286,7 @@ export default class API {
 
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -1545,6 +1546,16 @@ export default class API {
     }
   }
 
+  static async getProgramDetail(programId) {
+    try {
+      const response = await request(`${host}/api/epg/programs/${programId}/`);
+      return response;
+    } catch (e) {
+      console.warn('Failed to retrieve program detail', e);
+      return null;
+    }
+  }
+
   static async addM3UProfile(accountId, values) {
     try {
       const response = await request(
@@ -1590,9 +1601,7 @@ export default class API {
       });
 
       const playlist = await API.getPlaylist(accountId);
-      usePlaylistsStore
-        .getState()
-        .updateProfiles(playlist.id, playlist.profiles);
+      usePlaylistsStore.getState().updatePlaylist(playlist);
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }
@@ -2662,6 +2671,58 @@ export default class API {
     }
   }
 
+  static async stopRecording(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/stop/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to stop recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async extendRecording(id, extraMinutes) {
+    try {
+      const resp = await request(
+        `${host}/api/channels/recordings/${id}/extend/`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ extra_minutes: extraMinutes }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      return resp;
+    } catch (e) {
+      errorNotification(`Failed to extend recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async refreshArtwork(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/refresh-artwork/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to refresh artwork for recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async updateRecordingMetadata(id, { title, description }) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/update-metadata/`, {
+        method: 'POST',
+        body: JSON.stringify({ title, description }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) {
+      errorNotification(`Failed to update recording metadata`, e);
+      throw e;
+    }
+  }
+
   static async runComskip(recordingId) {
     try {
       const resp = await request(
@@ -2850,6 +2911,13 @@ export default class API {
     return await request(`${host}/api/accounts/users/me/`);
   }
 
+  static async updateMe(data) {
+    return await request(`${host}/api/accounts/users/me/`, {
+      method: 'PATCH',
+      body: data,
+    });
+  }
+
   static async getUsers() {
     try {
       const response = await request(`${host}/api/accounts/users/`);
@@ -2930,12 +2998,15 @@ export default class API {
     }
   }
 
-  static async updateUser(id, body) {
+  static async updateUser(id, body, self = false) {
     try {
-      const response = await request(`${host}/api/accounts/users/${id}/`, {
-        method: 'PATCH',
-        body,
-      });
+      const response = await request(
+        `${host}/api/accounts/users/${self ? 'me' : id}/`,
+        {
+          method: 'PATCH',
+          body,
+        }
+      );
 
       useUsersStore.getState().updateUser(response);
 

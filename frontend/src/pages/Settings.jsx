@@ -7,6 +7,7 @@ import {
   AccordionPanel,
   Box,
   Center,
+  Divider,
   Text,
   Loader,
 } from '@mantine/core';
@@ -23,6 +24,9 @@ import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UiSettingsForm from '../components/forms/settings/UiSettingsForm.jsx';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+const UserLimitsForm = React.lazy(
+  () => import('../components/forms/settings/UserLimitsForm.jsx')
+);
 const NetworkAccessForm = React.lazy(
   () => import('../components/forms/settings/NetworkAccessForm.jsx')
 );
@@ -37,6 +41,9 @@ const DvrSettingsForm = React.lazy(
 );
 const SystemSettingsForm = React.lazy(
   () => import('../components/forms/settings/SystemSettingsForm.jsx')
+);
+const NavOrderForm = React.lazy(
+  () => import('../components/forms/settings/NavOrderForm.jsx')
 );
 
 const SettingsPage = () => {
@@ -66,10 +73,25 @@ const SettingsPage = () => {
             <AccordionControl>UI Settings</AccordionControl>
             <AccordionPanel>
               <UiSettingsForm active={accordianValue === 'ui-settings'} />
+              <Divider my="md" />
+              <Accordion variant="contained">
+                <AccordionItem value="nav-order">
+                  <AccordionControl>Navigation</AccordionControl>
+                  <AccordionPanel>
+                    <ErrorBoundary>
+                      <Suspense fallback={<Loader />}>
+                        <NavOrderForm
+                          active={accordianValue === 'ui-settings'}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </AccordionPanel>
+                </AccordionItem>
+              </Accordion>
             </AccordionPanel>
           </AccordionItem>
 
-          {authUser.user_level == USER_LEVELS.ADMIN && (
+          {authUser.user_level >= USER_LEVELS.ADMIN && (
             <>
               <AccordionItem value="dvr-settings">
                 <AccordionControl>DVR</AccordionControl>
@@ -177,6 +199,19 @@ const SettingsPage = () => {
                   <ErrorBoundary>
                     <Suspense fallback={<Loader />}>
                       <BackupManager active={accordianValue === 'backups'} />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="user-limits">
+                <AccordionControl>User Limits</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <UserLimitsForm
+                        active={accordianValue === 'user-limits'}
+                      />
                     </Suspense>
                   </ErrorBoundary>
                 </AccordionPanel>

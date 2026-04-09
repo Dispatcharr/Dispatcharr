@@ -126,9 +126,6 @@ const CustomTableBody = ({
           }}
         >
           {row.getVisibleCells().map((cell) => {
-            const hasFixedSize = cell.column.columnDef.size;
-            const isFlexible = !hasFixedSize;
-
             return (
               <Box
                 className="td"
@@ -136,8 +133,11 @@ const CustomTableBody = ({
                 style={{
                   ...(cell.column.columnDef.grow
                     ? {
-                        flex: '1 1 0%',
+                        flex: `${cell.column.columnDef.grow === true ? 1 : cell.column.columnDef.grow} 1 0%`,
                         minWidth: 0,
+                        ...(cell.column.columnDef.maxSize && {
+                          maxWidth: `${cell.column.columnDef.maxSize}px`,
+                        }),
                       }
                     : {
                         flex: `0 0 ${cell.column.getSize ? cell.column.getSize() : 150}px`,

@@ -140,12 +140,12 @@ const ChannelStreams = ({ channel, isExpanded }) => {
   const authUser = useAuthStore((s) => s.user);
   const showVideo = useVideoStore((s) => s.showVideo);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
-  function handleWatchStream(streamHash) {
+  function handleWatchStream(streamHash, streamName) {
     let vidUrl = `/proxy/ts/stream/${streamHash}`;
     if (env_mode === 'dev') {
       vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
     }
-    showVideo(vidUrl);
+    showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
   }
 
   const [data, setData] = useState(channelStreams || []);
@@ -390,7 +390,10 @@ const ChannelStreams = ({ channel, isExpanded }) => {
                           color="blue"
                           variant="light"
                           onClick={() =>
-                            handleWatchStream(stream.stream_hash || stream.id)
+                            handleWatchStream(
+                              stream.stream_hash || stream.id,
+                              stream.name
+                            )
                           }
                           style={{ marginLeft: 2 }}
                         >

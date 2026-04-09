@@ -459,15 +459,10 @@ const useChannelsStore = create((set, get) => ({
   },
 
   fetchRecordings: async () => {
-    set({ isLoading: true, error: null });
     try {
-      set({
-        recordings: await api.getRecordings(),
-        isLoading: false,
-      });
+      set({ recordings: await api.getRecordings() });
     } catch (error) {
       console.error('Failed to fetch recordings:', error);
-      set({ error: 'Failed to load recordings.', isLoading: false });
     }
   },
 
@@ -494,11 +489,16 @@ const useChannelsStore = create((set, get) => ({
       const target = String(id);
       const current = state.recordings;
       if (Array.isArray(current)) {
+        // Early return if item doesn't exist — avoids a new array reference
+        // (and thus a needless re-render) when called redundantly, e.g. both
+        // the optimistic API delete and the WS recording_cancelled handler.
+        if (!current.some((r) => String(r?.id) === target)) return {};
         return {
           recordings: current.filter((r) => String(r?.id) !== target),
         };
       }
       if (current && typeof current === 'object') {
+        if (!Object.values(current).some((r) => String(r?.id) === target)) return {};
         const next = { ...current };
         for (const k of Object.keys(next)) {
           try {

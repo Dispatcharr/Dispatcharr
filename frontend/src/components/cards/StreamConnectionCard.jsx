@@ -1,15 +1,14 @@
 import { useLocation } from 'react-router-dom';
 import React, { useEffect, useMemo, useState } from 'react';
-import useLocalStorage from '../../hooks/useLocalStorage.jsx';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
+import useUsersStore from '../../store/users.jsx';
 import {
   ActionIcon,
   Badge,
   Box,
   Card,
   Center,
-  Flex,
   Group,
   Progress,
   Select,
@@ -56,6 +55,51 @@ import {
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
 
+const formatProgramTime = (seconds) => {
+  const absSeconds = Math.abs(seconds);
+  const hours = Math.floor(absSeconds / 3600);
+  const minutes = Math.floor((absSeconds % 3600) / 60);
+  const secs = Math.floor(absSeconds % 60);
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
+
+const ProgramProgress = ({ currentProgram }) => {
+  const now = new Date();
+  const startTime = new Date(currentProgram.start_time);
+  const endTime = new Date(currentProgram.end_time);
+  const totalDuration = (endTime - startTime) / 1000; // in seconds
+  const elapsed = (now - startTime) / 1000; // in seconds
+  const remaining = (endTime - now) / 1000; // in seconds
+  const percentage = Math.min(
+    100,
+    Math.max(0, (elapsed / totalDuration) * 100)
+  );
+
+  return (
+    <Stack gap="xs" mt={4}>
+      <Group justify="space-between" align="center">
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(elapsed)} elapsed
+        </Text>
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(remaining)} remaining
+        </Text>
+      </Group>
+      <Progress
+        value={percentage}
+        size="sm"
+        color="#3BA882"
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        }}
+      />
+    </Stack>
+  );
+};
+
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
   channel,
@@ -80,6 +124,8 @@ const StreamConnectionCard = ({
 
   // Get M3U account data from the playlists store
   const m3uAccounts = usePlaylistsStore((s) => s.playlists);
+  // Get users for resolving user_id → username on client rows
+  const users = useUsersStore((s) => s.users);
   // Get settings for speed threshold and environment mode
   const settings = useSettingsStore((s) => s.settings);
   const env_mode =
@@ -94,6 +140,15 @@ const StreamConnectionCard = ({
   const m3uAccountsMap = useMemo(() => {
     return getM3uAccountsMap(m3uAccounts);
   }, [m3uAccounts]);
+
+  // Create a map of user IDs to usernames for quick lookup
+  const usersMap = useMemo(() => {
+    const map = {};
+    users.forEach((u) => {
+      map[String(u.id)] = u.username;
+    });
+    return map;
+  }, [users]);
 
   // Update M3U profile information when channel data changes
   useEffect(() => {
@@ -271,7 +326,8 @@ const StreamConnectionCard = ({
       {
         header: 'IP Address',
         accessorKey: 'ip_address',
-        size: 150,
+        grow: true,
+        minSize: 85,
         cell: ({ cell }) => (
           <Tooltip label={cell.getValue()}>
             <Text size="xs" truncate style={{ maxWidth: '100%' }}>
@@ -280,10 +336,29 @@ const StreamConnectionCard = ({
           </Tooltip>
         ),
       },
+      {
+        id: 'user',
+        header: 'User',
+        grow: true,
+        minSize: 60,
+        accessorFn: (row) => {
+          const uid = row.user_id ? String(row.user_id) : null;
+          if (!uid || uid === '0') return 'Anonymous';
+          return usersMap[uid] || `User ${uid}`;
+        },
+        cell: ({ cell }) => (
+          <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+            {cell.getValue()}
+          </Text>
+        ),
+      },
       // Updated Connected column with tooltip
       {
         id: 'connected',
         header: 'Connected',
+        grow: 1.5,
+        minSize: 70,
+        maxSize: 150,
         accessorFn: connectedAccessor(fullDateTimeFormat),
         cell: ({ cell }) => (
           <Tooltip
@@ -293,7 +368,9 @@ const StreamConnectionCard = ({
                 : 'Unknown connection time'
             }
           >
-            <Text size="xs">{cell.getValue()}</Text>
+            <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+              {cell.getValue()}
+            </Text>
           </Tooltip>
         ),
       },
@@ -301,6 +378,8 @@ const StreamConnectionCard = ({
       {
         id: 'duration',
         header: 'Duration',
+        size: 82,
+        minSize: 60,
         accessorFn: durationAccessor(),
         cell: ({ cell, row }) => {
           const exactDuration =
@@ -313,7 +392,9 @@ const StreamConnectionCard = ({
                   : 'Unknown duration'
               }
             >
-              <Text size="xs">{cell.getValue()}</Text>
+              <Text size="xs" style={{ whiteSpace: 'nowrap' }}>
+                {cell.getValue()}
+              </Text>
             </Tooltip>
           );
         },
@@ -321,10 +402,11 @@ const StreamConnectionCard = ({
       {
         id: 'actions',
         header: 'Actions',
-        size: 100,
+        size: 60,
+        minSize: 40,
       },
     ],
-    [fullDateTimeFormat]
+    [fullDateTimeFormat, usersMap]
   );
 
   const channelClientsTable = useTable({
@@ -340,6 +422,7 @@ const StreamConnectionCard = ({
     }),
     headerCellRenderFns: {
       ip_address: renderHeaderCell,
+      user: renderHeaderCell,
       connected: renderHeaderCell,
       duration: renderHeaderCell,
       actions: renderHeaderCell,
@@ -431,7 +514,7 @@ const StreamConnectionCard = ({
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
     }
 
-    showVideo(url);
+    showVideo(url, 'live', { name: actualChannel.name });
   };
 
   if (location.pathname !== '/stats') {
@@ -567,51 +650,9 @@ const StreamConnectionCard = ({
         {currentProgram &&
           isProgramDescExpanded &&
           currentProgram.start_time &&
-          currentProgram.end_time &&
-          (() => {
-            const now = new Date();
-            const startTime = new Date(currentProgram.start_time);
-            const endTime = new Date(currentProgram.end_time);
-            const totalDuration = (endTime - startTime) / 1000; // in seconds
-            const elapsed = (now - startTime) / 1000; // in seconds
-            const remaining = (endTime - now) / 1000; // in seconds
-            const percentage = Math.min(
-              100,
-              Math.max(0, (elapsed / totalDuration) * 100)
-            );
-
-            const formatProgramTime = (seconds) => {
-              const absSeconds = Math.abs(seconds);
-              const hours = Math.floor(absSeconds / 3600);
-              const minutes = Math.floor((absSeconds % 3600) / 60);
-              const secs = Math.floor(absSeconds % 60);
-              if (hours > 0) {
-                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-              }
-              return `${minutes}:${secs.toString().padStart(2, '0')}`;
-            };
-
-            return (
-              <Stack gap="xs" mt={4}>
-                <Group justify="space-between" align="center">
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(elapsed)} elapsed
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(remaining)} remaining
-                  </Text>
-                </Group>
-                <Progress
-                  value={percentage}
-                  size="sm"
-                  color="#3BA882"
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                  }}
-                />
-              </Stack>
-            );
-          })()}
+          currentProgram.end_time && (
+            <ProgramProgress currentProgram={currentProgram} />
+          )}
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (

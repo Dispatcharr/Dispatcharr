@@ -78,9 +78,81 @@ class EPGSourceSerializer(serializers.ModelSerializer):
         return instance
 
 class ProgramDataSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = ProgramData
         fields = ['id', 'start_time', 'end_time', 'title', 'sub_title', 'description', 'tvg_id']
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        cp = obj.custom_properties or {}
+        data['season'] = cp.get('season')
+        data['episode'] = cp.get('episode')
+        data['is_new'] = bool(cp.get('new'))
+        data['is_live'] = bool(cp.get('live'))
+        data['is_premiere'] = bool(cp.get('premiere'))
+        premiere_text = cp.get('premiere_text', '')
+        data['is_finale'] = bool(premiere_text and 'finale' in premiere_text.lower())
+        return data
+
+class ProgramDetailSerializer(ProgramDataSerializer):
+    """Rich serializer for program detail view — extends slim serializer with full custom_properties."""
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        cp = obj.custom_properties or {}
+
+        # Categories
+        data['categories'] = cp.get('categories') or []
+
+        # Content rating
+        data['rating'] = cp.get('rating')
+        data['rating_system'] = cp.get('rating_system')
+
+        # Star ratings
+        data['star_ratings'] = cp.get('star_ratings') or []
+
+        # Credits — flatten from XMLTV structure
+        credits = cp.get('credits') or {}
+        data['credits'] = {
+            'actors': credits.get('actor') or [],
+            'directors': credits.get('director') or [],
+            'writers': credits.get('writer') or [],
+            'producers': credits.get('producer') or [],
+            'presenters': credits.get('presenter') or [],
+        }
+
+        # Video/audio quality
+        video = cp.get('video') or {}
+        data['video_quality'] = video.get('quality')
+        data['aspect_ratio'] = video.get('aspect')
+
+        audio = cp.get('audio') or {}
+        data['stereo'] = audio.get('stereo')
+
+        # Previously shown (rerun)
+        data['is_previously_shown'] = bool(cp.get('previously_shown'))
+
+        # Geographic/language
+        data['country'] = cp.get('country')
+        data['language'] = cp.get('language')
+
+        # Dates
+        data['production_date'] = cp.get('date')
+        previously_shown = cp.get('previously_shown_details') or {}
+        data['original_air_date'] = previously_shown.get('start')
+
+        # External IDs
+        data['imdb_id'] = cp.get('imdb.com_id')
+        data['tmdb_id'] = cp.get('themoviedb.org_id')
+        data['tvdb_id'] = cp.get('thetvdb.com_id')
+
+        # Images
+        data['icon'] = cp.get('icon')
+        data['images'] = cp.get('images') or []
+
+        return data
+
 
 class EPGDataSerializer(serializers.ModelSerializer):
     """

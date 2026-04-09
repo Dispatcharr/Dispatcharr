@@ -128,6 +128,15 @@ const CreateChannelModal = ({
               }
             />
             <Radio
+              value="highest"
+              label="Auto-Assign After Highest"
+              description={
+                isBulk
+                  ? 'Assign numbers sequentially starting after the current highest channel'
+                  : 'Assign the number immediately after the current highest channel'
+              }
+            />
+            <Radio
               value={customModeValue}
               label={
                 isBulk ? 'Start from Custom Number' : 'Use Specific Number'
