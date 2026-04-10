@@ -1,8 +1,5 @@
 # 🎬 Dispatcharr — Your Ultimate IPTV & Stream Management Companion
 
-<p align="center">
-  <img src="https://github.com/Dispatcharr/Dispatcharr/blob/main/frontend/src/images/logo.png?raw=true" height="200" alt="Dispatcharr Logo" />
-</p>
 
 ---
 
