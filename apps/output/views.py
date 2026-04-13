@@ -1959,12 +1959,21 @@ def xc_get_user(request, username=None, password=None):
     try:
         user = User.objects.get(username=username)
         custom_properties = user.custom_properties or {}
-        if custom_properties.get("xc_password") == password:
+        xc_password = custom_properties.get("xc_password", "")
+        # Blank xc_password means XC is disabled for this user
+        if not xc_password:
+            return None
+        if xc_password == password:
             return user
     except User.DoesNotExist:
         user = None
 
     # Plugin authentication hook fallback
+    # Skip if user exists but has blank xc_password (XC disabled)
+    if user is not None:
+        custom_properties = user.custom_properties or {}
+        if not custom_properties.get("xc_password", ""):
+            return None
     try:
         from apps.plugins.loader import PluginManager
         pm = PluginManager.get()
