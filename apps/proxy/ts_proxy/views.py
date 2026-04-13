@@ -21,7 +21,7 @@ from core.models import UserAgent, CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from apps.output.views import xc_get_user
+from apps.plugins.authentication import xc_get_user
 from apps.accounts.permissions import (
     IsAdmin,
     permission_classes_by_method,

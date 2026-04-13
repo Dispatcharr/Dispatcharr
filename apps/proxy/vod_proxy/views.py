@@ -20,7 +20,7 @@ from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
-from apps.output.views import xc_get_user
+from apps.plugins.authentication import xc_get_user
 
 logger = logging.getLogger(__name__)
 
