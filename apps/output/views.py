@@ -1946,9 +1946,51 @@ def generate_epg(request, profile_name=None, user=None):
     return response
 
 
-# XC authentication lives in apps.plugins.authentication; re-export for
-# backward compatibility with callers that import from here.
-from apps.plugins.authentication import xc_get_user  # noqa: F401
+def xc_get_user(request, username=None, password=None):
+    """Authenticate an XC API request via xc_password or plugin hooks.
+
+    Returns a User on success, or None if authentication fails.
+    A blank xc_password on an existing user means XC is disabled for them.
+    """
+    import hmac
+
+    if username is None:
+        username = request.GET.get("username")
+    if password is None:
+        password = request.GET.get("password")
+
+    if not username or not password:
+        return None
+
+    # Standard xc_password authentication
+    try:
+        user = User.objects.get(username=username)
+        custom_properties = user.custom_properties or {}
+        xc_password = custom_properties.get("xc_password", "")
+        # Blank xc_password means XC is disabled for this user
+        if not xc_password:
+            return None
+        if hmac.compare_digest(xc_password, password):
+            return user
+    except User.DoesNotExist:
+        user = None
+
+    # Plugin authentication hook fallback
+    # Skip if user exists but has blank xc_password (XC disabled)
+    if user is not None:
+        custom_properties = user.custom_properties or {}
+        if not custom_properties.get("xc_password", ""):
+            return None
+
+    try:
+        from apps.plugins.authentication import plugin_authenticate_xc
+        result = plugin_authenticate_xc(username, password)
+        if result is not None:
+            return result
+    except Exception:
+        logger.debug("Plugin XC auth hook unavailable", exc_info=True)
+
+    return None
 
 
 def xc_get_info(request, full=False):
