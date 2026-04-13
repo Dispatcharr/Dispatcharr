@@ -21,6 +21,7 @@ from core.models import UserAgent, CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from apps.output.views import xc_get_user
 from apps.accounts.permissions import (
     IsAdmin,
     permission_classes_by_method,
@@ -558,18 +559,13 @@ def stream_ts(request, channel_id, user=None):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
-    user = get_object_or_404(User, username=username)
+    user = xc_get_user(request, username, password)
+
+    if user is None:
+        return Response({"error": "Invalid credentials"}, status=401)
 
     extension = pathlib.Path(channel_id).suffix
     channel_id = pathlib.Path(channel_id).stem
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()

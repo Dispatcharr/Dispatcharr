@@ -20,6 +20,7 @@ from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
 from apps.proxy.utils import check_user_stream_limits
 from dispatcharr.utils import network_access_allowed
+from apps.output.views import xc_get_user
 
 logger = logging.getLogger(__name__)
 
@@ -1007,15 +1008,10 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
+    user = xc_get_user(request, username, password)
 
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
+    if user is None:
+        return JsonResponse({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
@@ -1041,15 +1037,10 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
+    user = xc_get_user(request, username, password)
 
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
+    if user is None:
+        return JsonResponse({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to series/episodes from all active M3U accounts
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}

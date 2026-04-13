@@ -1946,24 +1946,40 @@ def generate_epg(request, profile_name=None, user=None):
     return response
 
 
-def xc_get_user(request):
-    username = request.GET.get("username")
-    password = request.GET.get("password")
+def xc_get_user(request, username=None, password=None):
+    if username is None:
+        username = request.GET.get("username")
+    if password is None:
+        password = request.GET.get("password")
 
     if not username or not password:
         return None
 
-    user = get_object_or_404(User, username=username)
+    # Standard xc_password authentication
+    try:
+        user = User.objects.get(username=username)
+        custom_properties = user.custom_properties or {}
+        if custom_properties.get("xc_password") == password:
+            return user
+    except User.DoesNotExist:
+        user = None
 
-    custom_properties = user.custom_properties or {}
+    # Plugin authentication hook fallback
+    try:
+        from apps.plugins.loader import PluginManager
+        pm = PluginManager.get()
+        for lp in pm._registry.values():
+            if not lp.loaded or not lp.instance:
+                continue
+            auth_fn = getattr(lp.instance, "authenticate_xc", None)
+            if callable(auth_fn):
+                result = auth_fn(username, password)
+                if isinstance(result, User):
+                    return result
+    except Exception:
+        logger.debug("Plugin XC auth hook unavailable", exc_info=True)
 
-    if "xc_password" not in custom_properties:
-        return None
-
-    if custom_properties["xc_password"] != password:
-        return None
-
-    return user
+    return None
 
 
 def xc_get_info(request, full=False):

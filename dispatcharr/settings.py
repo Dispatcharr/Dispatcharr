@@ -299,6 +299,11 @@ STATICFILES_DIRS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "apps.plugins.authentication.PluginAuthBackend",
+]
+
 _default_redis_url = f"{_redis_scheme}://{_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 # Celery/Kombu require SSL parameters in the URL query string because
 # internal URL parsing can overwrite the CELERY_BROKER_USE_SSL dict.
