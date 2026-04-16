@@ -1520,3 +1520,39 @@ class Migration(migrations.Migration):
 +    stream_cooldown_enabled: false,
 +    stream_cooldown_minutes: 10,
 
+
+################################################################################
+# BUGFIX 6: Cooldown Keys werden beim Channel-Cleanup gelöscht
+################################################################################
+#
+# Root cause: server.py cleanup verwendet ts_proxy:channel:{id}:* Wildcard
+# und löscht damit auch Cooldown-Keys, die Channel-Neustarts überleben sollen.
+#
+# Fix: Cooldown-Keys beim Cleanup explizit ausschließen.
+
+--- a/apps/proxy/ts_proxy/server.py
++++ b/apps/proxy/ts_proxy/server.py
+@@ cleanup_channel_redis_keys @@
+             patterns = [
+                 f"ts_proxy:channel:{channel_id}:*",
+                 RedisKeys.events_channel(channel_id)
+             ]
++
++            # Cooldown keys must survive channel cleanup (intentionally persistent)
++            cooldown_prefix = f"ts_proxy:channel:{channel_id}:cooldown:"
+
+             for pattern in patterns:
+                 cursor = 0
+                 while True:
+                     cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
+                     if keys:
+-                        self.redis_client.delete(*keys)
+-                        total_deleted += len(keys)
++                        # Filter out cooldown keys - they must survive channel restarts
++                        keys_to_delete = [k for k in keys if not k.decode('utf-8', errors='ignore').startswith(cooldown_prefix)]
++                        if keys_to_delete:
++                            self.redis_client.delete(*keys_to_delete)
++                            total_deleted += len(keys_to_delete)
++                        skipped = len(keys) - len(keys_to_delete)
++                        if skipped > 0:
++                            logger.debug(f"Preserved {skipped} cooldown keys for channel {channel_id}")

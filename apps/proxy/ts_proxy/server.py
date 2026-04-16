@@ -1448,6 +1448,9 @@ class ProxyServer:
                 RedisKeys.events_channel(channel_id)  # Event channel
             ]
 
+            # Cooldown keys must survive channel cleanup (they are intentionally persistent)
+            cooldown_prefix = f"ts_proxy:channel:{channel_id}:cooldown:"
+
             total_deleted = 0
 
             for pattern in patterns:
@@ -1455,8 +1458,14 @@ class ProxyServer:
                 while True:
                     cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
                     if keys:
-                        self.redis_client.delete(*keys)
-                        total_deleted += len(keys)
+                        # Filter out cooldown keys - they must survive channel restarts
+                        keys_to_delete = [k for k in keys if not k.decode('utf-8', errors='ignore').startswith(cooldown_prefix)]
+                        if keys_to_delete:
+                            self.redis_client.delete(*keys_to_delete)
+                            total_deleted += len(keys_to_delete)
+                        skipped = len(keys) - len(keys_to_delete)
+                        if skipped > 0:
+                            logger.debug(f"Preserved {skipped} cooldown keys for channel {channel_id}")
 
                     # Exit when cursor returns to 0
                     if cursor == 0:
