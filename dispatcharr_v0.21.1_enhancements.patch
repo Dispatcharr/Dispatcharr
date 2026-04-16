@@ -1375,3 +1375,106 @@ class Migration(migrations.Migration):
                                  wait_start = time.time()
 +                                gevent.sleep(0.1)  # Prevent log spam during state transitions
                                  continue
+
+################################################################################
+# FEATURE 7: Stream Cooldown
+################################################################################
+#
+# Failed stream/profile combinations are stored in Redis with a TTL.
+# Survives channel restarts. Configurable per-channel, time in minutes.
+# Can be enabled/disabled via WebUI (Core Settings > Proxy Settings).
+#
+# Redis Key: ts_proxy:channel:{channel_id}:cooldown:{stream_id}:{profile_id}
+# TTL: stream_cooldown_minutes * 60 seconds
+
+--- a/apps/proxy/ts_proxy/redis_keys.py
++++ b/apps/proxy/ts_proxy/redis_keys.py
+@@ add stream_cooldown key @@
++    @staticmethod
++    def stream_cooldown(channel_id, stream_id, profile_id):
++        """Key for stream/profile combination cooldown (failed combinations)"""
++        return f"ts_proxy:channel:{channel_id}:cooldown:{stream_id}:{profile_id}"
+
+--- a/apps/proxy/config.py
++++ b/apps/proxy/config.py
+@@ defaults dict @@
++                "stream_cooldown_enabled": False,
++                "stream_cooldown_minutes": 10,
+
+--- a/apps/proxy/ts_proxy/config_helper.py
++++ b/apps/proxy/ts_proxy/config_helper.py
+@@ add new methods @@
++    @staticmethod
++    def stream_cooldown_enabled():
++        settings = Config.get_proxy_settings()
++        return settings.get("stream_cooldown_enabled", False)
++
++    @staticmethod
++    def stream_cooldown_seconds():
++        settings = Config.get_proxy_settings()
++        minutes = settings.get("stream_cooldown_minutes", 10)
++        return int(minutes) * 60
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ _try_next_stream - mark failed combination with cooldown @@
+         if self.current_stream_id and self.current_profile_id:
+             self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
++            # Set cooldown in Redis (survives channel restarts)
++            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
++                cooldown_secs = ConfigHelper.stream_cooldown_seconds()
++                cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
++                self.buffer.redis_client.setex(cooldown_key, cooldown_secs, str(time.time()))
++                logger.info(f"Set cooldown for stream {self.current_stream_id}/profile {self.current_profile_id} "
++                            f"on channel {self.channel_id} for {cooldown_secs // 60} minutes")
+
+@@ _try_next_stream - filter cooldown combinations @@
+-            untried_combinations = [
+-                s for s in alternate_streams
+-                if (s['stream_id'], s['profile_id']) not in self.tried_combinations
+-            ]
++            untried_combinations = [
++                s for s in alternate_streams
++                if (s['stream_id'], s['profile_id']) not in self.tried_combinations
++            ]
++            # Additionally filter out combinations on cooldown in Redis
++            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
++                cooled_down = []
++                for s in untried_combinations:
++                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
++                    if self.buffer.redis_client.exists(cooldown_key):
++                        ttl = self.buffer.redis_client.ttl(cooldown_key)
++                        logger.debug(f"Skipping stream {s['stream_id']}/profile {s['profile_id']} - on cooldown for {ttl}s more")
++                    else:
++                        cooled_down.append(s)
++                skipped = len(untried_combinations) - len(cooled_down)
++                if skipped > 0:
++                    logger.info(f"Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
++                untried_combinations = cooled_down
+
+--- a/frontend/src/constants.js
++++ b/frontend/src/constants.js
+@@ PROXY_SETTINGS_OPTIONS @@
++  stream_cooldown_enabled: {
++    label: 'Stream Cooldown Enabled',
++    description: 'When enabled, failed stream/profile combinations are skipped for a configurable time period',
++  },
++  stream_cooldown_minutes: {
++    label: 'Stream Cooldown (minutes)',
++    description: 'How long (in minutes) a failed stream/profile combination is skipped before being retried',
++  },
+
+--- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
++++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
+@@ isNumericField @@
++      'stream_cooldown_minutes',
+
+@@ getNumericFieldMax @@
++            : key === 'stream_cooldown_minutes'
++              ? 1440
+
+--- a/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
++++ b/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
+@@ getProxySettingDefaults @@
++    stream_cooldown_enabled: false,
++    stream_cooldown_minutes: 10,

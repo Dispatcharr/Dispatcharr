@@ -1688,6 +1688,20 @@ class StreamManager:
             # Mark current combination as tried
             if self.current_stream_id and self.current_profile_id:
                 self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
+                # Set cooldown for this failed combination in Redis (survives channel restarts)
+                if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                    cooldown_secs = ConfigHelper.stream_cooldown_seconds()
+                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
+                    failed_at = time.time()
+                    retry_at = failed_at + cooldown_secs
+                    self.buffer.redis_client.setex(cooldown_key, cooldown_secs, str(failed_at))
+                    import datetime
+                    retry_str = datetime.datetime.fromtimestamp(retry_at).strftime('%H:%M:%S')
+                    logger.info(
+                        f"[COOLDOWN] Stream {self.current_stream_id}/profile {self.current_profile_id} "
+                        f"on channel {self.channel_id} blocked for {cooldown_secs // 60} min "
+                        f"(retry after {retry_str})"
+                    )
 
             logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}, current profile ID: {self.current_profile_id}")
 
@@ -1703,6 +1717,25 @@ class StreamManager:
                 s for s in alternate_streams 
                 if (s['stream_id'], s['profile_id']) not in self.tried_combinations
             ]
+
+            # Additionally filter out combinations on cooldown in Redis
+            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
+                cooled_down = []
+                for s in untried_combinations:
+                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
+                    if self.buffer.redis_client.exists(cooldown_key):
+                        ttl = self.buffer.redis_client.ttl(cooldown_key)
+                        mins, secs = divmod(ttl, 60)
+                        logger.info(
+                            f"[COOLDOWN] Skipping stream {s['stream_id']}/profile {s['profile_id']} "
+                            f"- blocked for {mins}m {secs}s more"
+                        )
+                    else:
+                        cooled_down.append(s)
+                skipped = len(untried_combinations) - len(cooled_down)
+                if skipped > 0:
+                    logger.info(f"[COOLDOWN] Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
+                untried_combinations = cooled_down
             
             if untried_combinations:
                 entries = ', '.join([f"{s['stream_id']}:{s['profile_id']}" for s in untried_combinations])

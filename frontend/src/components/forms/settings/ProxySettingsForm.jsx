@@ -32,7 +32,7 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
       'failover_grace_period',
       'chunk_timeout',
       'initial_behind_chunks',
-      'chunk_batch_size',
+      'stream_cooldown_minutes',
       'health_check_interval',
     ].includes(key);
   };
@@ -62,10 +62,10 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
                         ? 30
                         : key === 'initial_behind_chunks'
                           ? 20
-                          : key === 'chunk_batch_size'
-                            ? 20
-                            : key === 'health_check_interval'
-                              ? 30
+                          : key === 'health_check_interval'
+                            ? 30
+                            : key === 'stream_cooldown_minutes'
+                              ? 1440
                               : 60;
   };
   return (

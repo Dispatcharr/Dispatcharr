@@ -94,3 +94,8 @@ class RedisKeys:
     def client_metadata(channel_id, client_id):
         """Key for client metadata hash"""
         return f"ts_proxy:channel:{channel_id}:clients:{client_id}"
+
+    @staticmethod
+    def stream_cooldown(channel_id, stream_id, profile_id):
+        """Key for stream/profile combination cooldown (failed combinations)"""
+        return f"ts_proxy:channel:{channel_id}:cooldown:{stream_id}:{profile_id}"

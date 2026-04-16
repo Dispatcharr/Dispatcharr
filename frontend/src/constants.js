@@ -88,9 +88,13 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Initial Behind Chunks',
     description: 'Number of chunks to buffer before starting playback',
   },
-  chunk_batch_size: {
-    label: 'Chunk Batch Size',
-    description: 'Number of chunks to process in a single batch',
+  stream_cooldown_enabled: {
+    label: 'Stream Cooldown Enabled',
+    description: 'When enabled, failed stream/profile combinations are skipped for a configurable time period',
+  },
+  stream_cooldown_minutes: {
+    label: 'Stream Cooldown (minutes)',
+    description: 'How long (in minutes) a failed stream/profile combination is skipped before being retried (0 = disabled)',
   },
   health_check_interval: {
     label: 'Health Check Interval (seconds)',

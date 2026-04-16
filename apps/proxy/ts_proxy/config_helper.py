@@ -132,13 +132,20 @@ class ConfigHelper:
         return settings.get("chunk_timeout", 5)
 
     @staticmethod
-    def chunk_batch_size():
-        """Get chunk batch size from database or default"""
-        settings = Config.get_proxy_settings()
-        return settings.get("chunk_batch_size", 5)
-
-    @staticmethod
     def health_check_interval():
         """Get health check interval in seconds from database or default"""
         settings = Config.get_proxy_settings()
         return settings.get("health_check_interval", 5)
+
+    @staticmethod
+    def stream_cooldown_enabled():
+        """Get whether stream cooldown is enabled from database or default"""
+        settings = Config.get_proxy_settings()
+        return settings.get("stream_cooldown_enabled", False)
+
+    @staticmethod
+    def stream_cooldown_seconds():
+        """Get stream cooldown duration in seconds (converted from minutes) from database or default"""
+        settings = Config.get_proxy_settings()
+        minutes = settings.get("stream_cooldown_minutes", 10)
+        return int(minutes) * 60
