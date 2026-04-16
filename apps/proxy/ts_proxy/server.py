@@ -1459,7 +1459,7 @@ class ProxyServer:
                     cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
                     if keys:
                         # Filter out cooldown keys - they must survive channel restarts
-                        keys_to_delete = [k for k in keys if not k.decode('utf-8', errors='ignore').startswith(cooldown_prefix)]
+                        keys_to_delete = [k for k in keys if not (k.decode('utf-8', errors='ignore') if isinstance(k, bytes) else k).startswith(cooldown_prefix)]
                         if keys_to_delete:
                             self.redis_client.delete(*keys_to_delete)
                             total_deleted += len(keys_to_delete)
