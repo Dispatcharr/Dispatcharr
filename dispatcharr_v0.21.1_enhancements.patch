@@ -1325,3 +1325,53 @@ class Migration(migrations.Migration):
 #  16. frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
 #
 ################################################################################
+
+################################################################################
+# BUGFIX 4: HTTPStreamReader Race Condition on Stop
+################################################################################
+#
+# Root cause: stop() closes self.response while _read_stream() thread is still
+# iterating iter_content(). This causes:
+#   AttributeError: 'NoneType' object has no attribute 'read'
+#
+# Fix: Catch AttributeError/TypeError in _read_stream() - these are expected
+# when the reader is stopped externally while streaming.
+
+--- a/apps/proxy/ts_proxy/http_streamer.py
++++ b/apps/proxy/ts_proxy/http_streamer.py
+@@ except block in _read_stream() @@
+-        except Exception as e:
+-            logger.error(f"HTTP reader unexpected error: {e}", exc_info=True)
++        except (AttributeError, TypeError):
++            # Race condition: response closed by stop() while iter_content() was running
++            if self.running:
++                logger.error(f"HTTP reader connection lost unexpectedly for {self.url}")
++            else:
++                logger.debug(f"HTTP reader stopped cleanly for {self.url}")
++        except Exception as e:
++            logger.error(f"HTTP reader unexpected error: {e}", exc_info=True)
+
+################################################################################
+# BUGFIX 5: Log Spam - "continuing to wait" flooding logs
+################################################################################
+#
+# Root cause: In views.py, the connecting/initializing state check had no sleep
+# before `continue`, causing the polling loop to spin at full speed and log
+# hundreds of "continuing to wait" messages per second.
+#
+# Fix: Add gevent.sleep(0.1) + downgrade log level to DEBUG
+
+--- a/apps/proxy/ts_proxy/views.py
++++ b/apps/proxy/ts_proxy/views.py
+@@ connecting state polling loop @@
+                             if current_state in [
+                                 ChannelState.INITIALIZING,
+                                 ChannelState.CONNECTING,
+                             ]:
+-                                logger.info(
++                                logger.debug(
+                                     f"[{client_id}] Channel {channel_id} is in {current_state} state, continuing to wait"
+                                 )
+                                 wait_start = time.time()
++                                gevent.sleep(0.1)  # Prevent log spam during state transitions
+                                 continue

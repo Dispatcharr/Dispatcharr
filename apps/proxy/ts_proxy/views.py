@@ -424,11 +424,12 @@ def stream_ts(request, channel_id, user=None):
                                 ChannelState.INITIALIZING,
                                 ChannelState.CONNECTING,
                             ]:
-                                logger.info(
+                                logger.debug(
                                     f"[{client_id}] Channel {channel_id} is in {current_state} state, continuing to wait"
                                 )
                                 # Reset wait timer to allow the transition to complete
                                 wait_start = time.time()
+                                gevent.sleep(0.1)  # Prevent log spam during state transitions
                                 continue
 
                             # Check if we're switching URLs

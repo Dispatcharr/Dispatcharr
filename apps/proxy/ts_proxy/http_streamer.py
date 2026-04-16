@@ -103,6 +103,12 @@ class HTTPStreamReader:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP reader request error: {e}")
+        except (AttributeError, TypeError):
+            # Race condition: response closed by stop() while iter_content() was running
+            if self.running:
+                logger.error(f"HTTP reader connection lost unexpectedly for {self.url}")
+            else:
+                logger.debug(f"HTTP reader stopped cleanly for {self.url}")
         except Exception as e:
             logger.error(f"HTTP reader unexpected error: {e}", exc_info=True)
         finally:
