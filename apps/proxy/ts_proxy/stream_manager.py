@@ -22,7 +22,7 @@ from .utils import detect_stream_type, get_logger
 from .redis_keys import RedisKeys
 from .constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from .config_helper import ConfigHelper
-from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object, get_stream_info_for_profile
 
 logger = get_logger()
 
