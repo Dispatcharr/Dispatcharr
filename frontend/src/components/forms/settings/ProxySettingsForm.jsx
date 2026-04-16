@@ -7,6 +7,7 @@ import {
   Button,
   Flex,
   NumberInput,
+  Select,
   Stack,
   TextInput,
 } from '@mantine/core';
@@ -38,6 +39,9 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
   };
   const isFloatField = (key) => {
     return key === 'buffering_speed';
+  };
+  const isSelectField = (key) => {
+    return key === 'stream_cooldown_enabled';
   };
   const getNumericFieldMax = (key) => {
     return key === 'buffering_timeout'
@@ -93,6 +97,22 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
               max={10.0}
               step={0.01}
               precision={1}
+            />
+          );
+        } else if (isSelectField(key)) {
+          return (
+            <Select
+              key={key}
+              label={config.label}
+              description={config.description || null}
+              data={[
+                { value: 'false', label: 'Disabled' },
+                { value: 'true', label: 'Active' },
+              ]}
+              value={String(proxySettingsForm.getValues()[key] ?? false)}
+              onChange={(val) =>
+                proxySettingsForm.setFieldValue(key, val === 'true')
+              }
             />
           );
         } else {

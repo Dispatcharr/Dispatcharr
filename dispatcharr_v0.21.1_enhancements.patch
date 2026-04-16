@@ -1556,3 +1556,47 @@ class Migration(migrations.Migration):
 +                        skipped = len(keys) - len(keys_to_delete)
 +                        if skipped > 0:
 +                            logger.debug(f"Preserved {skipped} cooldown keys for channel {channel_id}")
+
+################################################################################
+# FEATURE 7b: Stream Cooldown - WebUI Dropdown + rote Log-Farbe
+################################################################################
+
+--- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
++++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
+@@ imports @@
++  Select,
+
+@@ after isFloatField @@
++  const isSelectField = (key) => {
++    return key === 'stream_cooldown_enabled';
++  };
+
+@@ render block - add Select case before TextInput fallback @@
++        } else if (isSelectField(key)) {
++          return (
++            <Select
++              key={key}
++              label={config.label}
++              description={config.description || null}
++              data={[
++                { value: 'false', label: 'Disabled' },
++                { value: 'true', label: 'Active' },
++              ]}
++              value={String(proxySettingsForm.getValues()[key] ?? false)}
++              onChange={(val) =>
++                proxySettingsForm.setFieldValue(key, val === 'true')
++              }
++            />
++          );
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ COOLDOWN log messages - add ANSI red color @@
+-                    logger.info(f"[COOLDOWN] Stream ...")
++                    logger.info(f"\033[31m[COOLDOWN]\033[0m Stream ...")
+
+-                    logger.info(f"[COOLDOWN] Skipping stream ...")
++                    logger.info(f"\033[31m[COOLDOWN]\033[0m Skipping stream ...")
+
+-                    logger.info(f"[COOLDOWN] Skipped {skipped} ...")
++                    logger.info(f"\033[31m[COOLDOWN]\033[0m Skipped {skipped} ...")
