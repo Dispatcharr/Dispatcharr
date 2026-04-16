@@ -404,7 +404,7 @@ def fetch_channel_stats():
         while True:
             cursor, keys = redis_client.scan(cursor, match=channel_pattern)
             for key in keys:
-                channel_id_match = re.search(r"ts_proxy:channel:(.*):metadata", key.decode('utf-8'))
+                channel_id_match = re.search(r"ts_proxy:channel:(.*):metadata", key)
                 if channel_id_match:
                     ch_id = channel_id_match.group(1)
                     channel_info = ChannelStatus.get_basic_channel_info(ch_id)

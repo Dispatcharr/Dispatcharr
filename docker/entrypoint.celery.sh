@@ -36,6 +36,10 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     fi
 fi
 
+# Fix TLS client key permissions/ownership for PostgreSQL.
+FIXED_KEY_PATH="/data/.pg-client-celery.key"
+. /app/docker/init/00-fix-pg-ssl-key.sh
+
 # Wait for migrations to complete
 # Uses 'migrate --check' which exits 0 only when all migrations are applied,
 # and exits 1 on unapplied migrations OR connection errors (safe either way)

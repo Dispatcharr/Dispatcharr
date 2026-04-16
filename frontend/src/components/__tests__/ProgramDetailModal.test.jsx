@@ -21,9 +21,10 @@ vi.mock('../../utils/dateTimeUtils.js', () => ({
   useDateTimeFormat: vi.fn(() => ({ timeFormat: 'h:mm A' })),
 }));
 
-vi.mock('../../pages/guideUtils', () => ({
+vi.mock('../../utils/guideUtils', () => ({
   formatSeasonEpisode: vi.fn((s, e) => {
-    if (s != null && e != null) return `S${String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`;
+    if (s != null && e != null)
+      return `S${String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`;
     if (s != null) return `S${String(s).padStart(2, '0')}`;
     if (e != null) return `E${String(e).padStart(2, '0')}`;
     return null;

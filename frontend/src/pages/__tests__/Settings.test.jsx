@@ -78,6 +78,13 @@ vi.mock('../../components/forms/settings/NavOrderForm', () => ({
     </div>
   ),
 }));
+vi.mock('../../components/forms/settings/UserLimitsForm', () => ({
+  default: ({ active }) => (
+    <div data-testid="user-limits-form">
+      UserLimitsForm {active ? 'active' : 'inactive'}
+    </div>
+  ),
+}));
 vi.mock('../../components/ErrorBoundary', () => ({
   default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));

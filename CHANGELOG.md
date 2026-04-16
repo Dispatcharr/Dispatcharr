@@ -7,11 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-04-05
+
+### Fixed
+
+- Fixed EPG sources that emit a UTF-8 BOM (e.g. ErsatzTV, EPGShare, WebGrab+Plus) parsing 0 channels and 0 programmes after the HTML entity fix introduced in v0.22.0. `bytes.lstrip()` only strips ASCII whitespace, leaving the three BOM bytes (`EF BB BF`) in place, so `stripped.startswith(b'<?xml')` returned `False`. The function fell through to the no-declaration branch and prepended the HTML entity DOCTYPE block _before_ the BOM and XML declaration, producing invalid XML that lxml silently discarded under `recover=True`. Fixed by stripping the BOM explicitly before the whitespace strip: `start.lstrip(b'\xef\xbb\xbf').lstrip()`. BOM-free files are unaffected. (Closes #1173) — Thanks [@dwot](https://github.com/dwot) for the fix!
+
+## [0.22.0] - 2026-04-01
+
+### Security
+
+- Updated `requests` 2.32.5 → 2.33.0, resolving the following CVE:
+  - **CVE-2026-25645** (moderate): Insecure temp file reuse in `extract_zipped_paths()` utility function.
+- Updated frontend npm dependencies to resolve 4 audit vulnerabilities (2 moderate, 2 high):
+  - Updated `brace-expansion` 5.0.2 → 5.0.5, resolving **moderate** zero-step sequence causing process hang and memory exhaustion ([GHSA-f886-m6hf-6m8v](https://github.com/advisories/GHSA-f886-m6hf-6m8v))
+  - Updated `flatted` 3.4.1 → 3.4.2, resolving **high** Prototype Pollution via `parse()` in NodeJS flatted ([GHSA-rf6f-7fwh-wjgh](https://github.com/advisories/GHSA-rf6f-7fwh-wjgh))
+  - Updated `picomatch` 4.0.3 → 4.0.4, resolving **high** method injection in POSIX character classes causing incorrect glob matching ([GHSA-3v7f-55p6-f55p](https://github.com/advisories/GHSA-3v7f-55p6-f55p)) and a ReDoS vulnerability via extglob quantifiers ([GHSA-c2c7-rcm5-vvqj](https://github.com/advisories/GHSA-c2c7-rcm5-vvqj))
+  - Updated `yaml` 1.10.2 → 1.10.3, resolving **moderate** stack overflow via deeply nested YAML collections ([GHSA-48c2-rrv3-qjmp](https://github.com/advisories/GHSA-48c2-rrv3-qjmp))
+
+### Added
+
+- Connection cards on the Stats page now show the **username** of the connected user. For live channel connections a new User column appears between IP Address and Connected; for VOD connections the username is shown inline next to the IP address in the Client summary row. The username is resolved from the user store using the `user_id` stored in Redis client metadata. (Closes #766, Closes #586)
+- `ip_address` and `user_id` were not included in the client info returned by `get_detailed_channel_info()` despite being available in the Redis hash. Both fields are now extracted and returned. `user_id` is now also included in the VOD stats response.
+- Web UI stream preview now sends an `Authorization: Bearer` header with each mpegts.js request, identifying the logged-in user. Live channel previews initiated from the web UI now appear on the Stats page with the correct username rather than as unknown user.
+- `client_connect` and `client_disconnect` system events now include the **username** of the connected user. The username is stored alongside the client metadata in Redis and included in the event payload for `log_system_event` calls (making it available to webhook and script integrations).
+- Donate button added to the sidebar footer. A heart icon links to the project's Open Collective page, visible in both expanded and collapsed states. Hovering shows a "Support Dispatcharr" tooltip. The version string is also now clickable to copy it to the clipboard.
+- User stream limits: administrators can now set a maximum number of concurrent streams per user account. When a user reaches their limit, the system can automatically terminate an existing stream to free a slot based on configurable rules. Limit enforcement applies to both live channels and VOD. (Closes #544)
+  - Each user account has a new **Stream Limit** field (0 = unlimited) configurable from the user edit form in Settings → Users.
+  - Global enforcement behaviour is configurable in Settings → User Limits:
+    - **Terminate on Limit Exceeded**: automatically stop an existing stream when the user's limit is reached (vs. rejecting the new connection).
+    - **Terminate Oldest**: prefer terminating the oldest stream when freeing a slot; disable to prefer the newest.
+    - **Prioritize Single-Client Channels**: prefer terminating streams on channels that only this user is watching.
+    - **Ignore Same-Channel Connections**: count multiple connections to the same live channel as one stream toward the limit. Same-channel reconnects are always allowed through. When this is enabled and a channel must be freed, all connections to the chosen channel are terminated together so that the unique-channel count actually decreases. VOD is explicitly excluded from this bypass since VOD connections are not shared upstream.
+- TLS and mutual TLS (mTLS) support for Redis and PostgreSQL connections in modular deployments. Supports encrypted connections, server certificate verification (Redis: on/off; PostgreSQL: verify-full, verify-ca, require), CA certificate configuration, and client certificate authentication. Configured via environment variables in the docker compose file. Includes startup validation for certificate paths and TLS/URL scheme conflicts, and a read-only Connection Security panel in System Settings. (Closes #950) — Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Status filter for M3U group and VOD category filter modals: A new **All / Enabled / Disabled** segmented control is now shown alongside the text search input in the Live, VOD - Movies, and VOD - Series tabs of the M3U Group Filter modal. The status filter works in combination with the text search and also scopes the "Select Visible" / "Deselect Visible" buttons so they only act on the currently visible subset. (Closes #312)
+
+### Changed
+
+- M3U Profile form (XC accounts): added a **Simple / Advanced** mode toggle for credential-based URL rewriting. In Simple mode users enter just a new username and password; the search and replace patterns are built automatically from the account's current credentials. In Advanced mode the full regex fields are shown as before. The selected mode is saved to `custom_properties.xcMode` and auto-detected on existing profiles (a profile whose search pattern matches the account's current `username/password` is recognised as Simple automatically). The Live Regex Demonstration panel is hidden in Simple mode.
+- XtreamCodes VOD endpoints (`/movie/` and `/series/`) no longer redirect clients to a UUID-based proxy URL. Requests are now handled directly in the proxy layer via `stream_xc_movie` and `stream_xc_episode`, which call `stream_vod()` internally. The original XC path is preserved for the client throughout the stream.
+- `CustomTable` column layout now supports flexible (`grow`) columns alongside fixed-width ones:
+  - Column definitions accept a `grow` property (boolean or number) to opt into flex layout. A numeric value sets the flex-grow weight, allowing relative sizing between grow columns (e.g. `grow: 2` gives a column twice the share of spare space as `grow: 1`).
+  - `maxSize` is now respected on grow columns, capping how wide they expand via `maxWidth`.
+  - The wrapper's `minWidth` calculation now uses `minSize` (not TanStack's 150px default) for grow columns, preventing the table from overflowing its container when columns would otherwise be sized larger than available space.
+- Dependency updates:
+  - `requests` 2.32.5 → 2.33.0 (security patch; see Security section)
+  - `celery` 5.6.2 → 5.6.3
+  - `torch` 2.10.0+cpu → 2.11.0+cpu
+  - `sentence-transformers` 5.2.3 → 5.3.0
+  - `yt-dlp` 2026.3.13 → 2026.3.17
+- Docker base image cleanup: removed `python-is-python3`, `python3-pip`, and `streamlink` from the apt package list in `DispatcharrBase`. `python3-pip` and `streamlink` were pulling outdated system Python packages (e.g. `requests 2.31.0`, `cryptography 41.0.7`, `lxml 5.2.1`) into the system Python's site-packages despite the app running entirely in the uv-managed venv at `/dispatcharrpy`. `streamlink` is already installed in the venv via `pyproject.toml`. `python-is-python3` is unnecessary as `PATH` resolves bare `python` to the venv binary.
+- M3U table **Max Streams** column now reflects the combined limit across all active profiles. When a playlist has multiple active profiles, the column displays their summed total (or ∞ if any profile is unlimited) and a hover tooltip lists each profile's individual limit by name. (Closes #816)
+- Toggling an M3U profile's active state now immediately updates the playlist store (including the `playlists` array), so the **Max Streams** total in the M3U table reflects the change without a page reload.
+- M3U account form: **Max Streams** field changed from a plain text input to a number input with increment/decrement controls, consistent with other integer fields.
+- M3U account form: removed unused `useMantineTheme` import and `theme` variable.
+- Moved `guideUtils.js` from `frontend/src/pages/` to `frontend/src/utils/` to be consistent with other utility modules (e.g. `networkUtils.js`). Updated all imports across `GuideRow.jsx`, `HourTimeline.jsx`, `ProgramDetailModal.jsx`, `RecordingCardUtils.js`, `Guide.jsx`, and related test files.
+- Frontend cleanup: removed unused imports from `M3UGroupFilter`, `LiveGroupFilter`, and `VODCategoryFilter` (`Yup`, `M3UProfiles`, several unused Mantine components, dead `OptionWithTooltip` component, duplicate lucide-react imports, and `Divider` in `VODCategoryFilter`). No behaviour changes.
+- Network Access settings: leaving a field blank no longer shows a validation error. The default CIDR range for that field is saved automatically and a "Defaults Restored" warning is displayed listing which fields were reset. (Closes #726)
+
+### Fixed
+
+- M3U profile URL rewriting now uses the `regex` module instead of `re` across all URL transform code paths (`url_utils.transform_url`, `core/views.py`, `vod_proxy/_transform_url`, `tasks.get_transformed_credentials`, and the WebSocket live-preview handler in `consumers.py`). The `regex` module natively accepts JavaScript/PCRE-style named capture groups (`(?<name>...)`) without any conversion, eliminating the root cause of patterns that matched in the frontend live preview but failed on the backend with a `re.error`. As a further improvement, `regex` also supports variable-length lookbehind assertions (e.g. `(?<=a+)`), which `re` rejects with an error; patterns using these will now work correctly on the backend as well. Replace-pattern JS tokens are still normalised before calling `regex.sub`: `$<name>` → `\g<name>` and `$1`/`$2`/… → `\1`/`\2`/… (Python replacement syntax). Also fixed a bug in the WebSocket preview handler where a pattern error was incorrectly returning the search pattern string as the preview output instead of the original URL. (Fixes #1005)
+- Web UI stream preview (`FloatingVideo`) was calling `mpegts.createPlayer()` with all `Config` options (e.g. `enableWorker`, `liveSync`, `headers`) merged into the first `MediaDataSource` argument. mpegts.js only reads `Config` from the optional second argument; unrecognised fields in the first are silently ignored. As a result all player configuration was effectively the library defaults — worker offloading was disabled, latency management had no effect, and the `Authorization: Bearer` header (required for user identification) was never sent. Fixed by splitting into the correct two-argument call. Both `liveBufferLatencyChasing` and `liveSync` have been disabled, eliminating playback-rate fluctuations that caused audible stuttering on live streams. SourceBuffer cleanup thresholds were also relaxed from 10s/5s to 120s/60s to prevent frequent SourceBuffer pauses.
+- HTML named entities in XMLTV EPG files are now correctly preserved during lxml parsing. Some EPG providers (particularly French and other European sources) use HTML named entities like `&eacute;`, `&icirc;`, `&uuml;` in channel names, program titles, and metadata. These are not valid XML entities — lxml 6.0.2 with `recover=True` silently drops them, causing characters to go missing (e.g., "Chaîne Télé" becomes "Chane Tl"). This is now fixed by injecting an XML `<!DOCTYPE tv [...]>` internal subset declaring all 252 HTML 4 named entities directly into the byte stream that lxml reads, using a lightweight in-memory wrapper (`_PrependStream`) with zero disk I/O. libxml2 resolves the entities during its normal C-level parse pass — no Python-level preprocessing or temporary files are involved. The DOCTYPE block (~8 KB) is built once at module load from Python's stdlib `html.entities.name2codepoint` and reused for every parse. Files that already declare their own `<!DOCTYPE>` are passed through unchanged. (Closes #1095) — Thanks [@CodeBormen](https://github.com/CodeBormen) for helping with this!
+- Duplicate recordings created when EPG sources refresh and re-evaluate series rules (Fixes #940) — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - **Program ID instability**: `parse_programs_for_source()` deletes and recreates all `ProgramData` rows with new auto-increment IDs on every EPG refresh. The dedup set used these IDs, so it never matched after a refresh. Deduplication now uses a stable `(tvg_id, start_time, end_time)` composite key sourced from `Recording.custom_properties.program`.
+  - **Secondary guard using wrong times**: The DB guard compared unadjusted program times against offset-adjusted `Recording.start_time`/`end_time`, so it never matched when any DVR pre/post offset was configured. It now queries `custom_properties__program__start_time/end_time` (the original, unadjusted program times stored at recording creation).
+  - **No concurrency guard**: Each EPG source refresh fired `evaluate_series_rules.delay()` independently. Concurrent tasks loaded the dedup set before others committed, allowing races. Evaluation is now serialized with `acquire_task_lock` (reusing the existing EPG task pattern). Gracefully degrades if Redis is unavailable — the primary and secondary dedup guards still protect.
+- EPG refresh tasks (`refresh_epg_data`) were being killed mid-transaction on large EPG sources. The `soft_time_limit=1700s` introduced in v0.21.0 raised `SoftTimeLimitExceeded`, a subclass of `Exception`, which was swallowed by the existing `except Exception` handler in `parse_programs_for_source`, leaving the database in a partial state with no logged error. `soft_time_limit` has been removed from `refresh_epg_data` and `time_limit` raised to 14400s (4 hours) as a true last-resort ceiling; the existing `TaskLockRenewer` daemon thread continues to renew the Redis lock every 120s for legitimately long-running tasks.
+
 ## [0.21.1] - 2026-03-18
 
 ### Fixed
 
-- Backups failing on previous installations where `/data/backups` already existed: `/data/backups` was missing from the `DATA_DIRS` list in the init script, causing the PUID/PGID ownership migration to skip the directory and leave it with incorrect permissions. — Thanks [@CodeBormen](https://github.com/CodeBormen)
+- Docker container initialization fixes for PUID/PGID handling — Thanks [@CodeBormen](https://github.com/CodeBormen):
+  - Backups failing on previous installations where `/data/backups` already existed: `/data/backups` was missing from the `DATA_DIRS` list in the init script, causing the PUID/PGID ownership migration to skip the directory and leave it with incorrect permissions.
+  - Container startup failure on upgrade when data directories reside on external mounts (NFS, SMB/CIFS, FUSE): `chown` failures under `set -e` were crashing the container, breaking setups that worked fine on the previous image. Failures are now collected per-directory and reported as a consolidated warning; the container continues to start and Django reports at runtime if it cannot write a specific directory.
+  - Upgrading users running as UID 102 (the internal PostgreSQL system user) instead of the expected UID 1000: the PUID/PGID auto-detect introduced in v0.21.0 read ownership from `/data/db`, which was UID 102 in pre-PUID images, causing Django, file creation, and comskip to all run as the wrong user. PUID/PGID now default to 1000 (matching the original Django UID) rather than auto-detecting from data directory ownership.
 
 ## [0.21.0] - 2026-03-17
 

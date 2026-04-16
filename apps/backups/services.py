@@ -28,10 +28,36 @@ def _is_postgresql() -> bool:
 
 
 def _get_pg_env() -> dict:
-    """Get environment variables for PostgreSQL commands."""
+    """Get environment variables for PostgreSQL commands.
+
+    Includes PGPASSWORD for password auth and PGSSL* variables for TLS.
+    Reads TLS config from DATABASES['default']['OPTIONS'], which is
+    populated by settings.py when POSTGRES_SSL=true.
+    """
     db_config = settings.DATABASES["default"]
     env = os.environ.copy()
-    env["PGPASSWORD"] = db_config.get("PASSWORD", "")
+
+    password = db_config.get("PASSWORD", "")
+    if password:
+        env["PGPASSWORD"] = password
+    else:
+        env.pop("PGPASSWORD", None)
+
+    # Propagate TLS configuration from Django OPTIONS to libpq env vars.
+    options = db_config.get("OPTIONS", {})
+    _ssl_env_map = {
+        "sslmode": "PGSSLMODE",
+        "sslrootcert": "PGSSLROOTCERT",
+        "sslcert": "PGSSLCERT",
+        "sslkey": "PGSSLKEY",
+    }
+    # Always strip inherited PGSSL* vars first, then set only what is explicitly configured
+    for opt_key, env_key in _ssl_env_map.items():
+        env.pop(env_key, None)
+        value = options.get(opt_key)
+        if value:
+            env[env_key] = value
+
     return env
 
 

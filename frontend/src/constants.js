@@ -62,6 +62,33 @@ export const PROXY_SETTINGS_OPTIONS = {
   },
 };
 
+export const USER_LIMITS_OPTIONS = {
+  terminate_on_limit_exceeded: {
+    label: 'Terminate on Limit Exceeded',
+    description:
+      'Terminate a stream (based on below criteria) when the user exceeds the allowed limits',
+    default: true,
+  },
+  prioritize_single_client_channels: {
+    label: 'Prioritize Single Client Channels',
+    description:
+      'Prioritize terminating channels only a single client belonging to the user',
+    default: true,
+  },
+  ignore_same_channel_connections: {
+    label: 'Ignore Same-Channel Connections',
+    description:
+      'Multiple user connections to the same channel count as 1 connection toward user limits',
+    default: false,
+  },
+  terminate_oldest: {
+    label: 'Terminate Oldest',
+    description:
+      'Prioritize terminating the oldest stream when limits are exceeded. Setting to false prioritizes the newest stream.',
+    default: true,
+  },
+};
+
 export const M3U_FILTER_TYPES = [
   {
     label: 'Group',

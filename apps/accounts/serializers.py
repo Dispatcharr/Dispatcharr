@@ -65,6 +65,7 @@ class UserSerializer(serializers.ModelSerializer):
             "channel_profiles",
             "custom_properties",
             "avatar_config",
+            "stream_limit",
             "is_staff",
             "is_superuser",
             "last_login",

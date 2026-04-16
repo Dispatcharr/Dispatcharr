@@ -30,7 +30,13 @@ vi.mock('@mantine/core', async () => ({
   ),
   Stack: ({ children, gap }) => <div data-testid="stack">{children}</div>,
   Text: ({ children, size, fw, c, lineClamp, style }) => (
-    <span data-testid="text" data-size={size} data-fw={fw} data-color={c} style={style}>
+    <span
+      data-testid="text"
+      data-size={size}
+      data-fw={fw}
+      data-color={c}
+      style={style}
+    >
       {children}
     </span>
   ),
@@ -38,6 +44,7 @@ vi.mock('@mantine/core', async () => ({
 
 // ── lucide-react ───────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <svg data-testid="icon-list-ordered" />,
   Calendar: () => <svg data-testid="icon-calendar" />,
   Play: () => <svg data-testid="icon-play" />,
   Star: () => <svg data-testid="icon-star" />,
@@ -78,7 +85,12 @@ describe('SeriesCard', () => {
     });
 
     it('renders a fallback image when poster_url is missing', () => {
-      render(<SeriesCard series={makeSeries({ poster_url: null })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ poster_url: null })}
+          onClick={vi.fn()}
+        />
+      );
       const img = screen.getByRole('img');
       expect(img).toBeInTheDocument();
     });
@@ -105,7 +117,12 @@ describe('SeriesCard', () => {
 
     it('renders play icon', () => {
       //this only renders when logo.url is missing, but we want to test that the icon itself renders correctly
-      render(<SeriesCard series={makeSeries({ logo: { url: null } })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ logo: { url: null } })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('icon-play')).toBeInTheDocument();
     });
 
@@ -119,27 +136,52 @@ describe('SeriesCard', () => {
 
   describe('optional fields', () => {
     it('does not crash when year is missing', () => {
-      render(<SeriesCard series={makeSeries({ year: undefined })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ year: undefined })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
     });
 
     it('does not crash when rating is missing', () => {
-      render(<SeriesCard series={makeSeries({ rating: undefined })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ rating: undefined })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
     });
 
     it('does not crash when genre is missing', () => {
-      render(<SeriesCard series={makeSeries({ genre: undefined })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ genre: undefined })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
     });
 
     it('does not crash when description is missing', () => {
-      render(<SeriesCard series={makeSeries({ description: undefined })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ description: undefined })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
     });
 
     it('does not crash when seasons is missing', () => {
-      render(<SeriesCard series={makeSeries({ seasons: undefined })} onClick={vi.fn()} />);
+      render(
+        <SeriesCard
+          series={makeSeries({ seasons: undefined })}
+          onClick={vi.fn()}
+        />
+      );
       expect(screen.getByTestId('series-card')).toBeInTheDocument();
     });
 

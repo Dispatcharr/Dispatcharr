@@ -16,6 +16,12 @@ vi.mock('../../../../utils/forms/settings/SystemSettingsFormUtils.js', () => ({
   getSystemSettingsFormInitialValues: vi.fn(),
 }));
 
+vi.mock('../ConnectionSecurityPanel.jsx', () => ({
+  default: () => (
+    <div data-testid="connection-security-panel">ConnectionSecurityPanel</div>
+  ),
+}));
+
 // ── Mantine form ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/form', () => ({
   useForm: vi.fn(),
@@ -47,6 +53,7 @@ vi.mock('@mantine/core', () => ({
   ),
   Stack: ({ children }) => <div>{children}</div>,
   Text: ({ children }) => <span>{children}</span>,
+  Divider: () => <hr />,
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -69,7 +76,15 @@ const makeSettings = (overrides = {}) => ({
   ...overrides,
 });
 
-const setupMocks = ({ settings = makeSettings() } = {}) => {
+const makeEnvironment = (overrides = {}) => ({
+  env_mode: 'aio',
+  ...overrides,
+});
+
+const setupMocks = ({
+  settings = makeSettings(),
+  environment = makeEnvironment(),
+} = {}) => {
   const formValues = { max_system_events: settings?.max_system_events ?? 100 };
 
   const formMock = {
@@ -85,7 +100,9 @@ const setupMocks = ({ settings = makeSettings() } = {}) => {
 
   vi.mocked(useForm).mockReturnValue(formMock);
   vi.mocked(getSystemSettingsFormInitialValues).mockReturnValue(formValues);
-  vi.mocked(useSettingsStore).mockImplementation((sel) => sel({ settings }));
+  vi.mocked(useSettingsStore).mockImplementation((sel) =>
+    sel({ settings, environment })
+  );
   vi.mocked(parseSettings).mockReturnValue(formValues);
   vi.mocked(getChangedSettings).mockReturnValue({
     max_system_events: settings?.max_system_events ?? 100,
@@ -148,6 +165,22 @@ describe('SystemSettingsForm', () => {
       expect(screen.queryByTestId('alert')).not.toBeInTheDocument();
     });
 
+    it('does not render Connection Security panel in non-modular mode', () => {
+      setupMocks({ environment: makeEnvironment({ env_mode: 'aio' }) });
+      render(<SystemSettingsForm active={true} />);
+      expect(
+        screen.queryByTestId('connection-security-panel')
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders Connection Security panel in modular mode', () => {
+      setupMocks({ environment: makeEnvironment({ env_mode: 'modular' }) });
+      render(<SystemSettingsForm active={true} />);
+      expect(
+        screen.getByTestId('connection-security-panel')
+      ).toBeInTheDocument();
+    });
+
     it('renders NumberInput with value from form values', () => {
       setupMocks({ settings: makeSettings({ max_system_events: 250 }) });
       render(<SystemSettingsForm active={true} />);
@@ -167,7 +200,10 @@ describe('SystemSettingsForm', () => {
       vi.mocked(useForm).mockReturnValue(formMock);
       vi.mocked(getSystemSettingsFormInitialValues).mockReturnValue(formValues);
       vi.mocked(useSettingsStore).mockImplementation((sel) =>
-        sel({ settings: makeSettings({ max_system_events: 0 }) })
+        sel({
+          settings: makeSettings({ max_system_events: 0 }),
+          environment: makeEnvironment(),
+        })
       );
       vi.mocked(parseSettings).mockReturnValue(formValues);
       vi.mocked(getChangedSettings).mockReturnValue({});
@@ -211,7 +247,7 @@ describe('SystemSettingsForm', () => {
         max_system_events: 100,
       });
       vi.mocked(useSettingsStore).mockImplementation((sel) =>
-        sel({ settings: null })
+        sel({ settings: null, environment: makeEnvironment() })
       );
       vi.mocked(parseSettings).mockReturnValue({});
       vi.mocked(saveChangedSettings).mockResolvedValue(undefined);

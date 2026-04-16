@@ -287,11 +287,10 @@ class UserViewSet(viewsets.ModelViewSet):
         if request.method == "PATCH":
             ALLOWED_FIELDS = {"custom_properties", "first_name", "last_name", "email", "password"}
             disallowed = set(request.data.keys()) - ALLOWED_FIELDS
-            if disallowed:
-                return Response(
-                    {"detail": f"Fields not allowed for self-update: {', '.join(disallowed)}"},
-                    status=400,
-                )
+
+            for key in disallowed:
+                request.data.pop(key, None)
+
             serializer = UserSerializer(user, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()

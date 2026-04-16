@@ -95,7 +95,12 @@ vi.mock('@mantine/core', () => ({
   Center: ({ children }) => <div data-testid="center">{children}</div>,
   Group: ({ children }) => <div data-testid="group">{children}</div>,
   Progress: ({ value, size, color }) => (
-    <div data-testid="progress" data-value={value} data-size={size} data-color={color} />
+    <div
+      data-testid="progress"
+      data-value={value}
+      data-size={size}
+      data-color={color}
+    />
   ),
   Select: ({ value, onChange, label, data, disabled, placeholder }) => (
     <select
@@ -129,9 +134,7 @@ vi.mock('@mantine/core', () => ({
       {children}
     </span>
   ),
-  Tooltip: ({ children, label }) => (
-    <div data-tooltip={label}>{children}</div>
-  ),
+  Tooltip: ({ children, label }) => <div data-tooltip={label}>{children}</div>,
   useMantineTheme: vi.fn(() => ({
     tailwind: { green: { 5: '#22c55e' } },
   })),
@@ -139,6 +142,22 @@ vi.mock('@mantine/core', () => ({
 
 // ── lucide-react ──────────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
+  // navigation.js icons (all must be present for the auth→navigation import chain)
+  ListOrdered: () => <svg data-testid="icon-list-ordered" />,
+  Play: () => <svg data-testid="icon-play" />,
+  Database: () => <svg data-testid="icon-database" />,
+  LayoutGrid: () => <svg data-testid="icon-layout-grid" />,
+  Settings: () => <svg data-testid="icon-settings" />,
+  ChartLine: () => <svg data-testid="icon-chart-line" />,
+  Video: () => <svg data-testid="icon-video" />,
+  PlugZap: () => <svg data-testid="icon-plug-zap" />,
+  User: () => <svg data-testid="icon-user" />,
+  FileImage: () => <svg data-testid="icon-file-image" />,
+  Webhook: () => <svg data-testid="icon-webhook" />,
+  Logs: () => <svg data-testid="icon-logs" />,
+  Blocks: () => <svg data-testid="icon-blocks" />,
+  MonitorCog: () => <svg data-testid="icon-monitor-cog" />,
+  // StreamConnectionCard-specific icons
   ChevronDown: () => <svg data-testid="icon-chevron-down" />,
   ChevronRight: () => <svg data-testid="icon-chevron-right" />,
   CirclePlay: () => <svg data-testid="icon-circle-play" />,
@@ -149,7 +168,6 @@ vi.mock('lucide-react', () => ({
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
   Users: () => <svg data-testid="icon-users" />,
-  Video: () => <svg data-testid="icon-video" />,
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────
@@ -264,13 +282,17 @@ describe('StreamConnectionCard', () => {
   describe('route guard', () => {
     it('renders nothing when pathname is not /stats', () => {
       setupLocation('/dashboard');
-      const { container } = render(<StreamConnectionCard {...defaultProps()} />);
+      const { container } = render(
+        <StreamConnectionCard {...defaultProps()} />
+      );
       expect(container.firstChild).toBeNull();
     });
 
     it('renders nothing when pathname is /channels', () => {
       setupLocation('/channels');
-      const { container } = render(<StreamConnectionCard {...defaultProps()} />);
+      const { container } = render(
+        <StreamConnectionCard {...defaultProps()} />
+      );
       expect(container.firstChild).toBeNull();
     });
 
@@ -337,7 +359,9 @@ describe('StreamConnectionCard', () => {
       vi.mocked(getStreamsByIds).mockResolvedValue([]);
       render(
         <StreamConnectionCard
-          {...defaultProps({ channel: makeChannel({ name: '', stream_id: null }) })}
+          {...defaultProps({
+            channel: makeChannel({ name: '', stream_id: null }),
+          })}
         />
       );
       expect(screen.getByText('Unnamed Channel')).toBeInTheDocument();
@@ -465,7 +489,9 @@ describe('StreamConnectionCard', () => {
 
   describe('current program', () => {
     it('does not render program section when currentProgram is null', () => {
-      render(<StreamConnectionCard {...defaultProps({ currentProgram: null })} />);
+      render(
+        <StreamConnectionCard {...defaultProps({ currentProgram: null })} />
+      );
       expect(screen.queryByText('Now Playing:')).not.toBeInTheDocument();
     });
 
@@ -493,7 +519,9 @@ describe('StreamConnectionCard', () => {
           {...defaultProps({ currentProgram: makeCurrentProgram() })}
         />
       );
-      expect(screen.queryByText('Daily news broadcast.')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Daily news broadcast.')
+      ).not.toBeInTheDocument();
     });
 
     it('expands program description when chevron button is clicked', () => {
@@ -502,7 +530,9 @@ describe('StreamConnectionCard', () => {
           {...defaultProps({ currentProgram: makeCurrentProgram() })}
         />
       );
-      const chevronBtn = screen.getByTestId('icon-chevron-right').closest('button');
+      const chevronBtn = screen
+        .getByTestId('icon-chevron-right')
+        .closest('button');
       fireEvent.click(chevronBtn);
       expect(screen.getByText('Daily news broadcast.')).toBeInTheDocument();
     });
@@ -513,12 +543,18 @@ describe('StreamConnectionCard', () => {
           {...defaultProps({ currentProgram: makeCurrentProgram() })}
         />
       );
-      const chevronBtn = screen.getByTestId('icon-chevron-right').closest('button');
+      const chevronBtn = screen
+        .getByTestId('icon-chevron-right')
+        .closest('button');
       fireEvent.click(chevronBtn);
       expect(screen.getByText('Daily news broadcast.')).toBeInTheDocument();
-      const chevronDownBtn = screen.getByTestId('icon-chevron-down').closest('button');
+      const chevronDownBtn = screen
+        .getByTestId('icon-chevron-down')
+        .closest('button');
       fireEvent.click(chevronDownBtn);
-      expect(screen.queryByText('Daily news broadcast.')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Daily news broadcast.')
+      ).not.toBeInTheDocument();
     });
 
     it('renders program progress when expanded and times are present', () => {
@@ -527,7 +563,9 @@ describe('StreamConnectionCard', () => {
           {...defaultProps({ currentProgram: makeCurrentProgram() })}
         />
       );
-      const chevronBtn = screen.getByTestId('icon-chevron-right').closest('button');
+      const chevronBtn = screen
+        .getByTestId('icon-chevron-right')
+        .closest('button');
       fireEvent.click(chevronBtn);
       expect(screen.getByTestId('progress')).toBeInTheDocument();
     });
@@ -536,11 +574,16 @@ describe('StreamConnectionCard', () => {
       render(
         <StreamConnectionCard
           {...defaultProps({
-            currentProgram: makeCurrentProgram({ start_time: null, end_time: null }),
+            currentProgram: makeCurrentProgram({
+              start_time: null,
+              end_time: null,
+            }),
           })}
         />
       );
-      const chevronBtn = screen.getByTestId('icon-chevron-right').closest('button');
+      const chevronBtn = screen
+        .getByTestId('icon-chevron-right')
+        .closest('button');
       fireEvent.click(chevronBtn);
       expect(screen.queryByTestId('progress')).not.toBeInTheDocument();
     });
@@ -570,9 +613,8 @@ describe('StreamConnectionCard', () => {
         { id: 11, name: 'Stream B', url: 'http://b.com', m3u_profile: null },
       ]);
       // Provide options via getStreamOptions mock
-      const { getStreamOptions } = await import(
-        '../../../utils/cards/StreamConnectionCardUtils.js'
-        );
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
       vi.mocked(getStreamOptions).mockReturnValue([
         { value: '10', label: 'Stream A' },
         { value: '11', label: 'Stream B' },
@@ -585,7 +627,12 @@ describe('StreamConnectionCard', () => {
 
     it('sets activeStreamId when a matching stream is found by URL', async () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
-        { id: 42, name: 'Stream A', url: 'http://stream.example.com/ch1', m3u_profile: null },
+        {
+          id: 42,
+          name: 'Stream A',
+          url: 'http://stream.example.com/ch1',
+          m3u_profile: null,
+        },
       ]);
       vi.mocked(getMatchingStreamByUrl).mockReturnValue({
         id: 42,
@@ -614,11 +661,15 @@ describe('StreamConnectionCard', () => {
   describe('stream switching', () => {
     beforeEach(async () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
-        { id: 10, name: 'Stream A', url: 'http://a.com', m3u_profile: { name: 'M3U A' } },
+        {
+          id: 10,
+          name: 'Stream A',
+          url: 'http://a.com',
+          m3u_profile: { name: 'M3U A' },
+        },
       ]);
-      const { getStreamOptions } = await import(
-        '../../../utils/cards/StreamConnectionCardUtils.js'
-        );
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
       vi.mocked(getStreamOptions).mockReturnValue([
         { value: '10', label: 'Stream A' },
       ]);
@@ -633,7 +684,9 @@ describe('StreamConnectionCard', () => {
       vi.mocked(switchStream).mockResolvedValue({});
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => screen.getByTestId('select'));
-      fireEvent.change(screen.getByTestId('select'), { target: { value: '10' } });
+      fireEvent.change(screen.getByTestId('select'), {
+        target: { value: '10' },
+      });
       await waitFor(() => {
         expect(switchStream).toHaveBeenCalledWith(
           expect.objectContaining({ channel_id: 'ch-uuid-1' }),
@@ -646,7 +699,9 @@ describe('StreamConnectionCard', () => {
       vi.mocked(switchStream).mockResolvedValue({});
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => screen.getByTestId('select'));
-      fireEvent.change(screen.getByTestId('select'), { target: { value: '10' } });
+      fireEvent.change(screen.getByTestId('select'), {
+        target: { value: '10' },
+      });
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ color: 'blue.5' })
@@ -658,7 +713,9 @@ describe('StreamConnectionCard', () => {
       vi.mocked(switchStream).mockRejectedValue(new Error('Switch failed'));
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => screen.getByTestId('select'));
-      fireEvent.change(screen.getByTestId('select'), { target: { value: '10' } });
+      fireEvent.change(screen.getByTestId('select'), {
+        target: { value: '10' },
+      });
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
           expect.objectContaining({ color: 'red.5' })
@@ -672,7 +729,9 @@ describe('StreamConnectionCard', () => {
       });
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => screen.getByTestId('select'));
-      fireEvent.change(screen.getByTestId('select'), { target: { value: '10' } });
+      fireEvent.change(screen.getByTestId('select'), {
+        target: { value: '10' },
+      });
       await waitFor(() => {
         expect(screen.getByText('Updated M3U')).toBeInTheDocument();
       });
@@ -686,7 +745,9 @@ describe('StreamConnectionCard', () => {
       vi.mocked(getChannelStreams).mockResolvedValue([]);
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => {
-        expect(screen.queryByTestId('icon-circle-play')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('icon-circle-play')
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -694,10 +755,11 @@ describe('StreamConnectionCard', () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
         { id: 10, name: 'Stream A', url: 'http://a.com', m3u_profile: null },
       ]);
-      const { getStreamOptions } = await import(
-        '../../../utils/cards/StreamConnectionCardUtils.js'
-        );
-      vi.mocked(getStreamOptions).mockReturnValue([{ value: '10', label: 'Stream A' }]);
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
+      vi.mocked(getStreamOptions).mockReturnValue([
+        { value: '10', label: 'Stream A' },
+      ]);
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => {
         expect(screen.getByTestId('icon-circle-play')).toBeInTheDocument();
@@ -712,10 +774,11 @@ describe('StreamConnectionCard', () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
         { id: 10, name: 'Stream A', url: 'http://a.com', m3u_profile: null },
       ]);
-      const { getStreamOptions } = await import(
-        '../../../utils/cards/StreamConnectionCardUtils.js'
-        );
-      vi.mocked(getStreamOptions).mockReturnValue([{ value: '10', label: 'Stream A' }]);
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
+      vi.mocked(getStreamOptions).mockReturnValue([
+        { value: '10', label: 'Stream A' },
+      ]);
 
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => screen.getByTestId('icon-circle-play'));
@@ -738,10 +801,11 @@ describe('StreamConnectionCard', () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
         { id: 10, name: 'Stream A', url: 'http://a.com', m3u_profile: null },
       ]);
-      const { getStreamOptions } = await import(
-        '../../../utils/cards/StreamConnectionCardUtils.js'
-        );
-      vi.mocked(getStreamOptions).mockReturnValue([{ value: '10', label: 'Stream A' }]);
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
+      vi.mocked(getStreamOptions).mockReturnValue([
+        { value: '10', label: 'Stream A' },
+      ]);
 
       render(
         <StreamConnectionCard {...defaultProps({ channelsByUUID: {} })} />

@@ -1,51 +1,19 @@
 // Modal.js
-import React, { useState, useEffect, forwardRef } from 'react';
-import * as Yup from 'yup';
+import React, { useState, useEffect } from 'react';
 import API from '../../api';
-import M3UProfiles from './M3UProfiles';
 import {
   LoadingOverlay,
-  TextInput,
   Button,
-  Checkbox,
   Modal,
   Flex,
-  NativeSelect,
-  FileInput,
-  Select,
-  Space,
-  Chip,
   Stack,
-  Group,
-  Center,
-  SimpleGrid,
-  Text,
-  NumberInput,
-  Divider,
-  Alert,
-  Box,
-  MultiSelect,
-  Tooltip,
   Tabs,
 } from '@mantine/core';
-import { Info } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useVODStore from '../../store/useVODStore';
-import { CircleCheck, CircleX } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
 import LiveGroupFilter from './LiveGroupFilter';
 import VODCategoryFilter from './VODCategoryFilter';
-
-// Custom item component for MultiSelect with tooltip
-const OptionWithTooltip = forwardRef(
-  ({ label, description, ...others }, ref) => (
-    <Tooltip label={description} withArrow>
-      <div ref={ref} {...others}>
-        {label}
-      </div>
-    </Tooltip>
-  )
-);
 
 const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);

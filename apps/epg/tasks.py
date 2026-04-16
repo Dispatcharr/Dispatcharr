@@ -2,6 +2,7 @@
 
 import logging
 import gzip
+import html.entities
 import os
 import uuid
 import requests
@@ -15,7 +16,7 @@ import zipfile
 
 from celery import shared_task
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from apps.channels.models import Channel
 from core.models import UserAgent, CoreSettings
@@ -27,6 +28,103 @@ from .models import EPGSource, EPGData, ProgramData
 from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
+
+# DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
+# entities so lxml/libxml2 can resolve references like &eacute; correctly
+# instead of silently dropping them in recovery mode.
+# The 5 XML-predefined entities (amp, lt, gt, quot, apos) are always
+# recognised by the XML spec and must not be redeclared.
+_XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
+
+
+def _build_html_entity_doctype() -> bytes:
+    """Build a DOCTYPE internal subset declaring all HTML 4 named entities."""
+    lines = [b'<!DOCTYPE tv [\n']
+    for name, codepoint in sorted(html.entities.name2codepoint.items()):
+        if name not in _XML_ENTITIES:
+            # Numeric character references are always valid XML regardless of codepoint.
+            lines.append(f'<!ENTITY {name} "&#x{codepoint:X};">\n'.encode('ascii'))
+    lines.append(b']>\n')
+    return b''.join(lines)
+
+
+_HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
+
+
+class _PrependStream:
+    """Wraps an open binary file and prepends a bytes prefix to its content.
+
+    Used by _open_xmltv_file to inject a DOCTYPE entity block before the
+    file content reaches lxml's iterparse, with zero disk I/O.
+    """
+
+    __slots__ = ('_prefix', '_prefix_pos', '_file')
+
+    def __init__(self, prefix: bytes, file_obj):
+        self._prefix = prefix
+        self._prefix_pos = 0
+        self._file = file_obj
+
+    def read(self, size=-1):
+        prefix_len = len(self._prefix)
+        if self._prefix_pos >= prefix_len:
+            return self._file.read(size)
+        remaining = prefix_len - self._prefix_pos
+        if size < 0:
+            chunk = self._prefix[self._prefix_pos:] + self._file.read()
+            self._prefix_pos = prefix_len
+            return chunk
+        if size <= remaining:
+            chunk = self._prefix[self._prefix_pos:self._prefix_pos + size]
+            self._prefix_pos += size
+            return chunk
+        chunk = self._prefix[self._prefix_pos:]
+        self._prefix_pos = prefix_len
+        return chunk + self._file.read(size - remaining)
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def _open_xmltv_file(file_path: str):
+    """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
+
+    Prepends a <!DOCTYPE tv [...]> block that declares all 252 HTML 4 named
+    entities so lxml/libxml2 resolves references like &eacute; correctly
+    instead of silently dropping them in recovery mode.  This involves zero
+    disk I/O — the DOCTYPE is streamed in-memory before the file content.
+
+    If the file already contains a <!DOCTYPE> declaration the file is returned
+    unchanged; a second DOCTYPE would be invalid XML.
+
+    The caller is responsible for closing the returned object.
+    """
+    f = open(file_path, 'rb')
+    start = f.read(512)
+
+    # Do not inject if the file already declares a DOCTYPE.
+    if b'<!DOCTYPE' in start or b'<!doctype' in start.lower():
+        f.seek(0)
+        return f
+
+    # Insert the DOCTYPE after the XML declaration if one is present.
+    stripped = start.lstrip(b'\xef\xbb\xbf').lstrip()
+    if stripped.startswith(b'<?xml'):
+        decl_end = start.find(b'?>')
+        if decl_end >= 0:
+            xml_decl = start[:decl_end + 2]
+            f.seek(decl_end + 2)
+            return _PrependStream(xml_decl + b'\n' + _HTML_ENTITY_DOCTYPE, f)
+
+    # No XML declaration — insert DOCTYPE at the very start of the file.
+    f.seek(0)
+    return _PrependStream(_HTML_ENTITY_DOCTYPE, f)
 
 
 def validate_icon_url_fast(icon_url, max_length=None):
@@ -146,7 +244,7 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task(time_limit=1800, soft_time_limit=1700)
+@shared_task(time_limit=14400)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
@@ -397,42 +495,41 @@ def fetch_xmltv(source):
 
             # Download to temporary file
             with open(temp_download_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=16384):  # Increased chunk size for better performance
-                    if chunk:
-                        f.write(chunk)
+                for chunk in response.iter_content(chunk_size=16384):
+                    f.write(chunk)
 
-                        downloaded += len(chunk)
-                        elapsed_time = time.time() - start_time
+                    downloaded += len(chunk)
+                    elapsed_time = time.time() - start_time
 
-                        # Calculate download speed in KB/s
-                        speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
+                    # Calculate download speed in KB/s
+                    speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-                        # Calculate progress percentage
-                        if total_size and total_size > 0:
-                            progress = min(100, int((downloaded / total_size) * 100))
-                        else:
-                            # If no content length header, estimate progress
-                            progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
+                    # Calculate progress percentage
+                    if total_size and total_size > 0:
+                        progress = min(100, int((downloaded / total_size) * 100))
+                    else:
+                        # If no content length header, estimate progress
+                        progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
 
-                        # Time remaining (in seconds)
-                        time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
+                    # Time remaining (in seconds)
+                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
 
-                        # Only send updates at specified intervals to avoid flooding
-                        current_time = time.time()
-                        if current_time - last_update_time >= update_interval and progress > 0:
-                            last_update_time = current_time
-                            send_epg_update(
-                                source.id,
-                                "downloading",
-                                progress,
-                                speed=round(speed, 2),
-                                elapsed_time=round(elapsed_time, 1),
-                                time_remaining=round(time_remaining, 1),
-                                downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
-                            )
+                    # Only send updates at specified intervals to avoid flooding
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval and progress > 0:
+                        last_update_time = current_time
+                        send_epg_update(
+                            source.id,
+                            "downloading",
+                            progress,
+                            speed=round(speed, 2),
+                            elapsed_time=round(elapsed_time, 1),
+                            time_remaining=round(time_remaining, 1),
+                            downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
+                        )
 
-                        # Explicitly delete the chunk to free memory immediately
-                        del chunk
+                    # Explicitly delete the chunk to free memory immediately
+                    del chunk
 
             # Send completion notification
             send_epg_update(source.id, "downloading", 100)
@@ -526,6 +623,7 @@ def fetch_xmltv(source):
             source.save(update_fields=['status'])
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
+
             return True
 
     except requests.exceptions.HTTPError as e:
@@ -888,7 +986,7 @@ def parse_channels_only(source):
 
             # Open the file - no need to check file type since it's always XML now
             logger.debug(f"Opening file for channel parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             if process:
                 logger.debug(f"[parse_channels_only] Memory after opening file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -1271,7 +1369,7 @@ def parse_programs_for_tvg_id(epg_id):
         try:
             # Open the file directly - no need to check compression
             logger.debug(f"Opening file for parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
@@ -1544,7 +1642,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
         try:
             logger.debug(f"Opening file for single-pass parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
@@ -1657,6 +1755,10 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         batch_size = 1000
         try:
             with transaction.atomic():
+                # Kill any individual statement that hangs longer than 10 minutes.
+                # SET LOCAL automatically resets when this transaction ends (commit or rollback).
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '10min'")
                 # Delete existing programs for mapped EPGs
                 deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
                 logger.debug(f"Deleted {deleted_count} existing programs")

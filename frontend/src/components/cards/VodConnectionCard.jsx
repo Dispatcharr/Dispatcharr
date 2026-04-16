@@ -1,5 +1,5 @@
 // Format duration for content length
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import logo from '../../images/logo.png';
 import {
   ActionIcon,
@@ -38,6 +38,7 @@ import {
   getMovieDisplayTitle,
   getMovieSubtitle,
 } from '../../utils/cards/VodConnectionCardUtils.js';
+import useUsersStore from '../../store/users.jsx';
 
 const ClientDetails = ({ connection, connectionStartTime }) => {
   return (
@@ -142,7 +143,10 @@ const ClientDetails = ({ connection, connectionStartTime }) => {
 };
 
 const ConnectionProgress = ({ connection, durationSecs }) => {
-  const { totalTime, currentTime, percentage } = calculateProgress(connection, durationSecs);
+  const { totalTime, currentTime, percentage } = calculateProgress(
+    connection,
+    durationSecs
+  );
   return totalTime > 0 ? (
     <Stack gap="xs" mt="sm">
       <Group justify="space-between" align="center">
@@ -172,6 +176,14 @@ const ConnectionProgress = ({ connection, durationSecs }) => {
 const VodConnectionCard = ({ vodContent, stopVODClient }) => {
   const { fullDateTimeFormat } = useDateTimeFormat();
   const [isClientExpanded, setIsClientExpanded] = useState(false);
+  const users = useUsersStore((s) => s.users);
+  const usersMap = useMemo(() => {
+    const map = {};
+    users.forEach((u) => {
+      map[String(u.id)] = u.username;
+    });
+    return map;
+  }, [users]);
   const [, setUpdateTrigger] = useState(0); // Force re-renders for progress updates
 
   // Get metadata from the VOD content
@@ -377,13 +389,12 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
         </Group>
 
         {/* Progress bar - show current position in content */}
-        {connection &&
-          metadata.duration_secs &&
+        {connection && metadata.duration_secs && (
           <ConnectionProgress
             connection={connection}
             durationSecs={metadata.duration_secs}
           />
-        }
+        )}
 
         {/* Client information section - collapsible like channel cards */}
         {connection && (
@@ -403,11 +414,21 @@ const VodConnectionCard = ({ vodContent, stopVODClient }) => {
             >
               <Group gap={8}>
                 <Text size="sm" fw={500} color="dimmed">
-                  Client:
+                  Client IP:
                 </Text>
                 <Text size="sm" ff={'monospace'}>
                   {connection.client_ip || 'Unknown IP'}
                 </Text>
+                {usersMap[String(connection.user_id)] && (
+                  <>
+                    <Text size="sm" c="dimmed">
+                      User:
+                    </Text>
+                    <Text size="sm">
+                      {usersMap[String(connection.user_id)]}
+                    </Text>
+                  </>
+                )}
               </Group>
 
               <Group gap={8}>

@@ -19,6 +19,7 @@ from rapidfuzz import fuzz
 from apps.channels.models import Channel
 from apps.epg.models import EPGData
 from core.models import CoreSettings
+from core.utils import acquire_task_lock, release_task_lock
 
 from django.db import OperationalError, close_old_connections
 from channels.layers import get_channel_layer
@@ -1070,12 +1071,39 @@ def match_single_channel_epg(channel_id):
 
 def evaluate_series_rules_impl(tvg_id: str | None = None):
     """Synchronous implementation of series rule evaluation; returns details for debugging."""
+    result = {"scheduled": 0, "details": []}
+
+    # Serialize all invocations to prevent concurrent evaluations from
+    # racing to create duplicate recordings (e.g. multiple EPG sources
+    # refreshing simultaneously each firing evaluate_series_rules.delay()).
+    # If Redis is unavailable, proceed without lock — the primary and
+    # secondary dedup guards still prevent duplicates.
+    lock_acquired = False
+    try:
+        lock_acquired = acquire_task_lock('evaluate_series_rules', 'all')
+        if not lock_acquired:
+            result["details"].append({"status": "skipped", "reason": "concurrent evaluation in progress"})
+            return result
+    except (ConnectionError, OSError, AttributeError):
+        logger.warning("Could not acquire series rule evaluation lock (Redis unavailable), proceeding without lock")
+
+    try:
+        return _evaluate_series_rules_locked(tvg_id, result)
+    finally:
+        if lock_acquired:
+            try:
+                release_task_lock('evaluate_series_rules', 'all')
+            except (ConnectionError, OSError, AttributeError):
+                logger.warning("Could not release series rule evaluation lock")
+
+
+def _evaluate_series_rules_locked(tvg_id, result):
+    """Inner implementation of series rule evaluation, called under lock."""
     from django.utils import timezone
     from apps.channels.models import Recording, Channel
     from apps.epg.models import EPGData, ProgramData
 
     rules = CoreSettings.get_dvr_series_rules()
-    result = {"scheduled": 0, "details": []}
     if not isinstance(rules, list) or not rules:
         return result
 
@@ -1089,14 +1117,23 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
     now = timezone.now()
     horizon = now + timedelta(days=7)
 
-    # Preload existing recordings' program ids to avoid duplicates
-    existing_program_ids = set()
-    for rec in Recording.objects.all().only("custom_properties"):
+    # Preload existing recordings keyed by stable program attributes that
+    # survive EPG refreshes (tvg_id + original start/end times stored in
+    # custom_properties).  ProgramData.id changes on every EPG refresh so
+    # it cannot be used for deduplication.  Only load future recordings
+    # to bound the set size — past recordings cannot collide with newly
+    # scheduled future programs.
+    existing_program_keys = set()
+    for cp in Recording.objects.filter(
+        end_time__gte=now,
+    ).values_list("custom_properties", flat=True):
         try:
-            pid = rec.custom_properties.get("program", {}).get("id") if rec.custom_properties else None
-            if pid is not None:
-                # Normalize to string for consistent comparisons
-                existing_program_ids.add(str(pid))
+            prog_data = (cp or {}).get("program", {})
+            tvg_id_val = prog_data.get("tvg_id")
+            st = prog_data.get("start_time")
+            et = prog_data.get("end_time")
+            if tvg_id_val and st and et:
+                existing_program_keys.add((str(tvg_id_val), str(st), str(et)))
         except Exception:
             continue
 
@@ -1191,17 +1228,21 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
         created_here = 0
         for prog in unique_programs:
             try:
-                # Skip if already scheduled by program id
-                if str(prog.id) in existing_program_ids:
+                # Skip if a recording already exists for this exact airing
+                # (keyed by tvg_id + original program times, which are stable
+                # across EPG refreshes unlike ProgramData.id).
+                prog_key = (str(prog.tvg_id), prog.start_time.isoformat(), prog.end_time.isoformat())
+                if prog_key in existing_program_keys:
                     continue
-                # Extra guard: skip if a recording exists for the same channel + timeslot
+                # Extra guard: DB query using the same stable attributes
+                # stored in custom_properties (unadjusted program times,
+                # not offset-adjusted Recording.start_time/end_time).
                 try:
-                    from django.db.models import Q
                     if Recording.objects.filter(
-                        channel=channel,
-                        start_time=prog.start_time,
-                        end_time=prog.end_time,
-                    ).filter(Q(custom_properties__program__id=prog.id) | Q(custom_properties__program__title=prog.title)).exists():
+                        custom_properties__program__tvg_id=prog.tvg_id,
+                        custom_properties__program__start_time=prog.start_time.isoformat(),
+                        custom_properties__program__end_time=prog.end_time.isoformat(),
+                    ).exists():
                         continue
                 except Exception:
                     continue  # already scheduled/recorded
@@ -1245,7 +1286,7 @@ def evaluate_series_rules_impl(tvg_id: str | None = None):
                         }
                     },
                 )
-                existing_program_ids.add(str(prog.id))
+                existing_program_keys.add(prog_key)
                 created_here += 1
                 try:
                     prefetch_recording_artwork.apply_async(args=[rec.id], countdown=1)
@@ -2452,15 +2493,12 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 metadata_key = RedisKeys.channel_metadata(str(channel.uuid))
                 md = r.hgetall(metadata_key)
                 if md:
-                    def _gv(bkey):
-                        return md.get(bkey.encode('utf-8'))
-
                     def _d(bkey, cast=str):
-                        v = _gv(bkey)
+                        v = md.get(bkey)
                         try:
                             if v is None:
                                 return None
-                            s = v.decode('utf-8')
+                            s = v
                             return cast(s) if cast is not str else s
                         except Exception:
                             return None

@@ -131,7 +131,8 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('')).toBe('Invalid CIDR range');
+      // Empty values are allowed — defaults are substituted on submit
+      expect(validator('')).toBe(null);
     });
 
     it('should return empty object when NETWORK_ACCESS_OPTIONS is empty', () => {

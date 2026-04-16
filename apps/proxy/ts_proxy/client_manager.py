@@ -1,10 +1,8 @@
 """Client connection management for TS streams"""
 
 import threading
-import logging
 import time
 import json
-import gevent
 from typing import Set, Optional
 from apps.proxy.config import TSConfig as Config
 from redis.exceptions import ConnectionError, TimeoutError
@@ -58,7 +56,8 @@ class ClientManager:
             from django.conf import settings
 
             redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True, **ssl_params)
             all_channels = []
             cursor = 0
 
@@ -129,7 +128,7 @@ class ClientManager:
                             # Check for stale activity using last_active field
                             last_active = self.redis_client.hget(client_key, "last_active")
                             if last_active:
-                                last_active_time = float(last_active.decode('utf-8'))
+                                last_active_time = float(last_active)
                                 ghost_timeout = self.heartbeat_interval * getattr(Config, 'GHOST_CLIENT_MULTIPLIER', 5.0)
 
                                 if current_time - last_active_time > ghost_timeout:
@@ -229,7 +228,7 @@ class ClientManager:
         except Exception as e:
             logger.error(f"Error notifying owner of client activity: {e}")
 
-    def add_client(self, client_id, client_ip, user_agent=None):
+    def add_client(self, client_id, client_ip, user_agent=None, user=None):
         """Add a client with duplicate prevention"""
         if client_id in self._registered_clients:
             logger.debug(f"Client {client_id} already registered, skipping")
@@ -247,7 +246,9 @@ class ClientManager:
             "ip_address": client_ip,
             "connected_at": current_time,
             "last_active": current_time,
-            "worker_id": self.worker_id or "unknown"
+            "worker_id": self.worker_id or "unknown",
+            "user_id": str(user.id) if user is not None else "0",
+            # "user_level": user.user_level if user is not None else 100, # default to a high value since no user means the non-user specific M3U/HDHR
         }
 
         try:
@@ -277,7 +278,8 @@ class ClientManager:
                         "channel_id": self.channel_id,
                         "client_id": client_id,
                         "worker_id": self.worker_id or "unknown",
-                        "timestamp": time.time()
+                        "timestamp": time.time(),
+                        "username": user.username if user is not None else "unknown"
                     }
 
                     if user_agent:
@@ -308,8 +310,6 @@ class ClientManager:
 
     def remove_client(self, client_id):
         """Remove a client from this channel and Redis"""
-        client_ip = None
-
         with self.lock:
             if client_id in self.clients:
                 self.clients.remove(client_id)
@@ -320,13 +320,11 @@ class ClientManager:
             self.last_active_time = time.time()
 
             if self.redis_client:
-                # Get client IP before removing the data
+                # Get client data before removing the data
                 client_key = f"ts_proxy:channel:{self.channel_id}:clients:{client_id}"
-                client_data = self.redis_client.hgetall(client_key)
-                if client_data and b'ip_address' in client_data:
-                    client_ip = client_data[b'ip_address'].decode('utf-8')
-                elif client_data and 'ip_address' in client_data:
-                    client_ip = client_data['ip_address']
+                client_username = self.redis_client.hget(client_key, "username") or "unknown"
+                if isinstance(client_username, bytes):
+                    client_username = client_username.decode("utf-8")
 
                 # Remove from channel's client set
                 self.redis_client.srem(self.client_set_key, client_id)
@@ -367,7 +365,8 @@ class ClientManager:
                         "client_id": client_id,
                         "worker_id": self.worker_id or "unknown",
                         "timestamp": time.time(),
-                        "remaining_clients": remaining
+                        "remaining_clients": remaining,
+                        "username": client_username
                     })
                     self.redis_client.publish(RedisKeys.events_channel(self.channel_id), event_data)
 
@@ -434,8 +433,7 @@ class ClientManager:
         client_id_list = list(client_ids)
         pipe = redis_client.pipeline()
         for cid in client_id_list:
-            cid_str = cid.decode('utf-8')
-            pipe.exists(RedisKeys.client_metadata(channel_id, cid_str))
+            pipe.exists(RedisKeys.client_metadata(channel_id, cid))
         results = pipe.execute()
 
         stale_ids = [

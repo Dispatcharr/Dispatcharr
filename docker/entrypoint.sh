@@ -30,7 +30,14 @@ echo_with_timestamp() {
 # Set PostgreSQL environment variables
 export POSTGRES_DB=${POSTGRES_DB:-dispatcharr}
 export POSTGRES_USER=${POSTGRES_USER:-dispatch}
-export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secret}
+# AIO mode: default to 'secret' for internal DB.
+# Modular mode + TLS: no default — cert-only auth (mTLS) uses no password.
+# Modular mode + no TLS: preserve 'secret' default for backward compatibility.
+if [[ "${DISPATCHARR_ENV:-}" == "modular" && "${POSTGRES_SSL:-}" == "true" ]]; then
+    export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+else
+    export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-secret}"
+fi
 export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
 export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
@@ -96,6 +103,20 @@ echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 # Also make the log level available in /etc/environment for all login shells
 #grep -q "DISPATCHARR_LOG_LEVEL" /etc/environment || echo "DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL}" >> /etc/environment
 
+# Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
+# env vars. Called once before any external PostgreSQL connection; all child
+# processes (psql, pg_dump, pg_isready, createdb, dropdb) inherit these
+# automatically. No-op when POSTGRES_SSL is not "true".
+setup_pg_ssl_env() {
+    if [ "${POSTGRES_SSL:-false}" != "true" ]; then
+        return 0
+    fi
+    export PGSSLMODE="${POSTGRES_SSL_MODE:-verify-full}"
+    if [ -n "${POSTGRES_SSL_CA_CERT:-}" ]; then export PGSSLROOTCERT="$POSTGRES_SSL_CA_CERT"; fi
+    if [ -n "${POSTGRES_SSL_CERT:-}" ];    then export PGSSLCERT="$POSTGRES_SSL_CERT"; fi
+    if [ -n "${POSTGRES_SSL_KEY:-}" ];     then export PGSSLKEY="$POSTGRES_SSL_KEY"; fi
+}
+
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
@@ -111,6 +132,14 @@ variables=(
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
 )
+
+# TLS variables are optional — only propagate when set to avoid noisy warnings
+for _tls_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
+                REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY; do
+    if [ -n "${!_tls_var+x}" ]; then
+        variables+=("$_tls_var")
+    fi
+done
 
 # Truncate files before rewriting
 > /etc/profile.d/dispatcharr.sh
@@ -145,6 +174,22 @@ fi
 # Run init scripts
 echo "Starting user setup..."
 . /app/docker/init/01-user-setup.sh
+
+# Fix TLS client key permissions/ownership BEFORE any external PG connections.
+# Must run after 01-user-setup.sh (user exists for chown) and before
+# 02-postgres.sh / pg_isready (which make the first external PG connections).
+FIXED_KEY_PATH="/data/.pg-client.key"
+. /app/docker/init/00-fix-pg-ssl-key.sh
+# Propagate the fixed path to login shells (su - strips env vars)
+if [ "${POSTGRES_SSL_KEY:-}" = "$FIXED_KEY_PATH" ]; then
+    sed -i "/^POSTGRES_SSL_KEY=/d" /etc/environment
+    echo "POSTGRES_SSL_KEY='$FIXED_KEY_PATH'" >> /etc/environment
+    sed -i "s|export POSTGRES_SSL_KEY=.*|export POSTGRES_SSL_KEY='$FIXED_KEY_PATH'|" /etc/profile.d/dispatcharr.sh
+fi
+
+# Export libpq TLS env vars so all subsequent psql/pg_dump/pg_isready calls
+# (in 02-postgres.sh, modular-mode checks, etc.) use TLS automatically.
+setup_pg_ssl_env
 
 # Initialize PostgreSQL (script handles modular vs internal mode internally)
 echo "Setting up PostgreSQL..."

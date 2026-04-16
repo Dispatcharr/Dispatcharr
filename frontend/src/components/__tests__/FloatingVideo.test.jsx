@@ -150,6 +150,10 @@ describe('FloatingVideo', () => {
           type: 'mpegts',
           url: 'http://example.com/stream.ts',
           isLive: true,
+        }),
+        expect.objectContaining({
+          enableWorker: true,
+          enableStashBuffer: false,
         })
       );
     });

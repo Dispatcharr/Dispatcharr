@@ -26,6 +26,7 @@ vi.mock('../../utils', () => ({
 
 // Mock lucide-react icons
 vi.mock('lucide-react', () => ({
+  ListOrdered: () => <div data-testid="icon-list-ordered" />,
   Play: () => <div data-testid="play-icon" />,
   Copy: () => <div data-testid="copy-icon" />,
 }));
@@ -40,27 +41,60 @@ vi.mock('@mantine/core', async () => {
       if (!opened) return null;
       return (
         <div data-testid="modal" data-title={title} data-size={size}>
-          <button onClick={onClose} data-testid="modal-close">Close</button>
+          <button onClick={onClose} data-testid="modal-close">
+            Close
+          </button>
           <div>{children}</div>
         </div>
       );
     },
-    Box: ({ children, ...props }) => <div data-testid="box" {...props}>{children}</div>,
+    Box: ({ children, ...props }) => (
+      <div data-testid="box" {...props}>
+        {children}
+      </div>
+    ),
     Button: ({ children, onClick, disabled, ...props }) => (
-      <button onClick={onClick} disabled={disabled} data-testid="button" {...props}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        data-testid="button"
+        {...props}
+      >
         {children}
       </button>
     ),
-    Flex: ({ children, ...props }) => <div data-testid="flex" {...props}>{children}</div>,
-    Group: ({ children, ...props }) => <div data-testid="group" {...props}>{children}</div>,
+    Flex: ({ children, ...props }) => (
+      <div data-testid="flex" {...props}>
+        {children}
+      </div>
+    ),
+    Group: ({ children, ...props }) => (
+      <div data-testid="group" {...props}>
+        {children}
+      </div>
+    ),
     Image: ({ src, alt, ...props }) => (
       <img src={src} alt={alt} data-testid="image" {...props} />
     ),
-    Text: ({ children, ...props }) => <div data-testid="text" {...props}>{children}</div>,
-    Title: ({ children, order, ...props }) => (
-      <div data-testid="title" data-order={order} {...props}>{children}</div>
+    Text: ({ children, ...props }) => (
+      <div data-testid="text" {...props}>
+        {children}
+      </div>
     ),
-    Select: ({ value, onChange, data, label, placeholder, disabled, ...props }) => (
+    Title: ({ children, order, ...props }) => (
+      <div data-testid="title" data-order={order} {...props}>
+        {children}
+      </div>
+    ),
+    Select: ({
+      value,
+      onChange,
+      data,
+      label,
+      placeholder,
+      disabled,
+      ...props
+    }) => (
       <div data-testid="select" data-label={label}>
         <select
           value={value || ''}
@@ -77,39 +111,76 @@ vi.mock('@mantine/core', async () => {
         </select>
       </div>
     ),
-    Badge: ({ children, ...props }) => <a data-testid="badge" {...props}>{children}</a>,
+    Badge: ({ children, ...props }) => (
+      <a data-testid="badge" {...props}>
+        {children}
+      </a>
+    ),
     Loader: (props) => <div data-testid="loader" {...props} />,
-    Stack: ({ children, ...props }) => <div data-testid="stack" {...props}>{children}</div>,
+    Stack: ({ children, ...props }) => (
+      <div data-testid="stack" {...props}>
+        {children}
+      </div>
+    ),
     ActionIcon: ({ children, onClick, disabled, ...props }) => (
-      <button onClick={onClick} disabled={disabled} data-testid="action-icon" {...props}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        data-testid="action-icon"
+        {...props}
+      >
         {children}
       </button>
     ),
     Tabs: ({ children, value, onChange, ...props }) => (
       <div data-testid="tabs" data-value={value} {...props}>
-        <div onClick={(e) => {
-          const tab = e.target.closest('[data-tab-value]');
-          if (tab) onChange?.(tab.dataset.tabValue);
-        }}>
+        <div
+          onClick={(e) => {
+            const tab = e.target.closest('[data-tab-value]');
+            if (tab) onChange?.(tab.dataset.tabValue);
+          }}
+        >
           {children}
         </div>
       </div>
     ),
     TabsList: ({ children }) => <div data-testid="tabs-list">{children}</div>,
     TabsTab: ({ children, value }) => (
-      <button data-testid="tabs-tab" data-tab-value={value}>{children}</button>
+      <button data-testid="tabs-tab" data-tab-value={value}>
+        {children}
+      </button>
     ),
     TabsPanel: ({ children, value }) => (
-      <div data-testid="tabs-panel" data-value={value}>{children}</div>
+      <div data-testid="tabs-panel" data-value={value}>
+        {children}
+      </div>
     ),
-    Table: ({ children, ...props }) => <table data-testid="table" {...props}>{children}</table>,
-    TableThead: ({ children }) => <thead data-testid="table-thead">{children}</thead>,
-    TableTbody: ({ children }) => <tbody data-testid="table-tbody">{children}</tbody>,
+    Table: ({ children, ...props }) => (
+      <table data-testid="table" {...props}>
+        {children}
+      </table>
+    ),
+    TableThead: ({ children }) => (
+      <thead data-testid="table-thead">{children}</thead>
+    ),
+    TableTbody: ({ children }) => (
+      <tbody data-testid="table-tbody">{children}</tbody>
+    ),
     TableTr: ({ children, onClick, ...props }) => (
-      <tr onClick={onClick} data-testid="table-tr" {...props}>{children}</tr>
+      <tr onClick={onClick} data-testid="table-tr" {...props}>
+        {children}
+      </tr>
     ),
-    TableTh: ({ children, ...props }) => <th data-testid="table-th" {...props}>{children}</th>,
-    TableTd: ({ children, ...props }) => <td data-testid="table-td" {...props}>{children}</td>,
+    TableTh: ({ children, ...props }) => (
+      <th data-testid="table-th" {...props}>
+        {children}
+      </th>
+    ),
+    TableTd: ({ children, ...props }) => (
+      <td data-testid="table-td" {...props}>
+        {children}
+      </td>
+    ),
     Divider: (props) => <hr data-testid="divider" {...props} />,
   };
 });
@@ -168,7 +239,7 @@ describe('SeriesModal', () => {
       m3u_account: { name: 'Provider 2' },
       stream_name: 'Test Series 720p',
       quality_info: null,
-    }
+    },
   ];
 
   beforeEach(() => {
@@ -187,9 +258,15 @@ describe('SeriesModal', () => {
       environment: { env_mode: 'prod' },
     };
 
-    useVODStore.mockImplementation((selector) => selector ? selector(mockVODStore) : mockVODStore);
-    useVideoStore.mockImplementation((selector) => selector ? selector(mockVideoStore) : mockVideoStore);
-    useSettingsStore.mockImplementation((selector) => selector ? selector(mockSettingsStore) : mockSettingsStore);
+    useVODStore.mockImplementation((selector) =>
+      selector ? selector(mockVODStore) : mockVODStore
+    );
+    useVideoStore.mockImplementation((selector) =>
+      selector ? selector(mockVideoStore) : mockVideoStore
+    );
+    useSettingsStore.mockImplementation((selector) =>
+      selector ? selector(mockSettingsStore) : mockSettingsStore
+    );
 
     copyToClipboard.mockResolvedValue(undefined);
   });
@@ -325,23 +402,37 @@ describe('SeriesModal', () => {
 
     it('should display IMDB link when imdb_id exists', async () => {
       render(
-        <SeriesModal series={mockDetailedSeries} opened={true} onClose={vi.fn()} />
+        <SeriesModal
+          series={mockDetailedSeries}
+          opened={true}
+          onClose={vi.fn()}
+        />
       );
 
       await waitFor(() => {
         const link = screen.getByText(/IMDB/i).closest('a');
-        expect(link).toHaveAttribute('href', 'https://www.imdb.com/title/tt1234567');
+        expect(link).toHaveAttribute(
+          'href',
+          'https://www.imdb.com/title/tt1234567'
+        );
       });
     });
 
     it('should display TMDB link when tmdb_id exists', async () => {
       render(
-        <SeriesModal series={mockDetailedSeries} opened={true} onClose={vi.fn()} />
+        <SeriesModal
+          series={mockDetailedSeries}
+          opened={true}
+          onClose={vi.fn()}
+        />
       );
 
       await waitFor(() => {
         const link = screen.getByText(/TMDB/i).closest('a');
-        expect(link).toHaveAttribute('href', 'https://www.themoviedb.org/tv/12345');
+        expect(link).toHaveAttribute(
+          'href',
+          'https://www.themoviedb.org/tv/12345'
+        );
       });
     });
   });
@@ -446,7 +537,12 @@ describe('SeriesModal', () => {
     });
 
     it('should sort episodes by episode number', async () => {
-      const episode2 = { ...mockEpisode, id: 2, episode_number: 2, name: 'Second Episode' };
+      const episode2 = {
+        ...mockEpisode,
+        id: 2,
+        episode_number: 2,
+        name: 'Second Episode',
+      };
       mockVODStore.fetchSeriesInfo.mockResolvedValue({
         ...mockDetailedSeries,
         episodesList: [episode2, mockEpisode],
@@ -592,7 +688,12 @@ describe('SeriesModal', () => {
 
   describe('Season Tabs', () => {
     it('should create tabs for each season', async () => {
-      const season2Episode = { ...mockEpisode, id: 2, season_number: 2, episode_num: 1 };
+      const season2Episode = {
+        ...mockEpisode,
+        id: 2,
+        season_number: 2,
+        episode_num: 1,
+      };
       mockVODStore.fetchSeriesInfo.mockResolvedValue({
         ...mockDetailedSeries,
         episodesList: [mockEpisode, season2Episode],
@@ -669,7 +770,6 @@ describe('SeriesModal', () => {
       render(
         <SeriesModal series={mockSeries} opened={true} onClose={vi.fn()} />
       );
-
 
       await waitFor(() => {
         expect(screen.getByText(/Provider 1 - 1080p/)).toBeInTheDocument();
@@ -797,7 +897,7 @@ describe('SeriesModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Test Account')).toBeInTheDocument()
+        expect(screen.getByText('Test Account')).toBeInTheDocument();
       });
     });
   });

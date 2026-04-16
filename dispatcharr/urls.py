@@ -6,7 +6,7 @@ from django.views.generic import TemplateView, RedirectView
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.ts_proxy.views import stream_xc
-from apps.output.views import xc_movie_stream, xc_series_stream
+from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
 
 urlpatterns = [
     # API Routes
@@ -44,13 +44,13 @@ urlpatterns = [
     # XC VOD endpoints
     path(
         "movie/<str:username>/<str:password>/<str:stream_id>.<str:extension>",
-        xc_movie_stream,
-        name="xc_movie_stream",
+        stream_xc_movie,
+        name="stream_xc_movie",
     ),
     path(
         "series/<str:username>/<str:password>/<str:stream_id>.<str:extension>",
-        xc_series_stream,
-        name="xc_series_stream",
+        stream_xc_episode,
+        name="stream_xc_episode",
     ),
     # Admin
     path("admin", RedirectView.as_view(url="/admin/", permanent=True)),

@@ -52,8 +52,8 @@ class HTTPStreamReader:
 
             # Create session
             self.session = requests.Session()
-
-            # Configure HTTP proxy if provided
+            
+            # Configure proxy if provided
             if self.proxy:
                 logger.info(f"Configuring HTTP proxy: {self.proxy}")
                 self.session.proxies = {

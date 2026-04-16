@@ -24,6 +24,9 @@ import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
 import UiSettingsForm from '../components/forms/settings/UiSettingsForm.jsx';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
+const UserLimitsForm = React.lazy(
+  () => import('../components/forms/settings/UserLimitsForm.jsx')
+);
 const NetworkAccessForm = React.lazy(
   () => import('../components/forms/settings/NetworkAccessForm.jsx')
 );
@@ -196,6 +199,19 @@ const SettingsPage = () => {
                   <ErrorBoundary>
                     <Suspense fallback={<Loader />}>
                       <BackupManager active={accordianValue === 'backups'} />
+                    </Suspense>
+                  </ErrorBoundary>
+                </AccordionPanel>
+              </AccordionItem>
+
+              <AccordionItem value="user-limits">
+                <AccordionControl>User Limits</AccordionControl>
+                <AccordionPanel>
+                  <ErrorBoundary>
+                    <Suspense fallback={<Loader />}>
+                      <UserLimitsForm
+                        active={accordianValue === 'user-limits'}
+                      />
                     </Suspense>
                   </ErrorBoundary>
                 </AccordionPanel>

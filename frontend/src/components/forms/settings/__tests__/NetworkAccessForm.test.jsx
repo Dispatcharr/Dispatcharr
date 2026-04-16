@@ -313,10 +313,10 @@ describe('NetworkAccessForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('alert')).toBeInTheDocument();
-        expect(screen.getByTestId('alert-title')).toHaveTextContent(
-          'Saved Successfully'
-        );
+        const alertTitles = screen.getAllByTestId('alert-title');
+        expect(
+          alertTitles.some((el) => el.textContent === 'Saved Successfully')
+        ).toBe(true);
       });
     });
 
@@ -399,9 +399,10 @@ describe('NetworkAccessForm', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('alert-title')).toHaveTextContent(
-          'Saved Successfully'
-        );
+        const alertTitles = screen.getAllByTestId('alert-title');
+        expect(
+          alertTitles.some((el) => el.textContent === 'Saved Successfully')
+        ).toBe(true);
       });
     });
   });

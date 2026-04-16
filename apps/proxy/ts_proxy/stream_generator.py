@@ -25,7 +25,7 @@ class StreamGenerator:
     data delivery, and cleanup.
     """
 
-    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False):
+    def __init__(self, channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
         """
         Initialize the stream generator with client and channel details.
 
@@ -35,12 +35,14 @@ class StreamGenerator:
             client_ip: Client's IP address
             client_user_agent: User agent string from client
             channel_initializing: Whether the channel is still initializing
+            user: Authenticated user making the request
         """
         self.channel_id = channel_id
         self.client_id = client_id
         self.client_ip = client_ip
         self.client_user_agent = client_user_agent
         self.channel_initializing = channel_initializing
+        self.user = user
 
         # Performance and state tracking
         self.stream_start_time = time.time()
@@ -112,7 +114,8 @@ class StreamGenerator:
                     channel_name=channel_obj.name,
                     client_ip=self.client_ip,
                     client_id=self.client_id,
-                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None
+                    user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
+                    username=self.user.username if self.user else None
                 )
             except Exception as e:
                 logger.error(f"Could not log client connect event: {e}")
@@ -141,13 +144,13 @@ class StreamGenerator:
                 metadata_key = RedisKeys.channel_metadata(self.channel_id)
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
 
-                if metadata and b'state' in metadata:
-                    state = metadata[b'state'].decode('utf-8')
+                if metadata and 'state' in metadata:
+                    state = metadata['state']
                     if state in ['waiting_for_clients', 'active']:
                         logger.info(f"[{self.client_id}] Channel {self.channel_id} now ready (state={state})")
                         return True
                     elif state in ['error', 'stopped', 'stopping']:  # Added 'stopping' to error states
-                        error_message = metadata.get(b'error_message', b'Unknown error').decode('utf-8')
+                        error_message = metadata.get('error_message', 'Unknown error')
                         logger.error(f"[{self.client_id}] Channel {self.channel_id} in error state: {state}, message: {error_message}")
                         # Send error packet before giving up
                         yield create_ts_packet('error', f"Error: {error_message}")
@@ -155,9 +158,9 @@ class StreamGenerator:
                     else:
                         # Improved logging to track initialization progress
                         init_time = "unknown"
-                        if b'init_time' in metadata:
+                        if 'init_time' in metadata:
                             try:
-                                init_time_float = float(metadata[b'init_time'].decode('utf-8'))
+                                init_time_float = float(metadata['init_time'])
                                 init_duration = time.time() - init_time_float
                                 init_time = f"{init_duration:.1f}s ago"
                             except:
@@ -390,8 +393,8 @@ class StreamGenerator:
         # Channel state in metadata
         metadata_key = RedisKeys.channel_metadata(self.channel_id)
         metadata = proxy_server.redis_client.hgetall(metadata_key)
-        if metadata and b'state' in metadata:
-            state = metadata[b'state'].decode('utf-8')
+        if metadata and 'state' in metadata:
+            state = metadata['state']
             if state in ['error', 'stopped', 'stopping']:
                 logger.info(f"[{self.client_id}] Channel in {state} state, terminating stream")
                 return False
@@ -555,8 +558,6 @@ class StreamGenerator:
                 if metadata:
                     stream_id_bytes = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
                     if stream_id_bytes:
-                        stream_id = int(stream_id_bytes.decode('utf-8'))
-
                         # Check if we're the last client
                         if self.channel_id in proxy_server.client_managers:
                             client_count = proxy_server.client_managers[self.channel_id].get_total_client_count()
@@ -595,7 +596,8 @@ class StreamGenerator:
                     client_id=self.client_id,
                     user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
                     duration=round(elapsed, 2),
-                    bytes_sent=self.bytes_sent
+                    bytes_sent=self.bytes_sent,
+                    username=self.user.username if self.user else None
                 )
             except Exception as e:
                 logger.error(f"Could not log client disconnect event: {e}")
@@ -630,10 +632,10 @@ class StreamGenerator:
 
             gevent.spawn(delayed_shutdown)
 
-def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False):
+def create_stream_generator(channel_id, client_id, client_ip, client_user_agent, channel_initializing=False, user=None):
     """
     Factory function to create a new stream generator.
     Returns a function that can be passed to StreamingHttpResponse.
     """
-    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing)
+    generator = StreamGenerator(channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user)
     return generator.generate

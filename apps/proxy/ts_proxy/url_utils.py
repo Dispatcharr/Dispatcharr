@@ -3,7 +3,7 @@ Utilities for handling stream URLs and transformations.
 """
 
 import logging
-import re
+import regex
 from typing import Optional, Tuple, List
 from django.shortcuts import get_object_or_404
 from apps.channels.models import Channel, Stream
@@ -146,13 +146,14 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         logger.debug(f"  base URL: {input_url}")
         logger.debug(f"  search: {search_pattern}")
 
-        # Handle backreferences in the replacement pattern
-        safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', replace_pattern)
+        # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
+        safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
+        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
         logger.debug(f"  replace: {replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
 
-        # Apply the transformation
-        stream_url = re.sub(search_pattern, safe_replace_pattern, input_url)
+        # Apply the transformation (regex module accepts JS-style (?<name>...) natively)
+        stream_url = regex.sub(search_pattern, safe_replace_pattern, input_url)
         logger.info(f"Generated stream url: {stream_url}")
 
         return stream_url
@@ -211,9 +212,9 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
                     existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                     if existing_stream_id:
                         # Decode bytes to string/int for proper Redis key lookup
-                        existing_stream_id = existing_stream_id.decode('utf-8')
+                        existing_stream_id = existing_stream_id
                         existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
-                        if existing_profile_id and int(existing_profile_id.decode('utf-8')) == profile.id:
+                        if existing_profile_id and int(existing_profile_id) == profile.id:
                             channel_using_profile = True
                             logger.debug(f"Channel {channel.id} already using profile {profile.id}")
 
@@ -276,9 +277,57 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
 
+def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
+    """
+    Get stream information for a specific stream/profile combination.
+    
+    Args:
+        channel_id: The UUID of the channel
+        stream_id: The stream ID to use
+        m3u_profile_id: The profile ID to use
+        
+    Returns:
+        dict: Stream information including URL, user agent, transcode flag
+    """
+    try:
+        from core.utils import RedisClient
+        
+        channel = get_object_or_404(Channel, uuid=channel_id)
+        redis_client = RedisClient.get_client()
+        
+        # Get the stream and profile objects
+        stream = get_object_or_404(Stream, pk=stream_id)
+        profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
+        
+        # Get the M3U account
+        m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
+        
+        # Get the user agent
+        user_agent = m3u_account.get_user_agent().user_agent
+        
+        # Generate URL using the transform function
+        stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
+        
+        # Get transcode info from the channel's stream profile
+        stream_profile = channel.get_stream_profile()
+        transcode = not (stream_profile.is_proxy() or stream_profile is None)
+        profile_value = stream_profile.id
+        
+        return {
+            'url': stream_url,
+            'user_agent': user_agent,
+            'transcode': transcode,
+            'stream_profile': profile_value,
+            'stream_id': stream_id,
+            'm3u_profile_id': m3u_profile_id
+        }
+    except Exception as e:
+        logger.error(f"Error getting stream info for profile: {e}", exc_info=True)
+        return {'error': f'Error: {str(e)}'}
+
 def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None, current_profile_id: Optional[int] = None) -> List[dict]:
     """
-    Get alternative streams/profiles for a channel when the current stream fails.
+    Get alternative streams for a channel when the current stream fails.
     Includes profile failover: returns all available profiles for each stream.
 
     Args:
@@ -287,7 +336,7 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         current_profile_id: The currently failing profile ID to exclude
 
     Returns:
-        List[dict]: List of stream/profile combinations with stream_id and profile_id
+        List[dict]: List of stream information dictionaries with stream_id and profile_id
     """
     try:
         from core.utils import RedisClient
@@ -355,9 +404,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                         existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                         if existing_stream_id:
                             # Decode bytes to string/int for proper Redis key lookup
-                            existing_stream_id = existing_stream_id.decode('utf-8')
+                            existing_stream_id = existing_stream_id
                             existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
-                            if existing_profile_id and int(existing_profile_id.decode('utf-8')) == profile.id:
+                            if existing_profile_id and int(existing_profile_id) == profile.id:
                                 channel_using_profile = True
                                 logger.debug(f"Channel {channel.id} already using profile {profile.id}")
 
@@ -371,9 +420,10 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                                 'profile_id': profile.id,
                                 'name': stream.name
                             })
-                            logger.debug(f"Added stream {stream.id} with profile {profile.id}: {effective_connections}/{profile.max_streams}")
+                            logger.debug(f"Found available profile {profile.id} for stream {stream.id}: {effective_connections}/{profile.max_streams} effective (current: {current_connections}, already using: {channel_using_profile})")
+                            # NO BREAK - continue to check all profiles
                         else:
-                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams}")
+                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams} (current: {current_connections}, already using: {channel_using_profile})")
                     else:
                         # No Redis available, add all profiles
                         alternate_streams.append({
@@ -381,14 +431,15 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                             'profile_id': profile.id,
                             'name': stream.name
                         })
+                        # NO BREAK - continue to check all profiles
 
             except Exception as inner_e:
                 logger.error(f"Error finding profiles for stream {stream.id}: {inner_e}")
                 continue
 
         if alternate_streams:
-            entries = ', '.join([f"{s['stream_id']}:{s['profile_id']}" for s in alternate_streams])
-            logger.info(f"Found {len(alternate_streams)} alternate stream/profile combinations for channel {channel_id}: [{entries}]")
+            stream_ids = ', '.join([str(s['stream_id']) for s in alternate_streams])
+            logger.info(f"Found {len(alternate_streams)} alternate streams with available connections for channel {channel_id}: [{stream_ids}]")
         else:
             logger.warning(f"No alternate streams with available connections found for channel {channel_id}")
 
@@ -566,51 +617,3 @@ def get_connections_left(m3u_profile_id: int) -> int:
     except Exception as e:
         logger.error(f"Error getting connections left for M3U profile {m3u_profile_id}: {e}")
         return 0
-
-def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
-    """
-    Build URL/User-Agent/Transcode for a fixed combination of Stream + M3U profile.
-    Return schema compatible with get_stream_info_for_switch(...).
-    
-    Args:
-        channel_id: The UUID of the channel
-        stream_id: The ID of the stream
-        m3u_profile_id: The ID of the M3U profile
-    
-    Returns:
-        dict: Stream information including URL, user agent, transcode flag, etc.
-    """
-    try:
-        channel = get_stream_object(channel_id)
-        if isinstance(channel, Stream):
-            logger.error(f"get_stream_info_for_profile: {channel_id} refers to a Stream, not a Channel")
-            return {"error": "Invalid channel ID"}
-        
-        stream = get_object_or_404(Stream, pk=stream_id)
-        m3u_profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
-        
-        m3u_account = m3u_profile.m3u_account
-        
-        # Get the user agent from the M3U account
-        user_agent = m3u_account.get_user_agent().user_agent
-        
-        # Generate URL using the specific profile's transformation
-        input_url = stream.url
-        stream_url = transform_url(input_url, m3u_profile.search_pattern, m3u_profile.replace_pattern)
-        
-        # Get transcode info from the channel's stream profile
-        stream_profile = channel.get_stream_profile()
-        transcode = not (stream_profile.is_proxy() or stream_profile is None)
-        profile_value = stream_profile.id
-        
-        return {
-            'url': stream_url,
-            'user_agent': user_agent,
-            'transcode': transcode,
-            'stream_profile': profile_value,
-            'stream_id': stream_id,
-            'm3u_profile_id': m3u_profile_id
-        }
-    except Exception as e:
-        logger.error(f"Error in get_stream_info_for_profile: {e}", exc_info=True)
-        return {'error': f'Error: {str(e)}'}

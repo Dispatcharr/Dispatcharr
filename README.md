@@ -146,14 +146,6 @@ A huge thank you to all the incredible open-source projects and libraries that p
 
 ---
 
-## ⚖️ License
-
-> Dispatcharr is licensed under **GNU AGPL v3.0**:
-
-For full license details, see [LICENSE](https://www.gnu.org/licenses/agpl-3.0.html).
-
----
-
 ## ✉️ Connect With Us
 
 Have a question? Want to suggest a feature? Just want to say hi?\
@@ -161,8 +153,27 @@ Have a question? Want to suggest a feature? Just want to say hi?\
 
 ---
 
+## 💖 Support Dispatcharr
+
+[![Dispatcharr Open Collective](https://opencollective.com/dispatcharr/tiers/badge.svg)](https://opencollective.com/dispatcharr/contribute)
+
+Open Collective provides a transparent way for anyone who finds value in Dispatcharr to support things like:
+• Infrastructure costs (Domains, Servers, etc.)
+• Apple Developer Program and Google Play Developer accounts
+• Helping contributors dedicate more time to improving the project
+
+Support is completely optional, and Dispatcharr will always remain free and open-source.
+
+[Contribute here](https://opencollective.com/dispatcharr/contribute)
+
+---
+
+## ⚖️ License & Legal
+
+Dispatcharr is licensed under **GNU AGPL v3.0**: For full license details, see [LICENSE](https://www.gnu.org/licenses/agpl-3.0.html).
+
+Dispatcharr is a trademark of the Dispatcharr project. Use of the Dispatcharr name or logo requires permission from the maintainers.
+
+---
+
 ### 🚀 _Happy Streaming! The Dispatcharr Team_
-
-Dispatcharr is a trademark of the Dispatcharr project.
-
-Use of the Dispatcharr name or logo requires permission from the maintainers.

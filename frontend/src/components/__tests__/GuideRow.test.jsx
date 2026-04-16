@@ -6,7 +6,7 @@ import {
   CHANNEL_WIDTH,
   HOUR_WIDTH,
   PROGRAM_HEIGHT,
-} from '../../pages/guideUtils';
+} from '../../utils/guideUtils';
 
 // Mock logo import
 vi.mock('../../images/logo.png', () => ({

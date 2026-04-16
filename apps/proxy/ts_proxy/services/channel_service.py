@@ -40,28 +40,33 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
-        # FIXED: First, ensure that Redis metadata including stream_id is set BEFORE channel initialization
-        # This ensures the stream ID is available when the StreamManager looks it up
+        # FIXED: First, ensure that Redis metadata including stream_id AND m3u_profile_id is set BEFORE channel initialization
+        # This ensures both IDs are available when the StreamManager looks them up
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
             if proxy_server.redis_client.exists(metadata_key):
-                # Just update the existing metadata with stream_id
-                proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
-                logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
+                # Update the existing metadata with stream_id and profile_id
+                update = {ChannelMetadataField.STREAM_ID: str(stream_id)}
+                if m3u_profile_id:
+                    update[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+                proxy_server.redis_client.hset(metadata_key, mapping=update)
+                logger.info(f"Pre-set stream ID {stream_id} and profile ID {m3u_profile_id} in Redis for channel {channel_id}")
             else:
                 # Create initial metadata with essential values
                 initial_metadata = {
                     ChannelMetadataField.STREAM_ID: str(stream_id),
                     "temp_init": str(time.time())
                 }
+                if m3u_profile_id:
+                    initial_metadata[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
                 proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
-                logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
+                logger.info(f"Created initial metadata with stream_id {stream_id} and profile_id {m3u_profile_id} for channel {channel_id}")
 
             # Verify the stream_id was set
             stream_id_value = proxy_server.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
             if stream_id_value:
-                logger.debug(f"Verified stream_id {stream_id_value.decode('utf-8')} is now set in Redis")
+                logger.debug(f"Verified stream_id {stream_id_value} is now set in Redis")
             else:
                 logger.error(f"Failed to set stream_id {stream_id} in Redis before initialization")
 
@@ -131,7 +136,7 @@ class ChannelService:
             try:
                 # This is inefficient but used for diagnostics - in production would use more targeted checks
                 redis_keys = proxy_server.redis_client.keys(f"ts_proxy:*:{channel_id}*")
-                redis_keys = [k.decode('utf-8') for k in redis_keys] if redis_keys else []
+                redis_keys = [k for k in redis_keys] if redis_keys else []
             except Exception as e:
                 logger.error(f"Error checking Redis keys: {e}")
 
@@ -236,8 +241,8 @@ class ChannelService:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             try:
                 metadata = proxy_server.redis_client.hgetall(metadata_key)
-                if metadata and b'state' in metadata:
-                    state = metadata[b'state'].decode('utf-8')
+                if metadata and 'state' in metadata:
+                    state = metadata['state']
                     channel_info = {"state": state}
 
                     # Immediately mark as stopping in metadata so clients detect it faster
@@ -382,8 +387,8 @@ class ChannelService:
             metadata = proxy_server.redis_client.hgetall(metadata_key)
 
             # Extract state and owner
-            state = metadata.get(ChannelMetadataField.STATE.encode(), b'unknown').decode('utf-8')
-            owner = metadata.get(ChannelMetadataField.OWNER.encode(), b'unknown').decode('utf-8')
+            state = metadata.get(ChannelMetadataField.STATE, 'unknown')
+            owner = metadata.get(ChannelMetadataField.OWNER, 'unknown')
 
             # Valid states indicate channel is running properly
             valid_states = [ChannelState.ACTIVE, ChannelState.WAITING_FOR_CLIENTS, ChannelState.CONNECTING]
@@ -409,7 +414,7 @@ class ChannelService:
             }
 
             if last_data:
-                last_data_time = float(last_data.decode('utf-8'))
+                last_data_time = float(last_data)
                 data_age = time.time() - last_data_time
                 details["last_data_age"] = data_age
 
@@ -432,13 +437,13 @@ class ChannelService:
         try:
             # Use factory to parse the line based on stream type
             parsed_data = LogParserFactory.parse(stream_type, stream_info_line)
-            
+
             if not parsed_data:
                 return
 
             # Update Redis and database with parsed data
             ChannelService._update_stream_info_in_redis(
-                channel_id, 
+                channel_id,
                 parsed_data.get('video_codec'),
                 parsed_data.get('resolution'),
                 parsed_data.get('width'),
@@ -579,7 +584,7 @@ class ChannelService:
         metadata_key = RedisKeys.channel_metadata(channel_id)
 
         # First check if the key exists and what type it is
-        key_type = proxy_server.redis_client.type(metadata_key).decode('utf-8')
+        key_type = proxy_server.redis_client.type(metadata_key)
         logger.debug(f"Redis key {metadata_key} is of type: {key_type}")
 
         # Build metadata update dict

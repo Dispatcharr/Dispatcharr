@@ -19,7 +19,7 @@ Diese Version portiert 6 kritische Verbesserungen von v0.20.1 nach v0.21.1 mit k
 - **Lösung:** Timeout von (3,5) auf (10,15) Sekunden erhöht
 - **Dateien:** `apps/channels/api_views.py`, `apps/channels/tasks.py`
 
-### 2. Basic Authentication ✅
+### 2. gi ✅
 - **Problem:** Keine Authentifizierung für M3U/EPG Endpoints
 - **Lösung:** HTTP Basic Auth Support hinzugefügt
 - **Dateien:** `apps/output/views.py`

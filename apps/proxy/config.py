@@ -146,66 +146,6 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return settings.get("channel_init_grace_period", 5)
 
-    @classmethod
-    def get_chunk_timeout(cls):
-        """Get chunk timeout from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("chunk_timeout", 5)
-
-    @classmethod
-    def get_new_client_behind_seconds(cls):
-        """Get new client behind seconds from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("new_client_behind_seconds", 5)
-
-    @classmethod
-    def get_initial_behind_chunks(cls):
-        """Get initial behind chunks from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("initial_behind_chunks", 4)
-
-    @classmethod
-    def get_chunk_batch_size(cls):
-        """Get chunk batch size from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("chunk_batch_size", 5)
-
-    @classmethod
-    def get_health_check_interval(cls):
-        """Get health check interval from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("health_check_interval", 5)
-
-    @classmethod
-    def get_max_retries(cls):
-        """Get max retries from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("max_retries", 2)
-
-    @classmethod
-    def get_url_switch_timeout(cls):
-        """Get URL switch timeout from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("url_switch_timeout", 20)
-
-    @classmethod
-    def get_max_stream_switches(cls):
-        """Get max stream switches from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("max_stream_switches", 200)
-
-    @classmethod
-    def get_connection_timeout(cls):
-        """Get connection timeout from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("connection_timeout", 10)
-
-    @classmethod
-    def get_failover_grace_period(cls):
-        """Get failover grace period from database or default"""
-        settings = cls.get_proxy_settings()
-        return settings.get("failover_grace_period", 20)
-
     # Dynamic property access for these settings
     @property
     def CHANNEL_SHUTDOWN_DELAY(self):
@@ -222,26 +162,6 @@ class TSConfig(BaseConfig):
     @property
     def CHANNEL_INIT_GRACE_PERIOD(self):
         return self.get_channel_init_grace_period()
-
-    @property
-    def CHUNK_TIMEOUT(self):
-        return self.get_chunk_timeout()
-
-    @property
-    def NEW_CLIENT_BEHIND_SECONDS(self):
-        return self.get_new_client_behind_seconds()
-
-    @property
-    def INITIAL_BEHIND_CHUNKS(self):
-        return self.get_initial_behind_chunks()
-
-    @property
-    def CHUNK_BATCH_SIZE(self):
-        return self.get_chunk_batch_size()
-
-    @property
-    def HEALTH_CHECK_INTERVAL(self):
-        return self.get_health_check_interval()
 
 
 
