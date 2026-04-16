@@ -1060,3 +1060,143 @@ class Migration(migrations.Migration):
 # 3. docker restart dispatcharr
 #
 ################################################################################
+
+
+################################################################################
+# FEATURE 4b: Extended Timeout Configuration - Frontend UI
+################################################################################
+
+--- a/frontend/src/constants.js
++++ b/frontend/src/constants.js
+@@ PROXY_SETTINGS_OPTIONS
+   new_client_behind_seconds: {
+     label: 'New Client Buffer (seconds)',
+     description:
+       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
+   },
++  max_retries: {
++    label: 'Max Retries',
++    description: 'Maximum number of retry attempts before switching streams',
++  },
++  url_switch_timeout: {
++    label: 'URL Switch Timeout (seconds)',
++    description: 'Maximum time allowed for stream switching operations',
++  },
++  max_stream_switches: {
++    label: 'Max Stream Switches',
++    description: 'Maximum number of stream/profile combinations to try before giving up',
++  },
++  connection_timeout: {
++    label: 'Connection Timeout (seconds)',
++    description: 'Maximum time to wait for initial connection to a stream',
++  },
++  failover_grace_period: {
++    label: 'Failover Grace Period (seconds)',
++    description: 'Grace period after stream switch before applying normal health checks',
++  },
++  chunk_timeout: {
++    label: 'Chunk Timeout (seconds)',
++    description: 'Maximum time to wait for a single chunk before considering stream unhealthy',
++  },
++  initial_behind_chunks: {
++    label: 'Initial Behind Chunks',
++    description: 'Number of chunks to buffer before starting playback',
++  },
++  chunk_batch_size: {
++    label: 'Chunk Batch Size',
++    description: 'Number of chunks to process in a single batch',
++  },
++  health_check_interval: {
++    label: 'Health Check Interval (seconds)',
++    description: 'Interval between stream health checks',
++  },
+ };
+
+--- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
++++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
+@@ isNumericField
+     return [
+       'buffering_timeout',
+       'redis_chunk_ttl',
+       'channel_shutdown_delay',
+       'channel_init_grace_period',
+       'new_client_behind_seconds',
++      'max_retries',
++      'url_switch_timeout',
++      'max_stream_switches',
++      'connection_timeout',
++      'failover_grace_period',
++      'chunk_timeout',
++      'initial_behind_chunks',
++      'chunk_batch_size',
++      'health_check_interval',
+     ].includes(key);
+
+@@ getNumericFieldMax
+          ? 300
+          : key === 'new_client_behind_seconds'
+            ? 120
++            : key === 'max_retries'
++              ? 10
++              : key === 'url_switch_timeout'
++                ? 60
++                : key === 'max_stream_switches'
++                  ? 500
++                  : key === 'connection_timeout'
++                    ? 60
++                    : key === 'failover_grace_period'
++                      ? 60
++                      : key === 'chunk_timeout'
++                        ? 30
++                        : key === 'initial_behind_chunks'
++                          ? 20
++                          : key === 'chunk_batch_size'
++                            ? 20
++                            : key === 'health_check_interval'
++                              ? 30
+                               : 60;
+
+--- a/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
++++ b/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
+@@ getProxySettingDefaults
+     channel_shutdown_delay: 0,
+     channel_init_grace_period: 5,
+     new_client_behind_seconds: 5,
++    max_retries: 2,
++    url_switch_timeout: 20,
++    max_stream_switches: 200,
++    connection_timeout: 10,
++    failover_grace_period: 20,
++    chunk_timeout: 5,
++    initial_behind_chunks: 4,
++    chunk_batch_size: 5,
++    health_check_interval: 5,
+   };
+
+################################################################################
+# UPDATED FILE COUNT
+################################################################################
+#
+# TOTAL FILES CHANGED: 16 (13 Backend + 3 Frontend)
+#
+# Backend (13):
+#   1. apps/channels/api_views.py
+#   2. apps/channels/tasks.py
+#   3. apps/output/views.py
+#   4. apps/m3u/models.py
+#   5. apps/m3u/serializers.py
+#   6. core/models.py
+#   7. apps/proxy/config.py
+#   8. apps/proxy/ts_proxy/config_helper.py
+#   9. apps/proxy/ts_proxy/stream_manager.py
+#  10. apps/proxy/ts_proxy/http_streamer.py
+#  11. apps/proxy/ts_proxy/url_utils.py
+#  12. apps/proxy/ts_proxy/services/channel_service.py
+#  13. apps/m3u/migrations/0020_m3uaccount_proxy.py
+#
+# Frontend (3):
+#  14. frontend/src/constants.js
+#  15. frontend/src/components/forms/settings/ProxySettingsForm.jsx
+#  16. frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
+#
+################################################################################

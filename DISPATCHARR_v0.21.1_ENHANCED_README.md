@@ -42,7 +42,9 @@ Diese Version portiert 6 kritische Verbesserungen von v0.20.1 nach v0.21.1 mit k
 ### 4. Extended Timeout Configuration ✅
 - **Problem:** Hardcodierte Timeouts nicht konfigurierbar
 - **Lösung:** 15+ konfigurierbare Timeout-Einstellungen
-- **Dateien:** `apps/proxy/config.py`, `apps/proxy/ts_proxy/config_helper.py`
+- **Dateien:** 
+  - Backend: `apps/proxy/config.py`, `apps/proxy/ts_proxy/config_helper.py`
+  - Frontend: `constants.js`, `ProxySettingsForm.jsx`, `ProxySettingsFormUtils.js`
 - **WebUI:** ✅ Einstellungen werden in Core Settings > Proxy Settings angezeigt
 - **Einstellungen:**
   - `buffering_timeout` (Standard: 15s)
@@ -51,15 +53,15 @@ Diese Version portiert 6 kritische Verbesserungen von v0.20.1 nach v0.21.1 mit k
   - `channel_shutdown_delay` (Standard: 0s)
   - `channel_init_grace_period` (Standard: 5s)
   - `new_client_behind_seconds` (Standard: 5s)
-  - `max_retries` (Standard: 2)
-  - `url_switch_timeout` (Standard: 20s)
-  - `max_stream_switches` (Standard: 200)
-  - `connection_timeout` (Standard: 10s)
-  - `failover_grace_period` (Standard: 20s)
-  - `chunk_timeout` (Standard: 5s)
-  - `initial_behind_chunks` (Standard: 4)
-  - `chunk_batch_size` (Standard: 5)
-  - `health_check_interval` (Standard: 5s)
+  - `max_retries` (Standard: 2) ⭐ NEU
+  - `url_switch_timeout` (Standard: 20s) ⭐ NEU
+  - `max_stream_switches` (Standard: 200) ⭐ NEU
+  - `connection_timeout` (Standard: 10s) ⭐ NEU
+  - `failover_grace_period` (Standard: 20s) ⭐ NEU
+  - `chunk_timeout` (Standard: 5s) ⭐ NEU
+  - `initial_behind_chunks` (Standard: 4) ⭐ NEU
+  - `chunk_batch_size` (Standard: 5) ⭐ NEU
+  - `health_check_interval` (Standard: 5s) ⭐ NEU
 
 ### 5. Profile Failover Enhancement ✅
 - **Problem:** Nur erstes Profil pro Stream wurde versucht
@@ -113,25 +115,28 @@ docker restart dispatcharr
 ### ✅ Alle Änderungen sind WebUI-kompatibel
 
 1. **Proxy-Feld:**
-   - Automatisch im M3U Account Formular sichtbar
-   - Serializer enthält 'proxy' Feld
-   - Keine Frontend-Änderungen nötig
+   - ✅ Automatisch im M3U Account Formular sichtbar
+   - ✅ Serializer enthält 'proxy' Feld
+   - ✅ Frontend-Integration in M3U.jsx
 
 2. **Timeout-Einstellungen:**
-   - In Core Settings > Proxy Settings sichtbar
-   - JSON-Feld wird automatisch gerendert
-   - Keine Frontend-Änderungen nötig
+   - ✅ In Core Settings > Proxy Settings sichtbar
+   - ✅ 9 neue Einstellungen im Frontend hinzugefügt
+   - ✅ Vollständige UI-Integration mit Labels und Beschreibungen
+   - ✅ Default-Werte konfiguriert
+   - ✅ Validierung und Max-Werte gesetzt
 
 3. **Alle anderen Features:**
-   - Backend-only Änderungen
-   - Keine WebUI-Anpassungen erforderlich
+   - ✅ Backend-only Änderungen (Logo Timeout, Basic Auth, Adaptive Health)
+   - ✅ Keine zusätzlichen WebUI-Anpassungen erforderlich
 
 ---
 
 ## Geänderte Dateien
 
-### Total: 11 Dateien + 1 Migration
+### Total: 16 Dateien + 1 Migration
 
+**Backend (13 Dateien):**
 1. `apps/channels/api_views.py` - Logo timeout
 2. `apps/channels/tasks.py` - Logo timeout
 3. `apps/output/views.py` - Basic auth
@@ -142,10 +147,16 @@ docker restart dispatcharr
 8. `apps/proxy/ts_proxy/stream_manager.py` - Proxy, failover, adaptive
 9. `apps/proxy/ts_proxy/http_streamer.py` - Proxy support
 10. `apps/proxy/ts_proxy/url_utils.py` - Profile failover
-11. `core/models.py` - Proxy in build_command
+11. `apps/proxy/ts_proxy/services/channel_service.py` - Profile ID bugfix
+12. `core/models.py` - Proxy in build_command
+
+**Frontend (3 Dateien):**
+13. `frontend/src/constants.js` - Proxy settings options (9 neue Einstellungen)
+14. `frontend/src/components/forms/settings/ProxySettingsForm.jsx` - UI für neue Timeouts
+15. `frontend/src/utils/forms/settings/ProxySettingsFormUtils.js` - Default-Werte
 
 **Migration:**
-- `apps/m3u/migrations/0036_m3uaccount_proxy.py`
+16. `apps/m3u/migrations/0036_m3uaccount_proxy.py`
 
 ---
 
