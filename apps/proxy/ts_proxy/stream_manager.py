@@ -1747,7 +1747,35 @@ class StreamManager:
                 # Check if we have combinations but they've all been tried
                 if alternate_streams and len(self.tried_combinations) > 0:
                     logger.warning(f"All {len(alternate_streams)} alternate combinations have been tried for channel {self.channel_id}")
-                return False
+
+                # LAST RESORT: If cooldown is enabled and all combinations are blocked,
+                # clear all cooldowns for this channel and retry everything from scratch
+                if (ConfigHelper.stream_cooldown_enabled()
+                        and hasattr(self.buffer, 'redis_client')
+                        and self.buffer.redis_client
+                        and alternate_streams):
+                    cooldown_pattern = f"ts_proxy:channel:{self.channel_id}:cooldown:*"
+                    cursor = 0
+                    deleted = 0
+                    while True:
+                        cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
+                        if keys:
+                            self.buffer.redis_client.delete(*keys)
+                            deleted += len(keys)
+                        if cursor == 0:
+                            break
+                    if deleted > 0:
+                        logger.info(
+                            f"\033[31m[COOLDOWN]\033[0m Last resort: cleared {deleted} cooldown(s) for channel "
+                            f"{self.channel_id} - retrying all combinations"
+                        )
+                        # Also reset tried_combinations so everything is fresh
+                        self.tried_combinations.clear()
+                        # Retry immediately with the full list
+                        untried_combinations = alternate_streams
+
+                if not untried_combinations:
+                    return False
 
             # Try multiple combinations until we find one that works
             for next_stream in untried_combinations:

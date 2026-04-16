@@ -1600,3 +1600,55 @@ class Migration(migrations.Migration):
 
 -                    logger.info(f"[COOLDOWN] Skipped {skipped} ...")
 +                    logger.info(f"\033[31m[COOLDOWN]\033[0m Skipped {skipped} ...")
+
+################################################################################
+# FEATURE 7c: Stream Cooldown - Last Resort (alle Cooldowns löschen)
+################################################################################
+#
+# Wenn alle Kombinationen versucht wurden UND alle restlichen auf Cooldown sind,
+# werden alle Cooldown-Keys für diesen Channel gelöscht und alle Kombinationen
+# nochmal probiert. So wird verhindert dass ein Channel dauerhaft offline bleibt.
+#
+# Ablauf:
+#   1. Alle Kombinationen versucht → tried_combinations voll
+#   2. Restliche Kombinationen auf Cooldown → untried_combinations leer
+#   3. Last Resort: alle cooldown:* Keys für diesen Channel löschen
+#   4. tried_combinations.clear() → frischer Start
+#   5. Alle Kombinationen nochmal probieren
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ _try_next_stream - after all combinations exhausted @@
+-            if not untried_combinations:
+-                if alternate_streams and len(self.tried_combinations) > 0:
+-                    logger.warning(f"All {len(alternate_streams)} alternate combinations have been tried")
+-                return False
++            if not untried_combinations:
++                if alternate_streams and len(self.tried_combinations) > 0:
++                    logger.warning(f"All {len(alternate_streams)} alternate combinations have been tried")
++
++                # LAST RESORT: clear all cooldowns and retry everything
++                if (ConfigHelper.stream_cooldown_enabled()
++                        and hasattr(self.buffer, 'redis_client')
++                        and self.buffer.redis_client
++                        and alternate_streams):
++                    cooldown_pattern = f"ts_proxy:channel:{self.channel_id}:cooldown:*"
++                    cursor = 0
++                    deleted = 0
++                    while True:
++                        cursor, keys = self.buffer.redis_client.scan(cursor, match=cooldown_pattern, count=100)
++                        if keys:
++                            self.buffer.redis_client.delete(*keys)
++                            deleted += len(keys)
++                        if cursor == 0:
++                            break
++                    if deleted > 0:
++                        logger.info(
++                            f"\033[31m[COOLDOWN]\033[0m Last resort: cleared {deleted} cooldown(s) for channel "
++                            f"{self.channel_id} - retrying all combinations"
++                        )
++                        self.tried_combinations.clear()
++                        untried_combinations = alternate_streams
++
++                if not untried_combinations:
++                    return False
