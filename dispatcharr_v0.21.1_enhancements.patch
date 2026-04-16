@@ -1058,13 +1058,110 @@ class Migration(migrations.Migration):
 # □ Feature 1: Logo timeout (10, 15) in 2 files
 # □ Feature 2: Basic auth functions + integration in 2 endpoints
 # □ Feature 3: Proxy field + serializer + build_command + 2 connection methods + frontend
-# □ Feature 4: 15+ timeout settings + helper methods
-# □ Feature 5: tried_combinations + get_alternate_streams returns all profiles
+# □ Feature 4: 15+ timeout settings + helper methods (all DB-backed)
+# □ Feature 5: tried_combinations + get_alternate_streams returns all profiles (no full-stream skip)
 # □ Feature 6: last_stream_switch_time + 2 timestamp sets + adaptive thresholds
-# □ Bugfix: current_profile_id always None - profile failover never worked
+# □ Bugfix 1: current_profile_id always None - profile failover never worked
+# □ Bugfix 2: get_alternate_streams skipped entire current stream (profile failover broken)
+# □ Bugfix 3: ConfigHelper methods read class constants instead of DB values
 # □ Migration created for proxy field (idempotent)
 # □ Database backup created
 # □ All changes tested
+#
+################################################################################
+
+################################################################################
+# BUGFIX 2: Profile Failover - current stream was fully skipped
+################################################################################
+#
+# Root cause: get_alternate_streams() had a `continue` that skipped the ENTIRE
+# current stream, so other profiles on the same stream were never tried.
+#
+# Fix: Remove the full-stream skip. Only skip the specific stream+profile combo
+# (which is already handled inside the profile loop).
+
+--- a/apps/proxy/ts_proxy/url_utils.py
++++ b/apps/proxy/ts_proxy/url_utils.py
+@@ get_alternate_streams - remove full stream skip @@
+         # Process each stream in the user-defined order
+         for stream in streams:
+-            # Skip the current failing stream
+-            if current_stream_id and stream.id == current_stream_id:
+-                logger.debug(f"Skipping current stream ID {current_stream_id}")
+-                continue
++            # NOTE: Do NOT skip the current stream entirely - it may have other profiles available.
++            # The current stream+profile combination is skipped inside the profile loop below.
+
+################################################################################
+# BUGFIX 3: ConfigHelper methods read class constants instead of DB values
+################################################################################
+#
+# Root cause: Several ConfigHelper methods used ConfigHelper.get('CONSTANT', default)
+# which reads the class-level constant (e.g. MAX_RETRIES=3) instead of the DB value.
+# This meant WebUI settings had no effect on these values.
+#
+# Fix: All DB-backed methods now call Config.get_proxy_settings() directly.
+
+--- a/apps/proxy/ts_proxy/config_helper.py
++++ b/apps/proxy/ts_proxy/config_helper.py
+@@ Replace class-constant reads with DB reads @@
+
+-    def connection_timeout():
+-        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
++    def connection_timeout():
++        settings = Config.get_proxy_settings()
++        return settings.get("connection_timeout", 10)
+
+-    def max_retries():
+-        return ConfigHelper.get('MAX_RETRIES', 3)
++    def max_retries():
++        settings = Config.get_proxy_settings()
++        return settings.get("max_retries", 2)
+
+-    def max_stream_switches():
+-        return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)
++    def max_stream_switches():
++        settings = Config.get_proxy_settings()
++        return settings.get("max_stream_switches", 200)
+
+-    def url_switch_timeout():
+-        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 20)
++    def url_switch_timeout():
++        settings = Config.get_proxy_settings()
++        return settings.get("url_switch_timeout", 20)
+
+-    def failover_grace_period():
+-        return ConfigHelper.get('FAILOVER_GRACE_PERIOD', 20)
++    def failover_grace_period():
++        settings = Config.get_proxy_settings()
++        return settings.get("failover_grace_period", 20)
+
+-    def initial_behind_chunks():
+-        return ConfigHelper.get('INITIAL_BEHIND_CHUNKS', 4)
++    def initial_behind_chunks():
++        settings = Config.get_proxy_settings()
++        return settings.get("initial_behind_chunks", 4)
+
+-    def chunk_timeout():
+-        return ConfigHelper.get('CHUNK_TIMEOUT', 5)
++    def chunk_timeout():
++        settings = Config.get_proxy_settings()
++        return settings.get("chunk_timeout", 5)
+
+# New methods (add if not present):
++    def chunk_batch_size():
++        settings = Config.get_proxy_settings()
++        return settings.get("chunk_batch_size", 5)
+
++    def health_check_interval():
++        settings = Config.get_proxy_settings()
++        return settings.get("health_check_interval", 5)
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ health_check_interval init @@
+-        self.health_check_interval = ConfigHelper.get('HEALTH_CHECK_INTERVAL', 5)
++        self.health_check_interval = ConfigHelper.health_check_interval()
 #
 ################################################################################
 # SUPPORT
