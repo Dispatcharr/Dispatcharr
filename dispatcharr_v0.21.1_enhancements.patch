@@ -1377,66 +1377,95 @@ class Migration(migrations.Migration):
                                  continue
 
 ################################################################################
-# FEATURE 7: Stream Cooldown
+# FEATURE 7: Stream Cooldown (per Channel, Redis-backed)
 ################################################################################
 #
-# Failed stream/profile combinations are stored in Redis with a TTL.
-# Survives channel restarts. Configurable per-channel, time in minutes.
-# Can be enabled/disabled via WebUI (Core Settings > Proxy Settings).
+# KONZEPT:
+# Wenn eine Stream/Profil-Kombination fehlschlägt, wird sie für X Minuten
+# in Redis gesperrt. Der Cooldown überlebt Channel-Neustarts (Redis TTL).
+# Nach Ablauf der TTL löscht Redis den Key automatisch → Kombination wird
+# wieder versucht.
 #
-# Redis Key: ts_proxy:channel:{channel_id}:cooldown:{stream_id}:{profile_id}
-# TTL: stream_cooldown_minutes * 60 seconds
+# BEISPIEL:
+#   ARD Channel → Portal A (Stream 10) + Profil 3 → FAIL
+#   → Redis Key: ts_proxy:channel:{uuid}:cooldown:10:3  TTL: 600s
+#   → Sofort: Portal A (Stream 10) + Profil 4 wird probiert ✅
+#   → Nach 10 min: Profil 3 wird wieder freigegeben
+#
+# LOGGING:
+#   [COOLDOWN] Stream 10/profile 3 on channel {uuid} blocked for 10 min (retry after 10:25:15)
+#   [COOLDOWN] Skipping stream 10/profile 3 - blocked for 9m 47s more
+#   [COOLDOWN] Skipped 3 combinations on cooldown for channel {uuid}
+#
+# WEBUI: Core Settings > Proxy Settings
+#   - Stream Cooldown Enabled: true/false (default: false)
+#   - Stream Cooldown (minutes): 1-1440 (default: 10)
+#
+# HINWEIS: chunk_batch_size wurde entfernt (hatte keinen Effekt im Backend)
+#          und durch diese zwei Settings ersetzt.
 
 --- a/apps/proxy/ts_proxy/redis_keys.py
 +++ b/apps/proxy/ts_proxy/redis_keys.py
 @@ add stream_cooldown key @@
 +    @staticmethod
 +    def stream_cooldown(channel_id, stream_id, profile_id):
-+        """Key for stream/profile combination cooldown (failed combinations)"""
++        """Key for stream/profile combination cooldown (failed combinations).
++        TTL = stream_cooldown_minutes * 60. Redis auto-deletes after expiry."""
 +        return f"ts_proxy:channel:{channel_id}:cooldown:{stream_id}:{profile_id}"
 
 --- a/apps/proxy/config.py
 +++ b/apps/proxy/config.py
-@@ defaults dict @@
+@@ defaults dict - remove chunk_batch_size, add cooldown settings @@
+-                "chunk_batch_size": 5,
 +                "stream_cooldown_enabled": False,
 +                "stream_cooldown_minutes": 10,
 
 --- a/apps/proxy/ts_proxy/config_helper.py
 +++ b/apps/proxy/ts_proxy/config_helper.py
-@@ add new methods @@
+@@ remove chunk_batch_size, add cooldown methods @@
+-    @staticmethod
+-    def chunk_batch_size():
+-        settings = Config.get_proxy_settings()
+-        return settings.get("chunk_batch_size", 5)
+
 +    @staticmethod
 +    def stream_cooldown_enabled():
++        """Get whether stream cooldown is enabled from database or default"""
 +        settings = Config.get_proxy_settings()
 +        return settings.get("stream_cooldown_enabled", False)
 +
 +    @staticmethod
 +    def stream_cooldown_seconds():
++        """Get stream cooldown duration in seconds (converted from minutes)"""
 +        settings = Config.get_proxy_settings()
 +        minutes = settings.get("stream_cooldown_minutes", 10)
 +        return int(minutes) * 60
 
 --- a/apps/proxy/ts_proxy/stream_manager.py
 +++ b/apps/proxy/ts_proxy/stream_manager.py
-@@ _try_next_stream - mark failed combination with cooldown @@
+@@ _try_next_stream - mark failed combination with cooldown + improved logging @@
          if self.current_stream_id and self.current_profile_id:
              self.tried_combinations.add((self.current_stream_id, self.current_profile_id))
-+            # Set cooldown in Redis (survives channel restarts)
++            # Set cooldown in Redis (survives channel restarts, auto-expires via TTL)
 +            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
 +                cooldown_secs = ConfigHelper.stream_cooldown_seconds()
 +                cooldown_key = RedisKeys.stream_cooldown(self.channel_id, self.current_stream_id, self.current_profile_id)
-+                self.buffer.redis_client.setex(cooldown_key, cooldown_secs, str(time.time()))
-+                logger.info(f"Set cooldown for stream {self.current_stream_id}/profile {self.current_profile_id} "
-+                            f"on channel {self.channel_id} for {cooldown_secs // 60} minutes")
++                failed_at = time.time()
++                retry_at = failed_at + cooldown_secs
++                self.buffer.redis_client.setex(cooldown_key, cooldown_secs, str(failed_at))
++                import datetime
++                retry_str = datetime.datetime.fromtimestamp(retry_at).strftime('%H:%M:%S')
++                logger.info(
++                    f"[COOLDOWN] Stream {self.current_stream_id}/profile {self.current_profile_id} "
++                    f"on channel {self.channel_id} blocked for {cooldown_secs // 60} min "
++                    f"(retry after {retry_str})"
++                )
 
-@@ _try_next_stream - filter cooldown combinations @@
--            untried_combinations = [
--                s for s in alternate_streams
--                if (s['stream_id'], s['profile_id']) not in self.tried_combinations
--            ]
-+            untried_combinations = [
-+                s for s in alternate_streams
-+                if (s['stream_id'], s['profile_id']) not in self.tried_combinations
-+            ]
+@@ _try_next_stream - filter cooldown combinations with time display @@
+             untried_combinations = [
+                 s for s in alternate_streams
+                 if (s['stream_id'], s['profile_id']) not in self.tried_combinations
+             ]
 +            # Additionally filter out combinations on cooldown in Redis
 +            if ConfigHelper.stream_cooldown_enabled() and hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
 +                cooled_down = []
@@ -1444,37 +1473,50 @@ class Migration(migrations.Migration):
 +                    cooldown_key = RedisKeys.stream_cooldown(self.channel_id, s['stream_id'], s['profile_id'])
 +                    if self.buffer.redis_client.exists(cooldown_key):
 +                        ttl = self.buffer.redis_client.ttl(cooldown_key)
-+                        logger.debug(f"Skipping stream {s['stream_id']}/profile {s['profile_id']} - on cooldown for {ttl}s more")
++                        mins, secs = divmod(ttl, 60)
++                        logger.info(
++                            f"[COOLDOWN] Skipping stream {s['stream_id']}/profile {s['profile_id']} "
++                            f"- blocked for {mins}m {secs}s more"
++                        )
 +                    else:
 +                        cooled_down.append(s)
 +                skipped = len(untried_combinations) - len(cooled_down)
 +                if skipped > 0:
-+                    logger.info(f"Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
++                    logger.info(f"[COOLDOWN] Skipped {skipped} combinations on cooldown for channel {self.channel_id}")
 +                untried_combinations = cooled_down
 
 --- a/frontend/src/constants.js
 +++ b/frontend/src/constants.js
-@@ PROXY_SETTINGS_OPTIONS @@
+@@ PROXY_SETTINGS_OPTIONS - remove chunk_batch_size, add cooldown @@
+-  chunk_batch_size: {
+-    label: 'Chunk Batch Size',
+-    description: 'Number of chunks to process in a single batch',
+-  },
 +  stream_cooldown_enabled: {
 +    label: 'Stream Cooldown Enabled',
 +    description: 'When enabled, failed stream/profile combinations are skipped for a configurable time period',
 +  },
 +  stream_cooldown_minutes: {
 +    label: 'Stream Cooldown (minutes)',
-+    description: 'How long (in minutes) a failed stream/profile combination is skipped before being retried',
++    description: 'How long (in minutes) a failed stream/profile combination is skipped before being retried (0 = disabled)',
 +  },
 
 --- a/frontend/src/components/forms/settings/ProxySettingsForm.jsx
 +++ b/frontend/src/components/forms/settings/ProxySettingsForm.jsx
-@@ isNumericField @@
+@@ isNumericField - remove chunk_batch_size, add stream_cooldown_minutes @@
+-      'chunk_batch_size',
 +      'stream_cooldown_minutes',
 
-@@ getNumericFieldMax @@
+@@ getNumericFieldMax - remove chunk_batch_size, add stream_cooldown_minutes @@
+-            : key === 'chunk_batch_size'
+-              ? 20
 +            : key === 'stream_cooldown_minutes'
 +              ? 1440
 
 --- a/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
 +++ b/frontend/src/utils/forms/settings/ProxySettingsFormUtils.js
-@@ getProxySettingDefaults @@
+@@ getProxySettingDefaults - remove chunk_batch_size, add cooldown @@
+-    chunk_batch_size: 5,
 +    stream_cooldown_enabled: false,
 +    stream_cooldown_minutes: 10,
+
