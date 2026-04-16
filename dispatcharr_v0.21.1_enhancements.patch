@@ -643,72 +643,90 @@ class Migration(migrations.Migration):
 
 --- a/apps/proxy/ts_proxy/config_helper.py
 +++ b/apps/proxy/ts_proxy/config_helper.py
-@@ -10,6 +10,66 @@ class ConfigHelper:
-     """
-     Helper class to access configuration values from database or defaults
-     """
-+    
-+    @staticmethod
-+    def max_retries():
-+        """Get max retries from database or default"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get("max_retries", 2)
-+
-+    @staticmethod
-+    def url_switch_timeout():
-+        """Get URL switch timeout from database or default"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get("url_switch_timeout", 20)
-+
-+    @staticmethod
-+    def max_stream_switches():
-+        """Get max stream switches from database or default"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get("max_stream_switches", 200)
-+
+@@ Replace all DB-backed methods to read from proxy_settings instead of class constants @@
+ 
+-    @staticmethod
+-    def connection_timeout():
+-        """Get connection timeout in seconds"""
+-        return ConfigHelper.get('CONNECTION_TIMEOUT', 10)
 +    @staticmethod
 +    def connection_timeout():
-+        """Get connection timeout from database or default"""
-+        settings = TSConfig.get_proxy_settings()
++        """Get connection timeout in seconds from database or default"""
++        settings = Config.get_proxy_settings()
 +        return settings.get("connection_timeout", 10)
-+
+ 
+-    @staticmethod
+-    def max_retries():
+-        """Get maximum retry attempts"""
+-        return ConfigHelper.get('MAX_RETRIES', 3)
++    @staticmethod
++    def max_retries():
++        """Get maximum retry attempts from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("max_retries", 2)
+ 
+-    @staticmethod
+-    def max_stream_switches():
+-        """Get maximum number of stream switch attempts"""
+-        return ConfigHelper.get('MAX_STREAM_SWITCHES', 10)
++    @staticmethod
++    def max_stream_switches():
++        """Get maximum number of stream switch attempts from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("max_stream_switches", 200)
+ 
+-    @staticmethod
+-    def url_switch_timeout():
+-        """Get URL switch timeout in seconds (max time allowed for a stream switch operation)"""
+-        return ConfigHelper.get('URL_SWITCH_TIMEOUT', 20)
++    @staticmethod
++    def url_switch_timeout():
++        """Get URL switch timeout in seconds from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("url_switch_timeout", 20)
+ 
+-    @staticmethod
+-    def failover_grace_period():
+-        """Get extra time (in seconds) to allow for stream switching before disconnecting clients"""
+-        return ConfigHelper.get('FAILOVER_GRACE_PERIOD', 20)
 +    @staticmethod
 +    def failover_grace_period():
 +        """Get failover grace period from database or default"""
-+        settings = TSConfig.get_proxy_settings()
++        settings = Config.get_proxy_settings()
 +        return settings.get("failover_grace_period", 20)
-+
+ 
+-    @staticmethod
+-    def initial_behind_chunks():
+-        """Get number of chunks to start behind"""
+-        return ConfigHelper.get('INITIAL_BEHIND_CHUNKS', 4)
 +    @staticmethod
-+    def buffering_timeout():
-+        """Get buffering timeout from database or default"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get("buffering_timeout", 15)
-+
-+    @staticmethod
-+    def buffering_speed():
-+        """Get buffering speed threshold from database or default"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get("buffering_speed", 1.0)
-+
-+    @staticmethod
-+    def chunk_size():
-+        """Get chunk size from database or default"""
-+        return 188 * 1361  # ~256KB
-+
++    def initial_behind_chunks():
++        """Get number of chunks to start behind from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("initial_behind_chunks", 4)
+ 
+-    @staticmethod
+-    def chunk_timeout():
+-        """Get chunk timeout in seconds"""
+-        return ConfigHelper.get('CHUNK_TIMEOUT', 5)
 +    @staticmethod
 +    def chunk_timeout():
-+        """Get chunk timeout from database or default"""
-+        settings = TSConfig.get_proxy_settings()
++        """Get chunk timeout in seconds from database or default"""
++        settings = Config.get_proxy_settings()
 +        return settings.get("chunk_timeout", 5)
 +
++    # New methods (add if not present):
 +    @staticmethod
-+    def get(key, default=None):
-+        """Generic getter for any config value"""
-+        settings = TSConfig.get_proxy_settings()
-+        return settings.get(key, default)
- 
-     @staticmethod
-     def get_channel_shutdown_delay():
++    def chunk_batch_size():
++        """Get chunk batch size from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("chunk_batch_size", 5)
++
++    @staticmethod
++    def health_check_interval():
++        """Get health check interval in seconds from database or default"""
++        settings = Config.get_proxy_settings()
++        return settings.get("health_check_interval", 5)
 
 ################################################################################
 # FEATURE 5: Profile Failover Enhancement
@@ -804,10 +822,13 @@ class Migration(migrations.Migration):
      """
      try:
          from core.utils import RedisClient
-@@ -350,6 +351,11 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = N
+@@ -340,11 +351,16 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = N
  
++            # NOTE: Do NOT skip the current stream entirely - it may have other profiles available.
++            # The current stream+profile combination is skipped inside the profile loop below.
++
                  for profile in profiles:
-+                    # Skip current stream+profile combination
++                    # Skip current stream+profile combination ONLY (not the whole stream)
 +                    if current_stream_id and stream.id == current_stream_id and current_profile_id and profile.id == current_profile_id:
 +                        logger.debug(f"Skipping current stream/profile combination: {current_stream_id}/{current_profile_id}")
 +                        continue
