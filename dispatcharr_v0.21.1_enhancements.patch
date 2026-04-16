@@ -734,6 +734,12 @@ class Migration(migrations.Migration):
 
 --- a/apps/proxy/ts_proxy/stream_manager.py
 +++ b/apps/proxy/ts_proxy/stream_manager.py
+@@ import line @@
+-from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
++from .url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object, get_stream_info_for_profile
+
+--- a/apps/proxy/ts_proxy/stream_manager.py
++++ b/apps/proxy/ts_proxy/stream_manager.py
 @@ -71,8 +71,9 @@ class StreamManager:
  
          # Add tracking for tried streams and current stream
