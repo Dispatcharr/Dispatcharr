@@ -258,7 +258,8 @@
 # □ 5.14 Failover: current_profile_id loaded from Redis in BOTH branches of __init__
 # □ 5.15 Failover: get_alternate_streams() has current_profile_id param + no break
 # □ 5.16 Failover: get_stream_info_for_profile() exists in url_utils.py
-# □ 5.17 Failover: _try_next_stream() uses tried_combinations + get_stream_info_for_profile
+# □ 5.17 Failover: get_stream_info_for_profile imported in stream_manager.py
+# □ 5.18 Failover: _try_next_stream() uses tried_combinations + get_stream_info_for_profile
 # □ 5.18 Failover: m3u_profile_id written to Redis BEFORE initialize_channel() in channel_service.py
 # □ 5.19 Health: last_stream_switch_time = 0 in __init__
 # □ 5.20 Health: last_stream_switch_time = time.time() set at BOTH switch points in run()
