@@ -133,6 +133,7 @@ r.append(check(r'except \(AttributeError, TypeError\)', 'apps/proxy/ts_proxy/htt
 r.append(check(r'logger\.debug.*continuing to wait', 'apps/proxy/ts_proxy/views.py', 'BF5a: debug not info for wait'))
 r.append(check(r'gevent\.sleep\(0\.1\)', 'apps/proxy/ts_proxy/views.py', 'BF5b: gevent.sleep(0.1)'))
 r.append(check(r'Pre-set stream ID.*and profile ID', 'apps/proxy/ts_proxy/services/channel_service.py', 'BF6: profile_id before initialize_channel'))
+r.append(check(r'COOLDOWN.*Skipping profile', 'apps/channels/models.py', 'BF7: cooldown check in Channel.get_stream() bei Neustart'))
 print()
 
 # Frontend

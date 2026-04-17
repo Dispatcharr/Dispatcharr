@@ -635,6 +635,23 @@ class Channel(models.Model):
             for profile in profiles:
                 has_active_profiles = True
 
+                # Check cooldown: skip profiles that recently failed (Redis TTL-based)
+                try:
+                    from apps.proxy.ts_proxy.config_helper import ConfigHelper
+                    from apps.proxy.ts_proxy.redis_keys import RedisKeys
+                    if ConfigHelper.stream_cooldown_enabled():
+                        cooldown_key = RedisKeys.stream_cooldown(str(self.uuid), stream.id, profile.id)
+                        if redis_client.exists(cooldown_key):
+                            ttl = redis_client.ttl(cooldown_key)
+                            mins, secs = divmod(ttl, 60)
+                            logger.info(
+                                f"\033[31m[COOLDOWN]\033[0m Skipping profile {profile.id} for stream {stream.id} "
+                                f"on channel {self.uuid} - blocked for {mins}m {secs}s more"
+                            )
+                            continue
+                except Exception:
+                    pass  # Cooldown check is best-effort, never block stream selection
+
                 # Atomically check and reserve a slot (INCR-first pattern)
                 reserved, current_count = self._check_and_reserve_profile_slot(
                     profile, redis_client

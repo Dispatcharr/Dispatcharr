@@ -1694,3 +1694,58 @@ class Migration(migrations.Migration):
 +
 +                if not untried_combinations:
 +                    return False
+
+################################################################################
+# BUGFIX 7: Cooldown beim Channel-Neustart berücksichtigen
+################################################################################
+#
+# Problem: Channel.get_stream() ignorierte den Cooldown beim Channel-Start.
+# Symptom: Nach Channel-Neustart wurde immer wieder das gecooldownte Default-Profil
+#          versucht, schlug fehl, und wechselte erst dann auf das nächste Profil.
+#
+# Beispiel aus Logs (OHNE Fix):
+#   10:41:05 Channel startet → wählt Profil 239 (Default, auf Cooldown!)
+#   10:41:06 HTTP 512 → Failover → wechselt auf Profil 240
+#   (unnötiger Fehlversuch bei jedem Neustart)
+#
+# Beispiel aus Logs (MIT Fix):
+#   10:41:05 Channel startet → Profil 239 auf Cooldown → überspringt → wählt Profil 240 direkt
+#   (kein Fehlversuch mehr)
+#
+# Fix: In Channel.get_stream() vor dem Slot-Reservieren den Cooldown prüfen.
+#      Gilt für ALLE Profile, auch das Default-Profil.
+#
+# DATEI: apps/channels/models.py → Channel.get_stream()
+# GREP:  grep -n "COOLDOWN.*Skipping profile" apps/channels/models.py
+#        → muss eine Zeile zurückgeben
+#
+# PORTING-HINWEIS: In der neuen Version get_stream() suchen und den
+#   Cooldown-Check VOR "_check_and_reserve_profile_slot" einfügen.
+
+--- a/apps/channels/models.py
++++ b/apps/channels/models.py
+@@ Channel.get_stream() - profile loop @@
+             for profile in profiles:
+                 has_active_profiles = True
+
++                # Check cooldown: skip profiles that recently failed (Redis TTL-based)
++                try:
++                    from apps.proxy.ts_proxy.config_helper import ConfigHelper
++                    from apps.proxy.ts_proxy.redis_keys import RedisKeys
++                    if ConfigHelper.stream_cooldown_enabled():
++                        cooldown_key = RedisKeys.stream_cooldown(str(self.uuid), stream.id, profile.id)
++                        if redis_client.exists(cooldown_key):
++                            ttl = redis_client.ttl(cooldown_key)
++                            mins, secs = divmod(ttl, 60)
++                            logger.info(
++                                f"\033[31m[COOLDOWN]\033[0m Skipping profile {profile.id} for stream {stream.id} "
++                                f"on channel {self.uuid} - blocked for {mins}m {secs}s more"
++                            )
++                            continue
++                except Exception:
++                    pass  # Cooldown check is best-effort, never block stream selection
++
+                 # Atomically check and reserve a slot (INCR-first pattern)
+                 reserved, current_count = self._check_and_reserve_profile_slot(
+
+################################################################################
