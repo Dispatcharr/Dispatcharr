@@ -3,6 +3,46 @@
 ################################################################################
 #
 # Date: 2026-04-16 (Updated)
+#
+################################################################################
+# ⚠️⚠️⚠️ NACH JEDER IMPLEMENTIERUNG ZWINGEND AUSFÜHREN! ⚠️⚠️⚠️
+################################################################################
+#
+#   python _verify_patch.py
+#
+# Das Skript prüft ALLE 65+ Punkte dieses Patches gegen das Zielverzeichnis.
+# NICHT deployen bevor alle Checks grün sind!
+#
+# Falls _verify_patch.py nicht existiert: es liegt im Repo-Root.
+# Falls es fehlt: aus dem letzten Implementierungs-Chat wiederherstellen.
+#
+################################################################################
+# ⚠️⚠️⚠️ KRITISCHER BUG - WURDE ZWEIMAL VERGESSEN! ⚠️⚠️⚠️
+################################################################################
+#
+# BUGFIX 2: get_alternate_streams() darf den aktuellen Stream NICHT komplett
+# überspringen! Nur die aktuelle Stream+Profil-KOMBINATION überspringen!
+#
+# SYMPTOM: "No alternate streams with available connections found"
+#          obwohl der Stream mehrere Profile hat.
+#
+# FALSCH (überspringt den ganzen Stream → andere Profile werden nie gefunden):
+#   for stream in streams:
+#       if current_stream_id and stream.id == current_stream_id:
+#           continue   ← ⛔ DIESER CONTINUE MUSS WEG!
+#
+# RICHTIG (nur die aktuelle Kombination überspringen, im Profil-Loop):
+#   for stream in streams:
+#       # NOTE: Do NOT skip the current stream entirely
+#       for profile in profiles:
+#           if stream.id == current_stream_id and profile.id == current_profile_id:
+#               continue   ← ✅ nur diese Kombination überspringen
+#
+# DATEI: apps/proxy/ts_proxy/url_utils.py → get_alternate_streams()
+# GREP:  grep -n "Do NOT skip the current stream entirely" apps/proxy/ts_proxy/url_utils.py
+#        → muss eine Zeile zurückgeben, sonst ist der Bug noch drin!
+#
+################################################################################
 # Version: v0.21.1 Enhanced
 #
 # This patch ports 6 critical enhancements + bugfixes
@@ -1078,7 +1118,9 @@ class Migration(migrations.Migration):
 ################################################################################
 
 ################################################################################
-# BUGFIX 2: Profile Failover - current stream was fully skipped
+# ⚠️ BUGFIX 2: Profile Failover - current stream was fully skipped ⚠️
+# WURDE BEIM PORTING ZWEIMAL VERGESSEN - IMMER PRÜFEN!
+# GREP: grep -n "Do NOT skip the current stream entirely" apps/proxy/ts_proxy/url_utils.py
 ################################################################################
 #
 # Root cause: get_alternate_streams() had a `continue` that skipped the ENTIRE
