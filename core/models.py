@@ -132,7 +132,7 @@ class StreamProfile(models.Model):
             "{streamUrl}": stream_url,
             "{userAgent}": user_agent,
         }
-        
+
         # Add proxy to replacements if provided
         if proxy:
             replacements["{proxy}"] = proxy

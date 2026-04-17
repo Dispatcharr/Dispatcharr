@@ -367,21 +367,35 @@ class PluginManager:
                     obj.save()
 
     def list_plugins(self) -> List[Dict[str, Any]]:
-        from .models import PluginConfig
+        from .models import PluginConfig, PluginRepo
 
         plugins: List[Dict[str, Any]] = []
         with self._lock:
             registry_snapshot = dict(self._registry)
         try:
-            configs = {c.key: c for c in PluginConfig.objects.all()}
+            configs = {c.key: c for c in PluginConfig.objects.select_related("source_repo").all()}
         except Exception as e:
             # Database might not be migrated yet; fall back to registry only
             logger.warning("PluginConfig table unavailable; listing registry only: %s", e)
             configs = {}
 
+        # Build repo latest-version lookup from cached manifests
+        repo_latest = {}  # slug -> latest_version
+        try:
+            for repo in PluginRepo.objects.filter(enabled=True):
+                manifest_data = repo.cached_manifest or {}
+                manifest = manifest_data.get("manifest", manifest_data)
+                for rp in manifest.get("plugins", []):
+                    s = rp.get("slug", "")
+                    if s:
+                        repo_latest[s] = rp.get("latest_version", "")
+        except Exception:
+            pass
+
         # First, include all discovered plugins
         for key, lp in registry_snapshot.items():
             conf = configs.get(key)
+            conf_slug = conf.slug if conf else ""
             trusted = bool(conf and (conf.ever_enabled or conf.enabled))
             logo_url = self._get_logo_url(key, path=lp.path)
             plugins.append(
@@ -393,7 +407,7 @@ class PluginManager:
                     "author": getattr(lp, "author", "") or "",
                     "help_url": getattr(lp, "help_url", "") or "",
                     "enabled": conf.enabled if conf else False,
-                    "ever_enabled": getattr(conf, "ever_enabled", False) if conf else False,
+                    "ever_enabled": conf.ever_enabled if conf else False,
                     "fields": lp.fields or [],
                     "settings": (conf.settings if conf else {}),
                     "actions": lp.actions or [],
@@ -402,6 +416,22 @@ class PluginManager:
                     "loaded": bool(lp.loaded),
                     "legacy": bool(getattr(lp, "legacy", False)),
                     "logo_url": logo_url,
+                    "source_repo": conf.source_repo_id if conf else None,
+                    "source_repo_name": conf.source_repo.name if conf and conf.source_repo else None,
+                    "is_official_repo": bool(conf and conf.source_repo and conf.source_repo.is_official),
+                    "slug": conf_slug,
+                    "is_managed": bool(conf and conf.source_repo_id),
+                    "installed_version_is_prerelease": bool(
+                        conf and conf.installed_version_is_prerelease
+                    ),
+                    "update_available": bool(
+                        conf_slug and conf and conf.source_repo_id
+                        and not (conf and conf.installed_version_is_prerelease)
+                        and repo_latest.get(conf_slug)
+                        and lp.version != repo_latest.get(conf_slug)
+                    ),
+                    "latest_version": repo_latest.get(conf_slug, ""),
+                    "deprecated": conf.deprecated if conf else False,
                 }
             )
 
@@ -428,6 +458,22 @@ class PluginManager:
                     "loaded": False,
                     "legacy": False,
                     "logo_url": self._get_logo_url(key),
+                    "source_repo": conf.source_repo_id,
+                    "source_repo_name": conf.source_repo.name if conf.source_repo else None,
+                    "is_official_repo": bool(conf.source_repo and conf.source_repo.is_official),
+                    "slug": conf.slug,
+                    "is_managed": bool(conf.source_repo_id),
+                    "installed_version_is_prerelease": bool(
+                        conf.installed_version_is_prerelease
+                    ),
+                    "update_available": bool(
+                        conf.slug and conf.source_repo_id
+                        and not conf.installed_version_is_prerelease
+                        and repo_latest.get(conf.slug)
+                        and conf.version != repo_latest.get(conf.slug)
+                    ),
+                    "latest_version": repo_latest.get(conf.slug or "", ""),
+                    "deprecated": conf.deprecated,
                 }
             )
 

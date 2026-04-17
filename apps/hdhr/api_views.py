@@ -1,6 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
 from apps.accounts.permissions import Authenticated, permission_classes_by_action
 from django.http import JsonResponse, HttpResponseForbidden, HttpResponse
 import logging
@@ -46,6 +47,7 @@ class HDHRDeviceViewSet(viewsets.ModelViewSet):
 # 🔹 2) Discover API
 class DiscoverAPIView(APIView):
     """Returns device discovery information"""
+    permission_classes = [AllowAny]
 
     @extend_schema(
         description="Retrieve HDHomeRun device discovery information",
@@ -98,6 +100,7 @@ class DiscoverAPIView(APIView):
 # 🔹 3) Lineup API
 class LineupAPIView(APIView):
     """Returns available channel lineup"""
+    permission_classes = [AllowAny]
 
     @extend_schema(
         description="Retrieve the available channel lineup",
@@ -138,6 +141,7 @@ class LineupAPIView(APIView):
 # 🔹 4) Lineup Status API
 class LineupStatusAPIView(APIView):
     """Returns the current status of the HDHR lineup"""
+    permission_classes = [AllowAny]
 
     @extend_schema(
         description="Retrieve the HDHomeRun lineup status",
@@ -155,6 +159,7 @@ class LineupStatusAPIView(APIView):
 # 🔹 5) Device XML API
 class HDHRDeviceXMLAPIView(APIView):
     """Returns HDHomeRun device configuration in XML"""
+    permission_classes = [AllowAny]
 
     @extend_schema(
         description="Retrieve the HDHomeRun device XML configuration",

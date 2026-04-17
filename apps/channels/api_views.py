@@ -24,12 +24,13 @@ from apps.accounts.permissions import (
 )
 
 from core.models import UserAgent, CoreSettings
-from core.utils import RedisClient
+from core.utils import RedisClient, safe_upload_path
 
 from .models import (
     Stream,
     Channel,
     ChannelGroup,
+    ChannelStream,
     Logo,
     ChannelProfile,
     ChannelProfileMembership,
@@ -61,7 +62,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from apps.epg.models import EPGData
 from apps.vod.models import Movie, Series
 from django.db.models import Q
-from django.http import StreamingHttpResponse, FileResponse, Http404
+from django.http import HttpResponse, StreamingHttpResponse, FileResponse, Http404
 from django.utils import timezone
 import mimetypes
 from django.conf import settings
@@ -630,6 +631,53 @@ class ChannelViewSet(viewsets.ModelViewSet):
         context["include_streams"] = include_streams
         return context
 
+    @extend_schema(
+        methods=["PATCH"],
+        description=(
+            "Bulk edit multiple channels in a single request. "
+            "Accepts a JSON array of channel update objects. Each object must include `id` (the channel's primary key). "
+            "All other fields are optional and support partial updates. "
+            "The `streams` field accepts a list of stream IDs and will replace the channel's current stream assignments. "
+            "All updates are validated before any changes are applied and executed in a single database transaction."
+        ),
+        request=inline_serializer(
+            name="ChannelBulkEditRequest",
+            fields={
+                "id": serializers.IntegerField(help_text="ID of the channel to update (required)."),
+                "name": serializers.CharField(required=False),
+                "channel_number": serializers.FloatField(required=False),
+                "channel_group_id": serializers.IntegerField(required=False, allow_null=True),
+                "streams": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    help_text="List of stream IDs to assign to this channel (replaces existing assignments).",
+                ),
+                "stream_profile_id": serializers.IntegerField(required=False, allow_null=True),
+                "logo_id": serializers.IntegerField(required=False, allow_null=True),
+                "tvg_id": serializers.CharField(required=False, allow_blank=True),
+                "tvc_guide_stationid": serializers.CharField(required=False, allow_blank=True),
+                "epg_data_id": serializers.IntegerField(required=False, allow_null=True),
+                "user_level": serializers.IntegerField(required=False),
+                "is_adult": serializers.BooleanField(required=False),
+            },
+            many=True,
+        ),
+        responses={
+            200: inline_serializer(
+                name="ChannelBulkEditResponse",
+                fields={
+                    "message": serializers.CharField(),
+                    "channels": ChannelSerializer(many=True),
+                },
+            ),
+            400: inline_serializer(
+                name="ChannelBulkEditErrorResponse",
+                fields={
+                    "errors": serializers.ListField(child=serializers.DictField()),
+                },
+            ),
+        },
+    )
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):
         """
@@ -709,25 +757,56 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         # Apply all updates in a transaction
         with transaction.atomic():
+            streams_updates = []
             for channel, validated_data in validated_updates:
+                # Pop streams before setattr loop — M2M fields can't be set via setattr
+                streams = validated_data.pop("streams", None)
+                if streams is not None:
+                    streams_updates.append((channel, streams))
                 for key, value in validated_data.items():
                     setattr(channel, key, value)
 
             # Single bulk_update query instead of individual saves
             channels_to_update = [channel for channel, _ in validated_updates]
             if channels_to_update:
-                # Collect all unique field names from all updates
+                # Collect all unique field names from all updates (streams already popped)
                 all_fields = set()
                 for _, validated_data in validated_updates:
                     all_fields.update(validated_data.keys())
 
-                # Only call bulk_update if there are fields to update
+                # Only call bulk_update if there are non-M2M fields to update
                 if all_fields:
                     Channel.objects.bulk_update(
                         channels_to_update,
                         fields=list(all_fields),
                         batch_size=100
                     )
+
+            # Handle streams M2M updates separately
+            for channel, streams in streams_updates:
+                normalized_ids = [
+                    stream.id if hasattr(stream, "id") else stream for stream in streams
+                ]
+                current_links = {
+                    cs.stream_id: cs for cs in channel.channelstream_set.all()
+                }
+                existing_ids = set(current_links.keys())
+                new_ids = set(normalized_ids)
+
+                to_remove = existing_ids - new_ids
+                if to_remove:
+                    channel.channelstream_set.filter(stream_id__in=to_remove).delete()
+
+                for order, stream_id in enumerate(normalized_ids):
+                    if stream_id in current_links:
+                        cs = current_links[stream_id]
+                        if cs.order != order:
+                            cs.order = order
+                            cs.save(update_fields=["order"])
+                    else:
+                        ChannelStream.objects.create(
+                            channel=channel, stream_id=stream_id, order=order
+                        )
 
         # Return the updated objects (already in memory)
         serialized_channels = ChannelSerializer(
@@ -1486,7 +1565,11 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         name="EpgAssociation",
                         fields={
                             "channel_id": serializers.IntegerField(),
-                            "epg_data_id": serializers.IntegerField(),
+                            "epg_data_id": serializers.IntegerField(
+                                required=False,
+                                allow_null=True,
+                                help_text="EPG data ID to link. Pass null to remove EPG linkage.",
+                            ),
                         },
                     ),
                 )
@@ -1662,7 +1745,12 @@ class BulkDeleteLogosAPIView(APIView):
                 "logo_ids": serializers.ListField(
                     child=serializers.IntegerField(),
                     help_text="Logo IDs to delete",
-                )
+                ),
+                "delete_files": serializers.BooleanField(
+                    required=False,
+                    default=False,
+                    help_text="Whether to also delete local logo files from disk.",
+                ),
             },
         ),
     )
@@ -1901,10 +1989,13 @@ class LogoViewSet(viewsets.ModelViewSet):
                 {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        file_name = file.name
-        file_path = os.path.join("/data/logos", file_name)
+        # Sanitize filename: strip directory components to prevent path traversal
+        try:
+            file_path = safe_upload_path(file.name, "/data/logos")
+        except ValueError:
+            return Response({"error": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        os.makedirs("/data/logos", exist_ok=True)
         with open(file_path, "wb+") as destination:
             for chunk in file.chunks():
                 destination.write(chunk)
@@ -1924,7 +2015,7 @@ class LogoViewSet(viewsets.ModelViewSet):
 
         # Get custom name from request data, fallback to filename
         custom_name = request.data.get('name', '').strip()
-        logo_name = custom_name if custom_name else file_name
+        logo_name = custom_name if custom_name else os.path.basename(file_path)
 
         logo, _ = Logo.objects.get_or_create(
             url=file_path,
@@ -1966,7 +2057,7 @@ class LogoViewSet(viewsets.ModelViewSet):
             return response
 
         else:  # Remote image
-            # Skip URLs that recently failed to avoid blocking Daphne workers
+            # Skip URLs that recently failed to avoid blocking workers
             # on unreachable hosts (e.g., dead CDNs referenced by old recordings).
             fail_expiry = _logo_fetch_failures.get(logo_url)
             if fail_expiry and time.monotonic() < fail_expiry:
@@ -1982,7 +2073,11 @@ class LogoViewSet(viewsets.ModelViewSet):
                     # Fallback to hardcoded if default not found
                     user_agent = 'Dispatcharr/1.0'
 
-                # Add proper timeouts to prevent hanging
+                # Hard total timeout (connect + full download) prevents a slow
+                # server dripping bytes from holding a greenlet indefinitely.
+                _LOGO_TOTAL_TIMEOUT = 10  # seconds
+                _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+
                 remote_response = requests.get(
                     logo_url,
                     stream=True,
@@ -1990,7 +2085,25 @@ class LogoViewSet(viewsets.ModelViewSet):
                     headers={'User-Agent': user_agent}
                 )
                 if remote_response.status_code == 200:
-                    # Success — clear any previous failure entry
+                    # Eagerly read the full image with a total time + size cap
+                    # so the greenlet is released quickly.
+                    chunks = []
+                    total = 0
+                    deadline = time.monotonic() + _LOGO_TOTAL_TIMEOUT
+                    for chunk in remote_response.iter_content(chunk_size=8192):
+                        total += len(chunk)
+                        if total > _LOGO_MAX_BYTES:
+                            remote_response.close()
+                            raise Http404("Remote image too large")
+                        if time.monotonic() > deadline:
+                            remote_response.close()
+                            now = time.monotonic()
+                            _logo_fetch_failures[logo_url] = now + _LOGO_FAIL_TTL
+                            raise Http404("Remote image fetch timed out")
+                        chunks.append(chunk)
+                    body = b"".join(chunks)
+
+                    # Full read succeeded, clear any previous failure entry
                     _logo_fetch_failures.pop(logo_url, None)
 
                     # Try to get content type from response headers first
@@ -2004,13 +2117,14 @@ class LogoViewSet(viewsets.ModelViewSet):
                     if not content_type:
                         content_type = "image/jpeg"
 
-                    response = StreamingHttpResponse(
-                        remote_response.iter_content(chunk_size=8192),
+                    response = HttpResponse(
+                        body,
                         content_type=content_type,
                     )
-                    if(remote_response.headers.get("Cache-Control")):
+                    response["Content-Length"] = str(len(body))
+                    if remote_response.headers.get("Cache-Control"):
                         response["Cache-Control"] = remote_response.headers.get("Cache-Control")
-                    if(remote_response.headers.get("Last-Modified")):
+                    if remote_response.headers.get("Last-Modified"):
                         response["Last-Modified"] = remote_response.headers.get("Last-Modified")
                     response["Content-Disposition"] = 'inline; filename="{}"'.format(
                         os.path.basename(logo_url)

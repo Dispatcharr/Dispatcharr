@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { renderHook } from '@testing-library/react';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -10,8 +10,12 @@ import useLocalStorage from '../../hooks/useLocalStorage';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-vi.mock('../../store/settings');
-vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../store/settings', () => ({
+  default: vi.fn(() => ({})),
+}));
+vi.mock('../../hooks/useLocalStorage', () => ({
+  default: vi.fn(() => ['UTC', vi.fn()]),
+}));
 
 describe('dateTimeUtils', () => {
   beforeEach(() => {
@@ -482,6 +486,184 @@ describe('dateTimeUtils', () => {
       expect(result).toBe('UTC');
 
       Intl.DateTimeFormat = originalDateTimeFormat;
+    });
+  });
+
+  describe('setTz', () => {
+    it('should convert date to specified timezone', () => {
+      const date = '2024-01-15T15:00:00Z';
+      const result = dateTimeUtils.setTz(date, 'America/New_York');
+      expect(result.isValid()).toBe(true);
+      expect(result.utcOffset()).toBe(-300); // EST = UTC-5
+    });
+  });
+
+  describe('setMonth', () => {
+    it('should set the month on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setMonth(date, 5);
+      expect(result.month()).toBe(5);
+    });
+
+    it('should return a new dayjs object with correct month', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setMonth(date, 11);
+      expect(result.month()).toBe(11);
+    });
+  });
+
+  describe('setYear', () => {
+    it('should set the year on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setYear(date, 2030);
+      expect(result.year()).toBe(2030);
+    });
+  });
+
+  describe('setDay', () => {
+    it('should set the day of the month', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setDay(date, 20);
+      expect(result.date()).toBe(20);
+    });
+  });
+
+  describe('setHour', () => {
+    it('should set the hour on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setHour(date, 18);
+      expect(result.hour()).toBe(18);
+    });
+  });
+
+  describe('setMinute', () => {
+    it('should set the minute on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setMinute(date, 45);
+      expect(result.minute()).toBe(45);
+    });
+  });
+
+  describe('setSecond', () => {
+    it('should set the second on a date', () => {
+      const date = dayjs.utc('2024-01-15T10:00:00Z');
+      const result = dateTimeUtils.setSecond(date, 30);
+      expect(result.second()).toBe(30);
+    });
+  });
+
+  describe('getMonth', () => {
+    it('should return the month (0-indexed) from a date', () => {
+      const date = dayjs.utc('2024-03-15T10:00:00Z');
+      expect(dateTimeUtils.getMonth(date)).toBe(2);
+    });
+
+    it('should return 0 for January', () => {
+      const date = dayjs.utc('2024-01-01T12:00:00Z');
+      expect(dateTimeUtils.getMonth(date)).toBe(0);
+    });
+  });
+
+  describe('getYear', () => {
+    it('should return the year from a date', () => {
+      const date = dayjs.utc('2024-03-15T10:00:00Z');
+      expect(dateTimeUtils.getYear(date)).toBe(2024);
+    });
+  });
+
+  describe('getDay', () => {
+    it('should return the day of the month', () => {
+      const date = dayjs.utc('2024-01-20T12:00:00Z');
+      expect(dateTimeUtils.getDay(date)).toBe(20);
+    });
+  });
+
+  describe('getHour', () => {
+    it('should return the hour from a UTC date', () => {
+      const date = dayjs.utc('2024-01-15T14:00:00Z');
+      expect(dateTimeUtils.getHour(date)).toBe(14);
+    });
+  });
+
+  describe('getMinute', () => {
+    it('should return the minute from a date', () => {
+      const date = dayjs.utc('2024-01-15T14:35:00Z');
+      expect(dateTimeUtils.getMinute(date)).toBe(35);
+    });
+  });
+
+  describe('getSecond', () => {
+    it('should return the second from a date', () => {
+      const date = dayjs.utc('2024-01-15T14:00:45Z');
+      expect(dateTimeUtils.getSecond(date)).toBe(45);
+    });
+  });
+
+  describe('MONTH_NAMES', () => {
+    it('should have 12 month names', () => {
+      expect(dateTimeUtils.MONTH_NAMES).toHaveLength(12);
+    });
+
+    it('should start with january', () => {
+      expect(dateTimeUtils.MONTH_NAMES[0]).toBe('january');
+    });
+
+    it('should end with december', () => {
+      expect(dateTimeUtils.MONTH_NAMES[11]).toBe('december');
+    });
+
+    it('should contain all lowercase month names', () => {
+      expect(dateTimeUtils.MONTH_NAMES).toEqual([
+        'january',
+        'february',
+        'march',
+        'april',
+        'may',
+        'june',
+        'july',
+        'august',
+        'september',
+        'october',
+        'november',
+        'december',
+      ]);
+    });
+  });
+
+  describe('MONTH_ABBR', () => {
+    it('should have 12 abbreviated month names', () => {
+      expect(dateTimeUtils.MONTH_ABBR).toHaveLength(12);
+    });
+
+    it('should start with jan', () => {
+      expect(dateTimeUtils.MONTH_ABBR[0]).toBe('jan');
+    });
+
+    it('should end with dec', () => {
+      expect(dateTimeUtils.MONTH_ABBR[11]).toBe('dec');
+    });
+
+    it('should contain all lowercase abbreviated month names', () => {
+      expect(dateTimeUtils.MONTH_ABBR).toEqual([
+        'jan',
+        'feb',
+        'mar',
+        'apr',
+        'may',
+        'jun',
+        'jul',
+        'aug',
+        'sep',
+        'oct',
+        'nov',
+        'dec',
+      ]);
+    });
+
+    it('should align with MONTH_NAMES by index', () => {
+      dateTimeUtils.MONTH_NAMES.forEach((name, i) => {
+        expect(name.startsWith(dateTimeUtils.MONTH_ABBR[i])).toBe(true);
+      });
     });
   });
 });

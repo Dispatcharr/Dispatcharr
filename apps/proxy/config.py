@@ -51,9 +51,9 @@ class BaseConfig:
                 "failover_grace_period": 20,
                 "chunk_timeout": 5,
                 "initial_behind_chunks": 4,
-                "health_check_interval": 5,
                 "stream_cooldown_enabled": False,
                 "stream_cooldown_minutes": 10,
+                "health_check_interval": 5,
             }
 
         finally:

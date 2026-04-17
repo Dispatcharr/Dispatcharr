@@ -135,7 +135,8 @@ export default function FloatingVideo() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
-  const [showOverlay, setShowOverlay] = useState(true);
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [showControls, setShowControls] = useState(false);
   const [videoSize, setVideoSize] = useState(() => {
     const prefs = getPlayerPrefs();
     const saved = prefs.size;
@@ -225,7 +226,8 @@ export default function FloatingVideo() {
 
     setIsLoading(true);
     setLoadError(null);
-    setShowOverlay(true); // Show overlay initially
+    setShowOverlay(false);
+    setShowControls(false);
 
     console.log('Initializing VOD player for:', streamUrl);
 
@@ -248,7 +250,8 @@ export default function FloatingVideo() {
         console.log('Auto-play prevented:', e);
         setLoadError('Auto-play was prevented. Click play to start.');
       });
-      // Start overlay timer when video is ready
+      // Show overlay briefly when video is ready, then auto-hide
+      setShowOverlay(true);
       startOverlayTimer();
     };
     const handleError = (e) => {
@@ -300,10 +303,8 @@ export default function FloatingVideo() {
 
     setIsLoading(true);
     setLoadError(null);
+    setShowControls(false);
 
-    console.log('Initializing live stream player for:', streamUrl);
-    console.log('Access token present:', !!accessToken);
-    console.log('Current access token from auth store:', accessToken);
     try {
       if (!mpegts.getFeatureList().mseLivePlayback) {
         setIsLoading(false);
@@ -851,6 +852,7 @@ export default function FloatingVideo() {
         <Box
           style={{ position: 'relative' }}
           onMouseEnter={() => {
+            setShowControls(true);
             if (contentType === 'vod' && !isLoading) {
               setShowOverlay(true);
               if (overlayTimeoutRef.current) {
@@ -867,7 +869,7 @@ export default function FloatingVideo() {
           {/* Enhanced video element with better controls for VOD */}
           <video
             ref={videoRef}
-            controls
+            controls={showControls}
             className="floating-video-no-drag"
             style={{
               width: '100%',

@@ -40,8 +40,8 @@ class ChannelService:
             bool: Success status
         """
         proxy_server = ProxyServer.get_instance()
-        # FIXED: First, ensure that Redis metadata including stream_id AND m3u_profile_id is set BEFORE channel initialization
-        # This ensures both IDs are available when the StreamManager looks them up
+        # FIXED: First, ensure that Redis metadata including stream_id AND m3u_profile_id
+        # is set BEFORE channel initialization so StreamManager can load profile_id on startup
         if stream_id and proxy_server.redis_client:
             metadata_key = RedisKeys.channel_metadata(channel_id)
             # Check if metadata already exists
@@ -173,15 +173,6 @@ class ChannelService:
         else:
             result = {'status': 'success'}
 
-        # Update metadata in Redis regardless of ownership
-        if proxy_server.redis_client:
-            try:
-                ChannelService._update_channel_metadata(channel_id, new_url, user_agent, stream_id, m3u_profile_id)
-                result['metadata_updated'] = True
-            except Exception as e:
-                logger.error(f"Error updating Redis metadata: {e}", exc_info=True)
-                result['metadata_updated'] = False
-
         # If we're the owner, update directly
         if proxy_server.am_i_owner(channel_id) and channel_id in proxy_server.stream_managers:
             logger.info(f"This worker is the owner, changing stream URL for channel {channel_id}")
@@ -192,14 +183,33 @@ class ChannelService:
             success = manager.update_url(new_url, stream_id, m3u_profile_id)
             logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
 
+            # Update Redis metadata based on the actual outcome.
+            # On success, write the new values. On failure, restore whatever URL
+            # the manager will actually reconnect to (may be old_url if the
+            # exception happened before self.url was reassigned, or new_url if it
+            # happened after) so Redis never describes a URL that isn't in use.
+            if proxy_server.redis_client:
+                try:
+                    if success:
+                        ChannelService._update_channel_metadata(channel_id, new_url, user_agent, stream_id, m3u_profile_id)
+                    else:
+                        ChannelService._update_channel_metadata(channel_id, manager.url, user_agent)
+                    result['metadata_updated'] = True
+                except Exception as e:
+                    logger.error(f"Error updating Redis metadata: {e}", exc_info=True)
+                    result['metadata_updated'] = False
+
             result.update({
                 'direct_update': True,
                 'success': success,
                 'worker_id': proxy_server.worker_id
             })
         else:
-            # If we're not the owner, publish an event for the owner to pick up
-            logger.info(f"Not the owner, requesting URL change via Redis PubSub")
+            # Not the owner: publish the switch event. The owner will update metadata
+            # after the actual switch attempt succeeds (or roll back on failure).
+            # All needed info (url, user_agent, stream_id, m3u_profile_id) is carried
+            # in the pubsub message, so there is no reason to pre-write metadata here.
+            logger.debug(f"This worker is not the owner, publishing stream switch event for channel {channel_id}")
             if proxy_server.redis_client:
                 ChannelService._publish_stream_switch_event(channel_id, new_url, user_agent, stream_id, m3u_profile_id)
                 result.update({

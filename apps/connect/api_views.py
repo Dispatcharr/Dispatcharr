@@ -1,9 +1,10 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, serializers
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema, inline_serializer
 from .models import Integration, EventSubscription, DeliveryLog
 from .serializers import (
     IntegrationSerializer,
@@ -37,6 +38,33 @@ class IntegrationViewSet(viewsets.ModelViewSet):
         serializer = EventSubscriptionSerializer(qs, many=True)
         return Response(serializer.data)
 
+    @extend_schema(
+        methods=["PUT"],
+        description=(
+            "Replace the integration's event subscriptions with the provided list. "
+            "Accepts a JSON array of subscription objects. "
+            "Existing subscriptions not in the list will be deleted. "
+            "The 'payload_template' field is only relevant for webhook integrations."
+        ),
+        request=inline_serializer(
+            name="SetSubscriptionsRequest",
+            fields={
+                "event": serializers.CharField(help_text="Event name (e.g. 'channel_start')."),
+                "enabled": serializers.BooleanField(required=False, default=True),
+                "payload_template": serializers.CharField(required=False, allow_blank=True, allow_null=True, help_text="Custom payload template (webhook integrations only)."),
+            },
+            many=True,
+        ),
+        responses={200: inline_serializer(
+            name="SetSubscriptionsResponse",
+            fields={
+                "event": serializers.CharField(),
+                "enabled": serializers.BooleanField(),
+                "payload_template": serializers.CharField(allow_null=True),
+            },
+            many=True,
+        )},
+    )
     @action(detail=True, methods=["put"], url_path=r"subscriptions/set")
     def set_subscriptions(self, request, pk=None):
         """

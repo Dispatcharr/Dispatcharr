@@ -227,25 +227,28 @@ class ProxyServer:
                                         # Handle stream switch request
                                         new_url = data.get("url")
                                         user_agent = data.get("user_agent")
+                                        event_stream_id = data.get("stream_id")
+                                        event_m3u_profile_id = data.get("m3u_profile_id")
 
                                         if new_url and channel_id in self.stream_managers:
-                                            # Update metadata in Redis
+                                            # Mark the switch as in-progress in Redis so other workers know to wait
                                             if self.redis_client:
-                                                metadata_key = RedisKeys.channel_metadata(channel_id)
-                                                self.redis_client.hset(metadata_key, "url", new_url)
-                                                if user_agent:
-                                                    self.redis_client.hset(metadata_key, "user_agent", user_agent)
-
-                                                # Set switch status
                                                 status_key = RedisKeys.switch_status(channel_id)
                                                 self.redis_client.set(status_key, "switching")
 
-                                            # Perform the stream switch
+                                            # Perform the stream switch, forwarding stream_id and m3u_profile_id
                                             stream_manager = self.stream_managers[channel_id]
-                                            success = stream_manager.update_url(new_url)
+                                            success = stream_manager.update_url(new_url, event_stream_id, event_m3u_profile_id)
 
                                             if success:
                                                 logger.info(f"Stream switch initiated for channel {channel_id}")
+
+                                                # Confirm the URL in metadata now that the switch happened
+                                                if self.redis_client:
+                                                    metadata_key = RedisKeys.channel_metadata(channel_id)
+                                                    self.redis_client.hset(metadata_key, "url", new_url)
+                                                    if user_agent:
+                                                        self.redis_client.hset(metadata_key, "user_agent", user_agent)
 
                                                 # Publish confirmation
                                                 switch_result = {
@@ -265,6 +268,14 @@ class ProxyServer:
                                                     self.redis_client.set(status_key, "switched")
                                             else:
                                                 logger.error(f"Failed to switch stream for channel {channel_id}")
+
+                                                # Roll back the URL in metadata to what the manager will
+                                                # actually reconnect to. The non-owner may have pre-written
+                                                # the desired URL; use stream_manager.url (the ground truth)
+                                                # so Redis is consistent with the live stream.
+                                                if self.redis_client:
+                                                    metadata_key = RedisKeys.channel_metadata(channel_id)
+                                                    self.redis_client.hset(metadata_key, "url", stream_manager.url)
 
                                                 # Publish failure
                                                 switch_result = {
@@ -1448,7 +1459,7 @@ class ProxyServer:
                 RedisKeys.events_channel(channel_id)  # Event channel
             ]
 
-            # Cooldown keys must survive channel cleanup (they are intentionally persistent)
+            # Cooldown keys must survive channel cleanup (intentionally persistent)
             cooldown_prefix = f"ts_proxy:channel:{channel_id}:cooldown:"
 
             total_deleted = 0

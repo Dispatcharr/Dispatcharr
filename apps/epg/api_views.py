@@ -175,7 +175,7 @@ class EPGGridAPIView(APIView):
         # Get channels with custom dummy EPG sources (generate on-demand with patterns)
         channels_with_custom_dummy = Channel.objects.filter(
             epg_data__epg_source__source_type='dummy'
-        ).distinct()
+        ).select_related('epg_data__epg_source').distinct()
 
         # Log what we found
         without_count = channels_without_epg.count()
@@ -427,7 +427,13 @@ class EPGImportAPIView(APIView):
             return [Authenticated()]
 
     @extend_schema(
-        description="Triggers an EPG data import",
+        description="Triggers an EPG data refresh for the given source.",
+        request=inline_serializer(
+            name="EPGImportRequest",
+            fields={
+                "id": serializers.IntegerField(help_text="ID of the EPG source to refresh."),
+            },
+        ),
     )
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
@@ -449,7 +455,7 @@ class EPGImportAPIView(APIView):
         refresh_epg_data.delay(epg_id)  # Trigger Celery task
         logger.info("EPGImportAPIView: Task dispatched to refresh EPG data.")
         return Response(
-            {"success": True, "message": "EPG data import initiated."},
+            {"success": True, "message": "EPG data refresh initiated."},
             status=status.HTTP_202_ACCEPTED,
         )
 

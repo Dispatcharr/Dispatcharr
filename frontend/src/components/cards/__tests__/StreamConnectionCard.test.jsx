@@ -42,7 +42,6 @@ vi.mock('../../../utils/cards/StreamConnectionCardUtils.js', () => ({
   getChannelStreams: vi.fn(() => Promise.resolve([])),
   getLogoUrl: vi.fn(() => null),
   getM3uAccountsMap: vi.fn(() => ({})),
-  getMatchingStreamByUrl: vi.fn(() => null),
   getSelectedStream: vi.fn(() => null),
   getStartDate: vi.fn(() => 'Jan 1 2024 10:00 AM'),
   getStreamOptions: vi.fn(() => []),
@@ -168,6 +167,9 @@ vi.mock('lucide-react', () => ({
   SquareX: () => <svg data-testid="icon-square-x" />,
   Timer: () => <svg data-testid="icon-timer" />,
   Users: () => <svg data-testid="icon-users" />,
+  Video: () => <svg data-testid="icon-video" />,
+  Package: () => <svg data-testid="icon-package" />,
+  Download: () => <svg data-testid="icon-download" />,
 }));
 
 // ── Imports after mocks ───────────────────────────────────────────────────────
@@ -178,7 +180,6 @@ import useVideoStore from '../../../store/useVideoStore';
 import { showNotification } from '../../../utils/notificationUtils.js';
 import {
   getChannelStreams,
-  getMatchingStreamByUrl,
   getSelectedStream,
   getStreamsByIds,
   switchStream,
@@ -625,7 +626,7 @@ describe('StreamConnectionCard', () => {
       });
     });
 
-    it('sets activeStreamId when a matching stream is found by URL', async () => {
+    it('sets activeStreamId when a matching stream is found by stream_id', async () => {
       vi.mocked(getChannelStreams).mockResolvedValue([
         {
           id: 42,
@@ -634,15 +635,10 @@ describe('StreamConnectionCard', () => {
           m3u_profile: null,
         },
       ]);
-      vi.mocked(getMatchingStreamByUrl).mockReturnValue({
-        id: 42,
-        name: 'Stream A',
-        url: 'http://stream.example.com/ch1',
-        m3u_profile: null,
-      });
       render(<StreamConnectionCard {...defaultProps()} />);
       await waitFor(() => {
-        expect(getMatchingStreamByUrl).toHaveBeenCalled();
+        // defaultProps channel has stream_id: 42, which matches the stream id above
+        expect(getChannelStreams).toHaveBeenCalled();
       });
     });
 

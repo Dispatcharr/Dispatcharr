@@ -46,7 +46,6 @@ import {
   getChannelStreams,
   getLogoUrl,
   getM3uAccountsMap,
-  getMatchingStreamByUrl,
   getSelectedStream,
   getStartDate,
   getStreamOptions,
@@ -176,18 +175,13 @@ const StreamConnectionCard = ({
           // Use streams in the order returned by the API without sorting
           setAvailableStreams(streamData);
 
-          // If we have a channel URL, try to find the matching stream
-          if (channel.url && streamData.length > 0) {
-            // Try to find matching stream based on URL
-            const matchingStream = getMatchingStreamByUrl(
-              streamData,
-              channel.url
+          // Match by server-reported stream_id.
+          if (channel.stream_id && streamData.length > 0) {
+            const matchingStream = streamData.find(
+              (s) => s.id.toString() === channel.stream_id.toString()
             );
-
             if (matchingStream) {
               setActiveStreamId(matchingStream.id.toString());
-
-              // If the stream has M3U profile info, save it
               if (matchingStream.m3u_profile) {
                 setCurrentM3UProfile(matchingStream.m3u_profile);
               }
@@ -202,7 +196,7 @@ const StreamConnectionCard = ({
     };
 
     fetchStreams();
-  }, [channel.channel_id, channel.url, channelsByUUID]);
+  }, [channel.channel_id, channel.stream_id, channelsByUUID]);
 
   useEffect(() => {
     setData(

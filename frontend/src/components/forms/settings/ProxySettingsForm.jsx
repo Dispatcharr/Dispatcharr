@@ -66,10 +66,10 @@ const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
                         ? 30
                         : key === 'initial_behind_chunks'
                           ? 20
-                          : key === 'health_check_interval'
-                            ? 30
-                            : key === 'stream_cooldown_minutes'
-                              ? 1440
+                          : key === 'stream_cooldown_minutes'
+                            ? 1440
+                            : key === 'health_check_interval'
+                              ? 30
                               : 60;
   };
   return (

@@ -14,6 +14,7 @@ import Stats from './pages/Stats';
 import DVR from './pages/DVR';
 import Settings from './pages/Settings';
 import PluginsPage from './pages/Plugins';
+import PluginBrowsePage from './pages/PluginBrowse';
 import ConnectPage from './pages/Connect';
 import ConnectLogsPage from './pages/ConnectLogs';
 import Users from './pages/Users';
@@ -153,6 +154,10 @@ const App = () => {
                         <Route path="/guide" element={<Guide />} />
                         <Route path="/dvr" element={<DVR />} />
                         <Route path="/stats" element={<Stats />} />
+                        <Route
+                          path="/plugins/browse"
+                          element={<PluginBrowsePage />}
+                        />
                         <Route path="/plugins" element={<PluginsPage />} />
                         <Route path="/connect" element={<ConnectPage />} />
                         <Route

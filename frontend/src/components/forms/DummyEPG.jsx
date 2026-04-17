@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Accordion,
+  AccordionControl,
+  AccordionItem,
+  AccordionPanel,
   ActionIcon,
   Box,
   Button,
@@ -11,24 +14,32 @@ import {
   NumberInput,
   Paper,
   Popover,
+  PopoverDropdown,
+  PopoverTarget,
   Select,
   Stack,
   Text,
-  TextInput,
   Textarea,
+  TextInput,
 } from '@mantine/core';
 import { Info } from 'lucide-react';
 import { useForm } from '@mantine/form';
-import { notifications } from '@mantine/notifications';
-import API from '../../api';
 import useEPGsStore from '../../store/epgs';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
-
-// Extend dayjs with timezone support
-dayjs.extend(utc);
-dayjs.extend(timezone);
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  addEPG,
+  addNormalizedGroups,
+  applyTemplates,
+  buildCustomProperties,
+  buildTimePlaceholders,
+  getDummyEpgFormInitialValues,
+  getTimezones,
+  matchPattern,
+  updateEPG,
+  validateCustomNameSource,
+  validateCustomStreamIndex,
+  validateCustomTitlePattern,
+} from '../../utils/forms/DummyEpgUtils.js';
 
 // Helper component for labels with info popover
 const LabelWithInfo = ({ label, info, required }) => (
@@ -42,14 +53,14 @@ const LabelWithInfo = ({ label, info, required }) => (
       )}
     </Text>
     <Popover width={300} position="top" withArrow shadow="md">
-      <Popover.Target>
+      <PopoverTarget>
         <ActionIcon size="xs" variant="subtle" color="gray">
           <Info size={14} />
         </ActionIcon>
-      </Popover.Target>
-      <Popover.Dropdown>
+      </PopoverTarget>
+      <PopoverDropdown>
         <Text size="xs">{info}</Text>
-      </Popover.Dropdown>
+      </PopoverDropdown>
     </Popover>
   </Group>
 );
@@ -87,485 +98,76 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   const [loadingTimezones, setLoadingTimezones] = useState(true);
 
   const form = useForm({
-    initialValues: {
-      name: '',
-      is_active: true,
-      source_type: 'dummy',
-      custom_properties: {
-        title_pattern: '',
-        time_pattern: '',
-        date_pattern: '',
-        timezone: 'US/Eastern',
-        output_timezone: '',
-        program_duration: 180,
-        sample_title: '',
-        title_template: '',
-        subtitle_template: '',
-        description_template: '',
-        upcoming_title_template: '',
-        upcoming_description_template: '',
-        ended_title_template: '',
-        ended_description_template: '',
-        fallback_title_template: '',
-        fallback_description_template: '',
-        channel_logo_url: '',
-        program_poster_url: '',
-        name_source: 'channel',
-        stream_index: 1,
-        category: '',
-        include_date: true,
-        include_live: false,
-        include_new: false,
-      },
-    },
+    initialValues: getDummyEpgFormInitialValues(),
     validate: {
       name: (value) => (value?.trim() ? null : 'Name is required'),
       'custom_properties.title_pattern': (value) => {
-        if (!value?.trim()) return 'Title pattern is required';
-        try {
-          new RegExp(value);
-          return null;
-        } catch (e) {
-          return `Invalid regex: ${e.message}`;
-        }
+        return validateCustomTitlePattern(value);
       },
       'custom_properties.name_source': (value) => {
-        if (!value) return 'Name source is required';
-        return null;
+        return validateCustomNameSource(value);
       },
       'custom_properties.stream_index': (value, values) => {
-        if (values.custom_properties?.name_source === 'stream') {
-          if (!value || value < 1) {
-            return 'Stream index must be at least 1';
-          }
-        }
-        return null;
+        return validateCustomStreamIndex(values, value);
       },
     },
   });
 
-  // Real-time pattern validation with useMemo to prevent re-renders
   const patternValidation = useMemo(() => {
-    const result = {
-      titleMatch: false,
-      timeMatch: false,
-      dateMatch: false,
-      titleGroups: {},
-      timeGroups: {},
-      dateGroups: {},
-      calculatedPlaceholders: {},
-      formattedTitle: '',
-      formattedSubtitle: '',
-      formattedDescription: '',
-      formattedUpcomingTitle: '',
-      formattedUpcomingDescription: '',
-      formattedEndedTitle: '',
-      formattedEndedDescription: '',
-      formattedChannelLogoUrl: '',
-      formattedProgramPosterUrl: '',
-      error: null,
-    };
+    const title = matchPattern(
+      titlePattern,
+      sampleTitle,
+      'Title pattern error'
+    );
+    const time = matchPattern(timePattern, sampleTitle, 'Time pattern error');
+    const date = matchPattern(datePattern, sampleTitle, 'Date pattern error');
 
-    // Validate title pattern
-    if (titlePattern && sampleTitle) {
-      try {
-        const titleRegex = new RegExp(titlePattern);
-        const titleMatch = sampleTitle.match(titleRegex);
+    const errors = [title.error, time.error, date.error]
+      .filter(Boolean)
+      .join('; ');
 
-        if (titleMatch) {
-          result.titleMatch = true;
-          result.titleGroups = titleMatch.groups || {};
-        }
-      } catch (e) {
-        result.error = `Title pattern error: ${e.message}`;
-      }
-    }
+    const timePlaceholders = buildTimePlaceholders(
+      time.groups,
+      date.groups,
+      form.values.custom_properties?.timezone || 'UTC',
+      form.values.custom_properties?.output_timezone,
+      form.values.custom_properties?.program_duration
+    );
 
-    // Validate time pattern
-    if (timePattern && sampleTitle) {
-      try {
-        const timeRegex = new RegExp(timePattern);
-        const timeMatch = sampleTitle.match(timeRegex);
-
-        if (timeMatch) {
-          result.timeMatch = true;
-          result.timeGroups = timeMatch.groups || {};
-        }
-      } catch (e) {
-        result.error = result.error
-          ? `${result.error}; Time pattern error: ${e.message}`
-          : `Time pattern error: ${e.message}`;
-      }
-    }
-
-    // Validate date pattern
-    if (datePattern && sampleTitle) {
-      try {
-        const dateRegex = new RegExp(datePattern);
-        const dateMatch = sampleTitle.match(dateRegex);
-
-        if (dateMatch) {
-          result.dateMatch = true;
-          result.dateGroups = dateMatch.groups || {};
-        }
-      } catch (e) {
-        result.error = result.error
-          ? `${result.error}; Date pattern error: ${e.message}`
-          : `Date pattern error: ${e.message}`;
-      }
-    }
-
-    // Merge all groups for template formatting
-    const allGroups = {
-      ...result.titleGroups,
-      ...result.timeGroups,
-      ...result.dateGroups,
-    };
-
-    // Add normalized versions of all groups for cleaner URLs
-    // These remove all non-alphanumeric characters and convert to lowercase
-    Object.keys(allGroups).forEach((key) => {
-      const value = allGroups[key];
-      if (value) {
-        // Remove all non-alphanumeric characters (except spaces temporarily)
-        // then replace spaces with nothing, and convert to lowercase
-        const normalized = String(value)
-          .replace(/[^a-zA-Z0-9\s]/g, '')
-          .replace(/\s+/g, '')
-          .toLowerCase();
-        allGroups[`${key}_normalize`] = normalized;
-      }
+    const allGroups = addNormalizedGroups({
+      ...title.groups,
+      ...time.groups,
+      ...date.groups,
+      ...timePlaceholders,
     });
 
-    // Calculate formatted time strings if time was extracted
-    if (result.timeGroups.hour) {
-      try {
-        let hour24 = parseInt(result.timeGroups.hour);
-        const minute = result.timeGroups.minute
-          ? parseInt(result.timeGroups.minute)
-          : 0;
-        const ampm = result.timeGroups.ampm?.toLowerCase();
+    const hasMatch = title.matched || time.matched;
 
-        // Convert to 24-hour if AM/PM present
-        if (ampm === 'pm' && hour24 !== 12) {
-          hour24 += 12;
-        } else if (ampm === 'am' && hour24 === 12) {
-          hour24 = 0;
-        }
-
-        // Apply timezone conversion if output_timezone is set
-        const sourceTimezone = form.values.custom_properties?.timezone || 'UTC';
-        const outputTimezone = form.values.custom_properties?.output_timezone;
-
-        // Determine the base date to use
-        let baseDate = dayjs().tz(sourceTimezone);
-
-        // If date was extracted from pattern, use that instead of today
-        if (result.dateGroups.month && result.dateGroups.day) {
-          const monthValue = result.dateGroups.month;
-          let extractedMonth;
-
-          // Parse month - can be numeric (1-12) or text (Jan, January, Oct, October, etc.)
-          if (/^\d+$/.test(monthValue)) {
-            // Numeric month
-            extractedMonth = parseInt(monthValue);
-          } else {
-            // Text month - convert to number (1-12)
-            const monthLower = monthValue.toLowerCase();
-            const monthNames = [
-              'january',
-              'february',
-              'march',
-              'april',
-              'may',
-              'june',
-              'july',
-              'august',
-              'september',
-              'october',
-              'november',
-              'december',
-            ];
-            const monthAbbr = [
-              'jan',
-              'feb',
-              'mar',
-              'apr',
-              'may',
-              'jun',
-              'jul',
-              'aug',
-              'sep',
-              'oct',
-              'nov',
-              'dec',
-            ];
-
-            // Try full month names first
-            let monthIndex = monthNames.findIndex((m) => m === monthLower);
-            if (monthIndex === -1) {
-              // Try abbreviated month names
-              monthIndex = monthAbbr.findIndex((m) => m === monthLower);
-            }
-
-            if (monthIndex !== -1) {
-              extractedMonth = monthIndex + 1; // Convert 0-indexed to 1-12
-            } else {
-              // If we can't parse it, default to current month
-              extractedMonth = dayjs().month() + 1;
-            }
-          }
-
-          const extractedDay = parseInt(result.dateGroups.day);
-          const extractedYear = result.dateGroups.year
-            ? parseInt(result.dateGroups.year)
-            : dayjs().year(); // Default to current year if not provided
-
-          // Validate that we have valid numeric values
-          if (
-            !isNaN(extractedMonth) &&
-            !isNaN(extractedDay) &&
-            !isNaN(extractedYear) &&
-            extractedMonth >= 1 &&
-            extractedMonth <= 12 &&
-            extractedDay >= 1 &&
-            extractedDay <= 31
-          ) {
-            // Create a specific date string and parse it in the source timezone
-            // This ensures DST is calculated correctly for the target date
-            const dateString = `${extractedYear}-${extractedMonth.toString().padStart(2, '0')}-${extractedDay.toString().padStart(2, '0')}`;
-            baseDate = dayjs.tz(dateString, sourceTimezone);
-          }
-        }
-
-        if (outputTimezone && outputTimezone !== sourceTimezone) {
-          // Create a date in the source timezone with extracted or current date
-          // Set the time on the date, which will use the DST rules for that specific date
-          const sourceDate = baseDate
-            .set('hour', hour24)
-            .set('minute', minute)
-            .set('second', 0);
-
-          // Convert to output timezone
-          const outputDate = sourceDate.tz(outputTimezone);
-
-          // Update hour and minute to the converted values
-          hour24 = outputDate.hour();
-          const convertedMinute = outputDate.minute();
-
-          // Add date placeholders based on the OUTPUT timezone
-          // This ensures {date}, {month}, {day}, {year} reflect the converted timezone
-          allGroups.date = outputDate.format('YYYY-MM-DD');
-          allGroups.month = outputDate.month() + 1; // dayjs months are 0-indexed
-          allGroups.day = outputDate.date();
-          allGroups.year = outputDate.year();
-
-          // Format 24-hour start time string with converted time
-          if (convertedMinute > 0) {
-            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
-          } else {
-            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:00`;
-          }
-
-          // Convert to 12-hour format with converted time
-          const ampmDisplay = hour24 < 12 ? 'AM' : 'PM';
-          let hour12 = hour24;
-          if (hour24 === 0) {
-            hour12 = 12;
-          } else if (hour24 > 12) {
-            hour12 = hour24 - 12;
-          }
-
-          // Format 12-hour start time string with converted time
-          if (convertedMinute > 0) {
-            allGroups.starttime = `${hour12}:${convertedMinute.toString().padStart(2, '0')} ${ampmDisplay}`;
-          } else {
-            allGroups.starttime = `${hour12} ${ampmDisplay}`;
-          }
-
-          // Format long versions that always include minutes
-          allGroups.starttime_long = `${hour12}:${convertedMinute.toString().padStart(2, '0')} ${ampmDisplay}`;
-          allGroups.starttime24_long = `${hour24.toString().padStart(2, '0')}:${convertedMinute.toString().padStart(2, '0')}`;
-        } else {
-          // No timezone conversion - use original logic
-          // Add date placeholders based on the source timezone
-          const sourceDate = baseDate
-            .set('hour', hour24)
-            .set('minute', minute)
-            .set('second', 0);
-
-          allGroups.date = sourceDate.format('YYYY-MM-DD');
-          allGroups.month = sourceDate.month() + 1; // dayjs months are 0-indexed
-          allGroups.day = sourceDate.date();
-          allGroups.year = sourceDate.year();
-
-          // Format 24-hour start time string
-          if (minute > 0) {
-            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-          } else {
-            allGroups.starttime24 = `${hour24.toString().padStart(2, '0')}:00`;
-          }
-
-          // Convert to 12-hour format
-          const ampmDisplay = hour24 < 12 ? 'AM' : 'PM';
-          let hour12 = hour24;
-          if (hour24 === 0) {
-            hour12 = 12;
-          } else if (hour24 > 12) {
-            hour12 = hour24 - 12;
-          }
-
-          // Format 12-hour start time string
-          if (minute > 0) {
-            allGroups.starttime = `${hour12}:${minute.toString().padStart(2, '0')} ${ampmDisplay}`;
-          } else {
-            allGroups.starttime = `${hour12} ${ampmDisplay}`;
-          }
-
-          // Format long version that always includes minutes
-          allGroups.starttime_long = `${hour12}:${minute.toString().padStart(2, '0')} ${ampmDisplay}`;
-        }
-
-        // Calculate end time based on program duration
-        const programDuration =
-          form.values.custom_properties?.program_duration || 180;
-
-        // Calculate end time by adding duration to start time
-        const startMinutes = hour24 * 60 + minute;
-        const endMinutes = startMinutes + programDuration;
-
-        let endHour24 = Math.floor(endMinutes / 60) % 24; // Wrap around 24 hours
-        const endMinute = endMinutes % 60;
-
-        // Format 24-hour end time string
-        if (endMinute > 0) {
-          allGroups.endtime24 = `${endHour24.toString().padStart(2, '0')}:${endMinute.toString().padStart(2, '0')}`;
-        } else {
-          allGroups.endtime24 = `${endHour24.toString().padStart(2, '0')}:00`;
-        }
-
-        // Convert to 12-hour format for endtime
-        const endAmpmDisplay = endHour24 < 12 ? 'AM' : 'PM';
-        let endHour12 = endHour24;
-        if (endHour24 === 0) {
-          endHour12 = 12;
-        } else if (endHour24 > 12) {
-          endHour12 = endHour24 - 12;
-        }
-
-        // Format 12-hour end time string
-        if (endMinute > 0) {
-          allGroups.endtime = `${endHour12}:${endMinute.toString().padStart(2, '0')} ${endAmpmDisplay}`;
-        } else {
-          allGroups.endtime = `${endHour12} ${endAmpmDisplay}`;
-        }
-
-        // Format long version that always includes minutes
-        allGroups.endtime_long = `${endHour12}:${endMinute.toString().padStart(2, '0')} ${endAmpmDisplay}`;
-
-        // Store calculated placeholders for display in preview
-        result.calculatedPlaceholders = {
-          starttime: allGroups.starttime,
-          starttime24: allGroups.starttime24,
-          starttime_long: allGroups.starttime_long,
-          endtime: allGroups.endtime,
-          endtime24: allGroups.endtime24,
-          endtime_long: allGroups.endtime_long,
-          date: allGroups.date,
-          month: allGroups.month,
-          day: allGroups.day,
-          year: allGroups.year,
-        };
-      } catch (e) {
-        // If parsing fails, leave starttime/endtime as placeholders
-        console.error('Error formatting time:', e);
-      }
-    }
-
-    // Format title template
-    if (titleTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedTitle = titleTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format subtitle template
-    if (subtitleTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedSubtitle = subtitleTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format description template
-    if (descriptionTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedDescription = descriptionTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format upcoming title template
-    if (upcomingTitleTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedUpcomingTitle = upcomingTitleTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format upcoming description template
-    if (
-      upcomingDescriptionTemplate &&
-      (result.titleMatch || result.timeMatch)
-    ) {
-      result.formattedUpcomingDescription = upcomingDescriptionTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format ended title template
-    if (endedTitleTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedEndedTitle = endedTitleTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format ended description template
-    if (endedDescriptionTemplate && (result.titleMatch || result.timeMatch)) {
-      result.formattedEndedDescription = endedDescriptionTemplate.replace(
-        /\{(\w+)\}/g,
-        (match, key) => allGroups[key] || match
-      );
-    }
-
-    // Format channel logo URL
-    if (channelLogoUrl && (result.titleMatch || result.timeMatch)) {
-      result.formattedChannelLogoUrl = channelLogoUrl.replace(
-        /\{(\w+)\}/g,
-        (match, key) => {
-          const value = allGroups[key];
-          // URL encode the value to handle spaces and special characters
-          return value ? encodeURIComponent(String(value)) : match;
-        }
-      );
-    }
-
-    // Format program poster URL
-    if (programPosterUrl && (result.titleMatch || result.timeMatch)) {
-      result.formattedProgramPosterUrl = programPosterUrl.replace(
-        /\{(\w+)\}/g,
-        (match, key) => {
-          const value = allGroups[key];
-          // URL encode the value to handle spaces and special characters
-          return value ? encodeURIComponent(String(value)) : match;
-        }
-      );
-    }
-
-    return result;
+    return {
+      titleMatch: title.matched,
+      timeMatch: time.matched,
+      dateMatch: date.matched,
+      titleGroups: title.groups,
+      timeGroups: time.groups,
+      dateGroups: date.groups,
+      calculatedPlaceholders: time.matched ? timePlaceholders : {},
+      error: errors || null,
+      ...applyTemplates(
+        {
+          titleTemplate,
+          subtitleTemplate,
+          descriptionTemplate,
+          upcomingTitleTemplate,
+          upcomingDescriptionTemplate,
+          endedTitleTemplate,
+          endedDescriptionTemplate,
+          channelLogoUrl,
+          programPosterUrl,
+        },
+        allGroups,
+        hasMatch
+      ),
+    };
   }, [
     titlePattern,
     timePattern,
@@ -588,81 +190,16 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
   useEffect(() => {
     if (epg) {
       const custom = epg.custom_properties || {};
-
       form.setValues({
         name: epg.name || '',
         is_active: epg.is_active ?? true,
         source_type: 'dummy',
-        custom_properties: {
-          title_pattern: custom.title_pattern || '',
-          time_pattern: custom.time_pattern || '',
-          date_pattern: custom.date_pattern || '',
-          timezone:
-            custom.timezone ||
-            custom.timezone_offset?.toString() ||
-            'US/Eastern',
-          output_timezone: custom.output_timezone || '',
-          program_duration: custom.program_duration || 180,
-          sample_title: custom.sample_title || '',
-          title_template: custom.title_template || '',
-          subtitle_template: custom.subtitle_template || '',
-          description_template: custom.description_template || '',
-          upcoming_title_template: custom.upcoming_title_template || '',
-          upcoming_description_template:
-            custom.upcoming_description_template || '',
-          ended_title_template: custom.ended_title_template || '',
-          ended_description_template: custom.ended_description_template || '',
-          fallback_title_template: custom.fallback_title_template || '',
-          fallback_description_template:
-            custom.fallback_description_template || '',
-          channel_logo_url: custom.channel_logo_url || '',
-          program_poster_url: custom.program_poster_url || '',
-          name_source: custom.name_source || 'channel',
-          stream_index: custom.stream_index || 1,
-          category: custom.category || '',
-          include_date: custom.include_date ?? true,
-          include_live: custom.include_live ?? false,
-          include_new: custom.include_new ?? false,
-        },
+        custom_properties: buildCustomProperties(custom),
       });
-
-      // Set controlled state
-      setTitlePattern(custom.title_pattern || '');
-      setTimePattern(custom.time_pattern || '');
-      setDatePattern(custom.date_pattern || '');
-      setSampleTitle(custom.sample_title || '');
-      setTitleTemplate(custom.title_template || '');
-      setSubtitleTemplate(custom.subtitle_template || '');
-      setDescriptionTemplate(custom.description_template || '');
-      setUpcomingTitleTemplate(custom.upcoming_title_template || '');
-      setUpcomingDescriptionTemplate(
-        custom.upcoming_description_template || ''
-      );
-      setEndedTitleTemplate(custom.ended_title_template || '');
-      setEndedDescriptionTemplate(custom.ended_description_template || '');
-      setFallbackTitleTemplate(custom.fallback_title_template || '');
-      setFallbackDescriptionTemplate(
-        custom.fallback_description_template || ''
-      );
-      setChannelLogoUrl(custom.channel_logo_url || '');
-      setProgramPosterUrl(custom.program_poster_url || '');
+      applyCustomState(custom);
     } else {
       form.reset();
-      setTitlePattern('');
-      setTimePattern('');
-      setDatePattern('');
-      setSampleTitle('');
-      setTitleTemplate('');
-      setSubtitleTemplate('');
-      setDescriptionTemplate('');
-      setUpcomingTitleTemplate('');
-      setUpcomingDescriptionTemplate('');
-      setEndedTitleTemplate('');
-      setEndedDescriptionTemplate('');
-      setFallbackTitleTemplate('');
-      setFallbackDescriptionTemplate('');
-      setChannelLogoUrl('');
-      setProgramPosterUrl('');
+      applyCustomState(); // called with no args — all setters receive ''
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epg]);
@@ -672,7 +209,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     const fetchTimezones = async () => {
       try {
         setLoadingTimezones(true);
-        const response = await API.getTimezones();
+        const response = await getTimezones();
 
         // Convert timezone list to Select options format
         const options = response.timezones.map((tz) => ({
@@ -683,7 +220,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
         setTimezoneOptions(options);
       } catch (error) {
         console.error('Failed to load timezones:', error);
-        notifications.show({
+        showNotification({
           title: 'Warning',
           message: 'Failed to load timezone list. Using default options.',
           color: 'yellow',
@@ -703,50 +240,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     fetchTimezones();
   }, []);
 
-  // Function to import settings from an existing dummy EPG
-  const handleImportFromTemplate = (templateId) => {
-    const template = dummyEpgs.find((e) => e.id === parseInt(templateId));
-    if (!template) return;
-
-    const custom = template.custom_properties || {};
-
-    // Update form values
-    form.setValues({
-      name: `${template.name} (Copy)`,
-      is_active: template.is_active ?? true,
-      source_type: 'dummy',
-      custom_properties: {
-        title_pattern: custom.title_pattern || '',
-        time_pattern: custom.time_pattern || '',
-        date_pattern: custom.date_pattern || '',
-        timezone:
-          custom.timezone || custom.timezone_offset?.toString() || 'US/Eastern',
-        output_timezone: custom.output_timezone || '',
-        program_duration: custom.program_duration || 180,
-        sample_title: custom.sample_title || '',
-        title_template: custom.title_template || '',
-        subtitle_template: custom.subtitle_template || '',
-        description_template: custom.description_template || '',
-        upcoming_title_template: custom.upcoming_title_template || '',
-        upcoming_description_template:
-          custom.upcoming_description_template || '',
-        ended_title_template: custom.ended_title_template || '',
-        ended_description_template: custom.ended_description_template || '',
-        fallback_title_template: custom.fallback_title_template || '',
-        fallback_description_template:
-          custom.fallback_description_template || '',
-        channel_logo_url: custom.channel_logo_url || '',
-        program_poster_url: custom.program_poster_url || '',
-        name_source: custom.name_source || 'channel',
-        stream_index: custom.stream_index || 1,
-        category: custom.category || '',
-        include_date: custom.include_date ?? true,
-        include_live: custom.include_live ?? false,
-        include_new: custom.include_new ?? false,
-      },
-    });
-
-    // Update all individual state variables to match
+  const applyCustomState = (custom = {}) => {
     setTitlePattern(custom.title_pattern || '');
     setTimePattern(custom.time_pattern || '');
     setDatePattern(custom.date_pattern || '');
@@ -762,8 +256,23 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
     setFallbackDescriptionTemplate(custom.fallback_description_template || '');
     setChannelLogoUrl(custom.channel_logo_url || '');
     setProgramPosterUrl(custom.program_poster_url || '');
+  };
 
-    notifications.show({
+  // Function to import settings from an existing dummy EPG
+  const handleImportFromTemplate = (templateId) => {
+    const template = dummyEpgs.find((e) => e.id === parseInt(templateId));
+    if (!template) return;
+
+    const custom = template.custom_properties || {};
+    form.setValues({
+      name: `${template.name} (Copy)`,
+      is_active: template.is_active ?? true,
+      source_type: 'dummy',
+      custom_properties: buildCustomProperties(custom),
+    });
+    applyCustomState(custom);
+
+    showNotification({
       title: 'Template Imported',
       message: `Settings imported from "${template.name}". Don't forget to change the name!`,
       color: 'blue',
@@ -775,7 +284,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       if (epg?.id) {
         // Validate that we have a valid EPG object before updating
         if (!epg || typeof epg !== 'object' || !epg.id) {
-          notifications.show({
+          showNotification({
             title: 'Error',
             message: 'Invalid EPG data. Please close and reopen this form.',
             color: 'red',
@@ -783,15 +292,15 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
           return;
         }
 
-        await API.updateEPG({ ...values, id: epg.id });
-        notifications.show({
+        await updateEPG(values, epg);
+        showNotification({
           title: 'Success',
           message: 'Dummy EPG source updated successfully',
           color: 'green',
         });
       } else {
-        await API.addEPG(values);
-        notifications.show({
+        await addEPG(values);
+        showNotification({
           title: 'Success',
           message: 'Dummy EPG source created successfully',
           color: 'green',
@@ -799,7 +308,7 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
       }
       onClose();
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: error.message || 'Failed to save dummy EPG source',
         color: 'red',
@@ -852,9 +361,9 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
 
           {/* Accordion for organized sections */}
           <Accordion defaultValue="patterns" variant="separated">
-            <Accordion.Item value="patterns">
-              <Accordion.Control>Pattern Configuration</Accordion.Control>
-              <Accordion.Panel>
+            <AccordionItem value="patterns">
+              <AccordionControl>Pattern Configuration</AccordionControl>
+              <AccordionPanel>
                 <Stack spacing="md">
                   <Text size="sm" c="dimmed">
                     Define regex patterns to extract information from channel
@@ -961,12 +470,12 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     }}
                   />
                 </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
+              </AccordionPanel>
+            </AccordionItem>
 
-            <Accordion.Item value="templates">
-              <Accordion.Control>Output Templates</Accordion.Control>
-              <Accordion.Panel>
+            <AccordionItem value="templates">
+              <AccordionControl>Output Templates</AccordionControl>
+              <AccordionPanel>
                 <Stack spacing="md">
                   <Text size="sm" c="dimmed">
                     Use extracted groups from your patterns to format EPG titles
@@ -1039,12 +548,12 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     }}
                   />
                 </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
+              </AccordionPanel>
+            </AccordionItem>
 
-            <Accordion.Item value="upcoming-ended">
-              <Accordion.Control>Upcoming/Ended Templates</Accordion.Control>
-              <Accordion.Panel>
+            <AccordionItem value="upcoming-ended">
+              <AccordionControl>Upcoming/Ended Templates</AccordionControl>
+              <AccordionPanel>
                 <Stack spacing="md">
                   <Text size="sm" c="dimmed">
                     Customize how programs appear before and after the event. If
@@ -1138,12 +647,12 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     }}
                   />
                 </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
+              </AccordionPanel>
+            </AccordionItem>
 
-            <Accordion.Item value="fallback">
-              <Accordion.Control>Fallback Templates</Accordion.Control>
-              <Accordion.Panel>
+            <AccordionItem value="fallback">
+              <AccordionControl>Fallback Templates</AccordionControl>
+              <AccordionPanel>
                 <Stack spacing="md">
                   <Text size="sm" c="dimmed">
                     When patterns don't match the channel/stream name, use these
@@ -1195,12 +704,12 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     }}
                   />
                 </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
+              </AccordionPanel>
+            </AccordionItem>
 
-            <Accordion.Item value="settings">
-              <Accordion.Control>EPG Settings</Accordion.Control>
-              <Accordion.Panel>
+            <AccordionItem value="settings">
+              <AccordionControl>EPG Settings</AccordionControl>
+              <AccordionPanel>
                 <Stack spacing="md">
                   <Select
                     label={
@@ -1335,8 +844,8 @@ const DummyEPGForm = ({ epg, isOpen, onClose }) => {
                     })}
                   />
                 </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
+              </AccordionPanel>
+            </AccordionItem>
           </Accordion>
 
           {/* Testing & Preview */}

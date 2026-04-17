@@ -54,6 +54,32 @@ vi.mock('@mantine/core', async () => {
     Text: ({ children, ...props }) => <span {...props}>{children}</span>,
     UnstyledButton: ({ children, ...props }) => <button {...props}>{children}</button>,
     Badge: ({ children, ...props }) => <span {...props}>{children}</span>,
+    Loader: ({ size }) => <span data-testid="loader" data-size={size} />,
+    Modal: ({ opened, onClose, title, children }) =>
+      opened ? (
+        <div data-testid="modal">
+          <div data-testid="modal-title">{title}</div>
+          <button onClick={onClose}>Close Modal</button>
+          {children}
+        </div>
+      ) : null,
+    Tabs: Object.assign(
+      ({ children, value, onChange }) => (
+        <div data-testid="tabs" data-value={value}>{children}</div>
+      ),
+      {
+        List: ({ children }) => <div>{children}</div>,
+        Tab: ({ children, value, leftSection }) => (
+          <button data-value={value}>{leftSection}{children}</button>
+        ),
+        Panel: ({ children, value }) => (
+          <div data-testid={`tab-panel-${value}`}>{children}</div>
+        ),
+      }
+    ),
+    Tooltip: ({ children, label }) => (
+      <div title={label}>{children}</div>
+    ),
   };
 });
 
@@ -112,7 +138,7 @@ describe('PluginCard', () => {
       expect(screen.getByText('Test Plugin')).toBeInTheDocument();
       expect(screen.getByText('A test plugin')).toBeInTheDocument();
       expect(screen.getByText('v1.0.0')).toBeInTheDocument();
-      expect(screen.getByText('By Test Author')).toBeInTheDocument();
+      expect(screen.getByText('Test Author')).toBeInTheDocument();
     });
 
     it('should render plugin logo when logo_url is provided', () => {
@@ -166,43 +192,28 @@ describe('PluginCard', () => {
     });
   });
 
-  describe('Expansion/Collapse', () => {
-    it('should toggle expanded state when clicking chevron button', async () => {
-      render(<PluginCard plugin={mockPlugin} />);
-
-      await waitFor(() => {
-        fireEvent.click(screen.getByTitle('Collapse settings'));
-        expect(screen.queryByText('Test Action')).not.toBeInTheDocument();
-      });
-
-      await waitFor(() => {
-        fireEvent.click(screen.getByTitle('Expand settings'));
-      });
-
-      expect(await screen.findByText('Test Action')).toBeInTheDocument();
-    });
-
-    it('should toggle expanded state when clicking plugin name', () => {
+  describe('Modal Behavior', () => {
+    it('should open settings modal when Settings button is clicked', () => {
       render(<PluginCard {...defaultProps} />);
 
-      expect(screen.getByText('Test Action')).toBeInTheDocument();
-
-      const nameButton = screen.getByText('Test Plugin');
-
-      fireEvent.click(nameButton);
-      expect(screen.queryByText('Test Action')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText('Settings'));
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
     });
 
-    it('should collapse when plugin is disabled', () => {
-      const { rerender } = render(<PluginCard {...defaultProps} />);
+    it('should open actions modal when Actions button is clicked', () => {
+      render(<PluginCard {...defaultProps} />);
 
-      const expandButton = screen.getAllByRole('button')[0];
-      fireEvent.click(expandButton);
+      expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText('Actions'));
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
 
+    it('should not show Actions button when plugin is disabled', () => {
       const disabledPlugin = { ...mockPlugin, enabled: false };
-      rerender(<PluginCard {...defaultProps} plugin={disabledPlugin} />);
+      render(<PluginCard {...defaultProps} plugin={disabledPlugin} />);
 
-      expect(screen.queryByText('Test Action')).not.toBeInTheDocument();
+      expect(screen.queryByText('Actions')).not.toBeInTheDocument();
     });
   });
 
@@ -278,7 +289,8 @@ describe('PluginCard', () => {
       defaultProps.onSaveSettings.mockResolvedValue(true);
       render(<PluginCard {...defaultProps} />);
 
-      const saveButton = screen.getByText('Save Settings');
+      fireEvent.click(screen.getByText('Settings'));
+      const saveButton = screen.getByText('Save');
       fireEvent.click(saveButton);
 
       await waitFor(() => {
@@ -298,7 +310,8 @@ describe('PluginCard', () => {
       defaultProps.onSaveSettings.mockResolvedValue(false);
       render(<PluginCard {...defaultProps} />);
 
-      const saveButton = screen.getByText('Save Settings');
+      fireEvent.click(screen.getByText('Settings'));
+      const saveButton = screen.getByText('Save');
       fireEvent.click(saveButton);
 
       await waitFor(() => {
@@ -315,7 +328,8 @@ describe('PluginCard', () => {
       defaultProps.onSaveSettings.mockRejectedValue(error);
       render(<PluginCard {...defaultProps} />);
 
-      const saveButton = screen.getByText('Save Settings');
+      fireEvent.click(screen.getByText('Settings'));
+      const saveButton = screen.getByText('Save');
       fireEvent.click(saveButton);
 
       await waitFor(() => {
@@ -332,6 +346,7 @@ describe('PluginCard', () => {
     it('should render action buttons', () => {
       render(<PluginCard {...defaultProps} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       expect(screen.getByText('Run Action')).toBeInTheDocument();
     });
 
@@ -344,6 +359,7 @@ describe('PluginCard', () => {
 
       render(<PluginCard {...defaultProps} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       const actionButton = screen.getByText('Run Action');
       fireEvent.click(actionButton);
 
@@ -369,6 +385,7 @@ describe('PluginCard', () => {
 
       render(<PluginCard {...defaultProps} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       const actionButton = screen.getByText('Run Action');
       fireEvent.click(actionButton);
 
@@ -391,6 +408,7 @@ describe('PluginCard', () => {
 
       render(<PluginCard {...defaultProps} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       const actionButton = screen.getByText('Run Action');
       fireEvent.click(actionButton);
 
@@ -412,6 +430,7 @@ describe('PluginCard', () => {
 
       render(<PluginCard {...errorProps} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       const actionButton = screen.getByText('Run Action');
       fireEvent.click(actionButton);
 
@@ -439,6 +458,7 @@ describe('PluginCard', () => {
 
       render(<PluginCard {...defaultProps} plugin={pluginWithEvents} />);
 
+      fireEvent.click(screen.getByText('Actions'));
       expect(screen.getByText('Event Triggers')).toBeInTheDocument();
     });
   });
@@ -447,7 +467,7 @@ describe('PluginCard', () => {
     it('should call onRequestDelete when delete button is clicked', () => {
       render(<PluginCard {...defaultProps} />);
 
-      const deleteButton = screen.getByTitle('Delete plugin');
+      const deleteButton = screen.getByText('Uninstall');
       fireEvent.click(deleteButton);
 
       expect(defaultProps.onRequestDelete).toHaveBeenCalledWith(mockPlugin);
@@ -476,8 +496,8 @@ describe('PluginCard', () => {
       };
       rerender(<PluginCard {...defaultProps} plugin={newPlugin} />);
 
-      // Settings should be updated internally
-      expect(screen.getByText('Save Settings')).toBeInTheDocument();
+      // Settings button should still be present after key change
+      expect(screen.getByText('Settings')).toBeInTheDocument();
     });
   });
 });

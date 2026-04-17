@@ -67,8 +67,8 @@ const M3U = ({
       password: '',
       stale_stream_days: 7,
       priority: 0,
-      enable_vod: false,
       proxy: '',
+      enable_vod: false,
     },
 
     validate: {
@@ -100,8 +100,8 @@ const M3U = ({
           m3uAccount.priority !== undefined && m3uAccount.priority !== null
             ? m3uAccount.priority
             : 0,
-        enable_vod: m3uAccount.enable_vod || false,
         proxy: m3uAccount.proxy || '',
+        enable_vod: m3uAccount.enable_vod || false,
       });
       setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
@@ -463,12 +463,9 @@ const M3U = ({
               />
 
               <TextInput
-                style={{ width: '100%' }}
-                id="proxy"
-                name="proxy"
                 label="HTTP Proxy"
                 placeholder="http://proxy.example.com:8080"
-                description="Optional HTTP proxy URL for this M3U account"
+                description="Optional HTTP proxy URL for this M3U account (used for stream connections)"
                 {...form.getInputProps('proxy')}
                 key={form.key('proxy')}
               />

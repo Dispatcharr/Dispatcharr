@@ -6,6 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework import viewsets, status, serializers
+from rest_framework.throttling import AnonRateThrottle
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 import json
@@ -20,9 +21,14 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 logger = logging.getLogger(__name__)
 
 
+class LoginRateThrottle(AnonRateThrottle):
+    scope = "login"
+
+
 class TokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [LoginRateThrottle]
+
     def post(self, request, *args, **kwargs):
-        # Custom logic here
         if not network_access_allowed(request, "UI"):
             # Log blocked login attempt due to network restrictions
             from core.utils import log_system_event
@@ -153,12 +159,11 @@ class AuthViewSet(viewsets.ViewSet):
         Login doesn't require auth, but logout does
         """
         if self.action == 'logout':
-            from rest_framework.permissions import IsAuthenticated
-            return [IsAuthenticated()]
+            return [Authenticated()]
         return []
 
     @extend_schema(
-        description="Authenticate and log in a user",
+        description="Alias for POST /api/accounts/token/ — returns JWT access and refresh tokens.",
         request=inline_serializer(
             name="LoginRequest",
             fields={
@@ -168,55 +173,10 @@ class AuthViewSet(viewsets.ViewSet):
         ),
     )
     def login(self, request):
-        """Logs in a user and returns user details"""
-        username = request.data.get("username")
-        password = request.data.get("password")
-        user = authenticate(request, username=username, password=password)
-
-        # Get client info for logging
-        from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-        logger.debug(f"Login attempt via session: user={username} ip={client_ip}")
-
-        if user:
-            login(request, user)
-            # Update last_login timestamp
-            from django.utils import timezone
-            user.last_login = timezone.now()
-            user.save(update_fields=['last_login'])
-
-            # Log successful login
-            log_system_event(
-                event_type='login_success',
-                user=username,
-                client_ip=client_ip,
-                user_agent=user_agent,
-            )
-            logger.info(f"Login success via session: user={username} ip={client_ip}")
-
-            return Response(
-                {
-                    "message": "Login successful",
-                    "user": {
-                        "id": user.id,
-                        "username": user.username,
-                        "email": user.email,
-                        "groups": list(user.groups.values_list("name", flat=True)),
-                    },
-                }
-            )
-
-        # Log failed login attempt
-        log_system_event(
-            event_type='login_failed',
-            user=username or 'unknown',
-            client_ip=client_ip,
-            user_agent=user_agent,
-            reason='Invalid credentials',
-        )
-        logger.info(f"Login failed via session: user={username} ip={client_ip}")
-        return Response({"error": "Invalid credentials"}, status=400)
+        """Delegates to TokenObtainPairView (JWT login). Throttling, logging, and
+        network access checks are handled there."""
+        view = TokenObtainPairView.as_view()
+        return view(request._request)
 
     @extend_schema(
         description="Log out the current user",
@@ -290,6 +250,14 @@ class UserViewSet(viewsets.ModelViewSet):
 
             for key in disallowed:
                 request.data.pop(key, None)
+
+            # Strip admin-managed keys from custom_properties so users cannot
+            # set their own XC credentials via this endpoint.
+            ADMIN_ONLY_PROPS = {"xc_password"}
+            cp = request.data.get("custom_properties")
+            if isinstance(cp, dict):
+                for key in ADMIN_ONLY_PROPS:
+                    cp.pop(key, None)
 
             serializer = UserSerializer(user, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)

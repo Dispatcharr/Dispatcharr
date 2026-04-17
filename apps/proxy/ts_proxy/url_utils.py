@@ -277,58 +277,10 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
         logger.error(f"Error getting stream info for switch: {e}", exc_info=True)
         return {'error': f'Error: {str(e)}'}
 
-def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
-    """
-    Get stream information for a specific stream/profile combination.
-    
-    Args:
-        channel_id: The UUID of the channel
-        stream_id: The stream ID to use
-        m3u_profile_id: The profile ID to use
-        
-    Returns:
-        dict: Stream information including URL, user agent, transcode flag
-    """
-    try:
-        from core.utils import RedisClient
-        
-        channel = get_object_or_404(Channel, uuid=channel_id)
-        redis_client = RedisClient.get_client()
-        
-        # Get the stream and profile objects
-        stream = get_object_or_404(Stream, pk=stream_id)
-        profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
-        
-        # Get the M3U account
-        m3u_account = M3UAccount.objects.get(id=profile.m3u_account.id)
-        
-        # Get the user agent
-        user_agent = m3u_account.get_user_agent().user_agent
-        
-        # Generate URL using the transform function
-        stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
-        
-        # Get transcode info from the channel's stream profile
-        stream_profile = channel.get_stream_profile()
-        transcode = not (stream_profile.is_proxy() or stream_profile is None)
-        profile_value = stream_profile.id
-        
-        return {
-            'url': stream_url,
-            'user_agent': user_agent,
-            'transcode': transcode,
-            'stream_profile': profile_value,
-            'stream_id': stream_id,
-            'm3u_profile_id': m3u_profile_id
-        }
-    except Exception as e:
-        logger.error(f"Error getting stream info for profile: {e}", exc_info=True)
-        return {'error': f'Error: {str(e)}'}
-
 def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = None, current_profile_id: Optional[int] = None) -> List[dict]:
     """
     Get alternative streams for a channel when the current stream fails.
-    Includes profile failover: returns all available profiles for each stream.
+    Returns ALL stream/profile combinations (not just first profile per stream).
 
     Args:
         channel_id: The UUID of the channel
@@ -364,8 +316,10 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         for stream in streams:
             logger.debug(f"Checking stream ID {stream.id} ({stream.name}) for channel {channel_id}")
 
-            # NOTE: Do NOT skip the current stream entirely - it may have other profiles available.
-            # The current stream+profile combination is skipped inside the profile loop below.
+            # Skip the current failing stream
+            if current_stream_id and stream.id == current_stream_id:
+                logger.debug(f"Skipping current stream ID {current_stream_id}")
+                continue
 
             # Find compatible profiles for this stream with connection checking
             try:
@@ -387,9 +341,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                 profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
 
                 for profile in profiles:
-                    # Skip current stream+profile combination
-                    if current_stream_id and stream.id == current_stream_id and current_profile_id and profile.id == current_profile_id:
-                        logger.debug(f"Skipping current stream/profile combination: {current_stream_id}/{current_profile_id}")
+                    # Skip the current stream+profile combination
+                    if stream.id == current_stream_id and profile.id == current_profile_id:
+                        logger.debug(f"Skipping current combination stream {stream.id} + profile {profile.id}")
                         continue
 
                     # Check connection availability
@@ -401,8 +355,6 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                         channel_using_profile = False
                         existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
                         if existing_stream_id:
-                            # Decode bytes to string/int for proper Redis key lookup
-                            existing_stream_id = existing_stream_id
                             existing_profile_id = redis_client.get(f"stream_profile:{existing_stream_id}")
                             if existing_profile_id and int(existing_profile_id) == profile.id:
                                 channel_using_profile = True
@@ -418,10 +370,9 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                                 'profile_id': profile.id,
                                 'name': stream.name
                             })
-                            logger.debug(f"Found available profile {profile.id} for stream {stream.id}: {effective_connections}/{profile.max_streams} effective (current: {current_connections}, already using: {channel_using_profile})")
-                            # NO BREAK - continue to check all profiles
+                            logger.debug(f"Added combination stream {stream.id} + profile {profile.id}: {effective_connections}/{profile.max_streams}")
                         else:
-                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams} (current: {current_connections}, already using: {channel_using_profile})")
+                            logger.debug(f"Profile {profile.id} at max connections: {effective_connections}/{profile.max_streams}")
                     else:
                         # No Redis available, add all profiles
                         alternate_streams.append({
@@ -429,7 +380,6 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                             'profile_id': profile.id,
                             'name': stream.name
                         })
-                        # NO BREAK - continue to check all profiles
 
             except Exception as inner_e:
                 logger.error(f"Error finding profiles for stream {stream.id}: {inner_e}")
@@ -445,6 +395,47 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
     except Exception as e:
         logger.error(f"Error getting alternate streams for channel {channel_id}: {e}", exc_info=True)
         return []
+
+def get_stream_info_for_profile(channel_id: str, stream_id: int, m3u_profile_id: int) -> dict:
+    """
+    Get stream information for a specific stream/profile combination.
+
+    Args:
+        channel_id: The UUID of the channel
+        stream_id: The stream ID to use
+        m3u_profile_id: The M3U profile ID to use
+
+    Returns:
+        dict: Stream information including URL, user agent, transcode flag, etc.
+    """
+    try:
+        from django.shortcuts import get_object_or_404
+        from apps.channels.models import Channel, Stream
+        from apps.m3u.models import M3UAccountProfile
+
+        channel = get_object_or_404(Channel, uuid=channel_id)
+        stream = get_object_or_404(Stream, pk=stream_id)
+        profile = get_object_or_404(M3UAccountProfile, pk=m3u_profile_id)
+
+        m3u_account = profile.m3u_account
+        user_agent = m3u_account.get_user_agent().user_agent
+        stream_url = transform_url(stream.url, profile.search_pattern, profile.replace_pattern)
+
+        stream_profile = channel.get_stream_profile()
+        transcode = not (stream_profile.is_proxy() or stream_profile is None)
+        profile_value = stream_profile.id
+
+        return {
+            'url': stream_url,
+            'user_agent': user_agent,
+            'transcode': transcode,
+            'stream_profile': profile_value,
+            'stream_id': stream_id,
+            'm3u_profile_id': m3u_profile_id
+        }
+    except Exception as e:
+        logger.error(f"Error getting stream info for profile: {e}", exc_info=True)
+        return {'error': f'Error: {str(e)}'}
 
 def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     """

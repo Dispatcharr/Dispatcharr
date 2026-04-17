@@ -3,6 +3,7 @@ import logging
 import time
 import os
 import threading
+from pathlib import Path
 import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
@@ -430,6 +431,20 @@ def cleanup_memory(log_usage=False, force_collection=True):
         except (ImportError, Exception):
             pass
     logger.trace("Memory cleanup complete for django")
+
+def safe_upload_path(filename: str, base_dir) -> str:
+    """Return a safe absolute path for an uploaded file within base_dir.
+
+    Strips all directory components from *filename* and verifies the resolved
+    path stays inside *base_dir*.  Raises ValueError on path traversal attempts.
+    """
+    safe_name = Path(filename).name
+    base = Path(base_dir).resolve()
+    file_path = (base / safe_name).resolve()
+    if not file_path.is_relative_to(base):
+        raise ValueError("Invalid filename.")
+    return str(file_path)
+
 
 def is_protected_path(file_path):
     """

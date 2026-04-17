@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny
 from apps.accounts.permissions import IsAdmin
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
+from core.utils import safe_upload_path
 
 from . import services
 from .tasks import create_backup_task, restore_backup_task
@@ -267,10 +268,18 @@ def upload_backup(request):
 
     try:
         backup_dir = services.get_backup_dir()
-        filename = uploaded.name or "uploaded-backup.zip"
+        # Sanitize filename: strip directory components to prevent path traversal
+        filename = Path(uploaded.name or "uploaded-backup.zip").name
+        if not filename:
+            filename = "uploaded-backup.zip"
+
+        try:
+            safe_upload_path(filename, str(backup_dir))
+        except ValueError:
+            return Response({"detail": "Invalid filename."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Ensure unique filename
-        backup_file = backup_dir / filename
+        backup_file = (backup_dir / filename).resolve()
         counter = 1
         while backup_file.exists():
             name_parts = filename.rsplit(".", 1)

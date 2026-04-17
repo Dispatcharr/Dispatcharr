@@ -11,6 +11,7 @@ from django.db.models import Q
 import django_filters
 import logging
 import os
+import time
 import requests
 from apps.accounts.permissions import (
     Authenticated,
@@ -35,6 +36,11 @@ from django.utils import timezone
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+# Negative cache for remote VOD logo URLs that failed to fetch.
+# Prevents repeated blocking requests to unreachable hosts.
+_vod_logo_fetch_failures = {}
+_VOD_LOGO_FAIL_TTL = 300  # seconds
 
 
 class VODPagination(PageNumberPagination):
@@ -830,17 +836,62 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 return HttpResponse(status=500)
         else:
             # It's a remote URL - proxy it
+            # Skip URLs that recently failed to avoid blocking workers
+            fail_expiry = _vod_logo_fetch_failures.get(logo.url)
+            if fail_expiry and time.monotonic() < fail_expiry:
+                return HttpResponse(status=404)
+
             try:
-                response = requests.get(logo.url, stream=True, timeout=10)
-                response.raise_for_status()
+                _LOGO_TOTAL_TIMEOUT = 10  # seconds
+                _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
-                content_type = response.headers.get('Content-Type', 'image/png')
-
-                return StreamingHttpResponse(
-                    response.iter_content(chunk_size=8192),
-                    content_type=content_type
+                remote_response = requests.get(
+                    logo.url,
+                    stream=True,
+                    timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
                 )
+
+                if remote_response.status_code != 200:
+                    now = time.monotonic()
+                    _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
+                    return HttpResponse(status=404)
+
+                # Eagerly read the full image with a total time + size cap
+                # so the greenlet is released quickly.
+                chunks = []
+                total = 0
+                deadline = time.monotonic() + _LOGO_TOTAL_TIMEOUT
+                for chunk in remote_response.iter_content(chunk_size=8192):
+                    total += len(chunk)
+                    if total > _LOGO_MAX_BYTES:
+                        remote_response.close()
+                        return HttpResponse(status=404)
+                    if time.monotonic() > deadline:
+                        remote_response.close()
+                        now = time.monotonic()
+                        _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
+                        return HttpResponse(status=404)
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+
+                # Full read succeeded, clear any previous failure entry
+                _vod_logo_fetch_failures.pop(logo.url, None)
+
+                content_type = remote_response.headers.get('Content-Type', 'image/png')
+
+                response = HttpResponse(body, content_type=content_type)
+                response["Content-Length"] = str(len(body))
+                if remote_response.headers.get("Cache-Control"):
+                    response["Cache-Control"] = remote_response.headers.get("Cache-Control")
+                if remote_response.headers.get("Last-Modified"):
+                    response["Last-Modified"] = remote_response.headers.get("Last-Modified")
+                response["Content-Disposition"] = 'inline; filename="{}"'.format(
+                    os.path.basename(logo.url)
+                )
+                return response
             except requests.exceptions.RequestException as e:
+                now = time.monotonic()
+                _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
                 logger.error(f"Error fetching remote VOD logo {logo.url}: {str(e)}")
                 return HttpResponse(status=404)
 

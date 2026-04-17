@@ -1,6 +1,5 @@
 // Modal.js
 import React, { useState, useEffect } from 'react';
-import API from '../../api';
 import {
   TextInput,
   Button,
@@ -15,8 +14,9 @@ import {
   Text,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
-import { notifications } from '@mantine/notifications';
 import ScheduleInput from './ScheduleInput';
+import { addEPG, updateEPG } from '../../utils/forms/DummyEpgUtils.js';
+import { showNotification } from '../../utils/notificationUtils.js';
 
 const EPG = ({ epg = null, isOpen, onClose }) => {
   const [sourceType, setSourceType] = useState('xmltv');
@@ -58,7 +58,7 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
     if (epg?.id) {
       // Validate that we have a valid EPG object before updating
       if (!epg || typeof epg !== 'object' || !epg.id) {
-        notifications.show({
+        showNotification({
           title: 'Error',
           message: 'Invalid EPG data. Please close and reopen this form.',
           color: 'red',
@@ -66,9 +66,9 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
         return;
       }
 
-      await API.updateEPG({ id: epg.id, ...values });
+      await updateEPG(values, epg);
     } else {
-      await API.addEPG(values);
+      await addEPG(values);
     }
 
     form.reset();

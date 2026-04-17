@@ -9,7 +9,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -35,6 +35,9 @@ import os
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
+    IsStandardUser,
+    permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -50,6 +53,12 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     queryset = UserAgent.objects.all()
     serializer_class = UserAgentSerializer
 
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
 
 class StreamProfileViewSet(viewsets.ModelViewSet):
     """
@@ -58,6 +67,12 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
 
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -68,6 +83,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
 
     queryset = CoreSettings.objects.all()
     serializer_class = CoreSettingsSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -170,6 +191,11 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     API endpoint for proxy settings stored as JSON in CoreSettings.
     """
     serializer_class = ProxySettingsSerializer
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [IsStandardUser()]
+        return [IsAdmin()]
 
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
@@ -330,8 +356,8 @@ def environment(request):
 @extend_schema(
     description="Get application version information",
 )
-
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def version(request):
     # Import version information
     from version import __version__, __timestamp__

@@ -1,30 +1,70 @@
 import React, { useEffect, useState } from 'react';
-import API from '../../api';
 import {
+  Accordion,
+  AccordionControl,
+  AccordionItem,
+  AccordionPanel,
+  Alert,
+  Box,
   Button,
+  Checkbox,
+  Flex,
+  Group,
   Modal,
   Select,
-  Stack,
-  Flex,
-  TextInput,
-  Box,
-  Checkbox,
-  Text,
   SimpleGrid,
-  Textarea,
-  Group,
+  Stack,
   Tabs,
-  Accordion,
-  Alert,
+  TabsList,
+  TabsPanel,
+  TabsTab,
+  Text,
+  Textarea,
+  TextInput,
 } from '@mantine/core';
 import { isNotEmpty, useForm } from '@mantine/form';
-import { SUBSCRIPTION_EVENTS } from '../../constants';
+import {
+  buildConfig,
+  buildSubscriptions,
+  createConnectIntegration,
+  EVENT_OPTIONS,
+  parseApiError,
+  setConnectSubscriptions,
+  updateConnectIntegration,
+} from '../../utils/forms/ConnectionUtils.js';
 
-const EVENT_OPTIONS = Object.entries(SUBSCRIPTION_EVENTS).map(
-  ([value, label]) => ({
-    value,
-    label,
-  })
+const PayloadTemplateItem = ({ opt, payloadTemplates, onTemplateChange }) => (
+  <AccordionItem value={opt.value} key={opt.value}>
+    <AccordionControl>{opt.label}</AccordionControl>
+    <AccordionPanel>
+      <Textarea
+        label={opt.label}
+        placeholder='{"key": "{{value}}"}'
+        value={payloadTemplates[opt.value] ?? ''}
+        onChange={onTemplateChange}
+      />
+    </AccordionPanel>
+  </AccordionItem>
+);
+
+const HeaderRow = ({ h, onKeyChange, onValueChange, onRemove }) => (
+  <Group align="flex-start">
+    <TextInput
+      placeholder="Header name"
+      value={h.key}
+      onChange={onKeyChange}
+      style={{ flex: 1 }}
+    />
+    <TextInput
+      placeholder="Header value"
+      value={h.value}
+      onChange={onValueChange}
+      style={{ flex: 1 }}
+    />
+    <Button size="xs" color="red" onClick={onRemove}>
+      Remove
+    </Button>
+  </Group>
 );
 
 const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
@@ -105,80 +145,26 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
   };
 
   const onSubmit = async (values) => {
-    console.log(values);
+    setSubmitting(true);
+    setApiError('');
     try {
-      setSubmitting(true);
-      setApiError('');
-      // Build config including optional headers
-      let config;
-      if (values.type === 'webhook') {
-        const hdrs = {};
-        headers.forEach((h) => {
-          if (h.key && h.key.trim()) hdrs[h.key] = h.value;
-        });
-        config = { url: values.url };
-        if (Object.keys(hdrs).length) config.headers = hdrs;
-      } else {
-        config = { path: values.script_path };
-      }
+      const config = buildConfig(values, headers);
+      const subs = buildSubscriptions(selectedEvents, payloadTemplates);
 
       if (connection) {
-        await API.updateConnectIntegration(connection.id, {
-          name: values.name,
-          type: values.type,
-          config,
-          enabled: values.enabled,
-        });
+        await updateConnectIntegration(connection, values, config);
       } else {
-        connection = await API.createConnectIntegration({
-          name: values.name,
-          type: values.type,
-          config,
-          enabled: values.enabled,
-        });
+        connection = await createConnectIntegration(values, config);
       }
 
-      // Build subscription list including optional payload templates
-      const subs = Object.keys(SUBSCRIPTION_EVENTS).map((event) => ({
-        event,
-        enabled: selectedEvents.includes(event),
-        payload_template: payloadTemplates[event] || null,
-      }));
-
-      await API.setConnectSubscriptions(connection.id, subs);
+      await setConnectSubscriptions(connection, subs);
       handleClose();
     } catch (error) {
       console.error('Failed to create/update connection', error);
-      // Try to map server-side validation errors to form fields
-      const body = error?.body;
 
-      if (body && typeof body === 'object') {
-        const fieldErrors = {};
-        if (body.name) {
-          fieldErrors.name = body.name;
-        }
-        if (body.type) {
-          fieldErrors.type = body.type;
-        }
-        if (body.config) {
-          if (values.type === 'webhook') {
-            fieldErrors.url = msg;
-          } else {
-            fieldErrors.script_path = msg;
-          }
-        }
-
-        const nonField = body.non_field_errors || body.detail;
-        if (Object.keys(fieldErrors).length > 0) {
-          form.setErrors(fieldErrors);
-        }
-        if (nonField) setApiError(nonField);
-        if (!nonField && Object.keys(fieldErrors).length === 0) {
-          setApiError(body);
-        }
-      } else {
-        setApiError(error?.message || 'Unknown error');
-      }
+      const { fieldErrors, apiError } = parseApiError(error);
+      if (Object.keys(fieldErrors).length > 0) form.setErrors(fieldErrors);
+      setApiError(apiError);
     } finally {
       setSubmitting(false);
     }
@@ -192,19 +178,39 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
+  const onHeaderKeyChange = (idx, newValue) => {
+    const next = [...headers];
+    next[idx] = { ...next[idx], key: newValue };
+    setHeaders(next);
+  };
+
+  const onHeaderValueChange = (idx, newValue) => {
+    const next = [...headers];
+    next[idx] = {
+      ...next[idx],
+      value: newValue,
+    };
+    setHeaders(next);
+  };
+
+  const onHeaderRemove = (idx) => {
+    const next = headers.filter((_, i) => i !== idx);
+    setHeaders(next.length ? next : [{ key: '', value: '' }]);
+  };
+
   return (
     <Modal opened={isOpen} size="lg" onClose={handleClose} title="Connection">
       <form onSubmit={form.onSubmit(onSubmit)}>
         <Tabs defaultValue="settings">
-          <Tabs.List>
-            <Tabs.Tab value="settings">Settings</Tabs.Tab>
-            <Tabs.Tab value="triggers">Event Triggers</Tabs.Tab>
+          <TabsList>
+            <TabsTab value="settings">Settings</TabsTab>
+            <TabsTab value="triggers">Event Triggers</TabsTab>
             {form.getValues().type === 'webhook' && (
-              <Tabs.Tab value="templates">Payload Templates</Tabs.Tab>
+              <TabsTab value="templates">Payload Templates</TabsTab>
             )}
-          </Tabs.List>
+          </TabsList>
 
-          <Tabs.Panel value="settings" style={{ paddingTop: 10 }}>
+          <TabsPanel value="settings" style={{ paddingTop: 10 }}>
             <Stack gap="md">
               {apiError ? (
                 <Text c="red" size="sm">
@@ -246,43 +252,17 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
                   </Text>
                   <Stack spacing="xs">
                     {headers.map((h, idx) => (
-                      <Group key={idx} align="flex-start">
-                        <TextInput
-                          placeholder="Header name"
-                          value={h.key}
-                          onChange={(e) => {
-                            const next = [...headers];
-                            next[idx] = { ...next[idx], key: e.target.value };
-                            setHeaders(next);
-                          }}
-                          style={{ flex: 1 }}
-                        />
-                        <TextInput
-                          placeholder="Header value"
-                          value={h.value}
-                          onChange={(e) => {
-                            const next = [...headers];
-                            next[idx] = {
-                              ...next[idx],
-                              value: e.target.value,
-                            };
-                            setHeaders(next);
-                          }}
-                          style={{ flex: 1 }}
-                        />
-                        <Button
-                          size="xs"
-                          color="red"
-                          onClick={() => {
-                            const next = headers.filter((_, i) => i !== idx);
-                            setHeaders(
-                              next.length ? next : [{ key: '', value: '' }]
-                            );
-                          }}
-                        >
-                          Remove
-                        </Button>
-                      </Group>
+                      <HeaderRow
+                        key={idx}
+                        h={h}
+                        onKeyChange={(e) =>
+                          onHeaderKeyChange(idx, e.target.value)
+                        }
+                        onValueChange={(e) =>
+                          onHeaderValueChange(idx, e.target.value)
+                        }
+                        onRemove={() => onHeaderRemove(idx)}
+                      />
                     ))}
                     <Button
                       size="xs"
@@ -296,9 +276,9 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
                 </Box>
               ) : null}
             </Stack>
-          </Tabs.Panel>
+          </TabsPanel>
 
-          <Tabs.Panel value="triggers" style={{ paddingTop: 10 }}>
+          <TabsPanel value="triggers" style={{ paddingTop: 10 }}>
             <SimpleGrid cols={3}>
               {EVENT_OPTIONS.map((opt) => (
                 <Checkbox
@@ -309,10 +289,10 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
                 />
               ))}
             </SimpleGrid>
-          </Tabs.Panel>
+          </TabsPanel>
 
           {form.getValues().type === 'webhook' && (
-            <Tabs.Panel value="templates" style={{ paddingTop: 10 }}>
+            <TabsPanel value="templates" style={{ paddingTop: 10 }}>
               <Stack gap="xs">
                 <Alert variant="default">
                   <Text size="sm">
@@ -333,40 +313,26 @@ const ConnectionForm = ({ connection = null, isOpen, onClose }) => {
                         label: { padding: 2 },
                       }}
                     >
-                      {EVENT_OPTIONS.map(
-                        (opt) =>
-                          selectedEvents.includes(opt.value) && (
-                            <Accordion.Item key={opt.value} value={opt.value}>
-                              <Accordion.Control
-                                disabled={!selectedEvents.includes(opt.value)}
-                                style={{ paddingTop: 4, paddingBottom: 4 }}
-                              >
-                                {opt.label}
-                              </Accordion.Control>
-                              <Accordion.Panel>
-                                <Textarea
-                                  placeholder={
-                                    'Optional Jinja2 template (ex: {"content": "Channel {{ channel_name }} just started streaming!"} )'
-                                  }
-                                  minRows={3}
-                                  value={payloadTemplates[opt.value] || ''}
-                                  autosize
-                                  onChange={(e) =>
-                                    setPayloadTemplates({
-                                      ...payloadTemplates,
-                                      [opt.value]: e.target.value,
-                                    })
-                                  }
-                                />
-                              </Accordion.Panel>
-                            </Accordion.Item>
-                          )
-                      )}
+                      {EVENT_OPTIONS.filter((opt) =>
+                        selectedEvents.includes(opt.value)
+                      ).map((opt) => (
+                        <PayloadTemplateItem
+                          key={opt.value}
+                          opt={opt}
+                          payloadTemplates={payloadTemplates}
+                          onTemplateChange={(e) =>
+                            setPayloadTemplates({
+                              ...payloadTemplates,
+                              [opt.value]: e.target.value,
+                            })
+                          }
+                        />
+                      ))}
                     </Accordion>
                   </div>
                 </div>
               </Stack>
-            </Tabs.Panel>
+            </TabsPanel>
           )}
         </Tabs>
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">

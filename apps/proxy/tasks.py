@@ -1,16 +1,11 @@
-# yourapp/tasks.py
 from celery import shared_task
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
-import redis
 import json
 import logging
 import re
-import gc  # Add import for garbage collection
+import gc
 from core.utils import RedisClient
 from apps.proxy.ts_proxy.channel_status import ChannelStatus
 from core.utils import send_websocket_update
-from apps.proxy.vod_proxy.connection_manager import get_connection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +56,4 @@ def fetch_channel_stats():
     all_channels = None
     gc.collect()
 
-@shared_task
-def cleanup_vod_connections():
-    """Clean up stale VOD connections"""
-    try:
-        connection_manager = get_connection_manager()
-        connection_manager.cleanup_stale_connections(max_age_seconds=3600)  # 1 hour
-        logger.info("VOD connection cleanup completed")
-    except Exception as e:
-        logger.error(f"Error in VOD connection cleanup: {e}", exc_info=True)
+

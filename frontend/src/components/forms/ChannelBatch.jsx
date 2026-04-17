@@ -1,41 +1,60 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import useChannelsStore from '../../store/channels';
 import useChannelsTableStore from '../../store/channelsTable.jsx';
-import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import useEPGsStore from '../../store/epgs';
 import ChannelGroupForm from './ChannelGroup';
 import {
+  ActionIcon,
   Box,
   Button,
-  Modal,
-  TextInput,
-  Text,
-  Group,
-  ActionIcon,
-  Flex,
-  Select,
-  Stack,
-  useMantineTheme,
-  Popover,
-  ScrollArea,
-  Tooltip,
-  UnstyledButton,
   Center,
   Divider,
-  Checkbox,
+  Flex,
+  Group,
+  Modal,
   Paper,
+  Popover,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollArea,
+  Select,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+  UnstyledButton,
+  useMantineTheme,
 } from '@mantine/core';
-import { ListOrdered, SquarePlus, SquareX, X } from 'lucide-react';
+import { ListOrdered, SquarePlus, X } from 'lucide-react';
 import { FixedSizeList as List } from 'react-window';
 import { useForm } from '@mantine/form';
-import { notifications } from '@mantine/notifications';
-import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import LazyLogo from '../LazyLogo';
 import logo from '../../images/logo.png';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
+import { showNotification } from '../../utils/notificationUtils.js';
+import { requeryChannels } from '../../utils/forms/ChannelUtils.js';
+import {
+  batchSetEPG,
+  buildEpgAssociations,
+  buildSubmitValues,
+  bulkRegexRenameChannels,
+  computeRegexPreview,
+  getChannelGroupChange,
+  getEpgChange,
+  getLogoChange,
+  getMatureContentChange,
+  getRegexNameChange,
+  getStreamProfileChange,
+  getUserLevelChange,
+  setChannelLogosFromEpg,
+  setChannelNamesFromEpg,
+  setChannelTvgIdsFromEpg,
+  updateChannels,
+} from '../../utils/forms/ChannelBatchUtils.js';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const theme = useMantineTheme();
@@ -109,70 +128,17 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   // Build confirmation message based on selected changes
   const getConfirmationMessage = () => {
-    const changes = [];
     const values = form.getValues();
 
-    // Check for regex name changes
-    if (regexFind.trim().length > 0) {
-      changes.push(
-        `• Name Change: Apply regex find "${regexFind}" replace with "${regexReplace || ''}"`
-      );
-    }
-
-    // Check channel group
-    if (selectedChannelGroup && selectedChannelGroup !== '-1') {
-      const groupName = channelGroups[selectedChannelGroup]?.name || 'Unknown';
-      changes.push(`• Channel Group: ${groupName}`);
-    }
-
-    // Check logo
-    if (selectedLogoId && selectedLogoId !== '-1') {
-      if (selectedLogoId === '0') {
-        changes.push(`• Logo: Use Default`);
-      } else {
-        const logoName = channelLogos[selectedLogoId]?.name || 'Selected Logo';
-        changes.push(`• Logo: ${logoName}`);
-      }
-    }
-
-    // Check stream profile
-    if (values.stream_profile_id && values.stream_profile_id !== '-1') {
-      if (values.stream_profile_id === '0') {
-        changes.push(`• Stream Profile: Use Default`);
-      } else {
-        const profile = streamProfiles.find(
-          (p) => `${p.id}` === `${values.stream_profile_id}`
-        );
-        const profileName = profile?.name || 'Selected Profile';
-        changes.push(`• Stream Profile: ${profileName}`);
-      }
-    }
-
-    // Check user level
-    if (values.user_level && values.user_level !== '-1') {
-      const userLevelLabel =
-        USER_LEVEL_LABELS[values.user_level] || values.user_level;
-      changes.push(`• User Level: ${userLevelLabel}`);
-    }
-
-    // Check mature content flag
-    if (values.is_adult && values.is_adult !== '-1') {
-      changes.push(
-        `• Mature Content: ${values.is_adult === 'true' ? 'Yes' : 'No'}`
-      );
-    }
-
-    // Check dummy EPG
-    if (selectedDummyEpgId) {
-      if (selectedDummyEpgId === 'clear') {
-        changes.push(`• EPG: Clear Assignment (use default dummy)`);
-      } else {
-        const epgName = epgs[selectedDummyEpgId]?.name || 'Selected EPG';
-        changes.push(`• Dummy EPG: ${epgName}`);
-      }
-    }
-
-    return changes;
+    return [
+      getRegexNameChange(regexFind, regexReplace),
+      getChannelGroupChange(selectedChannelGroup, channelGroups),
+      getLogoChange(selectedLogoId, channelLogos),
+      getStreamProfileChange(values.stream_profile_id, streamProfiles),
+      getUserLevelChange(values.user_level, USER_LEVEL_LABELS),
+      getMatureContentChange(values.is_adult),
+      getEpgChange(selectedDummyEpgId, epgs),
+    ].filter(Boolean);
   };
 
   const handleSubmit = () => {
@@ -180,7 +146,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
     // If no changes detected, show notification
     if (changes.length === 0) {
-      notifications.show({
+      showNotification({
         title: 'No Changes',
         message: 'Please select at least one field to update.',
         color: 'orange',
@@ -200,110 +166,33 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     setConfirmBatchUpdateOpen(false);
     setIsSubmitting(true);
 
-    const values = {
-      ...form.getValues(),
-    }; // Handle channel group ID - convert to integer if it exists
-    if (selectedChannelGroup && selectedChannelGroup !== '-1') {
-      values.channel_group_id = parseInt(selectedChannelGroup);
-    } else {
-      delete values.channel_group_id;
-    }
-
-    if (selectedLogoId && selectedLogoId !== '-1') {
-      if (selectedLogoId === '0') {
-        values.logo_id = null;
-      } else {
-        values.logo_id = parseInt(selectedLogoId);
-      }
-    }
-    delete values.logo;
-
-    // Handle stream profile ID - convert special values
-    if (!values.stream_profile_id || values.stream_profile_id === '-1') {
-      delete values.stream_profile_id;
-    } else if (
-      values.stream_profile_id === '0' ||
-      values.stream_profile_id === 0
-    ) {
-      values.stream_profile_id = null; // Convert "use default" to null
-    }
-
-    if (values.user_level == '-1') {
-      delete values.user_level;
-    }
-
-    if (values.is_adult === '-1') {
-      delete values.is_adult;
-    } else if (values.is_adult === 'true') {
-      values.is_adult = true;
-    } else if (values.is_adult === 'false') {
-      values.is_adult = false;
-    }
-
-    // Remove the channel_group field from form values as we use channel_group_id
-    delete values.channel_group;
-
     try {
-      const applyRegex = regexFind.trim().length > 0;
+      const values = buildSubmitValues(
+        form.getValues(),
+        selectedChannelGroup,
+        selectedLogoId
+      );
 
-      // First, handle standard field updates (group, logo, profile, etc.)
       if (Object.keys(values).length > 0) {
-        await API.updateChannels(channelIds, values);
+        await updateChannels(channelIds, values);
       }
 
-      // Then, handle name changes via server-side regex to avoid loading all channels client-side
-      if (applyRegex) {
-        // Default global replace; case-insensitive could be added later via UI if needed
-        const flags = 'g';
-        await API.bulkRegexRenameChannels(
-          channelIds,
-          regexFind,
-          regexReplace ?? '',
-          flags
-        );
+      if (regexFind.trim().length > 0) {
+        await bulkRegexRenameChannels(channelIds, regexFind, regexReplace, 'g');
       }
 
-      // Then, handle EPG assignment if a dummy EPG was selected
-      if (selectedDummyEpgId) {
-        if (selectedDummyEpgId === 'clear') {
-          // Clear EPG assignments
-          const associations = channelIds.map((id) => ({
-            channel_id: id,
-            epg_data_id: null,
-          }));
-          await API.batchSetEPG(associations);
-        } else {
-          // Assign the selected dummy EPG
-          const selectedEpg = epgs[selectedDummyEpgId];
-          if (selectedEpg && selectedEpg.epg_data_count > 0) {
-            // Convert to number for comparison since Select returns string
-            const epgSourceId = parseInt(selectedDummyEpgId, 10);
-
-            // Check if we already have EPG data loaded in the store
-            let epgData = tvgs.find((data) => data.epg_source === epgSourceId);
-
-            // If not in store, fetch it
-            if (!epgData) {
-              const epgDataList = await API.getEPGData();
-              epgData = epgDataList.find(
-                (data) => data.epg_source === epgSourceId
-              );
-            }
-
-            if (epgData) {
-              const associations = channelIds.map((id) => ({
-                channel_id: id,
-                epg_data_id: epgData.id,
-              }));
-              await API.batchSetEPG(associations);
-            }
-          }
-        }
+      const associations = await buildEpgAssociations(
+        selectedDummyEpgId,
+        channelIds,
+        epgs,
+        tvgs
+      );
+      if (associations) {
+        await batchSetEPG(associations);
       }
 
-      // Refresh both the channels table data and the main channels store
       await Promise.all([
-        API.requeryChannels(),
+        requeryChannels(),
         useChannelsStore.getState().fetchChannelIds(),
       ]);
       onClose();
@@ -316,7 +205,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const handleSetNamesFromEpg = async () => {
     if (!channelIds || channelIds.length === 0) {
-      notifications.show({
+      showNotification({
         title: 'No Channels Selected',
         message: 'No channels to update.',
         color: 'orange',
@@ -336,11 +225,11 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     setSettingNames(true);
     try {
       // Start the backend task
-      await API.setChannelNamesFromEpg(channelIds);
+      await setChannelNamesFromEpg(channelIds);
 
       // The task will send WebSocket updates for progress
       // Just show that it started successfully
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: `Started setting names from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
         color: 'blue',
@@ -350,7 +239,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       onClose();
     } catch (error) {
       console.error('Failed to start EPG name setting task:', error);
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to start EPG name setting task.',
         color: 'red',
@@ -363,7 +252,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const handleSetLogosFromEpg = async () => {
     if (!channelIds || channelIds.length === 0) {
-      notifications.show({
+      showNotification({
         title: 'No Channels Selected',
         message: 'No channels to update.',
         color: 'orange',
@@ -383,11 +272,11 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     setSettingLogos(true);
     try {
       // Start the backend task
-      await API.setChannelLogosFromEpg(channelIds);
+      await setChannelLogosFromEpg(channelIds);
 
       // The task will send WebSocket updates for progress
       // Just show that it started successfully
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: `Started setting logos from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
         color: 'blue',
@@ -397,7 +286,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       onClose();
     } catch (error) {
       console.error('Failed to start EPG logo setting task:', error);
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to start EPG logo setting task.',
         color: 'red',
@@ -410,7 +299,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
   const handleSetTvgIdsFromEpg = async () => {
     if (!channelIds || channelIds.length === 0) {
-      notifications.show({
+      showNotification({
         title: 'No Channels Selected',
         message: 'No channels to update.',
         color: 'orange',
@@ -430,11 +319,11 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     setSettingTvgIds(true);
     try {
       // Start the backend task
-      await API.setChannelTvgIdsFromEpg(channelIds);
+      await setChannelTvgIdsFromEpg(channelIds);
 
       // The task will send WebSocket updates for progress
       // Just show that it started successfully
-      notifications.show({
+      showNotification({
         title: 'Task Started',
         message: `Started setting TVG-IDs from EPG for ${channelIds.length} channels. Progress will be shown in notifications.`,
         color: 'blue',
@@ -444,7 +333,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       onClose();
     } catch (error) {
       console.error('Failed to start EPG TVG-ID setting task:', error);
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to start EPG TVG-ID setting task.',
         color: 'red',
@@ -454,29 +343,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       setConfirmSetTvgIdsOpen(false);
     }
   };
-
-  // useEffect(() => {
-  //   // const sameStreamProfile = channels.every(
-  //   //   (channel) => channel.stream_profile_id == channels[0].stream_profile_id
-  //   // );
-  //   // const sameChannelGroup = channels.every(
-  //   //   (channel) => channel.channel_group_id == channels[0].channel_group_id
-  //   // );
-  //   // const sameUserLevel = channels.every(
-  //   //   (channel) => channel.user_level == channels[0].user_level
-  //   // );
-  //   // form.setValues({
-  //   //   ...(sameStreamProfile && {
-  //   //     stream_profile_id: `${channels[0].stream_profile_id}`,
-  //   //   }),
-  //   //   ...(sameChannelGroup && {
-  //   //     channel_group_id: `${channels[0].channel_group_id}`,
-  //   //   }),
-  //   //   ...(sameUserLevel && {
-  //   //     user_level: `${channels[0].user_level}`,
-  //   //   }),
-  //   // });
-  // }, [channelIds, streamProfiles, channelGroups]);
 
   const handleChannelGroupModalClose = (newGroup) => {
     setChannelGroupModalOpen(false);
@@ -510,6 +376,71 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   if (!isOpen) {
     return <></>;
   }
+
+  const LogoListItem = ({ item, onSelect }) => (
+    <div
+      style={{ cursor: 'pointer', padding: '5px', borderRadius: '4px' }}
+      onClick={() => onSelect(item)}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = 'rgb(68, 68, 68)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = 'transparent';
+      }}
+    >
+      <Center style={{ flexDirection: 'column', gap: '2px' }}>
+        {item.isDefault ? (
+          <img
+            src={logo}
+            height="30"
+            style={{ maxWidth: 80, objectFit: 'contain' }}
+            alt="Default Logo"
+          />
+        ) : item.id > 0 ? (
+          <img
+            src={item.cache_url || logo}
+            height="30"
+            style={{ maxWidth: 80, objectFit: 'contain' }}
+            alt={item.name || 'Logo'}
+            onError={(e) => {
+              if (e.target.src !== logo) e.target.src = logo;
+            }}
+          />
+        ) : (
+          <Box h={30} />
+        )}
+        <Text
+          size="xs"
+          c="dimmed"
+          ta="center"
+          style={{
+            maxWidth: 80,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {item.name}
+        </Text>
+      </Center>
+    </div>
+  );
+
+  const LogoPickerList = ({ filteredLogos, listRef, onSelect }) => (
+    <List
+      height={200}
+      itemCount={filteredLogos.length}
+      itemSize={55}
+      style={{ width: '100%' }}
+      ref={listRef}
+    >
+      {({ index, style }) => (
+        <div style={style}>
+          <LogoListItem item={filteredLogos[index]} onSelect={onSelect} />
+        </div>
+      )}
+    </List>
+  );
 
   return (
     <>
@@ -621,10 +552,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
               <Popover
                 opened={groupPopoverOpened}
                 onChange={setGroupPopoverOpened}
-                // position="bottom-start"
                 withArrow
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <Group style={{ width: '100%' }} align="flex-end">
                     <TextInput
                       id="channel_group"
@@ -665,9 +595,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                       <SquarePlus size="20" />
                     </ActionIcon>
                   </Group>
-                </Popover.Target>
+                </PopoverTarget>
 
-                <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                   <Group style={{ width: '100%' }} spacing="xs">
                     <TextInput
                       placeholder="Filter"
@@ -736,7 +666,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                       )}
                     </List>
                   </ScrollArea>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
 
               <Group style={{ width: '100%' }} align="flex-end" gap="xs">
@@ -745,7 +675,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   onChange={setLogoPopoverOpened}
                   withArrow
                 >
-                  <Popover.Target>
+                  <PopoverTarget>
                     <TextInput
                       label="Logo"
                       readOnly
@@ -770,8 +700,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                         )
                       }
                     />
-                  </Popover.Target>
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  </PopoverTarget>
+                  <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                     <Group>
                       <TextInput
                         placeholder="Filter"
@@ -798,94 +728,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                           </Text>
                         </Center>
                       ) : (
-                        <List
-                          height={200}
-                          itemCount={filteredLogos.length}
-                          itemSize={55}
-                          style={{ width: '100%' }}
-                          ref={logoListRef}
-                        >
-                          {({ index, style }) => {
-                            const item = filteredLogos[index];
-                            return (
-                              <div
-                                style={{
-                                  ...style,
-                                  cursor: 'pointer',
-                                  padding: '5px',
-                                  borderRadius: '4px',
-                                }}
-                                onClick={() => {
-                                  setSelectedLogoId(item.id);
-                                  form.setValues({
-                                    logo: item.name,
-                                  });
-                                  setLogoPopoverOpened(false);
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor =
-                                    'rgb(68, 68, 68)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.backgroundColor =
-                                    'transparent';
-                                }}
-                              >
-                                <Center
-                                  style={{
-                                    flexDirection: 'column',
-                                    gap: '2px',
-                                  }}
-                                >
-                                  {item.isDefault ? (
-                                    <img
-                                      src={logo}
-                                      height="30"
-                                      style={{
-                                        maxWidth: 80,
-                                        objectFit: 'contain',
-                                      }}
-                                      alt="Default Logo"
-                                    />
-                                  ) : item.id > 0 ? (
-                                    <img
-                                      src={item.cache_url || logo}
-                                      height="30"
-                                      style={{
-                                        maxWidth: 80,
-                                        objectFit: 'contain',
-                                      }}
-                                      alt={item.name || 'Logo'}
-                                      onError={(e) => {
-                                        if (e.target.src !== logo) {
-                                          e.target.src = logo;
-                                        }
-                                      }}
-                                    />
-                                  ) : (
-                                    <Box h={30} />
-                                  )}
-                                  <Text
-                                    size="xs"
-                                    c="dimmed"
-                                    ta="center"
-                                    style={{
-                                      maxWidth: 80,
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    {item.name}
-                                  </Text>
-                                </Center>
-                              </div>
-                            );
+                        <LogoPickerList
+                          filteredLogos={filteredLogos}
+                          listRef={logoListRef}
+                          onSelect={(item) => {
+                            setSelectedLogoId(item.id);
+                            form.setValues({ logo: item.name });
+                            setLogoPopoverOpened(false);
                           }}
-                        </List>
+                        />
                       )}
                     </ScrollArea>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
                 {selectedLogoId > 0 && (
                   <LazyLogo
@@ -1092,29 +946,10 @@ const RegexPreview = ({ channelIds, find, replace }) => {
     }
     return map;
   }, [pageChannels]);
-  const previewItems = useMemo(() => {
-    const items = [];
-    if (!find) return items;
-    let flags = 'g';
-    let re;
-    try {
-      re = new RegExp(find, flags);
-    } catch (error) {
-      console.error('Invalid regex:', error);
-      return [{ before: 'Invalid regex', after: '' }];
-    }
-    // Limit preview to items that exist on the current page
-    const pageOnlyIds = channelIds.filter((id) => nameById[id] !== undefined);
-    for (let i = 0; i < Math.min(pageOnlyIds.length, 25); i++) {
-      const id = pageOnlyIds[i];
-      const before = nameById[id] ?? '';
-      const after = before.replace(re, replace ?? '');
-      if (before !== after) {
-        items.push({ before, after });
-      }
-    }
-    return items;
-  }, [channelIds, nameById, find, replace]);
+  const previewItems = useMemo(
+    () => computeRegexPreview(channelIds, nameById, find, replace),
+    [channelIds, nameById, find, replace]
+  );
 
   if (!find) return null;
 

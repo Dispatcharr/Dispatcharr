@@ -1,11 +1,9 @@
-// Modal.js
 import React, { useState, useEffect } from 'react';
 import API from '../../api';
 import {
   TextInput,
   Button,
   Modal,
-  Flex,
   Select,
   PasswordInput,
   Group,
@@ -13,14 +11,12 @@ import {
   MultiSelect,
   ActionIcon,
   Switch,
-  Box,
-  Tooltip,
-  Grid,
-  SimpleGrid,
   NumberInput,
+  Tabs,
+  Text,
   useMantineTheme,
 } from '@mantine/core';
-import { RotateCcwKey, RotateCw, X } from 'lucide-react';
+import { RotateCcwKey, X } from 'lucide-react';
 import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
@@ -54,6 +50,8 @@ const User = ({ user = null, isOpen, onClose }) => {
       xc_password: '',
       channel_profiles: [],
       hide_adult_content: false,
+      epg_days: 0,
+      epg_prev_days: 0,
     },
 
     validate: (values) => ({
@@ -99,6 +97,12 @@ const User = ({ user = null, isOpen, onClose }) => {
     // Save hide_adult_content in custom_properties
     customProps.hide_adult_content = values.hide_adult_content || false;
     delete values.hide_adult_content;
+
+    // Save EPG defaults in custom_properties
+    customProps.epg_days = values.epg_days || 0;
+    delete values.epg_days;
+    customProps.epg_prev_days = values.epg_prev_days || 0;
+    delete values.epg_prev_days;
 
     values.custom_properties = customProps;
 
@@ -152,6 +156,8 @@ const User = ({ user = null, isOpen, onClose }) => {
             : ['0'],
         xc_password: customProps.xc_password || '',
         hide_adult_content: customProps.hide_adult_content || false,
+        epg_days: customProps.epg_days || 0,
+        epg_prev_days: customProps.epg_prev_days || 0,
       });
 
       if (customProps.xc_password) {
@@ -237,180 +243,204 @@ const User = ({ user = null, isOpen, onClose }) => {
   return (
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
       <form onSubmit={form.onSubmit(onSubmit)}>
-        <Group justify="space-between" align="top">
-          <Stack gap="xs" style={{ flex: 1 }}>
-            <TextInput
-              id="username"
-              name="username"
-              label="Username"
-              disabled={!isAdmin}
-              {...form.getInputProps('username')}
-              key={form.key('username')}
-            />
-
-            <TextInput
-              id="first_name"
-              name="first_name"
-              label="First Name"
-              {...form.getInputProps('first_name')}
-              key={form.key('first_name')}
-            />
-
-            <PasswordInput
-              label="Password"
-              description="Used for UI authentication"
-              {...form.getInputProps('password')}
-              key={form.key('password')}
-              disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
-            />
-
+        <Tabs defaultValue="account">
+          <Tabs.List mb="md">
+            <Tabs.Tab value="account">Account</Tabs.Tab>
             {showPermissions && (
-              <>
-                <Select
-                  label="User Level"
-                  data={Object.entries(USER_LEVELS).map(([, value]) => {
-                    return {
+              <Tabs.Tab value="permissions">Permissions</Tabs.Tab>
+            )}
+            <Tabs.Tab value="epg">EPG Defaults</Tabs.Tab>
+            <Tabs.Tab value="api">API &amp; XC</Tabs.Tab>
+          </Tabs.List>
+
+          <Tabs.Panel value="account">
+            <Stack gap="sm">
+              <Group grow align="flex-start">
+                <TextInput
+                  label="Username"
+                  disabled={!isAdmin}
+                  {...form.getInputProps('username')}
+                  key={form.key('username')}
+                />
+                <TextInput
+                  label="E-Mail"
+                  {...form.getInputProps('email')}
+                  key={form.key('email')}
+                />
+              </Group>
+              <Group grow align="flex-start">
+                <TextInput
+                  label="First Name"
+                  {...form.getInputProps('first_name')}
+                  key={form.key('first_name')}
+                />
+                <TextInput
+                  label="Last Name"
+                  {...form.getInputProps('last_name')}
+                  key={form.key('last_name')}
+                />
+              </Group>
+              <PasswordInput
+                label="Password"
+                description="Used for UI authentication"
+                {...form.getInputProps('password')}
+                key={form.key('password')}
+                disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
+              />
+            </Stack>
+          </Tabs.Panel>
+
+          {showPermissions && (
+            <Tabs.Panel value="permissions">
+              <Stack gap="sm">
+                <Group grow align="flex-start">
+                  <Select
+                    label="User Level"
+                    data={Object.entries(USER_LEVELS).map(([, value]) => ({
                       label: USER_LEVEL_LABELS[value],
                       value: `${value}`,
-                    };
+                    }))}
+                    {...form.getInputProps('user_level')}
+                    key={form.key('user_level')}
+                  />
+                  <NumberInput
+                    label="Stream Limit (0 = unlimited)"
+                    {...form.getInputProps('stream_limit')}
+                    key={form.key('stream_limit')}
+                  />
+                </Group>
+                <MultiSelect
+                  label="Channel Profiles"
+                  {...form.getInputProps('channel_profiles')}
+                  key={form.key('channel_profiles')}
+                  onChange={onChannelProfilesChange}
+                  data={Object.values(profiles).map((profile) => ({
+                    label: profile.name,
+                    value: `${profile.id}`,
+                  }))}
+                />
+                <Switch
+                  label="Hide Mature Content"
+                  description="Hide channels marked as mature content (admin users not affected)"
+                  {...form.getInputProps('hide_adult_content', {
+                    type: 'checkbox',
                   })}
-                  {...form.getInputProps('user_level')}
-                  key={form.key('user_level')}
+                  key={form.key('hide_adult_content')}
                 />
+              </Stack>
+            </Tabs.Panel>
+          )}
 
+          <Tabs.Panel value="epg">
+            <Stack gap="sm">
+              <Text size="sm" c="dimmed">
+                These defaults apply when no URL parameters are specified and
+                can be useful for XC clients that cannot pass custom query
+                parameters.
+              </Text>
+              <Group grow align="flex-start">
                 <NumberInput
-                  label="Stream Limit (0 = unlimited)"
-                  {...form.getInputProps('stream_limit')}
-                  key={form.key('stream_limit')}
+                  label="Days forward (0 = all)"
+                  description="How many future days of EPG data to include"
+                  min={0}
+                  max={365}
+                  {...form.getInputProps('epg_days')}
+                  key={form.key('epg_days')}
                 />
-              </>
-            )}
-          </Stack>
+                <NumberInput
+                  label="Days back (0 = none)"
+                  description="How many past days of EPG data to include (max 30)"
+                  min={0}
+                  max={30}
+                  {...form.getInputProps('epg_prev_days')}
+                  key={form.key('epg_prev_days')}
+                />
+              </Group>
+            </Stack>
+          </Tabs.Panel>
 
-          <Stack gap="xs" style={{ flex: 1 }}>
-            <TextInput
-              id="email"
-              name="email"
-              label="E-Mail"
-              {...form.getInputProps('email')}
-              key={form.key('email')}
-            />
-
-            <TextInput
-              id="last_name"
-              name="last_name"
-              label="Last Name"
-              {...form.getInputProps('last_name')}
-              key={form.key('last_name')}
-            />
-
-            <TextInput
-              label="XC Password"
-              description="Clear to disable XC API"
-              {...form.getInputProps('xc_password')}
-              key={form.key('xc_password')}
-              rightSectionWidth={30}
-              rightSection={
-                <ActionIcon
-                  variant="transparent"
-                  size="sm"
-                  color="white"
-                  onClick={generateXCPassword}
-                >
-                  <RotateCcwKey />
-                </ActionIcon>
-              }
-            />
-
-            {showPermissions && (
-              <MultiSelect
-                label="Channel Profiles"
-                {...form.getInputProps('channel_profiles')}
-                key={form.key('channel_profiles')}
-                onChange={onChannelProfilesChange}
-                data={Object.values(profiles).map((profile) => ({
-                  label: profile.name,
-                  value: `${profile.id}`,
-                }))}
-              />
-            )}
-
-            {showPermissions && (
-              <Box>
-                <Tooltip
-                  label="Hide channels marked as mature content (admin users not affected)"
-                  position="top"
-                  withArrow
-                >
-                  <Switch
-                    label="Hide Mature Content"
-                    {...form.getInputProps('hide_adult_content', {
-                      type: 'checkbox',
-                    })}
-                    key={form.key('hide_adult_content')}
-                  />
-                </Tooltip>
-              </Box>
-            )}
-
-            {canGenerateKey && (
-              <Stack>
-                {userAPIKey && (
-                  <TextInput
-                    label="API Key"
-                    disabled={true}
-                    value={userAPIKey}
-                    rightSection={
-                      <ActionIcon
-                        variant="transparent"
-                        size="sm"
-                        color="white"
-                        onClick={() =>
-                          copyToClipboard(userAPIKey, {
-                            successTitle: 'API Key Copied!',
-                            successMessage:
-                              'The API Key has been copied to your clipboard.',
-                          })
-                        }
-                      >
-                        <Copy />
-                      </ActionIcon>
-                    }
-                  />
-                )}
-
-                <Group gap="xs" grow>
-                  <Button
-                    leftSection={<Key size={14} />}
-                    size="xs"
-                    onClick={onGenerateKey}
-                    loading={generating}
-                    variant="light"
-                    fullWidth
+          <Tabs.Panel value="api">
+            <Stack gap="sm">
+              <TextInput
+                label="XC Password"
+                description={
+                  isAdmin
+                    ? 'Clear to disable XC API'
+                    : 'XC password can only be changed by an administrator'
+                }
+                disabled={!isAdmin}
+                {...form.getInputProps('xc_password')}
+                key={form.key('xc_password')}
+                rightSectionWidth={30}
+                rightSection={
+                  <ActionIcon
+                    variant="transparent"
+                    size="sm"
+                    color="white"
+                    onClick={generateXCPassword}
+                    disabled={!isAdmin}
                   >
-                    {userAPIKey ? 'Regenerate API Key' : 'Generate API Key'}
-                  </Button>
-
+                    <RotateCcwKey />
+                  </ActionIcon>
+                }
+              />
+              {canGenerateKey && (
+                <Stack gap="xs">
                   {userAPIKey && (
+                    <TextInput
+                      label="API Key"
+                      disabled={true}
+                      value={userAPIKey}
+                      rightSection={
+                        <ActionIcon
+                          variant="transparent"
+                          size="sm"
+                          color="white"
+                          onClick={() =>
+                            copyToClipboard(userAPIKey, {
+                              successTitle: 'API Key Copied!',
+                              successMessage:
+                                'The API Key has been copied to your clipboard.',
+                            })
+                          }
+                        >
+                          <Copy />
+                        </ActionIcon>
+                      }
+                    />
+                  )}
+                  <Group gap="xs" grow>
                     <Button
-                      leftSection={<X size={14} />}
+                      leftSection={<Key size={14} />}
                       size="xs"
-                      onClick={onRevokeKey}
+                      onClick={onGenerateKey}
                       loading={generating}
-                      color={theme.colors.red[5]}
                       variant="light"
                       fullWidth
                     >
-                      Revoke API Key
+                      {userAPIKey ? 'Regenerate API Key' : 'Generate API Key'}
                     </Button>
-                  )}
-                </Group>
-              </Stack>
-            )}
-          </Stack>
-        </Group>
+                    {userAPIKey && (
+                      <Button
+                        leftSection={<X size={14} />}
+                        size="xs"
+                        onClick={onRevokeKey}
+                        loading={generating}
+                        color={theme.colors.red[5]}
+                        variant="light"
+                        fullWidth
+                      >
+                        Revoke API Key
+                      </Button>
+                    )}
+                  </Group>
+                </Stack>
+              )}
+            </Stack>
+          </Tabs.Panel>
+        </Tabs>
 
-        <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+        <Group justify="flex-end" mt="md">
           <Button
             type="submit"
             variant="contained"
@@ -419,7 +449,7 @@ const User = ({ user = null, isOpen, onClose }) => {
           >
             Save
           </Button>
-        </Flex>
+        </Group>
       </form>
     </Modal>
   );

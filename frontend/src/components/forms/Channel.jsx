@@ -1,45 +1,55 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
-import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import useStreamsStore from '../../store/streams';
 import ChannelGroupForm from './ChannelGroup';
-import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import useLogosStore from '../../store/logos';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
 import {
+  ActionIcon,
   Box,
   Button,
-  Modal,
-  TextInput,
-  Text,
-  Group,
-  ActionIcon,
   Center,
-  Flex,
-  Select,
   Divider,
-  Stack,
-  useMantineTheme,
-  Popover,
-  ScrollArea,
-  Tooltip,
+  Flex,
+  Group,
+  Modal,
   NumberInput,
-  UnstyledButton,
+  Popover,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollArea,
+  Select,
+  Stack,
   Switch,
+  Text,
+  TextInput,
+  Tooltip,
+  UnstyledButton,
+  useMantineTheme,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
+import { ListOrdered, SquarePlus, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
-
 import { FixedSizeList as List } from 'react-window';
-import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { USER_LEVEL_LABELS, USER_LEVELS } from '../../constants';
+import {
+  showNotification,
+  updateNotification,
+} from '../../utils/notificationUtils.js';
+import {
+  addChannel,
+  createLogo,
+  getChannelFormDefaultValues,
+  getFormattedValues,
+  handleEpgUpdate,
+  matchChannelEpg,
+  requeryChannels,
+} from '../../utils/forms/ChannelUtils.js';
 
 const validationSchema = Yup.object({
   name: Yup.string().required('Name is required'),
@@ -54,7 +64,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const groupListRef = useRef(null);
 
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
 
   const {
     logos: channelLogos,
@@ -69,9 +78,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   useEffect(() => {
     ensureLogosLoaded();
   }, [ensureLogosLoaded]);
-  const streams = useStreamsStore((state) => state.streams);
+
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
-  const playlists = usePlaylistsStore((s) => s.playlists);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
@@ -90,18 +98,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const [autoMatchLoading, setAutoMatchLoading] = useState(false);
   const groupOptions = Object.values(channelGroups);
 
-  const addStream = (stream) => {
-    const streamSet = new Set(channelStreams);
-    streamSet.add(stream);
-    setChannelStreams(Array.from(streamSet));
-  };
-
-  const removeStream = (stream) => {
-    const streamSet = new Set(channelStreams);
-    streamSet.delete(stream);
-    setChannelStreams(Array.from(streamSet));
-  };
-
   const handleLogoSuccess = ({ logo }) => {
     if (logo && logo.id) {
       setValue('logo_id', logo.id);
@@ -113,7 +109,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const handleAutoMatchEpg = async () => {
     // Only attempt auto-match for existing channels (editing mode)
     if (!channel || !channel.id) {
-      notifications.show({
+      showNotification({
         title: 'Info',
         message: 'Auto-match is only available when editing existing channels.',
         color: 'blue',
@@ -123,7 +119,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     setAutoMatchLoading(true);
     try {
-      const response = await API.matchChannelEpg(channel.id);
+      const response = await matchChannelEpg(channel);
 
       if (response.matched) {
         // Update the form with the new EPG data
@@ -131,20 +127,20 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
           setValue('epg_data_id', response.channel.epg_data_id);
         }
 
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: response.message,
           color: 'green',
         });
       } else {
-        notifications.show({
+        showNotification({
           title: 'No Match Found',
           message: response.message,
           color: 'orange',
         });
       }
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to auto-match EPG data',
         color: 'red',
@@ -158,7 +154,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const handleSetNameFromEpg = () => {
     const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -169,13 +165,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.name) {
       setValue('name', tvg.name);
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: `Channel name set to "${tvg.name}"`,
         color: 'green',
       });
     } else {
-      notifications.show({
+      showNotification({
         title: 'No Name Available',
         message: 'No name found in the selected EPG data.',
         color: 'orange',
@@ -186,7 +182,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const handleSetLogoFromEpg = async () => {
     const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -196,7 +192,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     const tvg = tvgsById[epgDataId];
     if (!tvg || !tvg.icon_url) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Icon',
         message: 'EPG data does not have an icon URL.',
         color: 'orange',
@@ -206,20 +202,20 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
     try {
       // Try to find a logo that matches the EPG icon URL - check ALL logos to avoid duplicates
-      let matchingLogo = Object.values(allLogos).find(
+      const matchingLogo = Object.values(allLogos).find(
         (logo) => logo.url === tvg.icon_url
       );
 
       if (matchingLogo) {
         setValue('logo_id', matchingLogo.id);
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: `Logo set to "${matchingLogo.name}"`,
           color: 'green',
         });
       } else {
         // Logo doesn't exist - create it
-        notifications.show({
+        showNotification({
           id: 'creating-logo',
           title: 'Creating Logo',
           message: `Creating new logo from EPG icon URL...`,
@@ -233,11 +229,11 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
           };
 
           // Create logo by calling the Logo API directly
-          const newLogo = await API.createLogo(newLogoData);
+          const newLogo = await createLogo(newLogoData);
 
           setValue('logo_id', newLogo.id);
 
-          notifications.update({
+          updateNotification({
             id: 'creating-logo',
             title: 'Success',
             message: `Created and assigned new logo "${newLogo.name}"`,
@@ -246,7 +242,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
             autoClose: 5000,
           });
         } catch (createError) {
-          notifications.update({
+          updateNotification({
             id: 'creating-logo',
             title: 'Error',
             message: 'Failed to create logo from EPG icon URL',
@@ -258,7 +254,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         }
       }
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to set logo from EPG data',
         color: 'red',
@@ -270,7 +266,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   const handleSetTvgIdFromEpg = () => {
     const epgDataId = watch('epg_data_id');
     if (!epgDataId) {
-      notifications.show({
+      showNotification({
         title: 'No EPG Selected',
         message: 'Please select an EPG source first.',
         color: 'orange',
@@ -281,13 +277,13 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     const tvg = tvgsById[epgDataId];
     if (tvg && tvg.tvg_id) {
       setValue('tvg_id', tvg.tvg_id);
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: `TVG-ID set to "${tvg.tvg_id}"`,
         color: 'green',
       });
     } else {
-      notifications.show({
+      showNotification({
         title: 'No TVG-ID Available',
         message: 'No TVG-ID found in the selected EPG data.',
         color: 'orange',
@@ -296,28 +292,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   };
 
   const defaultValues = useMemo(
-    () => ({
-      name: channel?.name || '',
-      channel_number:
-        channel?.channel_number !== null &&
-        channel?.channel_number !== undefined
-          ? channel.channel_number
-          : '',
-      channel_group_id: channel?.channel_group_id
-        ? `${channel.channel_group_id}`
-        : Object.keys(channelGroups).length > 0
-          ? Object.keys(channelGroups)[0]
-          : '',
-      stream_profile_id: channel?.stream_profile_id
-        ? `${channel.stream_profile_id}`
-        : '0',
-      tvg_id: channel?.tvg_id || '',
-      tvc_guide_stationid: channel?.tvc_guide_stationid || '',
-      epg_data_id: channel?.epg_data_id ?? '',
-      logo_id: channel?.logo_id ? `${channel.logo_id}` : '',
-      user_level: `${channel?.user_level ?? '0'}`,
-      is_adult: channel?.is_adult ?? false,
-    }),
+    () => getChannelFormDefaultValues(channel, channelGroups),
     [channel, channelGroups]
   );
 
@@ -334,57 +309,14 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
   });
 
   const onSubmit = async (values) => {
-    let response;
-
     try {
-      const formattedValues = { ...values };
-
-      // Convert empty or "0" stream_profile_id to null for the API
-      if (
-        !formattedValues.stream_profile_id ||
-        formattedValues.stream_profile_id === '0'
-      ) {
-        formattedValues.stream_profile_id = null;
-      }
-
-      // Ensure tvg_id is properly included (no empty strings)
-      formattedValues.tvg_id = formattedValues.tvg_id || null;
-
-      // Ensure tvc_guide_stationid is properly included (no empty strings)
-      formattedValues.tvc_guide_stationid =
-        formattedValues.tvc_guide_stationid || null;
+      const formattedValues = getFormattedValues(values);
 
       if (channel) {
-        // If there's an EPG to set, use our enhanced endpoint
-        if (values.epg_data_id !== (channel.epg_data_id ?? '')) {
-          // Use the special endpoint to set EPG and trigger refresh
-          const epgResponse = await API.setChannelEPG(
-            channel.id,
-            values.epg_data_id
-          );
-
-          // Remove epg_data_id from values since we've handled it separately
-          const { epg_data_id, ...otherValues } = formattedValues;
-
-          // Update other channel fields if needed
-          if (Object.keys(otherValues).length > 0) {
-            response = await API.updateChannel({
-              id: channel.id,
-              ...otherValues,
-              streams: channelStreams.map((stream) => stream.id),
-            });
-          }
-        } else {
-          // No EPG change, regular update
-          response = await API.updateChannel({
-            id: channel.id,
-            ...formattedValues,
-            streams: channelStreams.map((stream) => stream.id),
-          });
-        }
+        await handleEpgUpdate(channel, values, formattedValues, channelStreams);
       } else {
         // New channel creation - use the standard method
-        response = await API.addChannel({
+        await addChannel({
           ...formattedValues,
           streams: channelStreams.map((stream) => stream.id),
         });
@@ -394,7 +326,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     }
 
     reset();
-    API.requeryChannels();
+    requeryChannels();
 
     // Refresh channel profiles to update the membership information
     useChannelsStore.getState().fetchChannelProfiles();
@@ -510,7 +442,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   // position="bottom-start"
                   withArrow
                 >
-                  <Popover.Target>
+                  <PopoverTarget>
                     <TextInput
                       id="channel_group_id"
                       name="channel_group_id"
@@ -524,9 +456,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       onClick={() => setGroupPopoverOpened(true)}
                       size="xs"
                     />
-                  </Popover.Target>
+                  </PopoverTarget>
 
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                     <Group>
                       <TextInput
                         placeholder="Filter"
@@ -581,26 +513,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         )}
                       </List>
                     </ScrollArea>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
 
-                {/* <Select
-                  id="channel_group_id"
-                  name="channel_group_id"
-                  label="Channel Group"
-                  value={watch('channel_group_id')}
-                  searchable
-                  onChange={(value) => {
-                    setValue('channel_group_id', value);
-                  }}
-                  error={errors.channel_group_id?.message}
-                  data={Object.values(channelGroups).map((option, index) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))}
-                  size="xs"
-                  style={{ flex: 1 }}
-                /> */}
                 <Flex align="flex-end">
                   <ActionIcon
                     color={theme.tailwind.green[5]}
@@ -668,7 +583,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   // position="bottom-start"
                   withArrow
                 >
-                  <Popover.Target>
+                  <PopoverTarget>
                     <TextInput
                       id="logo_id"
                       name="logo_id"
@@ -699,9 +614,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       }}
                       size="xs"
                     />
-                  </Popover.Target>
+                  </PopoverTarget>
 
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                  <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                     <Group>
                       <TextInput
                         placeholder="Filter"
@@ -791,7 +706,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                         </List>
                       )}
                     </ScrollArea>
-                  </Popover.Dropdown>
+                  </PopoverDropdown>
                 </Popover>
 
                 <Stack gap="xs" align="center">
@@ -876,10 +791,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
               <Popover
                 opened={epgPopoverOpened}
                 onChange={setEpgPopoverOpened}
-                // position="bottom-start"
                 withArrow
               >
-                <Popover.Target>
+                <PopoverTarget>
                   <TextInput
                     id="epg_data_id"
                     name="epg_data_id"
@@ -947,9 +861,9 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       </Tooltip>
                     }
                   />
-                </Popover.Target>
+                </PopoverTarget>
 
-                <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
+                <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
                   <Group>
                     <Select
                       label="Source"
@@ -1021,7 +935,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                       )}
                     </List>
                   </ScrollArea>
-                </Popover.Dropdown>
+                </PopoverDropdown>
               </Popover>
             </Stack>
           </Group>

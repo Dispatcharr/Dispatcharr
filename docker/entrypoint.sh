@@ -2,9 +2,27 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
+# Guard flag to prevent cleanup running twice (trap + explicit call)
+_cleanup_done=false
+
 # Function to clean up only running processes
 cleanup() {
+    if $_cleanup_done; then return; fi
+    _cleanup_done=true
+    set +e  # Disable exit-on-error so cleanup always runs fully
     echo "🔥 Cleanup triggered! Stopping services..."
+
+    # Explicitly stop uwsgi workers - children of 'su' wrapper, not tracked in pids[]
+    echo "⛔ Stopping uwsgi workers..."
+    pkill -TERM -f uwsgi 2>/dev/null || true
+
+    # Stop celery, daphne, redis - also not tracked in pids[]
+    echo "⛔ Stopping celery, daphne, redis..."
+    pkill -TERM -f "celery" 2>/dev/null || true
+    pkill -TERM -f "daphne" 2>/dev/null || true
+    pkill -TERM -f "redis-server" 2>/dev/null || true
+
+    # Stop tracked processes (postgres, nginx, su/uwsgi wrapper)
     for pid in "${pids[@]}"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             echo "⛔ Stopping process (PID: $pid)..."
@@ -13,14 +31,38 @@ cleanup() {
             echo "✅ Process (PID: $pid) already stopped."
         fi
     done
+
+    # Wait up to 8 s for graceful shutdown, exit early once all are gone
+    # (leaves headroom within Docker's default 10 s stop_grace_period)
+    _shutdown_timeout=8
+    _shutdown_elapsed=0
+    while [ "$_shutdown_elapsed" -lt "$_shutdown_timeout" ]; do
+        pgrep -f "uwsgi|celery|daphne|redis-server|postgres" >/dev/null 2>&1 || break
+        sleep 1
+        _shutdown_elapsed=$((_shutdown_elapsed + 1))
+    done
+
+    # Force kill anything still lingering
+    pkill -KILL -f uwsgi 2>/dev/null || true
+    pkill -KILL -f "celery" 2>/dev/null || true
+    pkill -KILL -f "daphne" 2>/dev/null || true
+    pkill -KILL -f "redis-server" 2>/dev/null || true
+    # Use pg_ctl immediate stop rather than SIGKILL. Avoids data corruption
+    # while still forcing a fast exit (crash recovery runs on next startup)
+    if pgrep -f "postgres" >/dev/null 2>&1; then
+        su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m immediate" 2>/dev/null || true
+    fi
+
     wait
+    echo "✅ All processes stopped cleanly."
 }
 
 # Catch termination signals (CTRL+C, Docker Stop, etc.)
 trap cleanup TERM INT
 
-# Initialize an array to store PIDs
+# Initialize an array to store PIDs and a map of PID->name
 pids=()
+declare -A pid_names
 
 # Function to echo with timestamp
 echo_with_timestamp() {
@@ -38,7 +80,15 @@ if [[ "${DISPATCHARR_ENV:-}" == "modular" && "${POSTGRES_SSL:-}" == "true" ]]; t
 else
     export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-secret}"
 fi
-export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+export DISPATCHARR_ENV=${DISPATCHARR_ENV:-aio}
+if [[ "$DISPATCHARR_ENV" == "aio" ]]; then
+    # Use Unix socket for loopback values (unset, localhost, 127.0.0.1)
+    if [[ -z "$POSTGRES_HOST" || "$POSTGRES_HOST" == "localhost" || "$POSTGRES_HOST" == "127.0.0.1" ]]; then
+        export POSTGRES_HOST=/var/run/postgresql
+    fi
+else
+    export POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+fi
 export POSTGRES_PORT=${POSTGRES_PORT:-5432}
 export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
@@ -210,7 +260,7 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
     done
     postgres_pid=$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
     echo "✅ Postgres started with PID $postgres_pid"
-    pids+=("$postgres_pid")
+    if [ -n "$postgres_pid" ]; then pids+=("$postgres_pid"); pid_names[$postgres_pid]="postgres"; fi
 
     # Unconditional startup guarantees — run on every AIO startup.
     # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
@@ -252,13 +302,13 @@ if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
     su - "$POSTGRES_USER" -c "cd /app/frontend && npm run dev &"
     npm_pid=$(pgrep vite | sort | head -n1)
     echo "✅ vite started with PID $npm_pid"
-    pids+=("$npm_pid")
+    if [ -n "$npm_pid" ]; then pids+=("$npm_pid"); pid_names[$npm_pid]="vite"; fi
 else
     echo "🚀 Starting nginx..."
     nginx
-    nginx_pid=$(pgrep nginx | sort  | head -n1)
+    nginx_pid=$(pgrep nginx | sort | head -n1)
     echo "✅ nginx started with PID $nginx_pid"
-    pids+=("$nginx_pid")
+    if [ -n "$nginx_pid" ]; then pids+=("$nginx_pid"); pid_names[$nginx_pid]="nginx"; fi
 fi
 
 
@@ -307,39 +357,7 @@ fi
 # This preserves both the nice value and environment variables
 nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
-pids+=("$uwsgi_pid")
-
-# sed -i 's/protected-mode yes/protected-mode no/g' /etc/redis/redis.conf
-# su - "$POSTGRES_USER" -c "redis-server --protected-mode no &"
-# redis_pid=$(pgrep redis)
-# echo "✅ redis started with PID $redis_pid"
-# pids+=("$redis_pid")
-
-# echo "🚀 Starting gunicorn..."
-# su - "$POSTGRES_USER" -c "cd /app && gunicorn dispatcharr.asgi:application \
-#   --bind 0.0.0.0:5656 \
-#   --worker-class uvicorn.workers.UvicornWorker \
-#   --workers 2 \
-#   --threads 1 \
-#   --timeout 0 \
-#   --keep-alive 30 \
-#   --access-logfile - \
-#   --error-logfile - &"
-# gunicorn_pid=$(pgrep gunicorn | sort | head -n1)
-# echo "✅ gunicorn started with PID $gunicorn_pid"
-# pids+=("$gunicorn_pid")
-
-# echo "Starting celery and beat..."
-# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr worker -l info --autoscale=8,2 &"
-# celery_pid=$(pgrep celery | sort | head -n1)
-# echo "✅ celery started with PID $celery_pid"
-# pids+=("$celery_pid")
-
-# su - "$POSTGRES_USER" -c "cd /app && celery -A dispatcharr beat -l info &"
-# beat_pid=$(pgrep beat | sort | head -n1)
-# echo "✅ celery beat started with PID $beat_pid"
-# pids+=("$beat_pid")
-
+pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
 
 # Wait for services to fully initialize before checking hardware
 echo "⏳ Waiting for services to fully initialize before hardware check..."
@@ -352,18 +370,23 @@ echo "🔍 Running hardware acceleration check..."
 # Wait for at least one process to exit and log the process that exited first
 if [ ${#pids[@]} -gt 0 ]; then
     echo "⏳ Dispatcharr is running. Monitoring processes..."
+    set +e
     while kill -0 "${pids[@]}" 2>/dev/null; do
         sleep 1  # Wait for a second before checking again
     done
 
-    echo "🚨 One of the processes exited! Checking which one..."
+    # Only report unexpected exits — skip if cleanup was already triggered by
+    # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
+    if ! $_cleanup_done; then
+        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
 
-    for pid in "${pids[@]}"; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            process_name=$(ps -p "$pid" -o comm=)
-            echo "❌ Process $process_name (PID: $pid) has exited!"
-        fi
-    done
+        for pid in "${pids[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                process_name=${pid_names[$pid]:-unknown}
+                echo "❌ Process $process_name (PID: $pid) has exited!"
+            fi
+        done
+    fi
 else
     echo "❌ No processes started. Exiting."
     exit 1

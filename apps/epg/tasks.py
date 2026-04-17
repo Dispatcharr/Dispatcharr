@@ -114,9 +114,9 @@ def _open_xmltv_file(file_path: str):
         return f
 
     # Insert the DOCTYPE after the XML declaration if one is present.
-    stripped = start.lstrip(b'\xef\xbb\xbf').lstrip()
-    if stripped.startswith(b'<?xml'):
-        decl_end = start.find(b'?>')
+    xml_pos = start.find(b'<?xml')
+    if xml_pos >= 0:
+        decl_end = start.find(b'?>', xml_pos)
         if decl_end >= 0:
             xml_decl = start[:decl_end + 2]
             f.seek(decl_end + 2)
@@ -938,7 +938,8 @@ def parse_channels_only(source):
 
         # Replace full dictionary load with more efficient lookup set
         existing_tvg_ids = set()
-        existing_epgs = {}  # Initialize the dictionary that will lazily load objects
+        existing_epgs = {}
+        scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
         last_id = 0
         chunk_size = 5000
 
@@ -1006,6 +1007,7 @@ def parse_channels_only(source):
                     channel_count += 1
                     tvg_id = elem.get('id', '').strip()
                     if tvg_id:
+                        scanned_tvg_ids.add(tvg_id)
                         display_name = None
                         icon_url = None
                         for child in elem:
@@ -1153,6 +1155,16 @@ def parse_channels_only(source):
         if epgs_to_update:
             EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
             logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
+
+        # Clean up stale EPGData: entries that existed before the scan but weren't seen, and aren't mapped to any channel.
+        # Use existing_tvg_ids - scanned_tvg_ids to avoid a full-table scan with a large EXCLUDE list.
+        potentially_stale = existing_tvg_ids - scanned_tvg_ids
+        if potentially_stale:
+            stale_qs = EPGData.objects.filter(epg_source=source, tvg_id__in=potentially_stale, channels__isnull=True)
+            deleted_count, _ = stale_qs.delete()
+            if deleted_count:
+                logger.info(f"[parse_channels_only] Cleaned up {deleted_count} stale EPG entries not in current scan and unmapped to any channel")
+
         if process:
             logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -1219,6 +1231,9 @@ def parse_channels_only(source):
             existing_epgs = None
             epgs_to_create = None
             epgs_to_update = None
+            if 'scanned_tvg_ids' in locals() and scanned_tvg_ids is not None:
+                scanned_tvg_ids.clear()
+                scanned_tvg_ids = None
             cleanup_memory(log_usage=should_log_memory, force_collection=True)
         except Exception as e:
             logger.warning(f"Cleanup error: {e}")

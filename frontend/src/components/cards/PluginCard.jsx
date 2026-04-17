@@ -2,23 +2,29 @@ import React, { useState } from 'react';
 import { showNotification } from '../../utils/notificationUtils.js';
 import { Field } from '../Field.jsx';
 import {
-  ActionIcon,
   Anchor,
-  Box,
   Avatar,
+  Badge,
+  Box,
   Button,
   Card,
-  Divider,
   Group,
+  Loader,
+  Modal,
   Stack,
   Switch,
+  Tabs,
   Text,
-  UnstyledButton,
-  Badge,
+  Tooltip,
 } from '@mantine/core';
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { Ban, Check, FlaskConical, Info, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
 import { getConfirmationDetails } from '../../utils/cards/PluginCardUtils.js';
 import { SUBSCRIPTION_EVENTS } from '../../constants.js';
+import useSettingsStore from '../../store/settings.jsx';
+import { usePluginStore } from '../../store/plugins.jsx';
+import API from '../../api';
+import PluginDetailPanel from '../PluginDetailPanel.jsx';
+import { compareVersions } from '../pluginUtils.js';
 
 const PluginFieldList = ({ plugin, settings, updateField }) => {
   return plugin.fields.map((f) => (
@@ -42,19 +48,19 @@ const PluginActionList = ({
     return (
       <Group key={action.id} justify="space-between">
         <div>
-          <Text>{action.label}</Text>
+          <Text size="sm">{action.label}</Text>
           {action.description && (
-            <Text size="sm" c="dimmed">
+            <Text size="xs" c="dimmed">
               {action.description}
             </Text>
           )}
           {events.length > 0 && (
             <>
-              <Text size="xs" style={{ paddingTop: 10 }}>
+              <Text size="xs" style={{ paddingTop: 6 }}>
                 Event Triggers
               </Text>
               {events.map((event) => (
-                <Badge key={`${action.id}:${event}`} size="sm" variant="light" color="green">
+                <Badge key={`${action.id}:${event}`} size="xs" variant="light" color="green">
                   {SUBSCRIPTION_EVENTS[event] || event}
                 </Badge>
               ))}
@@ -82,17 +88,17 @@ const PluginActionStatus = ({ running, lastResult }) => {
   return (
     <>
       {running && (
-        <Text size="sm" c="dimmed">
+        <Text size="xs" c="dimmed">
           Running action… please wait
         </Text>
       )}
       {!running && lastResult?.file && (
-        <Text size="sm" c="dimmed">
+        <Text size="xs" c="dimmed">
           Output: {lastResult.file}
         </Text>
       )}
       {!running && lastResult?.error && (
-        <Text size="sm" c="red">
+        <Text size="xs" c="red">
           Error: {String(lastResult.error)}
         </Text>
       )}
@@ -109,26 +115,91 @@ const PluginCard = ({
   onRequestDelete,
   onRequestConfirm,
 }) => {
+  const appVersion = useSettingsStore((s) => s.version?.version || '');
   const [settings, setSettings] = useState(plugin.settings || {});
   const [saving, setSaving] = useState(false);
   const [runningActionId, setRunningActionId] = useState(null);
   const [enabled, setEnabled] = useState(!!plugin.enabled);
   const [lastResult, setLastResult] = useState(null);
-  const [expanded, setExpanded] = useState(!!plugin.enabled);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTab, setModalTab] = useState('settings');
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState(null);
+  const [installing, setInstalling] = useState(false);
+  const [uninstalling] = useState(false);
 
-  // Keep local enabled state in sync with props (e.g., after import + enable)
+  const installPlugin = usePluginStore((s) => s.installPlugin);
+
+  // Keep local enabled state in sync with props
   React.useEffect(() => {
     setEnabled(!!plugin.enabled);
   }, [plugin.enabled]);
-  React.useEffect(() => {
-    if (!plugin.enabled) {
-      setExpanded(false);
-    }
-  }, [plugin.enabled]);
+
   // Sync settings if plugin changes identity
   React.useEffect(() => {
     setSettings(plugin.settings || {});
   }, [plugin.key, plugin.settings]);
+
+  const hasActions = !plugin.missing && enabled && plugin.actions?.length > 0;
+  const isManaged = !!(plugin.slug && plugin.source_repo);
+
+  const fetchDetail = async () => {
+    if (detailLoading || !isManaged) return;
+    // Find the available plugin entry for manifest_url
+    let avail = usePluginStore.getState().availablePlugins.find(
+      (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+    );
+    if (!avail) {
+      setDetailLoading(true);
+      try {
+        await usePluginStore.getState().fetchAvailablePlugins();
+        avail = usePluginStore.getState().availablePlugins.find(
+          (ap) => ap.slug === plugin.slug && ap.repo_id === plugin.source_repo
+        );
+      } catch { /* ignore */ }
+    }
+    if (!avail) { setDetailLoading(false); return; }
+    if (!avail.manifest_url) {
+      // Synthesize from top-level entry
+      setDetail({
+        manifest: {
+          description: avail.description,
+          author: avail.author,
+          license: avail.license,
+          repo_url: avail.repo_url,
+          discord_thread: avail.discord_thread,
+          registry_url: avail.registry_url,
+          versions: avail.latest_version ? [{
+            version: avail.latest_version,
+            url: avail.latest_url,
+            checksum_sha256: avail.latest_sha256,
+            min_dispatcharr_version: avail.min_dispatcharr_version,
+            max_dispatcharr_version: avail.max_dispatcharr_version,
+            build_timestamp: avail.last_updated,
+          }] : [],
+          latest: avail.latest_version ? { version: avail.latest_version } : null,
+        },
+        signature_verified: avail.signature_verified ?? null,
+        _avail: avail,
+      });
+      if (avail.latest_version) setSelectedVersion(avail.latest_version);
+      setDetailLoading(false);
+      return;
+    }
+    setDetailLoading(true);
+    try {
+      const result = await API.getPluginDetailManifest(avail.repo_id, avail.manifest_url);
+      if (result) {
+        setDetail({ ...result, _avail: avail });
+        if (result.manifest?.versions?.length) {
+          setSelectedVersion(result.manifest.versions[0].version);
+        }
+      }
+    } finally {
+      setDetailLoading(false);
+    }
+  };
 
   const updateField = (id, val) => {
     setSettings((prev) => ({ ...prev, [id]: val }));
@@ -170,7 +241,6 @@ const PluginCard = ({
       if (next && !plugin.ever_enabled && onRequireTrust) {
         const ok = await onRequireTrust(plugin);
         if (!ok) {
-          // Revert
           setEnabled(false);
           return;
         }
@@ -183,7 +253,7 @@ const PluginCard = ({
           setEnabled(previous);
           return;
         }
-      } catch (e) {
+      } catch {
         setEnabled(previous);
       }
     };
@@ -191,17 +261,12 @@ const PluginCard = ({
 
   const handlePluginRun = async (a) => {
     try {
-      // Determine if confirmation is required from action metadata or fallback field
       const { requireConfirm, confirmTitle, confirmMessage } =
         getConfirmationDetails(a, plugin, settings);
 
       if (requireConfirm) {
         const confirmed = await onRequestConfirm(confirmTitle, confirmMessage);
-
-        if (!confirmed) {
-          // User canceled, abort the action
-          return;
-        }
+        if (!confirmed) return;
       }
 
       setRunningActionId(a.id);
@@ -210,7 +275,7 @@ const PluginCard = ({
       // Save settings before running to ensure backend uses latest values
       try {
         await onSaveSettings(plugin.key, settings);
-      } catch (e) {
+      } catch {
         /* ignore, run anyway */
       }
       const resp = await onRunAction(plugin.key, a.id);
@@ -236,149 +301,320 @@ const PluginCard = ({
     }
   };
 
-  const toggleExpanded = () => {
-    setExpanded((prev) => !prev);
+  const hasFields = !missing && enabled && plugin.fields?.length > 0;
+
+  const openModal = (tab) => {
+    setModalTab(tab);
+    setModalOpen(true);
+    if (tab === 'details') fetchDetail();
+  };
+
+  const handleDetailInstall = async (params) => {
+    const selVer = params.version;
+    const isDown = plugin.version && compareVersions(selVer, plugin.version) < 0;
+    const action = isDown ? 'downgrade' : 'update';
+    const confirmed = await onRequestConfirm(
+      `${isDown ? 'Downgrade' : 'Update'} ${plugin.name}?`,
+      `${isDown ? 'Downgrade' : 'Update'} from v${plugin.version} to v${selVer}?`
+    );
+    if (!confirmed) return;
+    setInstalling(true);
+    try {
+      const result = await installPlugin(params);
+      if (result?.success) {
+        showNotification({
+          title: plugin.name,
+          message: `Successfully ${action === 'downgrade' ? 'downgraded' : 'updated'} to v${selVer}`,
+          color: 'green',
+        });
+        usePluginStore.getState().invalidatePlugins();
+      }
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleDetailUninstall = () => {
+    onRequestDelete && onRequestDelete(plugin);
   };
 
   return (
-    <Card
-      shadow="sm"
-      radius="md"
-      withBorder
-      style={{ opacity: !missing && enabled ? 1 : 0.6 }}
-    >
-      <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
-        <Group
-          gap="sm"
-          align="flex-start"
-          wrap="nowrap"
-          style={{ minWidth: 0, flex: 1 }}
-        >
-          <ActionIcon
-            variant="subtle"
-            size="sm"
-            onClick={toggleExpanded}
-            title={expanded ? 'Collapse settings' : 'Expand settings'}
-          >
-            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </ActionIcon>
-          {plugin.logo_url && (
+    <div style={{ position: 'relative' }}>
+      <Card
+        shadow="sm"
+        radius="md"
+        withBorder
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          minHeight: 220,
+          backgroundColor: '#27272A',
+          opacity: !missing && enabled ? 1 : 0.6,
+        }}
+      >
+        {/* Header: avatar, name/author, badges, toggle */}
+        <Group justify="space-between" mb="xs" align="flex-start" wrap="nowrap">
+          <Group gap="sm" align="flex-start" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
             <Avatar
               src={plugin.logo_url}
               radius="sm"
-              size={44}
+              size={48}
               alt={`${plugin.name} logo`}
-            />
-          )}
-          <UnstyledButton
-            onClick={toggleExpanded}
-            style={{ minWidth: 0, flex: 1, textAlign: 'left' }}
-          >
+              onClick={isManaged ? () => openModal('details') : undefined}
+              style={isManaged ? { cursor: 'pointer' } : undefined}
+            >
+              {plugin.name?.[0]?.toUpperCase()}
+            </Avatar>
             <Box style={{ minWidth: 0, flex: 1 }}>
-              <Text fw={600}>{plugin.name}</Text>
-              <Text size="sm" c="dimmed">
-                {plugin.description}
+              <Text
+                fw={600}
+                lineClamp={1}
+                onClick={isManaged ? () => openModal('details') : undefined}
+                style={isManaged ? { cursor: 'pointer' } : undefined}
+              >
+                {plugin.name}
               </Text>
-              {(plugin.author || plugin.help_url) && (
-                <Group gap="xs" mt={2}>
-                  {plugin.author && (
-                    <Text size="xs" c="dimmed">
-                      By {plugin.author}
-                    </Text>
-                  )}
-                  {plugin.help_url && (
-                    <Anchor
-                      href={plugin.help_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      size="xs"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      Docs
-                    </Anchor>
-                  )}
-                </Group>
-              )}
+              <Group gap={6} align="center" wrap="nowrap">
+                {plugin.author && (
+                  <Text
+                    size="xs"
+                    c="dimmed"
+                    truncate
+                    onClick={isManaged ? () => openModal('details') : undefined}
+                    style={{ minWidth: 0, maxWidth: '100%', ...(isManaged ? { cursor: 'pointer' } : {}) }}
+                  >
+                    {plugin.author}
+                  </Text>
+                )}
+                {plugin.help_url && (
+                  <Anchor
+                    href={plugin.help_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    size="xs"
+                  >
+                    Docs
+                  </Anchor>
+                )}
+              </Group>
             </Box>
-          </UnstyledButton>
+          </Group>
+          <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
+            {plugin.is_managed && plugin.installed_version_is_prerelease ? (
+              <Tooltip label={plugin.deprecated ? 'Prerelease installed (deprecated), click for details' : 'Prerelease installed, click for details'}>
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color={plugin.deprecated ? 'red' : 'violet'}
+                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <FlaskConical size={8} />}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => openModal('details')}
+                >
+                  {plugin.deprecated ? 'Prerelease · Deprecated' : 'Prerelease'}
+                </Badge>
+              </Tooltip>
+            ) : plugin.update_available ? (
+              <Tooltip label={plugin.deprecated ? `Update available: v${plugin.latest_version} (deprecated)` : `Update available: v${plugin.latest_version}`}>
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color={plugin.deprecated ? 'red' : 'yellow'}
+                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <RefreshCw size={8} />}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => openModal('details')}
+                >
+                  {plugin.deprecated ? 'Update · Deprecated' : 'Update'}
+                </Badge>
+              </Tooltip>
+            ) : plugin.is_managed ? (
+              <Tooltip label={plugin.deprecated ? 'Installed (deprecated), click for details' : 'View plugin details'}>
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color={plugin.deprecated ? 'orange' : 'green'}
+                  leftSection={detailLoading ? <Loader size={8} /> : plugin.deprecated ? <Ban size={8} /> : <Check size={8} />}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => openModal('details')}
+                >
+                  {plugin.deprecated ? 'Deprecated' : 'Up to Date'}
+                </Badge>
+              </Tooltip>
+            ) : (
+              <Badge size="xs" variant="light" color="gray">
+                Unmanaged
+              </Badge>
+            )}
+            <Switch
+              checked={!missing && enabled}
+              onChange={handleEnableChange()}
+              size="xs"
+              onLabel="On"
+              offLabel="Off"
+              disabled={missing}
+            />
+          </Group>
         </Group>
-        <Group gap="xs" align="center" wrap="nowrap" style={{ flexShrink: 0 }}>
-          <ActionIcon
-            variant="subtle"
+
+        {/* Description */}
+        <div style={{ overflow: 'hidden' }}>
+          <Text size="sm" c="dimmed" lineClamp={3} mb={0}>
+            {plugin.description}
+          </Text>
+        </div>
+
+        {/* Status warnings */}
+        {(missing || plugin.legacy) && (
+          <Text size="xs" c={missing ? 'red' : 'yellow'} mt="xs">
+            {missing
+              ? 'Missing plugin files. Re-import or delete this entry.'
+              : 'Please update or ask the developer to add plugin.json.'}
+          </Text>
+        )}
+
+        {/* Bottom metadata pills */}
+        <Stack gap={2} mt="auto" pt={4} style={{ flexShrink: 0 }}>
+          <Group gap="xs" wrap="wrap">
+            <Badge size="xs" variant="default">
+              <span style={{ opacity: 0.5, marginRight: 4 }}>VERSION</span>
+              v{plugin.version || '1.0.0'}
+            </Badge>
+            {plugin.is_managed && plugin.source_repo_name && (
+              <Badge size="xs" variant="default">
+                <span style={{ opacity: 0.5, marginRight: 4 }}>REPO</span>
+                {plugin.source_repo_name}
+              </Badge>
+            )}
+          </Group>
+        </Stack>
+
+        {/* Bottom button row */}
+        <Group justify="flex-end" mt="sm" gap="xs">
+          {hasFields && (
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<Settings size={14} />}
+              onClick={() => openModal('settings')}
+            >
+              Settings
+            </Button>
+          )}
+          {hasActions && (
+            <Button
+              size="xs"
+              variant="light"
+              color="blue"
+              leftSection={<Zap size={14} />}
+              onClick={() => openModal('actions')}
+            >
+              Actions
+            </Button>
+          )}
+          <Button
+            size="xs"
+            variant="light"
             color="red"
-            title="Delete plugin"
+            leftSection={<Trash2 size={14} />}
             onClick={() => onRequestDelete && onRequestDelete(plugin)}
           >
-            <Trash2 size={16} />
-          </ActionIcon>
-          <Text size="xs" c="dimmed">
-            v{plugin.version || '1.0.0'}
-          </Text>
-          <Switch
-            checked={!missing && enabled}
-            onChange={handleEnableChange()}
-            size="xs"
-            onLabel="On"
-            offLabel="Off"
-            disabled={missing}
-          />
+            Uninstall
+          </Button>
         </Group>
-      </Group>
+      </Card>
 
-      {(missing || plugin.legacy) && (
-        <Text size="sm" c={missing ? 'red' : 'yellow'}>
-          {missing
-            ? 'Missing plugin files. Re-import or delete this entry.'
-            : 'Please update or ask the developer to add plugin.json.'}
-        </Text>
-      )}
+      {/* Settings & Actions Modal */}
+      <Modal
+        opened={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={
+          <Group gap="xs" align="center">
+            <Avatar src={plugin.logo_url} radius="sm" size={28} alt={`${plugin.name} logo`}>
+              {plugin.name?.[0]?.toUpperCase()}
+            </Avatar>
+            <Text fw={600}>{plugin.name}</Text>
+          </Group>
+        }
+        size="lg"
+      >
+        <Tabs value={modalTab} onChange={(tab) => { setModalTab(tab); if (tab === 'details') fetchDetail(); }}>
+          <Tabs.List>
+            {isManaged && <Tabs.Tab value="details" leftSection={<Info size={14} />}>Details</Tabs.Tab>}
+            {hasFields && <Tabs.Tab value="settings" leftSection={<Settings size={14} />}>Settings</Tabs.Tab>}
+            {hasActions && <Tabs.Tab value="actions" leftSection={<Zap size={14} />}>Actions</Tabs.Tab>}
+          </Tabs.List>
 
-      {expanded &&
-        !missing &&
-        enabled &&
-        plugin.fields &&
-        plugin.fields.length > 0 && (
-          <Stack gap="xs" mt="sm">
-            <PluginFieldList
-              plugin={plugin}
-              settings={settings}
-              updateField={updateField}
-            />
-            <Group>
-              <Button
-                loading={saving}
-                onClick={save}
-                variant="default"
-                size="xs"
-              >
-                Save Settings
-              </Button>
-            </Group>
-          </Stack>
-        )}
-
-      {expanded &&
-        !missing &&
-        enabled &&
-        plugin.actions &&
-        plugin.actions.length > 0 && (
-          <>
-            <Divider my="sm" />
-            <Stack gap="xs">
-              <PluginActionList
-                plugin={plugin}
-                enabled={enabled}
-                runningActionId={runningActionId}
-                handlePluginRun={handlePluginRun}
+          {isManaged && (
+            <Tabs.Panel value="details" pt="md">
+              <PluginDetailPanel
+                detail={detail}
+                detailLoading={detailLoading}
+                selectedVersion={selectedVersion}
+                onVersionChange={setSelectedVersion}
+                installedVersion={plugin.version}
+                installedVersionIsPrerelease={!!plugin.installed_version_is_prerelease}
+                appVersion={appVersion}
+                installing={installing}
+                uninstalling={uninstalling}
+                onInstall={handleDetailInstall}
+                onUninstall={handleDetailUninstall}
+                installStatus="installed"
+                repoId={plugin.source_repo}
+                slug={plugin.slug}
               />
-              <PluginActionStatus
-                running={!!runningActionId}
-                lastResult={lastResult}
-              />
-            </Stack>
-          </>
-        )}
-    </Card>
+            </Tabs.Panel>
+          )}
+
+          {hasFields && (
+            <Tabs.Panel value="settings" pt="md">
+              <Stack gap="md">
+                <PluginFieldList
+                  plugin={plugin}
+                  settings={settings}
+                  updateField={updateField}
+                />
+                <Group justify="flex-end">
+                  <Button
+                    variant="default"
+                    size="xs"
+                    onClick={() => setModalOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    loading={saving}
+                    onClick={async () => {
+                      await save();
+                      setModalOpen(false);
+                    }}
+                    size="xs"
+                  >
+                    Save
+                  </Button>
+                </Group>
+              </Stack>
+            </Tabs.Panel>
+          )}
+
+          {hasActions && (
+            <Tabs.Panel value="actions" pt="md">
+              <Stack gap="sm">
+                <PluginActionList
+                  plugin={plugin}
+                  enabled={enabled}
+                  runningActionId={runningActionId}
+                  handlePluginRun={handlePluginRun}
+                />
+                <PluginActionStatus
+                  running={!!runningActionId}
+                  lastResult={lastResult}
+                />
+              </Stack>
+            </Tabs.Panel>
+          )}
+        </Tabs>
+      </Modal>
+    </div>
   );
 };
 
