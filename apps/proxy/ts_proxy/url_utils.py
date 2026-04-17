@@ -316,10 +316,8 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         for stream in streams:
             logger.debug(f"Checking stream ID {stream.id} ({stream.name}) for channel {channel_id}")
 
-            # Skip the current failing stream
-            if current_stream_id and stream.id == current_stream_id:
-                logger.debug(f"Skipping current stream ID {current_stream_id}")
-                continue
+            # NOTE: Do NOT skip the current stream entirely - it may have other profiles available.
+            # The current stream+profile combination is skipped inside the profile loop below.
 
             # Find compatible profiles for this stream with connection checking
             try:
