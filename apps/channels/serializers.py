@@ -300,6 +300,8 @@ class ChannelSerializer(serializers.ModelSerializer):
             "auto_created",
             "auto_created_by",
             "auto_created_by_name",
+            "user_hidden",
+            "user_locked",
         ]
 
     def to_representation(self, instance):

@@ -84,7 +84,7 @@ class LineupAPIView(APIView):
         description="Retrieve the available channel lineup",
     )
     def get(self, request):
-        channels = Channel.objects.all().order_by("channel_number")
+        channels = Channel.objects.exclude(user_hidden=True).order_by("channel_number")
         lineup = [
             {
                 "GuideNumber": str(ch.channel_number),

@@ -20,6 +20,7 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
   addChannel: vi.fn(),
+  applyAutoProtect: vi.fn(),
   createLogo: vi.fn(),
   getChannelFormDefaultValues: vi.fn(),
   getFormattedValues: vi.fn(),

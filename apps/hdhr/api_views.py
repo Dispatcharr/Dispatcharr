@@ -111,9 +111,9 @@ class LineupAPIView(APIView):
             channels = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
                 channelprofilemembership__enabled=True,
-            ).order_by("channel_number")
+            ).exclude(user_hidden=True).order_by("channel_number")
         else:
-            channels = Channel.objects.all().order_by("channel_number")
+            channels = Channel.objects.exclude(user_hidden=True).order_by("channel_number")
 
         lineup = []
         for ch in channels:

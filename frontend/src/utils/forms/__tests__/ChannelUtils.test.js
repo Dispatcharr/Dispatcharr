@@ -134,6 +134,8 @@ describe('ChannelUtils', () => {
         logo_id: '10',
         user_level: '1',
         is_adult: false,
+        user_hidden: false,
+        user_locked: false,
       });
     });
 
@@ -230,6 +232,8 @@ describe('ChannelUtils', () => {
         logo_id: '',
         user_level: '0',
         is_adult: false,
+        user_hidden: false,
+        user_locked: false,
       });
     });
   });

@@ -1686,6 +1686,13 @@ def delete_m3u_refresh_task_by_id(account_id):
         return False
 
 
+def _channel_is_frozen(channel):
+    # True when sync must never delete this channel. Both flags imply the
+    # user explicitly wants the row preserved. Does NOT gate metadata
+    # updates; hidden channels still receive provider tvg_id/logo/epg_data.
+    return channel.user_locked or channel.user_hidden
+
+
 @shared_task
 def sync_auto_channels(account_id, scan_start_time=None):
     """
@@ -1868,8 +1875,10 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
             if not has_streams:
                 logger.debug(f"No streams found in group {channel_group.name}")
-                # Delete all existing auto channels if no streams
-                channels_to_delete = [ch for ch in existing_channel_map.values()]
+                channels_to_delete = [
+                    ch for ch in existing_channel_map.values()
+                    if not _channel_is_frozen(ch)
+                ]
                 if channels_to_delete:
                     deleted_count = len(channels_to_delete)
                     Channel.objects.filter(
@@ -1926,6 +1935,13 @@ def sync_auto_channels(account_id, scan_start_time=None):
             for stream in current_streams:
                 if stream.id in existing_channel_map:
                     channel = existing_channel_map[stream.id]
+
+                    # Protected channels keep their user-chosen number.
+                    # Reserve it so the renumber pass doesn't hand it out again.
+                    if channel.user_locked:
+                        if channel.channel_number is not None:
+                            used_numbers.add(channel.channel_number)
+                        continue
 
                     # Determine target number based on numbering mode
                     if channel_numbering_mode == "provider":
@@ -2011,14 +2027,18 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     # Check if we already have a channel for this stream
                     existing_channel = existing_channel_map.get(stream.id)
 
+                    # Hidden channels flow through the normal update path; only
+                    # downstream output queryset filters exclude them.
                     if existing_channel:
                         # Update existing channel if needed (channel number already handled above)
                         channel_updated = False
 
-                        # Use new_name instead of stream.name
-                        if existing_channel.name != new_name:
-                            existing_channel.name = new_name
-                            channel_updated = True
+                        # Locked channels keep their user-chosen identity;
+                        # provider metadata below still flows through.
+                        if not existing_channel.user_locked:
+                            if existing_channel.name != new_name:
+                                existing_channel.name = new_name
+                                channel_updated = True
 
                         if existing_channel.tvg_id != stream.tvg_id:
                             existing_channel.tvg_id = stream.tvg_id
@@ -2028,8 +2048,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             existing_channel.tvc_guide_stationid = tvc_guide_stationid
                             channel_updated = True
 
-                        # Check if channel group needs to be updated (in case override was added/changed)
-                        if existing_channel.channel_group != target_group:
+                        # Locked channels keep their user-chosen group.
+                        if (
+                            not existing_channel.user_locked
+                            and existing_channel.channel_group != target_group
+                        ):
                             existing_channel.channel_group = target_group
                             channel_updated = True
                             logger.info(
@@ -2325,11 +2348,12 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     )
                     continue
 
-            # Delete channels for streams that no longer exist
+            # Delete channels for streams that no longer exist.
             channels_to_delete = []
             for stream_id, channel in existing_channel_map.items():
                 if stream_id not in processed_stream_ids:
-                    channels_to_delete.append(channel)
+                    if not _channel_is_frozen(channel):
+                        channels_to_delete.append(channel)
 
             if channels_to_delete:
                 deleted_count = len(channels_to_delete)
@@ -2342,10 +2366,12 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
 
         # Additional cleanup: Remove auto-created channels that no longer have any valid streams
-        # This handles the case where streams were deleted due to stale retention policy
+        # This handles the case where streams were deleted due to stale retention policy.
         orphaned_channels = Channel.objects.filter(
             auto_created=True,
-            auto_created_by=account
+            auto_created_by=account,
+            user_locked=False,
+            user_hidden=False,
         ).exclude(
             # Exclude channels that still have valid stream associations
             id__in=ChannelStream.objects.filter(

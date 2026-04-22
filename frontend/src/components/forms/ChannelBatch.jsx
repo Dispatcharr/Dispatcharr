@@ -36,7 +36,10 @@ import logo from '../../images/logo.png';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useWarningsStore from '../../store/warnings';
 import { showNotification } from '../../utils/notificationUtils.js';
-import { requeryChannels } from '../../utils/forms/ChannelUtils.js';
+import {
+  requeryChannels,
+  selectAutoCreatedInSelection,
+} from '../../utils/forms/ChannelUtils.js';
 import {
   batchSetEPG,
   buildEpgAssociations,
@@ -49,7 +52,9 @@ import {
   getMatureContentChange,
   getRegexNameChange,
   getStreamProfileChange,
+  getUserHiddenChange,
   getUserLevelChange,
+  getUserLockedChange,
   setChannelLogosFromEpg,
   setChannelNamesFromEpg,
   setChannelTvgIdsFromEpg,
@@ -123,8 +128,20 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       stream_profile_id: '-1',
       user_level: '-1',
       is_adult: '-1',
+      user_hidden: '-1',
+      user_locked: '-1',
     },
   });
+
+  // Auto-created subset of the selection. The Protect flag only applies to
+  // auto-created rows; tracking both ids and count here lets the submit path
+  // reuse the filter without recomputing.
+  const tableChannels = useChannelsTableStore((s) => s.channels);
+  const autoCreatedSelection = useMemo(
+    () => selectAutoCreatedInSelection(channelIds, tableChannels),
+    [channelIds, tableChannels]
+  );
+  const autoCreatedInSelectionCount = autoCreatedSelection.count;
 
   // Build confirmation message based on selected changes
   const getConfirmationMessage = () => {
@@ -137,6 +154,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       getStreamProfileChange(values.stream_profile_id, streamProfiles),
       getUserLevelChange(values.user_level, USER_LEVEL_LABELS),
       getMatureContentChange(values.is_adult),
+      getUserHiddenChange(values.user_hidden),
+      getUserLockedChange(values.user_locked, autoCreatedInSelectionCount),
       getEpgChange(selectedDummyEpgId, epgs),
     ].filter(Boolean);
   };
@@ -173,8 +192,32 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         selectedLogoId
       );
 
+      // Protect applies only to auto-created channels, so split user_locked
+      // out of the shared PATCH and target the auto-created subset separately.
+      const userLockedValue = Object.prototype.hasOwnProperty.call(
+        values,
+        'user_locked'
+      )
+        ? values.user_locked
+        : undefined;
+      delete values.user_locked;
+
+      const patches = [];
       if (Object.keys(values).length > 0) {
-        await updateChannels(channelIds, values);
+        patches.push(updateChannels(channelIds, values));
+      }
+      if (
+        userLockedValue !== undefined &&
+        autoCreatedSelection.ids.length > 0
+      ) {
+        patches.push(
+          updateChannels(autoCreatedSelection.ids, {
+            user_locked: userLockedValue,
+          })
+        );
+      }
+      if (patches.length > 0) {
+        await Promise.all(patches);
       }
 
       if (regexFind.trim().length > 0) {
@@ -797,6 +840,37 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   { value: '-1', label: '(no change)' },
                   { value: 'true', label: 'Yes' },
                   { value: 'false', label: 'No' },
+                ]}
+              />
+
+              <Select
+                size="xs"
+                label="Hide from Clients"
+                description="Hidden channels are excluded from HDHR, M3U, and EPG output."
+                {...form.getInputProps('user_hidden')}
+                key={form.key('user_hidden')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Hide' },
+                  { value: 'false', label: 'Unhide' },
+                ]}
+              />
+
+              <Select
+                size="xs"
+                label="Protect from Auto-Sync"
+                description={
+                  autoCreatedInSelectionCount > 0
+                    ? `Applied to ${autoCreatedInSelectionCount} auto-created channel${autoCreatedInSelectionCount === 1 ? '' : 's'} in the selection. Manual channels are skipped.`
+                    : 'No auto-created channels in the current selection; Protect has no effect here.'
+                }
+                disabled={autoCreatedInSelectionCount === 0}
+                {...form.getInputProps('user_locked')}
+                key={form.key('user_locked')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Protect' },
+                  { value: 'false', label: 'Unprotect' },
                 ]}
               />
             </Stack>

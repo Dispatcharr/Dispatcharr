@@ -40,6 +40,8 @@ export const getChannelFormDefaultValues = (channel, channelGroups) => {
     logo_id: channel?.logo_id ? `${channel.logo_id}` : '',
     user_level: `${channel?.user_level ?? '0'}`,
     is_adult: channel?.is_adult ?? false,
+    user_hidden: channel?.user_hidden ?? false,
+    user_locked: channel?.user_locked ?? false,
   };
 };
 
@@ -62,6 +64,35 @@ export const getFormattedValues = (values) => {
     formattedValues.tvc_guide_stationid || null;
 
   return formattedValues;
+};
+
+// Fields that auto-sync overwrites. Editing any of these on an auto-created
+// channel implies user_locked=true so the customization persists across
+// future refreshes.
+export const IDENTITY_FIELDS = ['name', 'channel_number', 'channel_group_id'];
+
+// Shared helper for bulk-selection flows that need to scope a user_locked
+// PATCH to auto-created rows only. Returns {ids, count} in one pass so
+// callers don't re-filter later.
+export const selectAutoCreatedInSelection = (channelIds, rows) => {
+  if (!channelIds?.length || !rows?.length) return { ids: [], count: 0 };
+  const selected = new Set(channelIds.map((id) => parseInt(id, 10)));
+  const ids = rows
+    .filter((c) => selected.has(c.id) && c.auto_created)
+    .map((c) => c.id);
+  return { ids, count: ids.length };
+};
+
+export const applyAutoProtect = (channel, values, formattedValues) => {
+  if (!channel?.auto_created) return;
+  if (channel.user_locked) return;
+  if (values.user_locked) return;
+  const identityChanged = IDENTITY_FIELDS.some(
+    (field) => formattedValues[field] !== channel[field]
+  );
+  if (identityChanged) {
+    formattedValues.user_locked = true;
+  }
 };
 
 export const handleEpgUpdate = async (

@@ -43,6 +43,7 @@ import {
 } from '../../utils/notificationUtils.js';
 import {
   addChannel,
+  applyAutoProtect,
   createLogo,
   getChannelFormDefaultValues,
   getFormattedValues,
@@ -314,6 +315,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       const formattedValues = getFormattedValues(values);
 
       if (channel) {
+        applyAutoProtect(channel, values, formattedValues);
         await handleEpgUpdate(channel, values, formattedValues, channelStreams);
       } else {
         // New channel creation - use the standard method
@@ -738,6 +740,43 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                   />
                 </Box>
               </Tooltip>
+
+              {channel && (
+                <Stack gap="xs" mt={4}>
+                  {channel.auto_created && (
+                    <Tooltip
+                      label="Protected from auto-sync. Channel name, channel number, and group will not be overwritten on M3U refresh."
+                      withArrow
+                    >
+                      <Box>
+                        <Switch
+                          label="Protect from Auto-Sync"
+                          checked={watch('user_locked')}
+                          onChange={(event) =>
+                            setValue('user_locked', event.currentTarget.checked)
+                          }
+                          size="md"
+                        />
+                      </Box>
+                    </Tooltip>
+                  )}
+                  <Tooltip
+                    label="Hidden from HDHR, M3U, and EPG output to clients."
+                    withArrow
+                  >
+                    <Box>
+                      <Switch
+                        label="Hide from Clients"
+                        checked={watch('user_hidden')}
+                        onChange={(event) =>
+                          setValue('user_hidden', event.currentTarget.checked)
+                        }
+                        size="md"
+                      />
+                    </Box>
+                  </Tooltip>
+                </Stack>
+              )}
             </Stack>
 
             <Divider size="sm" orientation="vertical" />

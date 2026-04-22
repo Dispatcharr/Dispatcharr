@@ -18,6 +18,18 @@ import {
 import API from '../../../api';
 import useChannelsTableStore from '../../../store/channelsTable';
 import useLogosStore from '../../../store/logos';
+import { IDENTITY_FIELDS } from '../../../utils/forms/ChannelUtils.js';
+
+const buildAutoLockUpdate = (row, columnId, payload) => {
+  if (
+    IDENTITY_FIELDS.includes(columnId) &&
+    row?.auto_created &&
+    !row?.user_locked
+  ) {
+    return { ...payload, user_locked: true };
+  }
+  return payload;
+};
 
 // Lightweight wrapper that only renders full editable cell when unlocked
 // This prevents 250+ heavy component instances when table is locked
@@ -103,10 +115,12 @@ const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          [column.id]: newValue || null,
-        });
+        const response = await API.updateChannel(
+          buildAutoLockUpdate(row.original, column.id, {
+            id: row.original.id,
+            [column.id]: newValue || null,
+          })
+        );
         previousValue.current = newValue;
 
         // Update the table store to reflect the change
@@ -118,7 +132,7 @@ const EditableTextCellInner = ({ row, column, getValue, onBlur }) => {
         setValue(previousValue.current || '');
       }
     },
-    [row.original.id, column.id]
+    [row.original, column.id]
   );
 
   useEffect(() => {
@@ -249,10 +263,12 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          [column.id]: newValue,
-        });
+        const response = await API.updateChannel(
+          buildAutoLockUpdate(row.original, column.id, {
+            id: row.original.id,
+            [column.id]: newValue,
+          })
+        );
         previousValue.current = newValue;
 
         // Update the table store to reflect the change
@@ -270,7 +286,7 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
         setValue(previousValue.current);
       }
     },
-    [row.original.id, column.id, onBlur]
+    [row.original, column.id, onBlur]
   );
 
   useEffect(() => {
@@ -366,10 +382,12 @@ const EditableGroupCellInner = ({
       }
 
       try {
-        const response = await API.updateChannel({
-          id: row.original.id,
-          channel_group_id: parseInt(newGroupId, 10),
-        });
+        const response = await API.updateChannel(
+          buildAutoLockUpdate(row.original, 'channel_group_id', {
+            id: row.original.id,
+            channel_group_id: parseInt(newGroupId, 10),
+          })
+        );
         previousGroupId.current = newGroupId;
 
         // Update the table store to reflect the change
@@ -380,7 +398,7 @@ const EditableGroupCellInner = ({
         console.error('Failed to update channel group:', error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newGroupId) => {

@@ -32,6 +32,20 @@ export const getMatureContentChange = (isAdult) => {
   return `• Mature Content: ${isAdult === 'true' ? 'Yes' : 'No'}`;
 };
 
+export const getUserHiddenChange = (userHidden) => {
+  if (!userHidden || userHidden === '-1') return null;
+  return `• Hide from Clients: ${userHidden === 'true' ? 'Yes' : 'No'}`;
+};
+
+export const getUserLockedChange = (userLocked, autoCreatedCount) => {
+  if (!userLocked || userLocked === '-1') return null;
+  const scope =
+    autoCreatedCount > 0
+      ? ` (${autoCreatedCount} auto-created channel${autoCreatedCount === 1 ? '' : 's'} in selection)`
+      : ' (no auto-created channels in selection; skipped)';
+  return `• Protect from Auto-Sync: ${userLocked === 'true' ? 'Yes' : 'No'}${scope}`;
+};
+
 export const getRegexNameChange = (regexFind, regexReplace) => {
   if (!regexFind?.trim()) return null;
   return `• Name Change: Apply regex find "${regexFind}" replace with "${regexReplace || ''}"`;
@@ -150,6 +164,20 @@ export const buildSubmitValues = (
     delete values.is_adult;
   } else {
     values.is_adult = values.is_adult === 'true';
+  }
+
+  // user_locked applies only to auto-created channels; the caller splits the
+  // PATCH so manual rows never end up with user_locked=true.
+  if (values.user_hidden === '-1' || values.user_hidden === undefined) {
+    delete values.user_hidden;
+  } else {
+    values.user_hidden = values.user_hidden === 'true';
+  }
+
+  if (values.user_locked === '-1' || values.user_locked === undefined) {
+    delete values.user_locked;
+  } else {
+    values.user_locked = values.user_locked === 'true';
   }
 
   return values;

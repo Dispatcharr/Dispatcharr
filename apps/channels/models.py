@@ -360,6 +360,16 @@ class Channel(models.Model):
         help_text="The M3U account that auto-created this channel"
     )
 
+    user_hidden = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="When True, the channel is excluded from HDHR, M3U, and EPG output and preserved across auto-sync refreshes."
+    )
+    user_locked = models.BooleanField(
+        default=False,
+        help_text="When True, auto-sync preserves user-set name, number, and group but continues updating EPG data, tvg_id, logo, and tvc_guide_stationid."
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         help_text="Timestamp when this channel was created"

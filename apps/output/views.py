@@ -168,6 +168,8 @@ def generate_m3u(request, profile_name=None, user=None):
         else:
             channels = Channel.objects.select_related('channel_group', 'logo').order_by("channel_number")
 
+    channels = channels.exclude(user_hidden=True)
+
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
 
@@ -1357,6 +1359,7 @@ def generate_epg(request, profile_name=None, user=None):
             else:
                 channels = Channel.objects.all().select_related('logo', 'epg_data__epg_source').order_by("channel_number")
 
+        channels = channels.exclude(user_hidden=True)
 
         # For dummy EPG, use either the specified value or default to 3 days
         dummy_days = num_days if num_days > 0 else 3
@@ -2173,6 +2176,8 @@ def xc_get_live_streams(request, user, category_id=None):
                 channel_group__id=category_id, user_level__lte=user.user_level
             ).select_related('channel_group', 'logo').order_by("channel_number")
 
+    channels = channels.exclude(user_hidden=True)
+
     # Resolve the fallback group ID once to avoid a get_or_create query per null-group channel
     _default_group_id = None
 
@@ -2259,7 +2264,7 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).select_related('epg_data__epg_source').first()
+            channel = Channel.objects.filter(**filters).exclude(user_hidden=True).select_related('epg_data__epg_source').first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2271,22 +2276,25 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).select_related('epg_data__epg_source').distinct().first()
+            channel = Channel.objects.filter(**filters).exclude(user_hidden=True).select_related('epg_data__epg_source').distinct().first()
 
         if not channel:
             raise Http404()
     else:
-        channel = get_object_or_404(Channel.objects.select_related('epg_data__epg_source'), id=channel_id)
+        channel = get_object_or_404(
+            Channel.objects.exclude(user_hidden=True).select_related('epg_data__epg_source'),
+            id=channel_id,
+        )
 
     if not channel:
         raise Http404()
 
-    # Calculate the collision-free integer channel number for this channel
-    # This must match the logic in xc_get_live_streams to ensure consistency
-    # Get all channels in the same category for collision detection
+    # Calculate the collision-free integer channel number for this channel.
+    # Must match xc_get_live_streams (which also excludes user_hidden) so the
+    # number mapping stays consistent.
     category_channels = Channel.objects.filter(
         channel_group=channel.channel_group
-    ).order_by("channel_number")
+    ).exclude(user_hidden=True).order_by("channel_number")
 
     channel_num_map = {}
     used_numbers = set()

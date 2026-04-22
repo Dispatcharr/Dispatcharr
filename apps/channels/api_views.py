@@ -586,6 +586,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
+        visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
             try:
@@ -608,6 +609,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if only_stale:
             # Filter channels that have at least one related stream marked as stale
             q_filters &= Q(streams__is_stale=True)
+
+        # Only apply visibility filtering to list-style reads. Retrieve/update/
+        # delete actions must still be able to reach a hidden channel by id so
+        # the frontend can PATCH user_hidden=False to unhide it.
+        if self.action in ("list", "get_ids", "summary"):
+            if visibility_filter == "hidden":
+                q_filters &= Q(user_hidden=True)
+            elif visibility_filter != "all":
+                q_filters &= Q(user_hidden=False)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level

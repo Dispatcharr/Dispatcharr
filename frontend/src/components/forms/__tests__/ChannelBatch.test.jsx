@@ -21,6 +21,7 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 
 vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
   requeryChannels: vi.fn(),
+  selectAutoCreatedInSelection: vi.fn(() => ({ ids: [], count: 0 })),
 }));
 
 vi.mock('../../../utils/forms/ChannelBatchUtils.js', () => ({
@@ -36,7 +37,9 @@ vi.mock('../../../utils/forms/ChannelBatchUtils.js', () => ({
   getMatureContentChange: vi.fn(),
   getRegexNameChange: vi.fn(),
   getStreamProfileChange: vi.fn(),
+  getUserHiddenChange: vi.fn(),
   getUserLevelChange: vi.fn(),
+  getUserLockedChange: vi.fn(),
   setChannelLogosFromEpg: vi.fn(),
   setChannelNamesFromEpg: vi.fn(),
   setChannelTvgIdsFromEpg: vi.fn(),

@@ -38,6 +38,10 @@ import {
   ArrowUpDown,
   ArrowDownWideNarrow,
   Search,
+  Eye,
+  EyeOff,
+  Shield,
+  ShieldOff,
 } from 'lucide-react';
 import {
   Box,
@@ -85,6 +89,7 @@ import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useAuthStore from '../../store/auth';
 import { USER_LEVELS } from '../../constants';
+import { selectAutoCreatedInSelection } from '../../utils/forms/ChannelUtils.js';
 
 const m3uUrlBase = `${window.location.protocol}//${window.location.host}/output/m3u`;
 const epgUrlBase = `${window.location.protocol}//${window.location.host}/output/epg`;
@@ -137,10 +142,15 @@ const ChannelRowActions = React.memo(
     handleWatchStream,
     createRecording,
     getChannelURL,
+    toggleChannelHidden,
+    toggleChannelLocked,
   }) => {
     // Extract the channel ID once to ensure consistency
     const channelId = row.original.id;
     const channelUuid = row.original.uuid;
+    const isHidden = !!row.original.user_hidden;
+    const isLocked = !!row.original.user_locked;
+    const isAutoCreated = !!row.original.auto_created;
 
     const authUser = useAuthStore((s) => s.user);
 
@@ -165,6 +175,14 @@ const ChannelRowActions = React.memo(
       console.log(`Recording channel ID: ${channelId}`);
       createRecording(row.original);
     }, [channelId]);
+
+    const onToggleHidden = useCallback(() => {
+      toggleChannelHidden(channelId, !isHidden);
+    }, [channelId, isHidden, toggleChannelHidden]);
+
+    const onToggleLocked = useCallback(() => {
+      toggleChannelLocked(channelId, !isLocked);
+    }, [channelId, isLocked, toggleChannelLocked]);
 
     const tableSize = table?.tableSize ?? 'default';
     const iconSize =
@@ -235,17 +253,42 @@ const ChannelRowActions = React.memo(
               >
                 <Text size="xs">Record</Text>
               </Menu.Item>
+
+              <Menu.Divider />
+
+              <Menu.Item
+                onClick={onToggleHidden}
+                disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                leftSection={
+                  isHidden ? <Eye size="14" /> : <EyeOff size="14" />
+                }
+              >
+                <Text size="xs">{isHidden ? 'Unhide' : 'Hide'}</Text>
+              </Menu.Item>
+
+              {isAutoCreated && (
+                <Menu.Item
+                  onClick={onToggleLocked}
+                  disabled={authUser.user_level != USER_LEVELS.ADMIN}
+                  leftSection={
+                    isLocked ? <ShieldOff size="14" /> : <Shield size="14" />
+                  }
+                >
+                  <Text size="xs">{isLocked ? 'Unprotect' : 'Protect'}</Text>
+                </Menu.Item>
+              )}
             </Menu.Dropdown>
           </Menu>
         </Center>
       </Box>
     );
   },
-  // Custom comparator: only re-render when the actual channel changes.
-  // The row object is a new TanStack Table reference on each render, but
-  // row.original.id is stable. Callbacks read fresh data at call time.
+  // The row object is a new reference per render; compare stable fields that
+  // drive visible menu labels so rows don't over-render.
   (prevProps, nextProps) =>
-    prevProps.row.original.id === nextProps.row.original.id
+    prevProps.row.original.id === nextProps.row.original.id &&
+    prevProps.row.original.user_hidden === nextProps.row.original.user_hidden &&
+    prevProps.row.original.user_locked === nextProps.row.original.user_locked
 );
 
 const ChannelsTable = ({ onReady }) => {
@@ -326,6 +369,7 @@ const ChannelsTable = ({ onReady }) => {
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
+  const [visibilityFilter, setVisibilityFilter] = useState('active');
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -429,6 +473,7 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStaleChannels === true) {
       params.append('only_stale', true);
     }
+    params.append('visibility_filter', visibilityFilter);
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -525,6 +570,7 @@ const ChannelsTable = ({ onReady }) => {
     selectedProfileId,
     showOnlyStreamlessChannels,
     showOnlyStaleChannels,
+    visibilityFilter,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -659,6 +705,16 @@ const ChannelsTable = ({ onReady }) => {
       setIsLoading(false);
       setConfirmDeleteOpen(false);
     }
+  };
+
+  const toggleChannelHidden = async (channelId, hidden) => {
+    await API.updateChannel({ id: channelId, user_hidden: hidden });
+    await API.requeryChannels();
+  };
+
+  const toggleChannelLocked = async (channelId, locked) => {
+    await API.updateChannel({ id: channelId, user_locked: locked });
+    await API.requeryChannels();
   };
 
   const createRecording = useCallback((channel) => {
@@ -926,7 +982,37 @@ const ChannelsTable = ({ onReady }) => {
         size: columnSizing.name || 200,
         minSize: 100,
         grow: true,
-        cell: (props) => <EditableTextCell {...props} />,
+        cell: (props) => {
+          const row = props.row?.original || {};
+          return (
+            <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+              <Box style={{ minWidth: 0, maxWidth: '100%' }}>
+                <EditableTextCell {...props} />
+              </Box>
+              {row.auto_created && (
+                <Tooltip
+                  label={
+                    row.user_locked
+                      ? 'Protected from auto-sync. Channel name, channel number, and group will not be overwritten on M3U refresh.'
+                      : 'Not protected from auto-sync. All channel information will be overwritten on M3U refresh.'
+                  }
+                >
+                  <Shield
+                    size={14}
+                    color={
+                      row.user_locked ? theme.tailwind.yellow[5] : '#9ca3af'
+                    }
+                  />
+                </Tooltip>
+              )}
+              {row.user_hidden && (
+                <Tooltip label="Hidden from HDHR, M3U, and EPG output to clients.">
+                  <EyeOff size={14} color="#9ca3af" />
+                </Tooltip>
+              )}
+            </Flex>
+          );
+        },
       },
       {
         id: 'epg',
@@ -989,6 +1075,8 @@ const ChannelsTable = ({ onReady }) => {
             handleWatchStream={handleWatchStream}
             createRecording={createRecording}
             getChannelURL={getChannelURL}
+            toggleChannelHidden={toggleChannelHidden}
+            toggleChannelLocked={toggleChannelLocked}
           />
         ),
       },
@@ -1180,6 +1268,13 @@ const ChannelsTable = ({ onReady }) => {
   });
 
   const rows = table.getRowModel().rows;
+
+  // Drives the "will be recreated on next refresh" note in the bulk delete
+  // dialog.
+  const bulkDeleteAutoCount = useMemo(
+    () => selectAutoCreatedInSelection(table?.selectedTableIds, data).count,
+    [table?.selectedTableIds, data]
+  );
 
   return (
     <>
@@ -1515,6 +1610,8 @@ const ChannelsTable = ({ onReady }) => {
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
             showOnlyStaleChannels={showOnlyStaleChannels}
             setShowOnlyStaleChannels={setShowOnlyStaleChannels}
+            visibilityFilter={visibilityFilter}
+            setVisibilityFilter={setVisibilityFilter}
           />
 
           {/* Table or ghost empty state inside Paper */}
@@ -1625,7 +1722,15 @@ const ChannelsTable = ({ onReady }) => {
         title={`Confirm ${isBulkDelete ? 'Bulk ' : ''}Channel Deletion`}
         message={
           isBulkDelete ? (
-            `Are you sure you want to delete ${table.selectedTableIds.length} channels? This action cannot be undone.`
+            bulkDeleteAutoCount === 0 ? (
+              `Are you sure you want to delete ${table.selectedTableIds.length} channels? This action cannot be undone.`
+            ) : (
+              <div style={{ whiteSpace: 'pre-line' }}>
+                {`Are you sure you want to delete ${table.selectedTableIds.length} channels? This action cannot be undone.
+
+Note: ${bulkDeleteAutoCount} of these ${bulkDeleteAutoCount === 1 ? 'channel was' : 'channels were'} created by auto-sync and will be recreated on the next M3U refresh. Use Edit > Hide from Clients instead to remove them permanently from downstream output.`}
+              </div>
+            )
           ) : channelToDelete ? (
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following channel?
@@ -1633,7 +1738,11 @@ const ChannelsTable = ({ onReady }) => {
 Name: ${channelToDelete.name}
 Channel Number: ${channelToDelete.channel_number}
 
-This action cannot be undone.`}
+This action cannot be undone.${
+                channelToDelete.auto_created
+                  ? '\n\nNote: this channel was created by auto-sync and will be recreated on the next M3U refresh. Use Hide instead to remove it permanently from downstream output.'
+                  : ''
+              }`}
             </div>
           ) : (
             'Are you sure you want to delete this channel? This action cannot be undone.'
