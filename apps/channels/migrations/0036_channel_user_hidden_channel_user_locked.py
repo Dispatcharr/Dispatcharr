@@ -1,12 +1,10 @@
-# Generated for FR #1196 (per-channel lock and hide flags for auto-sync'd channels)
-
 from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('dispatcharr_channels', '0034_remove_stream_dispatcharr_stream_id_idx_and_more'),
+        ('dispatcharr_channels', '0035_alter_channel_name_alter_stream_name'),
     ]
 
     operations = [
