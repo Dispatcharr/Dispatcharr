@@ -62,10 +62,10 @@ class ProgramSearchAPIViewTests(TestCase):
         )
 
         cls.now = now
+        cls.user = User.objects.create_user(username="testuser", password="pass", user_level=1)
 
     def setUp(self):
         self.client = APIClient(REMOTE_ADDR="127.0.0.1")
-        self.user = User.objects.create_user(username="testuser", password="pass", user_level=10)
         self.client.force_authenticate(user=self.user)
 
     # ------------------------------------------------------------------
@@ -111,9 +111,11 @@ class ProgramSearchAPIViewTests(TestCase):
 
     def test_title_case_insensitive(self):
         """Title search is case-insensitive."""
-        lower = self.client.get(SEARCH_URL, {"title": "football"}).json()["count"]
-        upper = self.client.get(SEARCH_URL, {"title": "FOOTBALL"}).json()["count"]
-        self.assertEqual(lower, upper)
+        lower = self.client.get(SEARCH_URL, {"title": "football"}).json()
+        upper = self.client.get(SEARCH_URL, {"title": "FOOTBALL"}).json()
+        self.assertEqual(lower["count"], 1)
+        self.assertEqual(upper["count"], 1)
+        self.assertEqual(lower["results"][0]["title"], upper["results"][0]["title"])
 
     def test_title_and_operator(self):
         """AND operator requires both terms to be present in the title."""
@@ -141,12 +143,13 @@ class ProgramSearchAPIViewTests(TestCase):
 
     def test_title_whole_word_matching(self):
         """title_whole_words=true does not match partial words."""
-        # "BBC News" contains "new" as a substring — whole-word "new" should NOT match it
-        partial_count = self.client.get(SEARCH_URL, {"title": "new"}).json()["count"]
-        whole_count = self.client.get(
-            SEARCH_URL, {"title": "new", "title_whole_words": "true"}
-        ).json()["count"]
-        self.assertGreaterEqual(partial_count, whole_count)
+        # 'new' as substring matches both 'Newcastle vs Villa' and 'BBC News at Ten'
+        partial = self.client.get(SEARCH_URL, {"title": "new"}).json()
+        whole = self.client.get(SEARCH_URL, {"title": "new", "title_whole_words": "true"}).json()
+        # icontains matches 'new' inside 'Newcastle' and 'News'
+        self.assertEqual(partial["count"], 2)
+        # Whole-word \bnew\b matches neither 'Newcastle' nor 'News'
+        self.assertEqual(whole["count"], 0)
 
     def test_title_regex(self):
         """title_regex=true applies the query as a regex pattern."""
@@ -173,7 +176,9 @@ class ProgramSearchAPIViewTests(TestCase):
         """AND operator in description requires both terms."""
         response = self.client.get(SEARCH_URL, {"description": "latest AND news"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["count"], 1)
+        data = response.json()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["title"], "BBC News at Ten")
 
     # ------------------------------------------------------------------
     # Time filters
@@ -256,4 +261,7 @@ class ProgramSearchAPIViewTests(TestCase):
         """page_size beyond the 500 maximum is clamped, not rejected."""
         response = self.client.get(SEARCH_URL, {"page_size": 10000})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertLessEqual(len(response.json()["results"]), 500)
+        data = response.json()
+        # All 4 seeded programs are returned — request was accepted and clamped
+        self.assertEqual(data["count"], 4)
+        self.assertEqual(len(data["results"]), 4)
