@@ -54,6 +54,8 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
         from apps.channels.models import Channel
         return EPGSource.objects.select_related(
             "refresh_task__crontab", "refresh_task__interval"
+        ).defer(
+            'programme_index'
         ).annotate(
             has_channels=Exists(
                 Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
