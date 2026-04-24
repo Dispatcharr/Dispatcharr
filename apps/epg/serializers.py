@@ -209,10 +209,16 @@ class ProgramSearchResultSerializer(serializers.ModelSerializer):
         ]
 
     def get_channels(self, obj):
+        fields = self.context.get('fields')
+        if fields is not None and 'channels' not in fields:
+            return []
         channels = obj.epg.channels.all() if obj.epg else []
         return ProgramSearchChannelSerializer(channels, many=True).data
 
     def get_streams(self, obj):
+        fields = self.context.get('fields')
+        if fields is not None and 'streams' not in fields:
+            return []
         channels = obj.epg.channels.all() if obj.epg else []
         stream_ids = set()
         streams = []

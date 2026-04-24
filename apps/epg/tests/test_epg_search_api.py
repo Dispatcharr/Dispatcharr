@@ -160,6 +160,21 @@ class ProgramSearchAPIViewTests(TestCase):
         for program in response.json()["results"]:
             self.assertTrue(program["title"].startswith("Premier"))
 
+    def test_title_parenthetical_grouping(self):
+        """Parenthetical groups with AND/OR are evaluated correctly."""
+        # (Newcastle OR Football) AND (Villa OR League) should match both seeded programs:
+        # "Premier League Football" matches Football AND League
+        # "Newcastle vs Villa" matches Newcastle AND Villa
+        response = self.client.get(
+            SEARCH_URL, {"title": "(Newcastle OR Football) AND (Villa OR League)"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = {r["title"] for r in response.json()["results"]}
+        self.assertIn("Premier League Football", titles)
+        self.assertIn("Newcastle vs Villa", titles)
+        self.assertNotIn("BBC News at Ten", titles)
+        self.assertNotIn("Nature Documentary", titles)
+
     # ------------------------------------------------------------------
     # Description search
     # ------------------------------------------------------------------
