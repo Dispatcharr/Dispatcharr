@@ -834,9 +834,6 @@ class CurrentProgramsAPIView(APIView):
         # Get channels with EPG data
         channels = query.select_related('epg_data')
 
-        # Get current time
-        now = timezone.now()
-
         # Build list of current programs
         current_programs = []
 
