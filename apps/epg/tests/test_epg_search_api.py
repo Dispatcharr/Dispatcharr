@@ -191,14 +191,22 @@ class ProgramSearchAPIViewTests(TestCase):
         self.assertEqual(data["results"], [])
 
     def test_title_whole_word_matching(self):
-        """title_whole_words=true does not match partial words."""
-        # 'new' as substring matches both 'Newcastle vs Villa' and 'BBC News at Ten'
+        """title_whole_words=true matches complete words but not partial words."""
+        # 'new' as substring matches 'Newcastle vs Villa' and 'BBC News at Ten'
         partial = self.client.get(SEARCH_URL, {"title": "new"}).json()
-        whole = self.client.get(SEARCH_URL, {"title": "new", "title_whole_words": "true"}).json()
-        # icontains matches 'new' inside 'Newcastle' and 'News'
+        # Whole-word \bnew\b matches neither 'Newcastle' nor 'News' (partial matches)
+        whole_no_match = self.client.get(SEARCH_URL, {"title": "new", "title_whole_words": "true"}).json()
         self.assertEqual(partial["count"], 2)
-        # Whole-word \bnew\b matches neither 'Newcastle' nor 'News'
-        self.assertEqual(whole["count"], 0)
+        self.assertEqual(whole_no_match["count"], 0)
+
+        # 'football' is a complete word in 'Premier League Football' — must still match
+        whole_match = self.client.get(SEARCH_URL, {"title": "football", "title_whole_words": "true"}).json()
+        self.assertEqual(whole_match["count"], 1)
+        self.assertEqual(whole_match["results"][0]["title"], "Premier League Football")
+
+        # 'league' is also a complete word — and 'Premier AND league' with whole_words works
+        both_words = self.client.get(SEARCH_URL, {"title": "Premier AND league", "title_whole_words": "true"}).json()
+        self.assertEqual(both_words["count"], 1)
 
     def test_title_regex(self):
         """title_regex=true applies the query as a regex pattern."""

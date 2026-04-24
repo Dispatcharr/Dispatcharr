@@ -183,15 +183,15 @@ class ProgramViewSet(viewsets.ModelViewSet):
                 OpenApiTypes.STR,
                 description='Title search query. Supports AND/OR operators (case-insensitive), quoted phrases, and parentheses. Double-quote a phrase to match it literally: `"Law and Order"`. Unquoted space-separated terms are matched as a phrase; use AND/OR to combine separate terms.',
             ),
-            OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive). Example: `^The` matches titles starting with "The".'),
-            OpenApiParameter('title_whole_words', OpenApiTypes.BOOL, description='Match whole words only in title. Prevents "NEW" from matching "News".'),
+            OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive, default: false). e.g. `^The` matches titles starting with "The".'),
+            OpenApiParameter('title_whole_words', OpenApiTypes.BOOL, description='Match whole words only in title (default: false). e.g. `new` matches "Newcastle" normally but not with whole words enabled.'),
             OpenApiParameter(
                 'description',
                 OpenApiTypes.STR,
                 description='Description search query. Same syntax and features as title search.'
             ),
-            OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive).'),
-            OpenApiParameter('description_whole_words', OpenApiTypes.BOOL, description='Match whole words only in description.'),
+            OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive, default: false).'),
+            OpenApiParameter('description_whole_words', OpenApiTypes.BOOL, description='Match whole words only in description (default: false). Same behaviour as title_whole_words.'),
             OpenApiParameter('start_after', OpenApiTypes.DATETIME, description='Filter programs starting at or after this time. ISO 8601 format, e.g. `2026-02-14T18:00:00Z`.'),
             OpenApiParameter('start_before', OpenApiTypes.DATETIME, description='Filter programs starting at or before this time. ISO 8601 format.'),
             OpenApiParameter('end_after', OpenApiTypes.DATETIME, description='Filter programs ending at or after this time. ISO 8601 format.'),
@@ -780,8 +780,14 @@ def _build_q_object(field_name, term, use_regex=False, whole_words=False):
         # Use Django's __iregex (case-insensitive regex)
         return Q(**{f'{field_name}__iregex': term})
     elif whole_words:
-        # Use word boundary regex (case-insensitive)
-        pattern = r'\b' + re.escape(term) + r'\b'
+        # Word boundary syntax differs by database engine:
+        #   PostgreSQL uses \y (or \m/\M); Python re (SQLite) uses \b.
+        from django.db import connection
+        if connection.vendor == 'postgresql':
+            boundary = r'\y'
+        else:
+            boundary = r'\b'
+        pattern = boundary + re.escape(term) + boundary
         return Q(**{f'{field_name}__iregex': pattern})
     else:
         # Standard case-insensitive contains
