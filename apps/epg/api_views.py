@@ -320,6 +320,15 @@ class ProgramViewSet(viewsets.ModelViewSet):
 
         queryset = queryset.filter(filters).distinct().order_by('start_time')
 
+        # Restrict results to programs on channels the user can access
+        user = request.user
+        if user.user_level < 10:
+            access_filter = Q(epg__channels__user_level__lte=user.user_level)
+            custom_props = user.custom_properties or {}
+            if custom_props.get('hide_adult_content', False):
+                access_filter &= Q(epg__channels__is_adult=False)
+            queryset = queryset.filter(access_filter).distinct()
+
         # Resolve field selection before serialization so expensive methods can short-circuit
         requested_fields = params.get('fields')
         allowed = set(f.strip() for f in requested_fields.split(',')) if requested_fields else None
@@ -327,7 +336,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
         # Paginate
         paginator = ProgramSearchPagination()
         page = paginator.paginate_queryset(queryset, request)
-        serializer = ProgramSearchResultSerializer(page, many=True, context={'fields': allowed})
+        serializer = ProgramSearchResultSerializer(page, many=True, context={'fields': allowed, 'user': request.user})
         data = serializer.data
 
         if allowed:

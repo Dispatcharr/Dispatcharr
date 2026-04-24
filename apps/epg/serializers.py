@@ -208,21 +208,32 @@ class ProgramSearchResultSerializer(serializers.ModelSerializer):
             'channels', 'streams',
         ]
 
+    def _accessible_channels(self, obj):
+        """Return prefetched channels filtered to those the requesting user can access."""
+        channels = list(obj.epg.channels.all()) if obj.epg else []
+        user = self.context.get('user')
+        if user is None or user.user_level >= 10:
+            return channels
+        custom_props = user.custom_properties or {}
+        hide_adult = custom_props.get('hide_adult_content', False)
+        return [
+            ch for ch in channels
+            if ch.user_level <= user.user_level and (not hide_adult or not ch.is_adult)
+        ]
+
     def get_channels(self, obj):
         fields = self.context.get('fields')
         if fields is not None and 'channels' not in fields:
             return []
-        channels = obj.epg.channels.all() if obj.epg else []
-        return ProgramSearchChannelSerializer(channels, many=True).data
+        return ProgramSearchChannelSerializer(self._accessible_channels(obj), many=True).data
 
     def get_streams(self, obj):
         fields = self.context.get('fields')
         if fields is not None and 'streams' not in fields:
             return []
-        channels = obj.epg.channels.all() if obj.epg else []
         stream_ids = set()
         streams = []
-        for ch in channels:
+        for ch in self._accessible_channels(obj):
             for s in ch.streams.all():
                 if s.id not in stream_ids:
                     stream_ids.add(s.id)
