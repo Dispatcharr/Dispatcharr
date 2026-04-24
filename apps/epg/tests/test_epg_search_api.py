@@ -109,6 +109,53 @@ class ProgramSearchAPIViewTests(TestCase):
         self.assertEqual(data["count"], 1)
         self.assertEqual(data["results"][0]["title"], "Premier League Football")
 
+    def test_title_multi_word_is_phrase_not_implicit_and(self):
+        """Space-separated words without AND/OR are matched as a phrase, not as implicit AND.
+
+        'Premier Football' contains both words from 'Premier League Football' but
+        not as a consecutive phrase — so it should return 0 results.
+        Use 'Premier AND Football' to match both words independently.
+        """
+        phrase = self.client.get(SEARCH_URL, {"title": "Premier Football"}).json()
+        explicit_and = self.client.get(SEARCH_URL, {"title": "Premier AND Football"}).json()
+        # Phrase match: "Premier Football" is not a substring of "Premier League Football"
+        self.assertEqual(phrase["count"], 0)
+        # Explicit AND: both words present → matches
+        self.assertEqual(explicit_and["count"], 1)
+
+    def test_title_quoted_phrase(self):
+        """Double-quoted phrases are matched literally; 'and'/'or' inside quotes are not operators.
+
+        This is the standard way to search for program titles that contain conjunctions,
+        e.g. "Law and Order". Without quotes, lowercase 'and'/'or' are still treated as
+        case-insensitive boolean operators — so quoting is the reliable way to do a phrase match.
+        """
+        prog = ProgramData.objects.create(
+            epg=self.epg,
+            title="Law and Order",
+            description="Crime drama.",
+            start_time=self.now + timedelta(hours=10),
+            end_time=self.now + timedelta(hours=11),
+        )
+        try:
+            # Quoted phrase → exact substring match → finds the program
+            quoted = self.client.get(SEARCH_URL, {"title": '"Law and Order"'}).json()
+            self.assertEqual(quoted["count"], 1)
+            self.assertEqual(quoted["results"][0]["title"], "Law and Order")
+
+            # Quoted phrase that is not a substring → no match
+            non_phrase = self.client.get(SEARCH_URL, {"title": '"Law Order"'}).json()
+            self.assertEqual(non_phrase["count"], 0)
+
+            # Mix: quoted phrase AND bare term present in the title → matches
+            mixed_match = self.client.get(SEARCH_URL, {"title": '"Law and Order" AND order'}).json()
+            self.assertEqual(mixed_match["count"], 1)
+
+            # Mix: quoted phrase AND bare term NOT in the title → no match
+            mixed_no_match = self.client.get(SEARCH_URL, {"title": '"Law and Order" AND crime'}).json()
+            self.assertEqual(mixed_no_match["count"], 0)
+        finally:
+            prog.delete()
     def test_title_case_insensitive(self):
         """Title search is case-insensitive."""
         lower = self.client.get(SEARCH_URL, {"title": "football"}).json()
@@ -118,20 +165,22 @@ class ProgramSearchAPIViewTests(TestCase):
         self.assertEqual(lower["results"][0]["title"], upper["results"][0]["title"])
 
     def test_title_and_operator(self):
-        """AND operator requires both terms to be present in the title."""
-        response = self.client.get(SEARCH_URL, {"title": "Premier AND League"})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        data = response.json()
-        self.assertEqual(data["count"], 1)
-        self.assertIn("Premier", data["results"][0]["title"])
+        """AND operator (case-insensitive) requires both terms to be present in the title."""
+        upper = self.client.get(SEARCH_URL, {"title": "Premier AND League"}).json()
+        lower = self.client.get(SEARCH_URL, {"title": "Premier and League"}).json()
+        self.assertEqual(upper["count"], 1)
+        self.assertEqual(lower["count"], 1)
+        self.assertIn("Premier", upper["results"][0]["title"])
 
     def test_title_or_operator(self):
-        """OR operator returns programs matching either term."""
-        response = self.client.get(SEARCH_URL, {"title": "Newcastle OR Football"})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        titles = [r["title"] for r in response.json()["results"]]
-        self.assertIn("Premier League Football", titles)
-        self.assertIn("Newcastle vs Villa", titles)
+        """OR operator (case-insensitive) returns programs matching either term."""
+        upper = self.client.get(SEARCH_URL, {"title": "Newcastle OR Football"})
+        lower = self.client.get(SEARCH_URL, {"title": "Newcastle or Football"})
+        self.assertEqual(upper.status_code, status.HTTP_200_OK)
+        for response in (upper, lower):
+            titles = [r["title"] for r in response.json()["results"]]
+            self.assertIn("Premier League Football", titles)
+            self.assertIn("Newcastle vs Villa", titles)
 
     def test_title_no_match_returns_empty(self):
         """Search with no matching title returns empty results."""

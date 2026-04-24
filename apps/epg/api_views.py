@@ -144,15 +144,18 @@ class ProgramViewSet(viewsets.ModelViewSet):
 ### Text Search Features
 
 **Title and Description Search**:
-- Supports AND/OR logical operators
+- Supports AND/OR logical operators (case-insensitive: `and`/`AND` both work)
+- Wrap phrases in double quotes to match them literally: `"Law and Order"`
 - Parenthetical grouping for complex queries: `(Newcastle OR NEW) AND (Villa OR AST)`
-- Regex pattern matching with `title_regex=true`
+- Regex pattern matching with `title_regex=true` (evaluated by the database engine)
 - Whole word matching with `title_whole_words=true` to avoid partial matches
 
 **Examples**:
 - Simple: `title=football`
 - AND operator: `title=premier AND league`
 - OR operator: `title=Newcastle OR Villa`
+- Quoted phrase: `title="Law and Order"` (matches the exact phrase; 'and' is literal)
+- Mixed: `title="Law and Order" AND crime`
 - Nested groups: `title=(Newcastle OR NEW) AND (Villa OR AST)`
 - Regex: `title=^Premier&title_regex=true` (programs starting with "Premier")
 - Whole words: `title=NEW&title_whole_words=true` (matches "NEW" but not "News")
@@ -178,7 +181,7 @@ class ProgramViewSet(viewsets.ModelViewSet):
             OpenApiParameter(
                 'title',
                 OpenApiTypes.STR,
-                description='Title search query. Supports AND/OR operators and parentheses: `(Newcastle OR NEW) AND (Villa OR AST)`. Space-separated terms default to AND.',
+                description='Title search query. Supports AND/OR operators (case-insensitive), quoted phrases, and parentheses. Double-quote a phrase to match it literally: `"Law and Order"`. Unquoted space-separated terms are matched as a phrase; use AND/OR to combine separate terms.',
                 examples=[
                     'football',
                     'premier AND league',
@@ -793,26 +796,50 @@ def _build_q_object(field_name, term, use_regex=False, whole_words=False):
 
 def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False):
     """
-    Parse a text search value with AND/OR operators (including nested groups with parentheses) into a Q object.
+    Parse a text search value with AND/OR operators (including nested groups, parentheses,
+    and quoted phrases) into a Q object.
+
+    Quoted phrases (double-quoted) are treated as atomic literals and are never split on
+    AND/OR. Outside of quotes, AND and OR are case-insensitive boolean operators.
 
     Examples:
         "sports AND football"                        → Q(field__icontains="sports") & Q(field__icontains="football")
-        "news OR weather"                            → Q(field__icontains="news") | Q(field__icontains="weather")
+        "news or weather"                            → Q(field__icontains="news") | Q(field__icontains="weather")
+        '"Law and Order"'                            → Q(field__icontains="Law and Order")  [quoted phrase]
+        '"Law and Order" AND crime'                  → phrase AND bare term
         "(Newcastle OR NEW) AND (Villa OR AST)"      → Grouped nested operations
-        "breaking news"                              → Q(field__icontains="breaking") & Q(field__icontains="news")  [default AND]
+        "breaking news"                              → Q(field__icontains="breaking news")  [unquoted phrase match]
 
     Args:
         field_name: Django ORM field name to query
-        raw_value: Text value with optional AND/OR operators
+        raw_value: Text value with optional AND/OR operators and quoted phrases
         use_regex: If True, use regex matching instead of icontains
         whole_words: If True, match whole words only (requires word boundaries)
 
-    Supports mixed operators evaluated left-to-right: "sports AND football OR basketball"
+    Supports mixed operators evaluated left-to-right: "sports and football or basketball"
     Supports nested groups: "(A OR B) AND (C OR D)"
     """
 
+    # Step 1: Extract quoted phrases into a lookup dict and replace with opaque placeholders.
+    # This lets AND/OR detection be case-insensitive without splitting phrases like
+    # "Law and Order" that happen to contain conjunctions.
+    phrases = {}
+
+    def extract_quoted(text):
+        def replacer(m):
+            key = f'\x00P{len(phrases)}\x00'
+            phrases[key] = m.group(1)
+            return key
+        return re.sub(r'"([^"]*)"', replacer, text)
+
+    processed = extract_quoted(raw_value)
+
+    def build_q(token):
+        """Build a Q object, resolving any quoted-phrase placeholder first."""
+        return _build_q_object(field_name, phrases.get(token, token), use_regex, whole_words)
+
     def parse_expression(expr):
-        """Recursively parse expression with parentheses support"""
+        """Recursively parse expression with parentheses support."""
         expr = expr.strip()
 
         # Handle parentheses: parse the innermost group into a Q object, then
@@ -828,7 +855,7 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
             before_str = expr[:paren_start].rstrip()
             after_str = expr[paren_end + 1:].lstrip()
 
-            # Operator connecting before-expression to the group
+            # Operator connecting before-expression to the group (case-insensitive)
             before_op = '&'
             if before_str.upper().endswith(' AND'):
                 before_str = before_str[:-4].rstrip()
@@ -836,11 +863,12 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
                 before_str = before_str[:-3].rstrip()
                 before_op = '|'
 
-            # Operator connecting the group to the after-expression
+            # Operator connecting the group to the after-expression (case-insensitive)
             after_op = '&'
-            if after_str.upper().startswith('AND '):
+            after_upper = after_str.upper()
+            if after_upper.startswith('AND '):
                 after_str = after_str[4:].lstrip()
-            elif after_str.upper().startswith('OR '):
+            elif after_upper.startswith('OR '):
                 after_str = after_str[3:].lstrip()
                 after_op = '|'
 
@@ -853,14 +881,16 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
                 result = (result | after_q) if after_op == '|' else (result & after_q)
             return result
 
-        # No parentheses: tokenize on " AND " and " OR " boundaries
+        # No parentheses: tokenize on AND/OR boundaries (case-insensitive).
+        # Quoted phrases have been replaced with placeholders and are never split.
         tokens = []
         operators = []
         remaining = expr
 
         while remaining:
-            and_pos = remaining.upper().find(' AND ')
-            or_pos = remaining.upper().find(' OR ')
+            upper = remaining.upper()
+            and_pos = upper.find(' AND ')
+            or_pos = upper.find(' OR ')
 
             if and_pos == -1 and or_pos == -1:
                 tokens.append(remaining.strip())
@@ -885,9 +915,9 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
             return Q()
 
         # Build Q chain
-        result = _build_q_object(field_name, tokens[0], use_regex, whole_words)
+        result = build_q(tokens[0])
         for i, op in enumerate(operators):
-            next_q = _build_q_object(field_name, tokens[i + 1], use_regex, whole_words)
+            next_q = build_q(tokens[i + 1])
             if op == '&':
                 result = result & next_q
             else:
@@ -895,7 +925,7 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
 
         return result
 
-    return parse_expression(raw_value)
+    return parse_expression(processed)
 
 
 class ProgramSearchPagination(PageNumberPagination):
