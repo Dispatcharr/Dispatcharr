@@ -1,11 +1,9 @@
-// Modal.js
 import React, { useState, useEffect } from 'react';
 import API from '../../api';
 import {
   TextInput,
   Button,
   Modal,
-  Flex,
   Select,
   PasswordInput,
   Group,
@@ -13,14 +11,18 @@ import {
   MultiSelect,
   ActionIcon,
   Switch,
-  Box,
-  Tooltip,
+  NumberInput,
+  Tabs,
+  Text,
+  useMantineTheme,
 } from '@mantine/core';
 import { RotateCcwKey, X } from 'lucide-react';
+import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
+import { copyToClipboard } from '../../utils';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -29,6 +31,11 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const [, setEnableXC] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState(new Set());
+  const [generating, setGenerating] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState(null);
+  const [userAPIKey, setUserAPIKey] = useState(user?.api_key || null);
+
+  const theme = useMantineTheme();
 
   const form = useForm({
     mode: 'uncontrolled',
@@ -38,10 +45,13 @@ const User = ({ user = null, isOpen, onClose }) => {
       last_name: '',
       email: '',
       user_level: '0',
+      stream_limit: 0,
       password: '',
       xc_password: '',
       channel_profiles: [],
       hide_adult_content: false,
+      epg_days: 0,
+      epg_prev_days: 0,
     },
 
     validate: (values) => ({
@@ -88,6 +98,12 @@ const User = ({ user = null, isOpen, onClose }) => {
     customProps.hide_adult_content = values.hide_adult_content || false;
     delete values.hide_adult_content;
 
+    // Save EPG defaults in custom_properties
+    customProps.epg_days = values.epg_days || 0;
+    delete values.epg_days;
+    customProps.epg_prev_days = values.epg_prev_days || 0;
+    delete values.epg_prev_days;
+
     values.custom_properties = customProps;
 
     // If 'All' is included, clear this and we assume access to all channels
@@ -107,7 +123,11 @@ const User = ({ user = null, isOpen, onClose }) => {
         delete values.password;
       }
 
-      const response = await API.updateUser(user.id, values);
+      const response = await API.updateUser(
+        user.id,
+        values,
+        isAdmin ? false : authUser.id === user.id
+      );
 
       if (user.id == authUser.id) {
         setUser(response);
@@ -115,6 +135,7 @@ const User = ({ user = null, isOpen, onClose }) => {
     }
 
     form.reset();
+    setUserAPIKey(null);
     onClose();
   };
 
@@ -128,17 +149,22 @@ const User = ({ user = null, isOpen, onClose }) => {
         last_name: user.last_name || '',
         email: user.email,
         user_level: `${user.user_level}`,
+        stream_limit: user.stream_limit || 0,
         channel_profiles:
           user.channel_profiles.length > 0
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
         hide_adult_content: customProps.hide_adult_content || false,
+        epg_days: customProps.epg_days || 0,
+        epg_prev_days: customProps.epg_prev_days || 0,
       });
 
       if (customProps.xc_password) {
         setEnableXC(true);
       }
+
+      setUserAPIKey(user.api_key || null);
     } else {
       form.reset();
     }
@@ -154,77 +180,197 @@ const User = ({ user = null, isOpen, onClose }) => {
     return <></>;
   }
 
-  const showPermissions =
-    authUser.user_level == USER_LEVELS.ADMIN && authUser.id !== user?.id;
+  const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
+  const isEditingSelf = authUser.id === user?.id;
+  const showPermissions = isAdmin && !isEditingSelf;
+
+  const canGenerateKey =
+    authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
+
+  const onGenerateKey = async () => {
+    if (!canGenerateKey) {
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const payload = {};
+      if (authUser.user_level == USER_LEVELS.ADMIN && user?.id) {
+        payload.user_id = user.id;
+      }
+
+      const resp = await API.generateApiKey(payload);
+      const newKey = resp && (resp.key || resp.raw_key);
+      if (newKey) {
+        setGeneratedKey(newKey);
+        setUserAPIKey(newKey);
+      }
+    } catch (e) {
+      // API shows notifications
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const onRevokeKey = async () => {
+    if (!canGenerateKey) return;
+
+    setGenerating(true);
+    try {
+      const payload = {};
+      if (authUser.user_level == USER_LEVELS.ADMIN && user?.id) {
+        payload.user_id = user.id;
+      }
+
+      const resp = await API.revokeApiKey(payload);
+      // backend returns { success: true } - clear local state
+      if (resp && resp.success) {
+        setGeneratedKey(null);
+        setUserAPIKey(null);
+
+        // If we're revoking the current authenticated user's key, update auth store
+        if (user?.id && authUser?.id === user.id) {
+          setUser({ ...authUser, api_key: null });
+        }
+      }
+    } catch (e) {
+      // API shows notifications
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <Modal opened={isOpen} onClose={onClose} title="User" size="xl">
       <form onSubmit={form.onSubmit(onSubmit)}>
-        <Group justify="space-between" align="top">
-          <Stack gap="xs" style={{ flex: 1 }}>
-            <TextInput
-              id="username"
-              name="username"
-              label="Username"
-              {...form.getInputProps('username')}
-              key={form.key('username')}
-            />
-
-            <TextInput
-              id="first_name"
-              name="first_name"
-              label="First Name"
-              {...form.getInputProps('first_name')}
-              key={form.key('first_name')}
-            />
-
-            <PasswordInput
-              label="Password"
-              description="Used for UI authentication"
-              {...form.getInputProps('password')}
-              key={form.key('password')}
-              disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
-            />
-
+        <Tabs defaultValue="account">
+          <Tabs.List mb="md">
+            <Tabs.Tab value="account">Account</Tabs.Tab>
             {showPermissions && (
-              <Select
-                label="User Level"
-                data={Object.entries(USER_LEVELS).map(([, value]) => {
-                  return {
-                    label: USER_LEVEL_LABELS[value],
-                    value: `${value}`,
-                  };
-                })}
-                {...form.getInputProps('user_level')}
-                key={form.key('user_level')}
-              />
+              <Tabs.Tab value="permissions">Permissions</Tabs.Tab>
             )}
-          </Stack>
+            <Tabs.Tab value="epg">EPG Defaults</Tabs.Tab>
+            <Tabs.Tab value="api">API &amp; XC</Tabs.Tab>
+          </Tabs.List>
 
-          <Stack gap="xs" style={{ flex: 1 }}>
-            <TextInput
-              id="email"
-              name="email"
-              label="E-Mail"
-              {...form.getInputProps('email')}
-              key={form.key('email')}
-            />
+          <Tabs.Panel value="account">
+            <Stack gap="sm">
+              <Group grow align="flex-start">
+                <TextInput
+                  label="Username"
+                  disabled={!isAdmin}
+                  {...form.getInputProps('username')}
+                  key={form.key('username')}
+                />
+                <TextInput
+                  label="E-Mail"
+                  {...form.getInputProps('email')}
+                  key={form.key('email')}
+                />
+              </Group>
+              <Group grow align="flex-start">
+                <TextInput
+                  label="First Name"
+                  {...form.getInputProps('first_name')}
+                  key={form.key('first_name')}
+                />
+                <TextInput
+                  label="Last Name"
+                  {...form.getInputProps('last_name')}
+                  key={form.key('last_name')}
+                />
+              </Group>
+              <PasswordInput
+                label="Password"
+                description="Used for UI authentication"
+                {...form.getInputProps('password')}
+                key={form.key('password')}
+                disabled={form.getValues().user_level == USER_LEVELS.STREAMER}
+              />
+            </Stack>
+          </Tabs.Panel>
 
-            <TextInput
-              id="last_name"
-              name="last_name"
-              label="Last Name"
-              {...form.getInputProps('last_name')}
-              key={form.key('last_name')}
-            />
+          {showPermissions && (
+            <Tabs.Panel value="permissions">
+              <Stack gap="sm">
+                <Group grow align="flex-start">
+                  <Select
+                    label="User Level"
+                    data={Object.entries(USER_LEVELS).map(([, value]) => ({
+                      label: USER_LEVEL_LABELS[value],
+                      value: `${value}`,
+                    }))}
+                    {...form.getInputProps('user_level')}
+                    key={form.key('user_level')}
+                  />
+                  <NumberInput
+                    label="Stream Limit (0 = unlimited)"
+                    {...form.getInputProps('stream_limit')}
+                    key={form.key('stream_limit')}
+                  />
+                </Group>
+                <MultiSelect
+                  label="Channel Profiles"
+                  {...form.getInputProps('channel_profiles')}
+                  key={form.key('channel_profiles')}
+                  onChange={onChannelProfilesChange}
+                  data={Object.values(profiles).map((profile) => ({
+                    label: profile.name,
+                    value: `${profile.id}`,
+                  }))}
+                />
+                <Switch
+                  label="Hide Mature Content"
+                  description="Hide channels marked as mature content (admin users not affected)"
+                  {...form.getInputProps('hide_adult_content', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('hide_adult_content')}
+                />
+              </Stack>
+            </Tabs.Panel>
+          )}
 
-            <Group align="flex-end">
+          <Tabs.Panel value="epg">
+            <Stack gap="sm">
+              <Text size="sm" c="dimmed">
+                These defaults apply when no URL parameters are specified and
+                can be useful for XC clients that cannot pass custom query
+                parameters.
+              </Text>
+              <Group grow align="flex-start">
+                <NumberInput
+                  label="Days forward (0 = all)"
+                  description="How many future days of EPG data to include"
+                  min={0}
+                  max={365}
+                  {...form.getInputProps('epg_days')}
+                  key={form.key('epg_days')}
+                />
+                <NumberInput
+                  label="Days back (0 = none)"
+                  description="How many past days of EPG data to include (max 30)"
+                  min={0}
+                  max={30}
+                  {...form.getInputProps('epg_prev_days')}
+                  key={form.key('epg_prev_days')}
+                />
+              </Group>
+            </Stack>
+          </Tabs.Panel>
+
+          <Tabs.Panel value="api">
+            <Stack gap="sm">
               <TextInput
                 label="XC Password"
-                description="Clear to disable XC API"
+                description={
+                  isAdmin
+                    ? 'Clear to disable XC API'
+                    : 'XC password can only be changed by an administrator'
+                }
+                disabled={!isAdmin}
                 {...form.getInputProps('xc_password')}
                 key={form.key('xc_password')}
-                style={{ flex: 1 }}
                 rightSectionWidth={30}
                 rightSection={
                   <ActionIcon
@@ -232,47 +378,69 @@ const User = ({ user = null, isOpen, onClose }) => {
                     size="sm"
                     color="white"
                     onClick={generateXCPassword}
+                    disabled={!isAdmin}
                   >
                     <RotateCcwKey />
                   </ActionIcon>
                 }
               />
-            </Group>
+              {canGenerateKey && (
+                <Stack gap="xs">
+                  {userAPIKey && (
+                    <TextInput
+                      label="API Key"
+                      disabled={true}
+                      value={userAPIKey}
+                      rightSection={
+                        <ActionIcon
+                          variant="transparent"
+                          size="sm"
+                          color="white"
+                          onClick={() =>
+                            copyToClipboard(userAPIKey, {
+                              successTitle: 'API Key Copied!',
+                              successMessage:
+                                'The API Key has been copied to your clipboard.',
+                            })
+                          }
+                        >
+                          <Copy />
+                        </ActionIcon>
+                      }
+                    />
+                  )}
+                  <Group gap="xs" grow>
+                    <Button
+                      leftSection={<Key size={14} />}
+                      size="xs"
+                      onClick={onGenerateKey}
+                      loading={generating}
+                      variant="light"
+                      fullWidth
+                    >
+                      {userAPIKey ? 'Regenerate API Key' : 'Generate API Key'}
+                    </Button>
+                    {userAPIKey && (
+                      <Button
+                        leftSection={<X size={14} />}
+                        size="xs"
+                        onClick={onRevokeKey}
+                        loading={generating}
+                        color={theme.colors.red[5]}
+                        variant="light"
+                        fullWidth
+                      >
+                        Revoke API Key
+                      </Button>
+                    )}
+                  </Group>
+                </Stack>
+              )}
+            </Stack>
+          </Tabs.Panel>
+        </Tabs>
 
-            {showPermissions && (
-              <MultiSelect
-                label="Channel Profiles"
-                {...form.getInputProps('channel_profiles')}
-                key={form.key('channel_profiles')}
-                onChange={onChannelProfilesChange}
-                data={Object.values(profiles).map((profile) => ({
-                  label: profile.name,
-                  value: `${profile.id}`,
-                }))}
-              />
-            )}
-
-            {showPermissions && (
-              <Box>
-                <Tooltip
-                  label="Hide channels marked as mature content (admin users not affected)"
-                  position="top"
-                  withArrow
-                >
-                  <Switch
-                    label="Hide Mature Content"
-                    {...form.getInputProps('hide_adult_content', {
-                      type: 'checkbox',
-                    })}
-                    key={form.key('hide_adult_content')}
-                  />
-                </Tooltip>
-              </Box>
-            )}
-          </Stack>
-        </Group>
-
-        <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
+        <Group justify="flex-end" mt="md">
           <Button
             type="submit"
             variant="contained"
@@ -281,7 +449,7 @@ const User = ({ user = null, isOpen, onClose }) => {
           >
             Save
           </Button>
-        </Flex>
+        </Group>
       </form>
     </Modal>
   );

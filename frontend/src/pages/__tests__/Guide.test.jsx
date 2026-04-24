@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import API from '../../api';
 import dayjs from 'dayjs';
 import Guide from '../Guide';
 import useChannelsStore from '../../store/channels';
@@ -9,7 +10,7 @@ import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { showNotification } from '../../utils/notificationUtils.js';
-import * as guideUtils from '../guideUtils';
+import * as guideUtils from '../../utils/guideUtils';
 import * as recordingCardUtils from '../../utils/cards/RecordingCardUtils.js';
 import * as dateTimeUtils from '../../utils/dateTimeUtils.js';
 import userEvent from '@testing-library/user-event';
@@ -21,6 +22,7 @@ vi.mock('../../store/epgs');
 vi.mock('../../store/settings');
 vi.mock('../../store/useVideoStore');
 vi.mock('../../hooks/useLocalStorage');
+vi.mock('../../api');
 
 vi.mock('@mantine/hooks', () => ({
   useElementSize: () => ({
@@ -124,6 +126,16 @@ vi.mock('@mantine/core', async () => {
         ))}
       </select>
     ),
+    Badge: ({ children, size, variant, color, style }) => (
+      <span
+        data-size={size}
+        data-variant={variant}
+        data-color={color}
+        style={style}
+      >
+        {children}
+      </span>
+    ),
     ActionIcon: ({ children, onClick, variant, size, color }) => (
       <button
         onClick={onClick}
@@ -146,7 +158,7 @@ vi.mock('react-window', () => ({
           {children({
             index: i,
             style: {},
-            data: itemData.filteredChannels[i],
+            data: itemData,
           })}
         </div>
       ))}
@@ -155,10 +167,42 @@ vi.mock('react-window', () => ({
 }));
 
 vi.mock('../../components/GuideRow', () => ({
-  default: ({ data }) => (
-    <div data-testid="guide-row">GuideRow for {data?.name}</div>
-  ),
+  default: ({ index, data }) => {
+    const channel = data?.filteredChannels?.[index];
+    const channelPrograms = data?.programsByChannelId?.get(channel?.id) || [];
+    const program = channelPrograms[0] || {
+      id: 'prog-1',
+      tvg_id: 'tvg-1',
+      title: 'Test Program 1',
+      channel_id: channel?.id,
+      start_time: '2024-01-15T12:00:00Z',
+      end_time: '2024-01-15T13:00:00Z',
+      programStart: dayjs('2024-01-15T12:00:00Z'),
+      programEnd: dayjs('2024-01-15T13:00:00Z'),
+      startMs: dayjs('2024-01-15T12:00:00Z').valueOf(),
+      endMs: dayjs('2024-01-15T13:00:00Z').valueOf(),
+    };
+
+    return (
+      <div data-testid="guide-row">
+        GuideRow for {channel?.name}
+        <button
+          data-testid="guide-row-select"
+          onClick={() => {
+            // renderProgram embeds the click handler — call it directly
+            const fakeEvent = { stopPropagation: () => {}, preventDefault: () => {} };
+            // renderProgram returns a Box with onClick — extract and call it
+            const rendered = data?.renderProgram?.(program, undefined, channel);
+            rendered?.props?.onClick?.(fakeEvent);
+          }}
+        >
+          Select program
+        </button>
+      </div>
+    );
+  },
 }));
+
 vi.mock('../../components/HourTimeline', () => ({
   default: ({ hourTimeline }) => (
     <div data-testid="hour-timeline">
@@ -189,9 +233,20 @@ vi.mock('../../components/forms/SeriesRecordingModal', () => ({
       </div>
     ) : null,
 }));
+vi.mock('../../components/ProgramDetailModal', () => ({
+  __esModule: true,
+  default: ({ program, channel, opened, onClose, onRecord }) =>
+    opened ? (
+      <div data-testid="program-detail-modal">
+        <div>{program?.title}</div>
+        <button onClick={onClose}>Close</button>
+        <button onClick={() => onRecord?.(program)}>Record</button>
+      </div>
+    ) : null,
+}));
 
-vi.mock('../guideUtils', async () => {
-  const actual = await vi.importActual('../guideUtils');
+vi.mock('../../utils/guideUtils', async () => {
+  const actual = await vi.importActual('../../utils/guideUtils');
   return {
     ...actual,
     fetchPrograms: vi.fn(),
@@ -261,7 +316,13 @@ describe('Guide', () => {
       },
       recordings: [],
       channelGroups: {
-        'group-1': { id: 'group-1', name: 'News', channels: ['channel-1'] },
+        // hasChannels is required: Guide.jsx filters groups by this property
+        'group-1': {
+          id: 'group-1',
+          name: 'News',
+          channels: ['channel-1'],
+          hasChannels: true,
+        },
       },
       profiles: {
         'profile-1': { id: 'profile-1', name: 'HD Profile' },
@@ -317,7 +378,14 @@ describe('Guide', () => {
         id: 'prog-1',
         tvg_id: 'tvg-1',
         title: 'Test Program 1',
+        sub_title: 'The Pilot',
         description: 'Description 1',
+        season: 1,
+        episode: 3,
+        is_new: false,
+        is_live: false,
+        is_premiere: false,
+        is_finale: false,
         start_time: now.toISOString(),
         end_time: now.add(1, 'hour').toISOString(),
         programStart: now,
@@ -346,6 +414,14 @@ describe('Guide', () => {
     ]);
 
     recordingCardUtils.getShowVideoUrl.mockReturnValue('http://video.test');
+
+    // Guide.jsx now fetches channels from the API rather than reading them
+    // from the channel store.  Mock both calls so guideChannels gets populated.
+    const mockChannelsArray = Object.values(mockChannelsState.channels);
+    API.getAllChannelIds.mockResolvedValue(
+      Object.keys(mockChannelsState.channels)
+    );
+    API.getChannelsSummary.mockResolvedValue(mockChannelsArray);
   });
 
   afterEach(() => {
@@ -367,9 +443,14 @@ describe('Guide', () => {
     });
 
     it('renders channel rows when channels are available', async () => {
+      vi.useRealTimers();
+
       render(<Guide />);
 
-      expect(screen.getAllByTestId('guide-row')).toHaveLength(2);
+      // Channels are now fetched asynchronously from the API
+      await waitFor(() => {
+        expect(screen.getAllByTestId('guide-row')).toHaveLength(2);
+      });
     });
 
     it('shows no channels message when filters exclude all channels', async () => {
@@ -385,11 +466,14 @@ describe('Guide', () => {
     });
 
     it('displays channel count', async () => {
+      vi.useRealTimers();
+
       render(<Guide />);
 
-      // await waitFor(() => {
-      expect(screen.getByText(/2 channels/)).toBeInTheDocument();
-      // });
+      // Channels are now fetched asynchronously from the API
+      await waitFor(() => {
+        expect(screen.getByText(/2 channels/)).toBeInTheDocument();
+      });
     });
   });
 
@@ -416,7 +500,9 @@ describe('Guide', () => {
       await user.type(searchInput, 'Test');
       expect(searchInput).toHaveValue('Test');
 
-      await user.click(screen.getByText('Clear Filters'));
+      // Use getAllByText to safely handle the brief window where both the
+      // filter-bar and the empty-state buttons are in the DOM simultaneously.
+      await user.click(screen.getAllByText('Clear Filters')[0]);
       expect(searchInput).toHaveValue('');
     });
 
@@ -495,51 +581,95 @@ describe('Guide', () => {
       await user.type(searchInput, 'Test');
 
       // Clear them
-      const clearButton = await screen.findByText('Clear Filters');
-      await user.click(clearButton);
+      // Use findAllByText + [0] to target the filter-bar button specifically
+      // in case the empty-state also shows a Clear Filters button.
+      const clearButtons = await screen.findAllByText('Clear Filters');
+      await user.click(clearButtons[0]);
 
       expect(searchInput).toHaveValue('');
     });
   });
 
   describe('Recording Functionality', () => {
-    it('opens Series Rules modal when button is clicked', async () => {
+    it('opens Program Recording modal when Record One is clicked', async () => {
       vi.useRealTimers();
 
       const user = userEvent.setup();
       render(<Guide />);
 
-      const rulesButton = await screen.findByText('Series Rules');
-      await user.click(rulesButton);
+      const selectButtons = await screen.findAllByTestId('guide-row-select');
+      await user.click(selectButtons[0]);
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-detail-modal')).toBeInTheDocument()
+      );
+
+      fireEvent.click(screen.getByText('Record'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-recording-modal')).toBeInTheDocument()
+      );
+
+      fireEvent.click(screen.getByText('Record One'));
 
       await waitFor(() => {
-        expect(
-          screen.getByTestId('series-recording-modal')
-        ).toBeInTheDocument();
+        expect(guideUtils.createRecording).toHaveBeenCalled();
       });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
     });
 
-    it('fetches rules when opening Series Rules modal', async () => {
+    it('uses selected channel for recordOne instead of tvg_id fallback', async () => {
       vi.useRealTimers();
 
-      const mockRules = [{ id: 1, title: 'Test Rule' }];
-      guideUtils.fetchRules.mockResolvedValue(mockRules);
+      API.getAllChannelIds.mockResolvedValue(['channel-1']);
+      API.getChannelsSummary.mockResolvedValue([mockChannelsState.channels['channel-1']]);
+      guideUtils.filterGuideChannels.mockImplementation((channels) =>
+        Array.isArray(channels) ? channels : Object.values(channels)
+      );
 
-      const user = userEvent.setup();
+      const program = {
+        id: 'prog-1',
+        tvg_id: 'tvg-1',
+        title: 'Test Program 1',
+        channel_id: 'channel-1',
+        start_time: now.toISOString(),
+        end_time: now.add(1, 'hour').toISOString(),
+        programStart: now,
+        programEnd: now.add(1, 'hour'),
+        startMs: now.valueOf(),
+        endMs: now.add(1, 'hour').valueOf(),
+      };
+
+      guideUtils.fetchPrograms.mockResolvedValue([program]);
+
       render(<Guide />);
 
-      const rulesButton = await screen.findByText('Series Rules');
-      await user.click(rulesButton);
+      await waitFor(() =>
+        expect(screen.getAllByTestId('guide-row').length).toBeGreaterThan(0)
+      );
+
+      // Use userEvent instead of fireEvent so microtasks (Suspense lazy resolution) are flushed
+      const user = userEvent.setup({ delay: null });
+
+      await user.click(screen.getByTestId('guide-row-select'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-detail-modal')).toBeInTheDocument()
+      );
+
+      await user.click(screen.getByText('Record'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('program-recording-modal')).toBeInTheDocument()
+      );
+
+      await user.click(screen.getByText('Record One'));
 
       await waitFor(() => {
-        expect(guideUtils.fetchRules).toHaveBeenCalled();
+        expect(guideUtils.createRecording).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'channel-1' }),
+          expect.objectContaining({ id: 'prog-1' })
+        );
       });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2024-01-15T12:00:00Z'));
     });
   });
 
@@ -572,22 +702,19 @@ describe('Guide', () => {
   });
 
   describe('Error Handling', () => {
-    it('shows notification when no channels are available', async () => {
-      useChannelsStore.mockImplementation((selector) => {
-        const state = {
-          channels: {},
-          recordings: [],
-          channelGroups: {},
-          profiles: {},
-        };
-        return selector ? selector(state) : state;
-      });
+    it('shows empty state when the API returns no channels', async () => {
+      vi.useRealTimers();
+
+      // Guide.jsx no longer emits a notification for an empty channel list;
+      // instead it renders an empty-state message directly in the UI.
+      API.getChannelsSummary.mockResolvedValue([]);
 
       render(<Guide />);
 
-      expect(showNotification).toHaveBeenCalledWith({
-        title: 'No channels available',
-        color: 'red.5',
+      await waitFor(() => {
+        expect(
+          screen.getByText('No channels match your filters')
+        ).toBeInTheDocument();
       });
     });
   });

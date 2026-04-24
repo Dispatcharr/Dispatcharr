@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
+import { notifications } from '@mantine/notifications';
 import {
   Paper,
   Title,
@@ -130,6 +131,16 @@ const LoginForm = () => {
       // Navigation will happen automatically via the useEffect or route protection
     } catch (e) {
       console.log(`Failed to login: ${e}`);
+      if (e?.message === 'Unauthorized') {
+        notifications.show({
+          title: 'Web UI Access Denied',
+          message:
+            'This account is a Streamer account and cannot log into the web UI. ' +
+            'Your M3U and stream URLs still work. Contact an admin to upgrade your account level.',
+          color: 'red',
+          autoClose: 10000,
+        });
+      }
       await logout();
       setIsLoading(false);
     }

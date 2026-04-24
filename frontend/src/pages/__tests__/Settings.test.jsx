@@ -71,6 +71,20 @@ vi.mock('../../components/forms/settings/SystemSettingsForm', () => ({
     </div>
   ),
 }));
+vi.mock('../../components/forms/settings/NavOrderForm', () => ({
+  default: ({ active }) => (
+    <div data-testid="nav-order-form">
+      NavOrderForm {active ? 'active' : 'inactive'}
+    </div>
+  ),
+}));
+vi.mock('../../components/forms/settings/UserLimitsForm', () => ({
+  default: ({ active }) => (
+    <div data-testid="user-limits-form">
+      UserLimitsForm {active ? 'active' : 'inactive'}
+    </div>
+  ),
+}));
 vi.mock('../../components/ErrorBoundary', () => ({
   default: ({ children }) => <div data-testid="error-boundary">{children}</div>,
 }));
@@ -96,6 +110,7 @@ vi.mock('@mantine/core', async () => {
     AccordionPanel: accordionComponent.Panel,
     Box: ({ children }) => <div>{children}</div>,
     Center: ({ children }) => <div>{children}</div>,
+    Divider: () => <hr />,
     Loader: () => <div data-testid="loader">Loading...</div>,
     Text: ({ children }) => <span>{children}</span>,
   };
@@ -127,7 +142,7 @@ describe('SettingsPage', () => {
     it('renders the settings page', () => {
       renderWithRouter(<SettingsPage />);
 
-      expect(screen.getByTestId('accordion')).toBeInTheDocument();
+      expect(screen.getAllByTestId('accordion').length).toBeGreaterThan(0);
     });
 
     it('renders UI Settings accordion item', () => {
@@ -157,6 +172,15 @@ describe('SettingsPage', () => {
       expect(screen.queryByText('Proxy Settings')).not.toBeInTheDocument();
       expect(screen.queryByText('Backup & Restore')).not.toBeInTheDocument();
     });
+
+    it('renders Navigation accordion item for regular users', () => {
+      renderWithRouter(<SettingsPage />);
+
+      expect(
+        screen.getByTestId('accordion-item-nav-order')
+      ).toBeInTheDocument();
+      expect(screen.getByText('Navigation')).toBeInTheDocument();
+    });
   });
 
   describe('Rendering for Admin User', () => {
@@ -181,6 +205,7 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Network Access')).toBeInTheDocument();
         expect(screen.getByText('Proxy Settings')).toBeInTheDocument();
         expect(screen.getByText('Backup & Restore')).toBeInTheDocument();
+        expect(screen.getByText('Navigation')).toBeInTheDocument();
       });
     });
 
@@ -244,6 +269,14 @@ describe('SettingsPage', () => {
       renderWithRouter(<SettingsPage />);
 
       expect(screen.getByTestId('accordion-item-backups')).toBeInTheDocument();
+    });
+
+    it('renders Navigation accordion item', () => {
+      renderWithRouter(<SettingsPage />);
+
+      expect(
+        screen.getByTestId('accordion-item-nav-order')
+      ).toBeInTheDocument();
     });
   });
 

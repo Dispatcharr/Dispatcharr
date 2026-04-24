@@ -12,8 +12,19 @@ fi
 trap 'echo -e "\n[ERROR] Line $LINENO failed. Exiting." >&2; exit 1' ERR
 
 ##############################################################################
-# 0) Warning / Disclaimer
+# 0) Locales & Warning / Disclaimer
 ##############################################################################
+
+setup_locales() {
+  echo ">>> Setting up locales..."
+  apt-get update
+  apt-get install -y locales
+  sed -i '/en_US.UTF-8 UTF-8/s/^# //g' /etc/locale.gen
+  locale-gen
+  update-locale LANG=en_US.UTF-8
+  export LANG=en_US.UTF-8
+  export LC_ALL=en_US.UTF-8
+}
 
 show_disclaimer() {
   echo "**************************************************************"
@@ -106,8 +117,8 @@ setup_postgresql() {
 
   db_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$POSTGRES_DB'")
   if [[ "$db_exists" != "1" ]]; then
-    echo ">>> Creating database '${POSTGRES_DB}'..."
-    sudo -u postgres createdb "$POSTGRES_DB"
+    echo ">>> Creating database '${POSTGRES_DB}' with UTF8 encoding..."
+    sudo -u postgres createdb -E UTF8 "$POSTGRES_DB"
   else
     echo ">>> Database '${POSTGRES_DB}' already exists, skipping creation."
   fi
@@ -168,23 +179,50 @@ install_uv() {
 
 setup_python_env() {
   echo ">>> Setting up Python virtual environment with UV..."
-  # Install UV globally first
-  install_uv
 
   su - "$DISPATCH_USER" <<EOSU
-cd "$APP_DIR"
-export PATH="\$HOME/.local/bin:\$PATH"
-# Install UV for the dispatch user if not already available
-if ! command -v uv &> /dev/null; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  set -euo pipefail
+  cd "$APP_DIR"
   export PATH="\$HOME/.local/bin:\$PATH"
-fi
-# Create venv and install dependencies using UV
-uv venv env --python $PYTHON_BIN
-uv sync --python env/bin/python --no-install-project --no-dev
+
+  command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+
+  rm -rf env
+  $PYTHON_BIN -m venv env
+  env/bin/python -m ensurepip --upgrade
+
+  export UV_PROJECT_ENVIRONMENT="$APP_DIR/env"
+  uv sync --no-dev
+
+  env/bin/python -m pip install -q gunicorn
 EOSU
+
   ln -sf /usr/bin/ffmpeg "$APP_DIR/env/bin/ffmpeg"
 }
+
+
+##############################################################################
+# 6.1) Ensure Environment File
+##############################################################################
+
+ensure_env_file() {
+  echo ">>> Ensuring DJANGO_SECRET_KEY exists in ${APP_DIR}/.env..."
+  su - "$DISPATCH_USER" <<EOSU
+set -euo pipefail
+cd "$APP_DIR"
+touch .env
+chmod 600 .env
+if ! grep -q '^DJANGO_SECRET_KEY=' .env; then
+  key=\$(env/bin/python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(64))
+PY
+)
+  echo "DJANGO_SECRET_KEY=\$key" >> .env
+fi
+EOSU
+}
+
 
 ##############################################################################
 # 7) Build Frontend
@@ -231,16 +269,20 @@ create_directories() {
 django_migrate_collectstatic() {
   echo ">>> Running Django migrations & collectstatic..."
   su - "$DISPATCH_USER" <<EOSU
+set -euo pipefail
 cd "$APP_DIR"
-source env/bin/activate
+set -a
+source .env
+set +a
 export POSTGRES_DB="$POSTGRES_DB"
 export POSTGRES_USER="$POSTGRES_USER"
 export POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
 export POSTGRES_HOST="localhost"
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput
+env/bin/python manage.py migrate --noinput
+env/bin/python manage.py collectstatic --noinput
 EOSU
 }
+
 
 ##############################################################################
 # 10) Configure Services & Nginx
@@ -261,6 +303,7 @@ Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
 RuntimeDirectory=${GUNICORN_RUNTIME_DIR}
 RuntimeDirectoryMode=0775
+EnvironmentFile=/opt/dispatcharr/.env
 Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
@@ -293,7 +336,8 @@ Requires=dispatcharr.service
 User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
-Environment="PATH=${APP_DIR}/env/bin"
+EnvironmentFile=/opt/dispatcharr/.env
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -320,7 +364,8 @@ Requires=dispatcharr.service
 User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
-Environment="PATH=${APP_DIR}/env/bin"
+EnvironmentFile=/opt/dispatcharr/.env
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -347,7 +392,8 @@ Requires=dispatcharr.service
 User=${DISPATCH_USER}
 Group=${DISPATCH_GROUP}
 WorkingDirectory=${APP_DIR}
-Environment="PATH=${APP_DIR}/env/bin"
+EnvironmentFile=/opt/dispatcharr/.env
+Environment="PATH=${APP_DIR}/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="POSTGRES_DB=${POSTGRES_DB}"
 Environment="POSTGRES_USER=${POSTGRES_USER}"
 Environment="POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
@@ -439,6 +485,7 @@ EOF
 ##############################################################################
 
 main() {
+  setup_locales
   show_disclaimer
   configure_variables
   install_packages
@@ -448,6 +495,7 @@ main() {
   setup_python_env
   build_frontend
   create_directories
+  ensure_env_file
   django_migrate_collectstatic
   configure_services
   start_services

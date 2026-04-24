@@ -156,6 +156,7 @@ PROXY_SETTINGS_KEY = "proxy_settings"
 NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
+USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
 
 
 class CoreSettings(models.Model):
@@ -240,16 +241,23 @@ class CoreSettings(models.Model):
         })
 
     @classmethod
+    def _safe_string_list(cls, value):
+        """Return a list of strings, filtering out non-list or non-string values."""
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str)]
+
+    @classmethod
     def get_epg_match_ignore_prefixes(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_prefixes", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_prefixes", []))
 
     @classmethod
     def get_epg_match_ignore_suffixes(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_suffixes", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_suffixes", []))
 
     @classmethod
     def get_epg_match_ignore_custom(cls):
-        return cls.get_epg_settings().get("epg_match_ignore_custom", [])
+        return cls._safe_string_list(cls.get_epg_settings().get("epg_match_ignore_custom", []))
 
     # DVR Settings
     @classmethod
@@ -312,12 +320,16 @@ class CoreSettings(models.Model):
 
     @classmethod
     def get_dvr_series_rules(cls):
-        return cls.get_dvr_settings().get("series_rules", [])
+        rules = cls.get_dvr_settings().get("series_rules", [])
+        if not isinstance(rules, list):
+            return []
+        return [r for r in rules if isinstance(r, dict)]
 
     @classmethod
     def set_dvr_series_rules(cls, rules):
-        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"series_rules": rules})
-        return rules
+        clean = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+        cls._update_group(DVR_SETTINGS_KEY, "DVR Settings", {"series_rules": clean})
+        return clean
 
     # Proxy Settings
     @classmethod
@@ -329,6 +341,7 @@ class CoreSettings(models.Model):
             "redis_chunk_ttl": 60,
             "channel_shutdown_delay": 0,
             "channel_init_grace_period": 5,
+            "new_client_behind_seconds": 5,
         })
 
     # System Settings
@@ -349,6 +362,15 @@ class CoreSettings(models.Model):
         value = (tz_name or "").strip() or getattr(settings, "TIME_ZONE", "UTC") or "UTC"
         cls._update_group(SYSTEM_SETTINGS_KEY, "System Settings", {"time_zone": value})
         return value
+
+    @classmethod
+    def get_user_limits_settings(cls):
+        return cls._get_group(USER_LIMITS_SETTINGS_KEY, {
+            "terminate_on_limit_exceeded": True,
+            "prioritize_single_client_channels": True,
+            "ignore_same_channel_connections": False,
+            "terminate_oldest": True,
+        })
 
 
 class SystemEvent(models.Model):
@@ -377,6 +399,8 @@ class SystemEvent(models.Model):
         ('logout', 'User Logged Out'),
         ('m3u_blocked', 'M3U Download Blocked'),
         ('epg_blocked', 'EPG Download Blocked'),
+        ('vod_start', 'VOD Started'),
+        ('vod_stop', 'VOD Stopped'),
     ]
 
     event_type = models.CharField(max_length=50, choices=EVENT_TYPES, db_index=True)

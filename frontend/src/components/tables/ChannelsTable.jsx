@@ -17,13 +17,11 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import useChannelsStore from '../../store/channels';
-import { notifications } from '@mantine/notifications';
 import API from '../../api';
 import ChannelForm from '../forms/Channel';
 import ChannelBatchForm from '../forms/ChannelBatch';
 import RecordingForm from '../forms/Recording';
 import { useDebounce, copyToClipboard } from '../../utils';
-import logo from '../../images/logo.png';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
 import {
@@ -65,7 +63,6 @@ import {
   Tooltip,
   Skeleton,
 } from '@mantine/core';
-import { getCoreRowModel, flexRender } from '@tanstack/react-table';
 import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import ChannelTableStreams from './ChannelTableStreams';
@@ -243,7 +240,12 @@ const ChannelRowActions = React.memo(
         </Center>
       </Box>
     );
-  }
+  },
+  // Custom comparator: only re-render when the actual channel changes.
+  // The row object is a new TanStack Table reference on each render, but
+  // row.original.id is stable. Callbacks read fresh data at call time.
+  (prevProps, nextProps) =>
+    prevProps.row.original.id === nextProps.row.original.id
 );
 
 const ChannelsTable = ({ onReady }) => {
@@ -251,16 +253,15 @@ const ChannelsTable = ({ onReady }) => {
   const tvgsById = useEPGsStore((s) => s.tvgsById);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgsLoaded = useEPGsStore((s) => s.tvgsLoaded);
+  const hasUnassignedEPGChannels = useChannelsTableStore(
+    (s) => s.hasUnassignedEPGChannels
+  );
 
   // Get channel logos for logo selection
   const { ensureLogosLoaded } = useChannelLogoSelection();
 
   const theme = useMantineTheme();
   const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
-  const canDeleteChannelGroup = useChannelsStore(
-    (s) => s.canDeleteChannelGroup
-  );
   const hasSignaledReady = useRef(false);
 
   /**
@@ -270,30 +271,41 @@ const ChannelsTable = ({ onReady }) => {
   // store/channelsTable
   const data = useChannelsTableStore((s) => s.channels);
   const pageCount = useChannelsTableStore((s) => s.pageCount);
+
+  const rowClassMap = useMemo(() => {
+    const map = {};
+    for (const channel of data) {
+      const hasStreams = channel.streams?.length > 0;
+      if (!hasStreams) {
+        map[channel.id] = 'no-streams-row';
+      } else if (channel.streams.some((s) => s.is_stale)) {
+        map[channel.id] = 'has-stale-streams-row';
+      }
+    }
+    return map;
+  }, [data]);
   const setSelectedChannelIds = useChannelsTableStore(
     (s) => s.setSelectedChannelIds
   );
   const selectedChannelIds = useChannelsTableStore((s) => s.selectedChannelIds);
+  const setExpandedChannelId = useChannelsTableStore(
+    (s) => s.setExpandedChannelId
+  );
   const pagination = useChannelsTableStore((s) => s.pagination);
   const setPagination = useChannelsTableStore((s) => s.setPagination);
   const sorting = useChannelsTableStore((s) => s.sorting);
   const setSorting = useChannelsTableStore((s) => s.setSorting);
   const totalCount = useChannelsTableStore((s) => s.totalCount);
-  const setChannelStreams = useChannelsTableStore((s) => s.setChannelStreams);
   const allRowIds = useChannelsTableStore((s) => s.allQueryIds);
   const setAllRowIds = useChannelsTableStore((s) => s.setAllQueryIds);
-  const isUnlocked = useChannelsTableStore((s) => s.isUnlocked);
 
   // store/channels
-  const channels = useChannelsStore((s) => s.channels);
+  const hasChannels = useChannelsStore((s) => s.channelIds.length > 0);
   const profiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const [tablePrefs, setTablePrefs] = useLocalStorage('channel-table-prefs', {
+  const [, setTablePrefs] = useLocalStorage('channel-table-prefs', {
     pageSize: 50,
   });
-  const selectedProfileChannels = useChannelsStore(
-    (s) => s.profiles[selectedProfileId]?.channels
-  );
 
   // store/settings
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
@@ -304,26 +316,16 @@ const ChannelsTable = ({ onReady }) => {
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
   /**
-   * useMemo
-   */
-  const selectedProfileChannelIds = useMemo(
-    () => new Set(selectedProfileChannels),
-    [selectedProfileChannels]
-  );
-
-  /**
    * useState
    */
   const [channel, setChannel] = useState(null);
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelBatchModalOpen, setChannelBatchModalOpen] = useState(false);
   const [recordingModalOpen, setRecordingModalOpen] = useState(false);
-  const [selectedProfile, setSelectedProfile] = useState(
-    profiles[selectedProfileId]
-  );
   const [showDisabled, setShowDisabled] = useState(true);
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
+  const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -331,7 +333,7 @@ const ChannelsTable = ({ onReady }) => {
     channel_group: '',
     epg: '',
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [, setIsLoading] = useState(true);
 
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
@@ -374,42 +376,26 @@ const ChannelsTable = ({ onReady }) => {
     cachedlogos: true,
     tvg_id_source: 'channel_number',
     days: 0,
+    prev_days: 0,
   });
 
   /**
    * Derived variables
    */
-  const activeGroupIds = new Set(
-    Object.values(channels).map((channel) => channel.channel_group_id)
-  );
   const groupOptions = Object.values(channelGroups)
-    .filter((group) => activeGroupIds.has(group.id))
-    .map((group) => group.name);
+    .filter((group) => group.hasChannels)
+    .map((group) => group.name)
+    .sort((a, b) => a.localeCompare(b));
 
-  // Get unique EPG sources from active channels
-  const activeEPGSources = new Set();
-  let hasUnlinkedChannels = false;
-  Object.values(channels).forEach((channel) => {
-    if (channel.epg_data_id) {
-      const epgObj = tvgsById[channel.epg_data_id];
-      if (epgObj && epgObj.epg_source) {
-        const epgName = epgs[epgObj.epg_source]?.name || epgObj.epg_source;
-        activeEPGSources.add(epgName);
-      }
-    } else {
-      hasUnlinkedChannels = true;
-    }
-  });
-  const epgOptions = Array.from(activeEPGSources).sort();
-  if (hasUnlinkedChannels) {
-    epgOptions.unshift('No EPG');
-  }
-  // Map for MultiSelect: value 'null' for 'No EPG', label for display
-  const epgSelectOptions = epgOptions.map((opt) =>
-    opt === 'No EPG'
-      ? { value: 'null', label: 'No EPG' }
-      : { value: opt, label: opt }
-  );
+  const epgOptions = Object.values(epgs)
+    .filter((epg) => epg.is_active && epg.has_channels)
+    .map((epg) => epg.name)
+    .sort((a, b) => a.localeCompare(b));
+  // Only show 'No EPG' if there are channels without an EPG assigned
+  const epgSelectOptions = [
+    ...(hasUnassignedEPGChannels ? [{ value: 'null', label: 'No EPG' }] : []),
+    ...epgOptions.map((opt) => ({ value: opt, label: opt })),
+  ];
   const debouncedFilters = useDebounce(filters, 500, () => {
     setPagination({
       ...pagination,
@@ -440,10 +426,21 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStreamlessChannels === true) {
       params.append('only_streamless', true);
     }
+    if (showOnlyStaleChannels === true) {
+      params.append('only_stale', true);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
-      const sortField = sorting[0].id;
+      let sortField = sorting[0].id;
+      // Map frontend column ids to backend ordering field names
+      const fieldMapping = {
+        channel_group: 'channel_group__name',
+        epg: 'epg_data__name',
+      };
+      if (fieldMapping[sortField]) {
+        sortField = fieldMapping[sortField];
+      }
       const sortDirection = sorting[0].desc ? '-' : '';
       params.append('ordering', `${sortDirection}${sortField}`);
     }
@@ -481,7 +478,7 @@ const ChannelsTable = ({ onReady }) => {
     setIsLoading(true);
 
     try {
-      const [results, ids] = await Promise.all([
+      const [, ids] = await Promise.all([
         API.queryChannels(params),
         API.getAllChannelIds(params),
       ]);
@@ -527,6 +524,7 @@ const ChannelsTable = ({ onReady }) => {
     showDisabled,
     selectedProfileId,
     showOnlyStreamlessChannels,
+    showOnlyStaleChannels,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -594,6 +592,10 @@ const ChannelsTable = ({ onReady }) => {
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
+
+    const rows = table.getRowModel().rows;
+    const knownChannel = rows.find((row) => row.original.id === id)?.original;
+
     table.setSelectedTableIds([]);
 
     if (selectedChannelIds.length > 0) {
@@ -613,7 +615,7 @@ const ChannelsTable = ({ onReady }) => {
     // Single channel delete
     setIsBulkDelete(false);
     setDeleteTarget(id);
-    setChannelToDelete(channels[id]); // Store the channel object for displaying details
+    setChannelToDelete(knownChannel); // Store the channel object for displaying details
 
     if (isWarningSuppressed('delete-channel')) {
       // Skip warning if suppressed
@@ -659,41 +661,49 @@ const ChannelsTable = ({ onReady }) => {
     }
   };
 
-  const createRecording = (channel) => {
+  const createRecording = useCallback((channel) => {
     console.log(`Recording channel ID: ${channel.id}`);
     setChannel(channel);
     setRecordingModalOpen(true);
-  };
+  }, []);
 
-  const getChannelURL = (channel) => {
-    // Make sure we're using the channel UUID consistently
-    if (!channel || !channel.uuid) {
-      console.error('Invalid channel object or missing UUID:', channel);
-      return '';
-    }
+  const getChannelURL = useCallback(
+    (channel) => {
+      // Make sure we're using the channel UUID consistently
+      if (!channel || !channel.uuid) {
+        console.error('Invalid channel object or missing UUID:', channel);
+        return '';
+      }
 
-    const uri = `/proxy/ts/stream/${channel.uuid}`;
-    let channelUrl = `${window.location.protocol}//${window.location.host}${uri}`;
-    if (env_mode == 'dev') {
-      channelUrl = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
-    }
+      const uri = `/proxy/ts/stream/${channel.uuid}`;
+      let channelUrl = `${window.location.protocol}//${window.location.host}${uri}`;
+      if (env_mode == 'dev') {
+        channelUrl = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
+      }
 
-    return channelUrl;
-  };
+      return channelUrl;
+    },
+    [env_mode]
+  );
 
-  const handleWatchStream = (channel) => {
-    // Add additional logging to help debug issues
-    console.log(
-      `Watching stream for channel: ${channel.name} (${channel.id}), UUID: ${channel.uuid}`
-    );
-    const url = getChannelURL(channel);
-    console.log(`Stream URL: ${url}`);
-    showVideo(url);
-  };
+  const handleWatchStream = useCallback(
+    (channel) => {
+      const url = getChannelURL(channel);
+      showVideo(url, 'live', { name: channel.name });
+    },
+    [getChannelURL, showVideo]
+  );
 
   const onRowSelectionChange = (newSelection) => {
     setSelectedChannelIds(newSelection);
   };
+
+  const onRowExpansionChange = useCallback(
+    (expandedIds) => {
+      setExpandedChannelId(expandedIds.length > 0 ? expandedIds[0] : null);
+    },
+    [setExpandedChannelId]
+  );
 
   const onPageSizeChange = (e) => {
     setPagination({
@@ -745,6 +755,8 @@ const ChannelsTable = ({ onReady }) => {
     if (epgParams.tvg_id_source !== 'channel_number')
       params.append('tvg_id_source', epgParams.tvg_id_source);
     if (epgParams.days > 0) params.append('days', epgParams.days.toString());
+    if (epgParams.prev_days > 0)
+      params.append('prev_days', epgParams.prev_days.toString());
 
     const baseUrl = epgUrl;
     return params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
@@ -845,8 +857,6 @@ const ChannelsTable = ({ onReady }) => {
   }, [fetchData]);
 
   useEffect(() => {
-    setSelectedProfile(profiles[selectedProfileId]);
-
     const profileString =
       selectedProfileId != '0' ? `/${profiles[selectedProfileId].name}` : '';
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
@@ -931,7 +941,7 @@ const ChannelsTable = ({ onReady }) => {
           />
         ),
         size: columnSizing.epg || 200,
-        minSize: 80,
+        minSize: 120,
       },
       {
         id: 'channel_group',
@@ -942,8 +952,8 @@ const ChannelsTable = ({ onReady }) => {
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
-        size: columnSizing.channel_group || 175,
-        minSize: 100,
+        size: columnSizing.channel_group || 200,
+        minSize: 120,
       },
       {
         id: 'logo',
@@ -1025,6 +1035,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('epg');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
       case 'enabled':
@@ -1036,11 +1055,16 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'channel_number':
         return (
-          <Flex gap={2}>
+          <Flex gap={2} align="center">
             #
-            <Center>
+            <Center
+              onClick={(e) => {
+                e.stopPropagation();
+                onSortingChange('channel_number');
+              }}
+              style={{ cursor: 'pointer' }}
+            >
               {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('channel_number'),
                 size: 14,
               })}
             </Center>
@@ -1049,25 +1073,27 @@ const ChannelsTable = ({ onReady }) => {
 
       case 'name':
         return (
-          <Flex gap="sm">
-            <TextInput
-              name="name"
-              placeholder="Name"
-              value={filters.name || ''}
-              onClick={(e) => e.stopPropagation()}
-              onChange={handleFilterChange}
-              size="xs"
-              variant="unstyled"
-              className="table-input-header"
-              leftSection={<Search size={14} opacity={0.5} />}
-            />
-            <Center>
-              {React.createElement(sortingIcon, {
-                onClick: () => onSortingChange('name'),
-                size: 14,
-              })}
-            </Center>
-          </Flex>
+          <TextInput
+            name="name"
+            placeholder="Name"
+            value={filters.name || ''}
+            onClick={(e) => e.stopPropagation()}
+            onChange={handleFilterChange}
+            size="xs"
+            variant="unstyled"
+            className="table-input-header"
+            leftSection={<Search size={14} opacity={0.5} />}
+            style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('name');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
+          />
         );
 
       case 'channel_group':
@@ -1090,6 +1116,15 @@ const ChannelsTable = ({ onReady }) => {
                   : []
             }
             style={{ width: '100%' }}
+            rightSectionPointerEvents="auto"
+            rightSection={React.createElement(sortingIcon, {
+              onClick: (e) => {
+                e.stopPropagation();
+                onSortingChange('channel_group');
+              },
+              size: 14,
+              style: { cursor: 'pointer' },
+            })}
           />
         );
     }
@@ -1111,6 +1146,7 @@ const ChannelsTable = ({ onReady }) => {
     enableRowSelection: true,
     enableDragDrop: true,
     onRowSelectionChange: onRowSelectionChange,
+    onRowExpansionChange: onRowExpansionChange,
     state: {
       pagination,
       sorting,
@@ -1126,7 +1162,7 @@ const ChannelsTable = ({ onReady }) => {
           className="tr"
           style={{ display: 'flex', width: '100%' }}
         >
-          <ChannelTableStreams channel={row.original} isExpanded={true} />
+          <ChannelTableStreams channel={row.original} />
         </Box>
       );
     },
@@ -1138,13 +1174,8 @@ const ChannelsTable = ({ onReady }) => {
       epg: renderHeaderCell,
     },
     getRowStyles: (row) => {
-      const hasStreams =
-        row.original.streams && row.original.streams.length > 0;
-      return hasStreams
-        ? {} // Default style for channels with streams
-        : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+      const cls = rowClassMap[row.original.id];
+      return cls ? { className: cls } : {};
     },
   });
 
@@ -1215,7 +1246,7 @@ const ChannelsTable = ({ onReady }) => {
                   </Button>
                 </Popover.Target>
                 <Popover.Dropdown>
-                  <Group
+                  <Stack
                     gap="sm"
                     style={{
                       minWidth: 250,
@@ -1223,16 +1254,27 @@ const ChannelsTable = ({ onReady }) => {
                       width: 'max-content',
                     }}
                   >
-                    <TextInput value={hdhrUrl} size="small" readOnly />
-                    <ActionIcon
-                      onClick={copyHDHRUrl}
+                    <Text size="sm" c="dimmed">
+                      Use this URL in HDHomeRun-compatible apps and IPTV
+                      clients.
+                    </Text>
+                    <TextInput
+                      value={hdhrUrl}
                       size="sm"
-                      variant="transparent"
-                      color="gray.5"
-                    >
-                      <Copy size="18" fontSize="small" />
-                    </ActionIcon>
-                  </Group>
+                      readOnly
+                      style={{ width: '100%' }}
+                      rightSection={
+                        <ActionIcon
+                          onClick={copyHDHRUrl}
+                          size="sm"
+                          variant="transparent"
+                          color="gray.5"
+                        >
+                          <Copy size="16" />
+                        </ActionIcon>
+                      }
+                    />
+                  </Stack>
                 </Popover.Dropdown>
               </Popover>
               <Popover
@@ -1267,9 +1309,13 @@ const ChannelsTable = ({ onReady }) => {
                     onClick={stopPropagation}
                     onMouseDown={stopPropagation}
                   >
+                    <Text size="sm" c="dimmed">
+                      Use this URL in your media player or IPTV app to load your
+                      channel list.
+                    </Text>
                     <TextInput
                       value={buildM3UUrl()}
-                      size="xs"
+                      size="sm"
                       readOnly
                       label="Generated URL"
                       rightSection={
@@ -1283,35 +1329,34 @@ const ChannelsTable = ({ onReady }) => {
                         </ActionIcon>
                       }
                     />
-                    <Group justify="space-between">
-                      <Text size="sm">Use cached logos</Text>
-                      <Switch
-                        size="sm"
-                        checked={m3uParams.cachedlogos}
-                        onChange={(event) =>
-                          setM3uParams((prev) => ({
-                            ...prev,
-                            cachedlogos: event.target.checked,
-                          }))
-                        }
-                      />
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm">Direct stream URLs</Text>
-                      <Switch
-                        size="sm"
-                        checked={m3uParams.direct}
-                        onChange={(event) =>
-                          setM3uParams((prev) => ({
-                            ...prev,
-                            direct: event.target.checked,
-                          }))
-                        }
-                      />
-                    </Group>{' '}
+                    <Switch
+                      label="Use cached logos"
+                      description="Proxy channel logos through Dispatcharr"
+                      size="sm"
+                      checked={m3uParams.cachedlogos}
+                      onChange={(event) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          cachedlogos: event.target.checked,
+                        }))
+                      }
+                    />
+                    <Switch
+                      label="Direct stream URLs"
+                      description="Bypass the Dispatcharr proxy; client connects directly to the source"
+                      size="sm"
+                      checked={m3uParams.direct}
+                      onChange={(event) =>
+                        setM3uParams((prev) => ({
+                          ...prev,
+                          direct: event.target.checked,
+                        }))
+                      }
+                    />
                     <Select
                       label="TVG-ID Source"
-                      size="xs"
+                      description="Value used as the tvg-id attribute in the M3U"
+                      size="sm"
                       value={m3uParams.tvg_id_source}
                       onChange={(value) =>
                         setM3uParams((prev) => ({
@@ -1362,9 +1407,15 @@ const ChannelsTable = ({ onReady }) => {
                     onClick={stopPropagation}
                     onMouseDown={stopPropagation}
                   >
+                    <Text size="sm" c="dimmed">
+                      Use this URL in your IPTV app for program guide data.
+                      Per-user defaults for days forward/back can be set in
+                      account settings, which apply automatically for XC
+                      clients.
+                    </Text>
                     <TextInput
                       value={buildEPGUrl()}
-                      size="xs"
+                      size="sm"
                       readOnly
                       label="Generated URL"
                       rightSection={
@@ -1378,22 +1429,22 @@ const ChannelsTable = ({ onReady }) => {
                         </ActionIcon>
                       }
                     />
-                    <Group justify="space-between">
-                      <Text size="sm">Use cached logos</Text>
-                      <Switch
-                        size="sm"
-                        checked={epgParams.cachedlogos}
-                        onChange={(event) =>
-                          setEpgParams((prev) => ({
-                            ...prev,
-                            cachedlogos: event.target.checked,
-                          }))
-                        }
-                      />
-                    </Group>
+                    <Switch
+                      label="Use cached logos"
+                      description="Proxy channel logos through Dispatcharr"
+                      size="sm"
+                      checked={epgParams.cachedlogos}
+                      onChange={(event) =>
+                        setEpgParams((prev) => ({
+                          ...prev,
+                          cachedlogos: event.target.checked,
+                        }))
+                      }
+                    />
                     <Select
                       label="TVG-ID Source"
-                      size="xs"
+                      description="Value used to match EPG channels to M3U streams"
+                      size="sm"
                       value={epgParams.tvg_id_source}
                       onChange={(value) =>
                         setEpgParams((prev) => ({
@@ -1409,8 +1460,9 @@ const ChannelsTable = ({ onReady }) => {
                       ]}
                     />
                     <NumberInput
-                      label="Days (0 = all data)"
-                      size="xs"
+                      label="Days forward (0 = all)"
+                      description="Limit EPG to this many future days; 0 returns all available data"
+                      size="sm"
                       min={0}
                       max={365}
                       value={epgParams.days}
@@ -1418,6 +1470,20 @@ const ChannelsTable = ({ onReady }) => {
                         setEpgParams((prev) => ({
                           ...prev,
                           days: value || 0,
+                        }))
+                      }
+                    />
+                    <NumberInput
+                      label="Days back (0 = none)"
+                      description="Include this many past days of EPG data (max 30)"
+                      size="sm"
+                      min={0}
+                      max={30}
+                      value={epgParams.prev_days}
+                      onChange={(value) =>
+                        setEpgParams((prev) => ({
+                          ...prev,
+                          prev_days: value || 0,
                         }))
                       }
                     />
@@ -1447,17 +1513,18 @@ const ChannelsTable = ({ onReady }) => {
             setShowDisabled={setShowDisabled}
             showOnlyStreamlessChannels={showOnlyStreamlessChannels}
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
+            showOnlyStaleChannels={showOnlyStaleChannels}
+            setShowOnlyStaleChannels={setShowOnlyStaleChannels}
           />
 
           {/* Table or ghost empty state inside Paper */}
           <Box>
-            {channelsTableLength === 0 &&
-              Object.keys(channels).length === 0 && (
-                <ChannelsTableOnboarding editChannel={editChannel} />
-              )}
+            {channelsTableLength === 0 && !hasChannels && (
+              <ChannelsTableOnboarding editChannel={editChannel} />
+            )}
           </Box>
 
-          {(channelsTableLength > 0 || Object.keys(channels).length > 0) && (
+          {(channelsTableLength > 0 || hasChannels) && (
             <Box
               style={{
                 display: 'flex',

@@ -43,7 +43,50 @@ export const getNow = () => dayjs();
 export const toFriendlyDuration = (dateTime, unit) =>
   dayjs.duration(dateTime, unit).humanize();
 
+export const formatExactDuration = (seconds) => {
+  if (seconds < 60) return `${seconds.toFixed(1)} seconds`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m} minute${m !== 1 ? 's' : ''}, ${s} second${s !== 1 ? 's' : ''}`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h} hour${h !== 1 ? 's' : ''}, ${m} minute${m !== 1 ? 's' : ''}`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  return `${d} day${d !== 1 ? 's' : ''}, ${h} hour${h !== 1 ? 's' : ''}`;
+};
+
 export const fromNow = (dateTime) => dayjs(dateTime).fromNow();
+
+export const setTz = (dateTime, timeZone) => dayjs(dateTime).tz(timeZone);
+
+export const setMonth = (dateTime, value) => dayjs(dateTime).month(value);
+
+export const setYear = (dateTime, value) => dayjs(dateTime).year(value);
+
+export const setDay = (dateTime, value) => dayjs(dateTime).date(value);
+
+export const setHour = (dateTime, value) => dayjs(dateTime).hour(value);
+
+export const setMinute = (dateTime, value) => dayjs(dateTime).minute(value);
+
+export const setSecond = (dateTime, value) => dayjs(dateTime).second(value);
+
+export const getMonth = (dateTime) => dayjs(dateTime).month();
+
+export const getYear = (dateTime) => dayjs(dateTime).year();
+
+export const getDay = (dateTime) => dayjs(dateTime).date();
+
+export const getHour = (dateTime) => dayjs(dateTime).hour();
+
+export const getMinute = (dateTime) => dayjs(dateTime).minute();
+
+export const getSecond = (dateTime) => dayjs(dateTime).second();
 
 export const getNowMs = () => Date.now();
 
@@ -281,3 +324,33 @@ export const getDefaultTimeZone = () => {
     return 'UTC';
   }
 };
+
+export const MONTH_NAMES = [
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+];
+
+export const MONTH_ABBR = [
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'may',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'oct',
+  'nov',
+  'dec',
+];

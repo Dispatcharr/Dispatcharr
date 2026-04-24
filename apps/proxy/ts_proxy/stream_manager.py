@@ -32,6 +32,12 @@ class StreamManager:
     def __init__(self, channel_id, url, buffer, user_agent=None, transcode=False, stream_id=None, worker_id=None):
         # Basic properties
         self.channel_id = channel_id
+        # Cache channel name once to avoid repeated DB queries in hot retry/reconnect loops
+        try:
+            _name = Channel.objects.filter(uuid=channel_id).values_list('name', flat=True).first()
+            self.channel_name = _name if _name else str(channel_id)
+        except Exception:
+            self.channel_name = str(channel_id)
         self.url = url
         self.buffer = buffer
         self.running = True
@@ -90,7 +96,7 @@ class StreamManager:
                     # Try to get stream_id specifically
                     stream_id_bytes = buffer.redis_client.hget(metadata_key, "stream_id")
                     if stream_id_bytes:
-                        self.current_stream_id = int(stream_id_bytes.decode('utf-8'))
+                        self.current_stream_id = int(stream_id_bytes)
                         self.tried_stream_ids.add(self.current_stream_id)
                         logger.info(f"Loaded stream ID {self.current_stream_id} from Redis for channel {buffer.channel_id}")
                     else:
@@ -122,6 +128,12 @@ class StreamManager:
 
         # Add HTTP reader thread property
         self.http_reader = None
+
+        # Output bitrate smoothing / throttled DB persistence
+        self._smoothed_output_bitrate = None
+        self._last_bitrate_db_save_time = 0
+        self._bitrate_db_save_interval = 30  # seconds between DB writes
+        self._bitrate_warmup_samples = 10   # discard first N samples while EMA stabilizes (~5s)
 
     def _create_session(self):
         """Create and configure requests session with optimal settings"""
@@ -268,11 +280,10 @@ class StreamManager:
                             # Log reconnection event if this is a retry (not first attempt)
                             if self.retry_count > 0:
                                 try:
-                                    channel_obj = Channel.objects.get(uuid=self.channel_id)
                                     log_system_event(
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
-                                        channel_name=channel_obj.name,
+                                        channel_name=self.channel_name,
                                         attempt=self.retry_count + 1,
                                         max_attempts=self.max_retries
                                     )
@@ -311,11 +322,10 @@ class StreamManager:
 
                             # Log connection error event
                             try:
-                                channel_obj = Channel.objects.get(uuid=self.channel_id)
                                 log_system_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
-                                    channel_name=channel_obj.name,
+                                    channel_name=self.channel_name,
                                     error_type='connection_failed',
                                     url=self.url[:100] if self.url else None,
                                     attempts=self.max_retries
@@ -338,11 +348,10 @@ class StreamManager:
 
                             # Log connection error event with exception details
                             try:
-                                channel_obj = Channel.objects.get(uuid=self.channel_id)
                                 log_system_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
-                                    channel_name=channel_obj.name,
+                                    channel_name=self.channel_name,
                                     error_type='connection_exception',
                                     error_message=str(e)[:200],
                                     url=self.url[:100] if self.url else None,
@@ -401,24 +410,44 @@ class StreamManager:
             # Close all connections
             self._close_all_connections()
 
-            # Update channel state in Redis to prevent clients from waiting indefinitely
+            # Transition to ERROR so clients stop waiting. Ownership may have
+            # expired during retries, so fall back to a state guard when no
+            # owner exists — but never clobber a new owner's active stream.
             if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
                 try:
                     metadata_key = RedisKeys.channel_metadata(self.channel_id)
-
-                    # Check if we're the owner before updating state
                     owner_key = RedisKeys.channel_owner(self.channel_id)
                     current_owner = self.buffer.redis_client.get(owner_key)
 
-                    # Use the worker_id that was passed in during initialization
-                    if current_owner and self.worker_id and current_owner.decode('utf-8') == self.worker_id:
-                        # Determine the appropriate error message based on retry failures
+                    is_owner = (
+                        current_owner
+                        and self.worker_id
+                        and current_owner == self.worker_id
+                    )
+                    no_owner = current_owner is None
+
+                    should_update = is_owner
+                    if not should_update and no_owner:
+                        current_state_bytes = self.buffer.redis_client.hget(
+                            metadata_key, ChannelMetadataField.STATE
+                        )
+                        current_state = (
+                            current_state_bytes
+                            if current_state_bytes else None
+                        )
+                        should_update = current_state in ChannelState.PRE_ACTIVE
+                        if not should_update and current_state:
+                            logger.info(
+                                f"Channel {self.channel_id} has no owner but "
+                                f"state is {current_state} — skipping ERROR update"
+                            )
+
+                    if should_update:
                         if self.tried_stream_ids and len(self.tried_stream_ids) > 0:
                             error_message = f"All {len(self.tried_stream_ids)} stream options failed"
                         else:
                             error_message = f"Connection failed after {self.max_retries} attempts"
 
-                        # Update metadata to indicate error state
                         update_data = {
                             ChannelMetadataField.STATE: ChannelState.ERROR,
                             ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
@@ -426,9 +455,13 @@ class StreamManager:
                             ChannelMetadataField.ERROR_TIME: str(time.time())
                         }
                         self.buffer.redis_client.hset(metadata_key, mapping=update_data)
-                        logger.info(f"Updated channel {self.channel_id} state to ERROR in Redis after stream failure")
+                        logger.info(
+                            f"Updated channel {self.channel_id} state to ERROR "
+                            f"in Redis after stream failure "
+                            f"(owner={'self' if is_owner else 'expired'})"
+                        )
 
-                        # Also set stopping key to ensure clients disconnect
+                        # Signal clients to disconnect
                         stop_key = RedisKeys.channel_stopping(self.channel_id)
                         self.buffer.redis_client.setex(stop_key, 60, "true")
                 except Exception as e:
@@ -749,13 +782,25 @@ class StreamManager:
             if any(x is not None for x in [ffmpeg_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate]):
                 self._update_ffmpeg_stats_in_redis(ffmpeg_speed, ffmpeg_fps, actual_fps, ffmpeg_output_bitrate)
 
-                # Also save ffmpeg_output_bitrate to database if we have stream_id
+                # Update local EMA and periodically flush to database
                 if ffmpeg_output_bitrate is not None and self.current_stream_id:
-                    from .services.channel_service import ChannelService
-                    ChannelService._update_stream_stats_in_db(
-                        self.current_stream_id,
-                        ffmpeg_output_bitrate=ffmpeg_output_bitrate
-                    )
+                    if self._bitrate_warmup_samples > 0:
+                        # Discard early samples from the EMA
+                        self._bitrate_warmup_samples -= 1
+                    else:
+                        if self._smoothed_output_bitrate is None:
+                            self._smoothed_output_bitrate = ffmpeg_output_bitrate
+                        else:
+                            self._smoothed_output_bitrate = 0.9 * self._smoothed_output_bitrate + 0.1 * ffmpeg_output_bitrate
+
+                        now = time.time()
+                        if now - self._last_bitrate_db_save_time >= self._bitrate_db_save_interval:
+                            from .services.channel_service import ChannelService
+                            ChannelService._update_stream_stats_in_db(
+                                self.current_stream_id,
+                                ffmpeg_output_bitrate=round(self._smoothed_output_bitrate, 1)
+                            )
+                            self._last_bitrate_db_save_time = now
 
             # Fix the f-string formatting
             actual_fps_str = f"{actual_fps:.1f}" if actual_fps is not None else "N/A"
@@ -784,11 +829,10 @@ class StreamManager:
 
                                 # Log failover event
                                 try:
-                                    channel_obj = Channel.objects.get(uuid=self.channel_id)
                                     log_system_event(
                                         'channel_failover',
                                         channel_id=self.channel_id,
-                                        channel_name=channel_obj.name,
+                                        channel_name=self.channel_name,
                                         reason='buffering_timeout',
                                         duration=buffering_duration
                                     )
@@ -804,11 +848,10 @@ class StreamManager:
 
                     # Log system event for buffering
                     try:
-                        channel_obj = Channel.objects.get(uuid=self.channel_id)
                         log_system_event(
                             'channel_buffering',
                             channel_id=self.channel_id,
-                            channel_name=channel_obj.name,
+                            channel_name=self.channel_name,
                             speed=ffmpeg_speed
                         )
                     except Exception as e:
@@ -1033,6 +1076,20 @@ class StreamManager:
         # Set running to false to ensure thread exits
         self.running = False
 
+        # Flush the final bitrate to DB on stop only if warmup completed and we have
+        # a meaningful EMA. Short previews / channel hops that die during warmup do NOT
+        # write anything, preserving any previously correct value in the database.
+        if self._smoothed_output_bitrate is not None and self.current_stream_id:
+            final_bitrate = self._smoothed_output_bitrate
+            try:
+                from .services.channel_service import ChannelService
+                ChannelService._update_stream_stats_in_db(
+                    self.current_stream_id,
+                    ffmpeg_output_bitrate=round(final_bitrate, 1)
+                )
+            except Exception as e:
+                logger.debug(f"Error flushing final bitrate to DB for channel {self.channel_id}: {e}")
+
     def update_url(self, new_url, stream_id=None, m3u_profile_id=None):
         """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions"""
         if new_url == self.url:
@@ -1090,6 +1147,11 @@ class StreamManager:
             self.url = new_url
             self.connected = False
 
+            # Reset bitrate EMA on every URL change so stale data never carries over
+            self._smoothed_output_bitrate = None
+            self._last_bitrate_db_save_time = 0
+            self._bitrate_warmup_samples = 10
+
             # Update stream ID if provided
             if stream_id:
                 old_stream_id = self.current_stream_id
@@ -1111,11 +1173,10 @@ class StreamManager:
 
             # Log stream switch event
             try:
-                channel_obj = Channel.objects.get(uuid=self.channel_id)
                 log_system_event(
                     'stream_switch',
                     channel_id=self.channel_id,
-                    channel_name=channel_obj.name,
+                    channel_name=self.channel_name,
                     new_url=new_url[:100] if new_url else None,
                     stream_id=stream_id
                 )
@@ -1127,7 +1188,7 @@ class StreamManager:
             logger.error(f"Error during URL update for channel {self.channel_id}: {e}", exc_info=True)
             return False
         finally:
-            # CRITICAL FIX: Always reset the URL switching flag when done, whether successful or not
+            # Always reset the URL switching flag when done, whether successful or not
             self.url_switching = False
             logger.info(f"Stream switch completed for channel {self.channel_id}")
 
@@ -1243,11 +1304,10 @@ class StreamManager:
 
                     # Log reconnection event
                     try:
-                        channel_obj = Channel.objects.get(uuid=self.channel_id)
                         log_system_event(
                             'channel_reconnect',
                             channel_id=self.channel_id,
-                            channel_name=channel_obj.name,
+                            channel_name=self.channel_name,
                             reason='health_monitor'
                         )
                     except Exception as e:
@@ -1479,9 +1539,9 @@ class StreamManager:
                     current_state = None
                     try:
                         metadata = redis_client.hgetall(metadata_key)
-                        state_field = ChannelMetadataField.STATE.encode('utf-8')
+                        state_field = ChannelMetadataField.STATE
                         if metadata and state_field in metadata:
-                            current_state = metadata[state_field].decode('utf-8')
+                            current_state = metadata[state_field]
                     except Exception as e:
                         logger.error(f"Error checking current state: {e}")
 
@@ -1632,7 +1692,7 @@ class StreamManager:
                 new_user_agent = stream_info['user_agent']
                 new_transcode = stream_info['transcode']
 
-                # CRITICAL FIX: Check if the new URL is the same as current URL
+                # Check if the new URL is the same as current URL
                 # This can happen when current_stream_id is None and we accidentally select the same stream
                 if new_url == self.url:
                     logger.warning(f"Stream ID {stream_id} generates the same URL as current stream ({new_url}). "
@@ -1641,7 +1701,7 @@ class StreamManager:
 
                 logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
 
-                # IMPORTANT: Just update the URL, don't stop the channel or release resources
+                # Just update the URL, don't stop the channel or release resources
                 switch_result = self.update_url(new_url, stream_id, profile_id)
                 if not switch_result:
                     logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")

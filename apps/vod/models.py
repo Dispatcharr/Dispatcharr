@@ -261,6 +261,14 @@ class M3UEpisodeRelation(models.Model):
     """Links M3U accounts to Episodes with provider-specific information"""
     m3u_account = models.ForeignKey(M3UAccount, on_delete=models.CASCADE, related_name='episode_relations')
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='m3u_relations')
+    series_relation = models.ForeignKey(
+        'M3USeriesRelation',
+        on_delete=models.CASCADE,
+        related_name='episode_relations',
+        null=True,
+        blank=True,
+        help_text="The series relation this episode relation belongs to. CASCADE ensures cleanup when the series relation is removed."
+    )
 
     # Streaming information (provider-specific)
     stream_id = models.CharField(max_length=255, help_text="External stream ID from M3U provider")

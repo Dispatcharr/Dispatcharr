@@ -52,3 +52,53 @@ class PluginsConfig(AppConfig):
             import logging
 
             logging.getLogger(__name__).exception("Plugin discovery wiring failed during app ready")
+
+        # Register periodic task for refreshing plugin repo manifests
+        self._setup_repo_refresh_schedule()
+
+        # Refresh repo manifests once at startup so the UI always has current data
+        self._enqueue_startup_refresh()
+
+    def _enqueue_startup_refresh(self):
+        from dispatcharr.app_initialization import should_skip_initialization
+        if should_skip_initialization():
+            return
+        try:
+            from .tasks import refresh_plugin_repos
+            refresh_plugin_repos.apply_async(countdown=10)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Could not enqueue startup plugin repo refresh (Celery may not be ready yet)"
+            )
+
+    def _setup_repo_refresh_schedule(self):
+        from dispatcharr.app_initialization import should_skip_initialization
+        if should_skip_initialization():
+            return
+        try:
+            from core.scheduling import create_or_update_periodic_task, delete_periodic_task
+            from core.models import CoreSettings
+            from .tasks import PLUGIN_REPO_REFRESH_TASK_NAME
+
+            interval = 6
+            try:
+                obj = CoreSettings.objects.get(key="plugin_repo_settings")
+                interval = obj.value.get("refresh_interval_hours", 6)
+            except CoreSettings.DoesNotExist:
+                pass
+
+            if interval == 0:
+                delete_periodic_task(PLUGIN_REPO_REFRESH_TASK_NAME)
+            else:
+                create_or_update_periodic_task(
+                    task_name=PLUGIN_REPO_REFRESH_TASK_NAME,
+                    celery_task_path="apps.plugins.tasks.refresh_plugin_repos",
+                    interval_hours=interval,
+                    enabled=True,
+                )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Could not set up plugin repo refresh schedule (migrations may not have run yet)"
+            )

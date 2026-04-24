@@ -19,11 +19,11 @@ import {
   Popover,
   ScrollArea,
   Center,
+  SegmentedControl,
 } from '@mantine/core';
-import { Info } from 'lucide-react';
+import { Info, CircleCheck, CircleX } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useStreamProfilesStore from '../../store/streamProfiles';
-import { CircleCheck, CircleX } from 'lucide-react';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
 import { FixedSizeList as List } from 'react-window';
 import LazyLogo from '../LazyLogo';
@@ -54,6 +54,7 @@ const LiveGroupFilter = ({
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
   const fetchStreamProfiles = useStreamProfilesStore((s) => s.fetchProfiles);
   const [groupFilter, setGroupFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [epgSources, setEpgSources] = useState([]);
 
   // Logo selection functionality
@@ -177,13 +178,22 @@ const LiveGroupFilter = ({
     setCurrentEditingGroupId(null);
   };
 
+  const isVisible = (group) => {
+    const matchesText = group.name
+      .toLowerCase()
+      .includes(groupFilter.toLowerCase());
+    const matchesStatus =
+      statusFilter === 'all' ||
+      (statusFilter === 'enabled' && group.enabled) ||
+      (statusFilter === 'disabled' && !group.enabled);
+    return matchesText && matchesStatus;
+  };
+
   const selectAll = () => {
     setGroupStates(
       groupStates.map((state) => ({
         ...state,
-        enabled: state.name.toLowerCase().includes(groupFilter.toLowerCase())
-          ? true
-          : state.enabled,
+        enabled: isVisible(state) ? true : state.enabled,
       }))
     );
   };
@@ -192,9 +202,7 @@ const LiveGroupFilter = ({
     setGroupStates(
       groupStates.map((state) => ({
         ...state,
-        enabled: state.name.toLowerCase().includes(groupFilter.toLowerCase())
-          ? false
-          : state.enabled,
+        enabled: isVisible(state) ? false : state.enabled,
       }))
     );
   };
@@ -220,13 +228,23 @@ const LiveGroupFilter = ({
         description="When disabled, new groups from the M3U source will be created but disabled by default. You can enable them manually later."
       />
 
-      <Flex gap="sm">
+      <Flex gap="sm" align="center">
         <TextInput
           placeholder="Filter groups..."
           value={groupFilter}
           onChange={(event) => setGroupFilter(event.currentTarget.value)}
           style={{ flex: 1 }}
           size="xs"
+        />
+        <SegmentedControl
+          value={statusFilter}
+          onChange={setStatusFilter}
+          size="xs"
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Enabled', value: 'enabled' },
+            { label: 'Disabled', value: 'disabled' },
+          ]}
         />
         <Button variant="default" size="xs" onClick={selectAll}>
           Select Visible
@@ -245,9 +263,7 @@ const LiveGroupFilter = ({
           verticalSpacing="xs"
         >
           {groupStates
-            .filter((group) =>
-              group.name.toLowerCase().includes(groupFilter.toLowerCase())
-            )
+            .filter((group) => isVisible(group))
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((group) => (
               <Group
@@ -314,17 +330,119 @@ const LiveGroupFilter = ({
 
                   {group.auto_channel_sync && group.enabled && (
                     <>
-                      <NumberInput
-                        label="Start Channel #"
-                        value={group.auto_sync_channel_start}
-                        onChange={(value) =>
-                          updateChannelStart(group.channel_group, value)
+                      <Tooltip
+                        label={
+                          <div>
+                            <div>
+                              <strong>Fixed:</strong> Start at a specific number
+                              and increment
+                            </div>
+                            <div>
+                              <strong>Provider:</strong> Use channel numbers
+                              from the M3U source
+                            </div>
+                            <div>
+                              <strong>Next Available:</strong> Auto-assign
+                              starting from 1, skipping used numbers
+                            </div>
+                          </div>
                         }
-                        min={1}
-                        step={1}
-                        size="xs"
-                        precision={1}
-                      />
+                        withArrow
+                        multiline
+                        w={280}
+                        openDelay={500}
+                      >
+                        <Select
+                          label="Channel Numbering Mode"
+                          placeholder="Select mode..."
+                          value={
+                            group.custom_properties?.channel_numbering_mode ||
+                            'fixed'
+                          }
+                          onChange={(value) => {
+                            setGroupStates(
+                              groupStates.map((state) => {
+                                if (
+                                  state.channel_group === group.channel_group
+                                ) {
+                                  return {
+                                    ...state,
+                                    custom_properties: {
+                                      ...state.custom_properties,
+                                      channel_numbering_mode: value || 'fixed',
+                                    },
+                                  };
+                                }
+                                return state;
+                              })
+                            );
+                          }}
+                          data={[
+                            {
+                              value: 'fixed',
+                              label: 'Fixed Start Number',
+                            },
+                            {
+                              value: 'provider',
+                              label: 'Use Provider Number',
+                            },
+                            {
+                              value: 'next_available',
+                              label: 'Next Available',
+                            },
+                          ]}
+                          size="xs"
+                        />
+                      </Tooltip>
+
+                      {(!group.custom_properties?.channel_numbering_mode ||
+                        group.custom_properties?.channel_numbering_mode ===
+                          'fixed') && (
+                        <NumberInput
+                          label="Start Channel #"
+                          value={group.auto_sync_channel_start}
+                          onChange={(value) =>
+                            updateChannelStart(group.channel_group, value)
+                          }
+                          min={1}
+                          step={1}
+                          size="xs"
+                          precision={0}
+                        />
+                      )}
+
+                      {group.custom_properties?.channel_numbering_mode ===
+                        'provider' && (
+                        <NumberInput
+                          label="Fallback Channel # (if provider # missing)"
+                          value={
+                            group.custom_properties
+                              ?.channel_numbering_fallback || 1
+                          }
+                          onChange={(value) => {
+                            setGroupStates(
+                              groupStates.map((state) => {
+                                if (
+                                  state.channel_group === group.channel_group
+                                ) {
+                                  return {
+                                    ...state,
+                                    custom_properties: {
+                                      ...state.custom_properties,
+                                      channel_numbering_fallback: value || 1,
+                                    },
+                                  };
+                                }
+                                return state;
+                              })
+                            );
+                          }}
+                          min={1}
+                          step={1}
+                          size="xs"
+                          precision={0}
+                        />
+                      )}
 
                       {/* Auto Channel Sync Options Multi-Select */}
                       <MultiSelect

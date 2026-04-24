@@ -159,12 +159,14 @@ describe('StatsPage', () => {
 
   let mockSetChannelStats;
   let mockSetRefreshInterval;
+  let mockSetVodStats;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockSetChannelStats = vi.fn();
     mockSetRefreshInterval = vi.fn();
+    mockSetVodStats = vi.fn();
 
     // Setup store mocks
     useChannelsStore.mockImplementation((selector) => {
@@ -173,6 +175,8 @@ describe('StatsPage', () => {
         channelsByUUID: mockChannelsByUUID,
         stats: { channels: mockChannelStats.channels },
         setChannelStats: mockSetChannelStats,
+        activeVodConnections: mockVODStats.vod_connections,
+        setVodStats: mockSetVodStats,
       };
       return selector ? selector(state) : state;
     });
@@ -419,11 +423,15 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
+        // Stats page now lazily loads channelsByUUID and channels via API
+        // (keyed by UUID→ID and ID→channel respectively) rather than reading
+        // them directly from the channel store.  Both start as empty objects
+        // and are populated on demand; the first call therefore sees {}.
         expect(getStatsByChannelId).toHaveBeenCalledWith(
           mockChannelStats,
-          expect.any(Object),
-          mockChannelsByUUID,
-          mockChannels,
+          expect.any(Object), // prevChannelHistory
+          {}, // channelsByUUID (local state, starts empty)
+          {}, // channels (local state, starts empty)
           mockStreamProfiles
         );
       });
@@ -500,6 +508,18 @@ describe('StatsPage', () => {
         ],
       };
       getVODStats.mockResolvedValue(multiVODStats);
+
+      useChannelsStore.mockImplementation((selector) => {
+        const state = {
+          channels: mockChannels,
+          channelsByUUID: mockChannelsByUUID,
+          stats: { channels: mockChannelStats.channels },
+          setChannelStats: mockSetChannelStats,
+          activeVodConnections: multiVODStats.vod_connections,
+          setVodStats: mockSetVodStats,
+        };
+        return selector ? selector(state) : state;
+      });
 
       render(<StatsPage />);
 

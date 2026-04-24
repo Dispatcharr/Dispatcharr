@@ -2,6 +2,7 @@
 
 import logging
 import gzip
+import html.entities
 import os
 import uuid
 import requests
@@ -15,7 +16,7 @@ import zipfile
 
 from celery import shared_task
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from apps.channels.models import Channel
 from core.models import UserAgent, CoreSettings
@@ -24,9 +25,106 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .models import EPGSource, EPGData, ProgramData
-from core.utils import acquire_task_lock, release_task_lock, send_websocket_update, cleanup_memory, log_system_event
+from core.utils import acquire_task_lock, release_task_lock, TaskLockRenewer, send_websocket_update, cleanup_memory, log_system_event
 
 logger = logging.getLogger(__name__)
+
+# DOCTYPE internal subset for XMLTV files.  Declares all 252 HTML 4 named
+# entities so lxml/libxml2 can resolve references like &eacute; correctly
+# instead of silently dropping them in recovery mode.
+# The 5 XML-predefined entities (amp, lt, gt, quot, apos) are always
+# recognised by the XML spec and must not be redeclared.
+_XML_ENTITIES = frozenset({'amp', 'lt', 'gt', 'quot', 'apos'})
+
+
+def _build_html_entity_doctype() -> bytes:
+    """Build a DOCTYPE internal subset declaring all HTML 4 named entities."""
+    lines = [b'<!DOCTYPE tv [\n']
+    for name, codepoint in sorted(html.entities.name2codepoint.items()):
+        if name not in _XML_ENTITIES:
+            # Numeric character references are always valid XML regardless of codepoint.
+            lines.append(f'<!ENTITY {name} "&#x{codepoint:X};">\n'.encode('ascii'))
+    lines.append(b']>\n')
+    return b''.join(lines)
+
+
+_HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
+
+
+class _PrependStream:
+    """Wraps an open binary file and prepends a bytes prefix to its content.
+
+    Used by _open_xmltv_file to inject a DOCTYPE entity block before the
+    file content reaches lxml's iterparse, with zero disk I/O.
+    """
+
+    __slots__ = ('_prefix', '_prefix_pos', '_file')
+
+    def __init__(self, prefix: bytes, file_obj):
+        self._prefix = prefix
+        self._prefix_pos = 0
+        self._file = file_obj
+
+    def read(self, size=-1):
+        prefix_len = len(self._prefix)
+        if self._prefix_pos >= prefix_len:
+            return self._file.read(size)
+        remaining = prefix_len - self._prefix_pos
+        if size < 0:
+            chunk = self._prefix[self._prefix_pos:] + self._file.read()
+            self._prefix_pos = prefix_len
+            return chunk
+        if size <= remaining:
+            chunk = self._prefix[self._prefix_pos:self._prefix_pos + size]
+            self._prefix_pos += size
+            return chunk
+        chunk = self._prefix[self._prefix_pos:]
+        self._prefix_pos = prefix_len
+        return chunk + self._file.read(size - remaining)
+
+    def close(self):
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def _open_xmltv_file(file_path: str):
+    """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
+
+    Prepends a <!DOCTYPE tv [...]> block that declares all 252 HTML 4 named
+    entities so lxml/libxml2 resolves references like &eacute; correctly
+    instead of silently dropping them in recovery mode.  This involves zero
+    disk I/O — the DOCTYPE is streamed in-memory before the file content.
+
+    If the file already contains a <!DOCTYPE> declaration the file is returned
+    unchanged; a second DOCTYPE would be invalid XML.
+
+    The caller is responsible for closing the returned object.
+    """
+    f = open(file_path, 'rb')
+    start = f.read(512)
+
+    # Do not inject if the file already declares a DOCTYPE.
+    if b'<!DOCTYPE' in start or b'<!doctype' in start.lower():
+        f.seek(0)
+        return f
+
+    # Insert the DOCTYPE after the XML declaration if one is present.
+    xml_pos = start.find(b'<?xml')
+    if xml_pos >= 0:
+        decl_end = start.find(b'?>', xml_pos)
+        if decl_end >= 0:
+            xml_decl = start[:decl_end + 2]
+            f.seek(decl_end + 2)
+            return _PrependStream(xml_decl + b'\n' + _HTML_ENTITY_DOCTYPE, f)
+
+    # No XML declaration — insert DOCTYPE at the very start of the file.
+    f.seek(0)
+    return _PrependStream(_HTML_ENTITY_DOCTYPE, f)
 
 
 def validate_icon_url_fast(icon_url, max_length=None):
@@ -146,11 +244,14 @@ def refresh_all_epg_data():
     return "EPG data refreshed."
 
 
-@shared_task
+@shared_task(time_limit=14400)
 def refresh_epg_data(source_id):
     if not acquire_task_lock('refresh_epg_data', source_id):
         logger.debug(f"EPG refresh for {source_id} already running")
         return
+
+    lock_renewer = TaskLockRenewer('refresh_epg_data', source_id)
+    lock_renewer.start()
 
     source = None
     try:
@@ -168,6 +269,7 @@ def refresh_epg_data(source_id):
                 logger.info(f"No orphaned task found for EPG source {source_id}")
 
             # Release the lock and exit
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -176,6 +278,7 @@ def refresh_epg_data(source_id):
         # The source exists but is not active, just skip processing
         if not source.is_active:
             logger.info(f"EPG source {source_id} is not active. Skipping.")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             # Force garbage collection before exit
             gc.collect()
@@ -184,6 +287,7 @@ def refresh_epg_data(source_id):
         # Skip refresh for dummy EPG sources - they don't need refreshing
         if source.source_type == 'dummy':
             logger.info(f"Skipping refresh for dummy EPG source {source.name} (ID: {source_id})")
+            lock_renewer.stop()
             release_task_lock('refresh_epg_data', source_id)
             gc.collect()
             return
@@ -194,6 +298,7 @@ def refresh_epg_data(source_id):
             fetch_success = fetch_xmltv(source)
             if not fetch_success:
                 logger.error(f"Failed to fetch XMLTV for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -202,6 +307,7 @@ def refresh_epg_data(source_id):
             parse_channels_success = parse_channels_only(source)
             if not parse_channels_success:
                 logger.error(f"Failed to parse channels for source {source.name}")
+                lock_renewer.stop()
                 release_task_lock('refresh_epg_data', source_id)
                 # Force garbage collection before exit
                 gc.collect()
@@ -234,6 +340,7 @@ def refresh_epg_data(source_id):
         source = None
         # Force garbage collection before releasing the lock
         gc.collect()
+        lock_renewer.stop()
         release_task_lock('refresh_epg_data', source_id)
 
 
@@ -388,42 +495,41 @@ def fetch_xmltv(source):
 
             # Download to temporary file
             with open(temp_download_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=16384):  # Increased chunk size for better performance
-                    if chunk:
-                        f.write(chunk)
+                for chunk in response.iter_content(chunk_size=16384):
+                    f.write(chunk)
 
-                        downloaded += len(chunk)
-                        elapsed_time = time.time() - start_time
+                    downloaded += len(chunk)
+                    elapsed_time = time.time() - start_time
 
-                        # Calculate download speed in KB/s
-                        speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
+                    # Calculate download speed in KB/s
+                    speed = downloaded / elapsed_time / 1024 if elapsed_time > 0 else 0
 
-                        # Calculate progress percentage
-                        if total_size and total_size > 0:
-                            progress = min(100, int((downloaded / total_size) * 100))
-                        else:
-                            # If no content length header, estimate progress
-                            progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
+                    # Calculate progress percentage
+                    if total_size and total_size > 0:
+                        progress = min(100, int((downloaded / total_size) * 100))
+                    else:
+                        # If no content length header, estimate progress
+                        progress = min(95, int((downloaded / (10 * 1024 * 1024)) * 100))  # Assume 10MB if unknown
 
-                        # Time remaining (in seconds)
-                        time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
+                    # Time remaining (in seconds)
+                    time_remaining = (total_size - downloaded) / (speed * 1024) if speed > 0 and total_size > 0 else 0
 
-                        # Only send updates at specified intervals to avoid flooding
-                        current_time = time.time()
-                        if current_time - last_update_time >= update_interval and progress > 0:
-                            last_update_time = current_time
-                            send_epg_update(
-                                source.id,
-                                "downloading",
-                                progress,
-                                speed=round(speed, 2),
-                                elapsed_time=round(elapsed_time, 1),
-                                time_remaining=round(time_remaining, 1),
-                                downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
-                            )
+                    # Only send updates at specified intervals to avoid flooding
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval and progress > 0:
+                        last_update_time = current_time
+                        send_epg_update(
+                            source.id,
+                            "downloading",
+                            progress,
+                            speed=round(speed, 2),
+                            elapsed_time=round(elapsed_time, 1),
+                            time_remaining=round(time_remaining, 1),
+                            downloaded=f"{downloaded / (1024 * 1024):.2f} MB"
+                        )
 
-                        # Explicitly delete the chunk to free memory immediately
-                        del chunk
+                    # Explicitly delete the chunk to free memory immediately
+                    del chunk
 
             # Send completion notification
             send_epg_update(source.id, "downloading", 100)
@@ -517,6 +623,7 @@ def fetch_xmltv(source):
             source.save(update_fields=['status'])
 
             logger.info(f"Cached EPG file saved to {source.file_path}")
+
             return True
 
     except requests.exceptions.HTTPError as e:
@@ -831,7 +938,8 @@ def parse_channels_only(source):
 
         # Replace full dictionary load with more efficient lookup set
         existing_tvg_ids = set()
-        existing_epgs = {}  # Initialize the dictionary that will lazily load objects
+        existing_epgs = {}
+        scanned_tvg_ids = set()  # Track tvg_ids seen in the current scan for stale cleanup
         last_id = 0
         chunk_size = 5000
 
@@ -858,6 +966,7 @@ def parse_channels_only(source):
         batch_size = 500  # Process in batches to limit memory usage
         progress = 0  # Initialize progress variable here
         icon_url_max_length = EPGData._meta.get_field('icon_url').max_length  # Get max length for icon_url field
+        name_max_length = EPGData._meta.get_field('name').max_length  # Get max length for name field
 
         # Track memory at key points
         if process:
@@ -879,7 +988,7 @@ def parse_channels_only(source):
 
             # Open the file - no need to check file type since it's always XML now
             logger.debug(f"Opening file for channel parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             if process:
                 logger.debug(f"[parse_channels_only] Memory after opening file: {process.memory_info().rss / 1024 / 1024:.2f} MB")
@@ -899,6 +1008,7 @@ def parse_channels_only(source):
                     channel_count += 1
                     tvg_id = elem.get('id', '').strip()
                     if tvg_id:
+                        scanned_tvg_ids.add(tvg_id)
                         display_name = None
                         icon_url = None
                         for child in elem:
@@ -912,6 +1022,10 @@ def parse_channels_only(source):
 
                         if not display_name:
                             display_name = tvg_id
+
+                        if display_name and len(display_name) > name_max_length:
+                            logger.warning(f"EPG display name too long ({len(display_name)} > {name_max_length}), truncating: {display_name[:80]}...")
+                            display_name = display_name[:name_max_length]
 
                         # Use lazy loading approach to reduce memory usage
                         if tvg_id in existing_tvg_ids:
@@ -1046,6 +1160,16 @@ def parse_channels_only(source):
         if epgs_to_update:
             EPGData.objects.bulk_update(epgs_to_update, ["name", "icon_url"])
             logger.debug(f"[parse_channels_only] Updated final batch of {len(epgs_to_update)} EPG entries")
+
+        # Clean up stale EPGData: entries that existed before the scan but weren't seen, and aren't mapped to any channel.
+        # Use existing_tvg_ids - scanned_tvg_ids to avoid a full-table scan with a large EXCLUDE list.
+        potentially_stale = existing_tvg_ids - scanned_tvg_ids
+        if potentially_stale:
+            stale_qs = EPGData.objects.filter(epg_source=source, tvg_id__in=potentially_stale, channels__isnull=True)
+            deleted_count, _ = stale_qs.delete()
+            if deleted_count:
+                logger.info(f"[parse_channels_only] Cleaned up {deleted_count} stale EPG entries not in current scan and unmapped to any channel")
+
         if process:
             logger.debug(f"[parse_channels_only] Memory after final batch creation: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
@@ -1112,6 +1236,9 @@ def parse_channels_only(source):
             existing_epgs = None
             epgs_to_create = None
             epgs_to_update = None
+            if 'scanned_tvg_ids' in locals() and scanned_tvg_ids is not None:
+                scanned_tvg_ids.clear()
+                scanned_tvg_ids = None
             cleanup_memory(log_usage=should_log_memory, force_collection=True)
         except Exception as e:
             logger.warning(f"Cleanup error: {e}")
@@ -1126,11 +1253,14 @@ def parse_channels_only(source):
 
 
 
-@shared_task
+@shared_task(time_limit=3600, soft_time_limit=3500)
 def parse_programs_for_tvg_id(epg_id):
     if not acquire_task_lock('parse_epg_programs', epg_id):
         logger.info(f"Program parse for {epg_id} already in progress, skipping duplicate task")
         return "Task already running"
+
+    lock_renewer = TaskLockRenewer('parse_epg_programs', epg_id)
+    lock_renewer.start()
 
     source_file = None
     program_parser = None
@@ -1161,11 +1291,13 @@ def parse_programs_for_tvg_id(epg_id):
         # Skip program parsing for dummy EPG sources - they don't have program data files
         if epg_source.source_type == 'dummy':
             logger.info(f"Skipping program parsing for dummy EPG source {epg_source.name} (ID: {epg_id})")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
         if not Channel.objects.filter(epg_data=epg).exists():
             logger.info(f"No channels matched to EPG {epg.tvg_id}")
+            lock_renewer.stop()
             release_task_lock('parse_epg_programs', epg_id)
             return
 
@@ -1207,6 +1339,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, cannot parse programs"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="Failed to download EPG file")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1217,6 +1350,7 @@ def parse_programs_for_tvg_id(epg_id):
                     epg_source.last_message = f"Failed to download EPG data, file missing after download"
                     epg_source.save(update_fields=['status', 'last_message'])
                     send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="File not found after download")
+                    lock_renewer.stop()
                     release_task_lock('parse_epg_programs', epg_id)
                     return
 
@@ -1232,6 +1366,7 @@ def parse_programs_for_tvg_id(epg_id):
                 epg_source.last_message = f"No URL provided, cannot fetch EPG data"
                 epg_source.save(update_fields=['status', 'last_message'])
                 send_epg_update(epg_source.id, "parsing_programs", 100, status="error", error="No URL provided")
+                lock_renewer.stop()
                 release_task_lock('parse_epg_programs', epg_id)
                 return
 
@@ -1254,7 +1389,7 @@ def parse_programs_for_tvg_id(epg_id):
         try:
             # Open the file directly - no need to check compression
             logger.debug(f"Opening file for parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme',  remove_blank_text=True, recover=True)
@@ -1288,11 +1423,28 @@ def parse_programs_for_tvg_id(epg_id):
                             logger.trace(f"Number of custom properties: {len(custom_props)}")
                             custom_properties_json = custom_props
 
+                        # Fallback: extract S/E from description when episode-num
+                        # elements didn't provide them
+                        if desc:
+                            has_season = (custom_properties_json or {}).get('season') is not None
+                            has_episode = (custom_properties_json or {}).get('episode') is not None
+                            if not has_season or not has_episode:
+                                d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                                if d_season is not None and d_episode is not None:
+                                    if custom_properties_json is None:
+                                        custom_properties_json = {}
+                                    if not has_season:
+                                        custom_properties_json['season'] = d_season
+                                    if not has_episode:
+                                        custom_properties_json['episode'] = d_episode
+                                    custom_properties_json['season_episode_source'] = 'description'
+                                    desc = cleaned_desc
+
                         programs_to_create.append(ProgramData(
                             epg=epg,
                             start_time=start_time,
                             end_time=end_time,
-                            title=title,
+                            title=title[:255],
                             description=desc,
                             sub_title=sub_title,
                             tvg_id=epg.tvg_id,
@@ -1379,7 +1531,7 @@ def parse_programs_for_tvg_id(epg_id):
         epg_source = None
         # Add comprehensive cleanup before releasing lock
         cleanup_memory(log_usage=should_log_memory, force_collection=True)
-         # Memory tracking after processing
+        # Memory tracking after processing
         if process:
             try:
                 mem_after = process.memory_info().rss / 1024 / 1024
@@ -1389,6 +1541,7 @@ def parse_programs_for_tvg_id(epg_id):
             process = None
         epg = None
         programs_processed = None
+        lock_renewer.stop()
         release_task_lock('parse_epg_programs', epg_id)
 
 
@@ -1509,7 +1662,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
 
         try:
             logger.debug(f"Opening file for single-pass parsing: {file_path}")
-            source_file = open(file_path, 'rb')
+            source_file = _open_xmltv_file(file_path)
 
             # Stream parse the file using lxml's iterparse
             program_parser = etree.iterparse(source_file, events=('end',), tag='programme', remove_blank_text=True, recover=True)
@@ -1548,12 +1701,29 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                     custom_props = extract_custom_properties(elem)
                     custom_properties_json = custom_props if custom_props else None
 
+                    # Fallback: extract S/E from description when episode-num
+                    # elements didn't provide them
+                    if desc:
+                        has_season = (custom_properties_json or {}).get('season') is not None
+                        has_episode = (custom_properties_json or {}).get('episode') is not None
+                        if not has_season or not has_episode:
+                            d_season, d_episode, cleaned_desc = extract_season_episode_from_description(desc)
+                            if d_season is not None and d_episode is not None:
+                                if custom_properties_json is None:
+                                    custom_properties_json = {}
+                                if not has_season:
+                                    custom_properties_json['season'] = d_season
+                                if not has_episode:
+                                    custom_properties_json['episode'] = d_episode
+                                custom_properties_json['season_episode_source'] = 'description'
+                                desc = cleaned_desc
+
                     epg_id = tvg_id_to_epg_id[channel_id]
                     all_programs_to_create.append(ProgramData(
                         epg_id=epg_id,
                         start_time=start_time,
                         end_time=end_time,
-                        title=title,
+                        title=title[:255],
                         description=desc,
                         sub_title=sub_title,
                         tvg_id=channel_id,
@@ -1605,6 +1775,10 @@ def parse_programs_for_source(epg_source, tvg_id=None):
         batch_size = 1000
         try:
             with transaction.atomic():
+                # Kill any individual statement that hangs longer than 10 minutes.
+                # SET LOCAL automatically resets when this transaction ends (commit or rollback).
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '10min'")
                 # Delete existing programs for mapped EPGs
                 deleted_count = ProgramData.objects.filter(epg_id__in=mapped_epg_ids).delete()[0]
                 logger.debug(f"Deleted {deleted_count} existing programs")
@@ -1839,6 +2013,10 @@ def parse_schedules_direct_time(time_str):
         raise
 
 
+# Re-export from utils to preserve backward compatibility for any callers
+from apps.epg.utils import extract_season_episode_from_description, _ONSCREEN_RE  # noqa: F401
+
+
 # Helper function to extract custom properties - moved to a separate function to clean up the code
 def extract_custom_properties(prog):
     # Create a new dictionary for each call
@@ -1874,8 +2052,16 @@ def extract_custom_properties(prog):
                     except ValueError:
                         pass
         elif system == 'onscreen' and ep_num.text:
-            # Just store the raw onscreen format
-            custom_props['onscreen_episode'] = ep_num.text.strip()
+            onscreen_text = ep_num.text.strip()
+            custom_props['onscreen_episode'] = onscreen_text
+            # Extract season/episode from onscreen format if not already set by xmltv_ns
+            if 'season' not in custom_props or 'episode' not in custom_props:
+                match = _ONSCREEN_RE.search(onscreen_text)
+                if match:
+                    if 'season' not in custom_props:
+                        custom_props['season'] = int(match.group(1))
+                    if 'episode' not in custom_props:
+                        custom_props['episode'] = int(match.group(2))
         elif system == 'dd_progid' and ep_num.text:
             # Store the dd_progid format
             custom_props['dd_progid'] = ep_num.text.strip()

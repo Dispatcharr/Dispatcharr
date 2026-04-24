@@ -1,21 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React from 'react';
 import API from '../../api';
-import {
-  Button,
-  Modal,
-  Text,
-  Group,
-  Flex,
-  useMantineTheme,
-  NumberInput,
-} from '@mantine/core';
+import { Button, Modal, Text, Group, Flex, NumberInput } from '@mantine/core';
 import { ListOrdered } from 'lucide-react';
 import { useForm } from '@mantine/form';
-import { notifications } from '@mantine/notifications';
+import { showNotification } from '../../utils/notificationUtils.js';
+
+const assignChannelNumbers = (channelIds, starting_number) => {
+  return API.assignChannelNumbers(channelIds, starting_number);
+};
+
+const requeryChannels = () => {
+  API.requeryChannels();
+};
 
 const AssignChannelNumbers = ({ channelIds, isOpen, onClose }) => {
-  const theme = useMantineTheme();
-
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
@@ -27,22 +25,19 @@ const AssignChannelNumbers = ({ channelIds, isOpen, onClose }) => {
     const { starting_number } = form.getValues();
 
     try {
-      const result = await API.assignChannelNumbers(
-        channelIds,
-        starting_number
-      );
+      const result = await assignChannelNumbers(channelIds, starting_number);
 
-      notifications.show({
+      showNotification({
         title: result.message || 'Channels assigned',
         color: 'green.5',
       });
 
-      API.requeryChannels();
+      requeryChannels();
 
       onClose();
     } catch (err) {
       console.error(err);
-      notifications.show({
+      showNotification({
         title: 'Failed to assign channels',
         color: 'red.5',
       });

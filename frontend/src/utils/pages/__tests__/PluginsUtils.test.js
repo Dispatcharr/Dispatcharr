@@ -205,7 +205,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.importPlugin(importFile);
 
-      expect(API.importPlugin).toHaveBeenCalledWith(importFile);
+      expect(API.importPlugin).toHaveBeenCalledWith(importFile, false, false);
       expect(API.importPlugin).toHaveBeenCalledTimes(1);
     });
 
@@ -227,7 +227,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.importPlugin(importFile);
 
-      expect(API.importPlugin).toHaveBeenCalledWith(importFile);
+      expect(API.importPlugin).toHaveBeenCalledWith(importFile, false, false);
     });
 
     it('should handle FormData', async () => {
@@ -236,7 +236,7 @@ describe('PluginsUtils', () => {
 
       await PluginsUtils.importPlugin(formData);
 
-      expect(API.importPlugin).toHaveBeenCalledWith(formData);
+      expect(API.importPlugin).toHaveBeenCalledWith(formData, false, false);
     });
 
     it('should propagate API errors', async () => {

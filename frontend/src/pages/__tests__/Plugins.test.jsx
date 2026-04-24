@@ -94,6 +94,41 @@ vi.mock('@mantine/core', async () => {
         {children}
       </button>
     ),
+    Badge: ({ children, color, variant, size, leftSection, style, onClick }) => (
+      <span data-color={color} data-variant={variant} data-size={size} style={style} onClick={onClick}>
+        {leftSection}{children}
+      </span>
+    ),
+    Select: ({ value, onChange, data, label, placeholder, disabled }) => (
+      <div>
+        {label && <label>{label}</label>}
+        <select
+          value={value || ''}
+          onChange={(e) => onChange?.(e.target.value)}
+          disabled={disabled}
+          aria-label={label}
+        >
+          {(data || []).map((item) => (
+            <option key={item.value ?? item} value={item.value ?? item}>
+              {item.label ?? item}
+            </option>
+          ))}
+        </select>
+      </div>
+    ),
+    TextInput: ({ value, onChange, label, placeholder, disabled }) => (
+      <div>
+        {label && <label>{label}</label>}
+        <input
+          type="text"
+          value={value || ''}
+          onChange={(e) => onChange?.(e)}
+          placeholder={placeholder}
+          disabled={disabled}
+          aria-label={label}
+        />
+      </div>
+    ),
     SimpleGrid: ({ children, cols }) => <div data-cols={cols}>{children}</div>,
     Modal: ({ opened, onClose, title, children, size, centered }) =>
       opened ? (
@@ -166,10 +201,13 @@ describe('PluginsPage', () => {
   const mockPluginStoreState = {
     plugins: mockPlugins,
     loading: false,
+    repos: [],
     fetchPlugins: vi.fn(),
     updatePlugin: vi.fn(),
     removePlugin: vi.fn(),
     invalidatePlugins: vi.fn(),
+    refreshRepo: vi.fn(),
+    fetchAvailablePlugins: vi.fn(),
   };
 
   beforeEach(() => {
@@ -185,7 +223,7 @@ describe('PluginsPage', () => {
       render(<PluginsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Plugins')).toBeInTheDocument();
+        expect(screen.getByText('My Plugins')).toBeInTheDocument();
         expect(screen.getByText('Test Plugin 1')).toBeInTheDocument();
         expect(screen.getByText('Test Plugin 2')).toBeInTheDocument();
       });
@@ -319,7 +357,7 @@ describe('PluginsPage', () => {
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
-        expect(importPlugin).toHaveBeenCalledWith(file);
+        expect(importPlugin).toHaveBeenCalledWith(file, false, true);
         expect(showNotification).toHaveBeenCalled();
         expect(updateNotification).toHaveBeenCalled();
       });
@@ -362,6 +400,7 @@ describe('PluginsPage', () => {
         name: 'New Plugin',
         description: 'New Description',
         ever_enabled: false,
+        enabled: false,
       };
       importPlugin.mockResolvedValue({
         success: true,
@@ -384,7 +423,7 @@ describe('PluginsPage', () => {
       fireEvent.click(uploadButton);
 
       await waitFor(() => {
-        expect(screen.getByText('New Plugin')).toBeInTheDocument();
+        expect(screen.getByText(/'New Plugin'/)).toBeInTheDocument();
         expect(screen.getByText('Enable now')).toBeInTheDocument();
       });
     });
@@ -395,6 +434,7 @@ describe('PluginsPage', () => {
         name: 'New Plugin',
         description: 'New Description',
         ever_enabled: true,
+        enabled: false,
       };
       importPlugin.mockResolvedValue({
         success: true,
@@ -442,6 +482,7 @@ describe('PluginsPage', () => {
         name: 'New Plugin',
         description: 'New Description',
         ever_enabled: false,
+        enabled: false,
       };
       importPlugin.mockResolvedValue({
         success: true,
@@ -489,6 +530,7 @@ describe('PluginsPage', () => {
         name: 'New Plugin',
         description: 'New Description',
         ever_enabled: false,
+        enabled: false,
       };
       importPlugin.mockResolvedValue({
         success: true,
@@ -540,6 +582,7 @@ describe('PluginsPage', () => {
         name: 'New Plugin',
         description: 'New Description',
         ever_enabled: false,
+        enabled: false,
       };
       importPlugin.mockResolvedValue({
         success: true,
@@ -589,10 +632,10 @@ describe('PluginsPage', () => {
 
   describe('Reload', () => {
     it('reloads plugins when reload button is clicked', async () => {
-      const invalidatePlugins = vi.fn();
+      const fetchPlugins = vi.fn().mockResolvedValue(undefined);
       usePluginStore.getState = vi.fn(() => ({
         ...mockPluginStoreState,
-        invalidatePlugins,
+        fetchPlugins,
       }));
 
       render(<PluginsPage />);
@@ -602,7 +645,7 @@ describe('PluginsPage', () => {
 
       await waitFor(() => {
         expect(reloadPlugins).toHaveBeenCalled();
-        expect(invalidatePlugins).toHaveBeenCalled();
+        expect(fetchPlugins).toHaveBeenCalled();
       });
     });
   });

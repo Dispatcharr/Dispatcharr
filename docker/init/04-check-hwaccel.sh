@@ -140,7 +140,7 @@ check_user_device_access() {
     local device=$1
     local user=$2
     if [ -e "$device" ];then
-        if su -c "test -r $device && test -w $device" - $user 2>/dev/null; then
+        if su -c "test -r '$device' && test -w '$device'" - "$user" 2>/dev/null; then
             echo "✅ User $user has full access to $device"
             return 0
         else

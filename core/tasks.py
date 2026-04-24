@@ -13,7 +13,7 @@ from apps.epg.models import EPGSource
 from apps.m3u.tasks import refresh_single_m3u_account
 from apps.epg.tasks import refresh_epg_data
 from .models import CoreSettings
-from apps.channels.models import Stream, ChannelStream
+from apps.channels.models import ChannelStream
 from django.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -404,7 +404,7 @@ def fetch_channel_stats():
         while True:
             cursor, keys = redis_client.scan(cursor, match=channel_pattern)
             for key in keys:
-                channel_id_match = re.search(r"ts_proxy:channel:(.*):metadata", key.decode('utf-8'))
+                channel_id_match = re.search(r"ts_proxy:channel:(.*):metadata", key)
                 if channel_id_match:
                     ch_id = channel_id_match.group(1)
                     channel_info = ChannelStatus.get_basic_channel_info(ch_id)
@@ -754,20 +754,6 @@ def _determine_stream_to_keep(stream_a, stream_b):
 
 
 @shared_task
-def cleanup_vod_persistent_connections():
-    """Clean up stale VOD persistent connections"""
-    try:
-        from apps.proxy.vod_proxy.connection_manager import VODConnectionManager
-
-        # Clean up connections older than 30 minutes
-        VODConnectionManager.cleanup_stale_persistent_connections(max_age_seconds=1800)
-        logger.info("VOD persistent connection cleanup completed")
-
-    except Exception as e:
-        logger.error(f"Error during VOD persistent connection cleanup: {e}")
-
-
-@shared_task
 def check_for_version_update():
     """
     Check for new Dispatcharr versions on GitHub and create a notification if available.
@@ -789,6 +775,7 @@ def check_for_version_update():
     try:
         is_dev_build = __timestamp__ is not None
         DISPATCHARR_HEADERS = {'User-Agent': f'Dispatcharr/{__version__}'}
+
         if is_dev_build:
             # Check Docker Hub for newer dev builds
             docker_hub_url = "https://hub.docker.com/v2/repositories/dispatcharr/dispatcharr/tags/dev"
@@ -878,7 +865,21 @@ def check_for_version_update():
                         }
                     )
         else:
-            # Production build - check GitHub for stable releases
+            # Production build - check GitHub for stable releases.
+            # Delete any stale notification for the currently running version upfront;
+            # a "vX is available" notification is meaningless once the user is already on vX.
+            # Notify the frontend immediately so the badge clears without waiting for the API call.
+            deleted_count = SystemNotification.objects.filter(
+                notification_key=f"version-{__version__}",
+                notification_type='version_update',
+            ).delete()[0]
+            if deleted_count > 0:
+                send_websocket_update(
+                    'updates',
+                    'update',
+                    {'success': True, 'type': 'notifications_cleared', 'count': deleted_count}
+                )
+
             github_api_url = "https://api.github.com/repos/Dispatcharr/Dispatcharr/releases/latest"
             headers = {"Accept": "application/vnd.github.v3+json", **DISPATCHARR_HEADERS}
             response = requests.get(

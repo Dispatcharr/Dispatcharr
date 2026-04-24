@@ -11,6 +11,7 @@ from django.db.models import Q
 import django_filters
 import logging
 import os
+import time
 import requests
 from apps.accounts.permissions import (
     Authenticated,
@@ -35,6 +36,11 @@ from django.utils import timezone
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+# Negative cache for remote VOD logo URLs that failed to fetch.
+# Prevents repeated blocking requests to unreachable hosts.
+_vod_logo_fetch_failures = {}
+_VOD_LOGO_FAIL_TTL = 300  # seconds
 
 
 class VODPagination(PageNumberPagination):
@@ -578,13 +584,15 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                 "series.id IN (SELECT DISTINCT series_id FROM vod_m3useriesrelation msr JOIN m3u_m3uaccount ma ON msr.m3u_account_id = ma.id WHERE ma.is_active = true)"
             ]
 
-            params = []
+            movie_params = []
+            series_params = []
 
             if search:
                 where_conditions[0] += " AND LOWER(movies.name) LIKE %s"
                 where_conditions[1] += " AND LOWER(series.name) LIKE %s"
                 search_param = f"%{search.lower()}%"
-                params.extend([search_param, search_param])
+                movie_params.append(search_param)
+                series_params.append(search_param)
 
             if category:
                 if '|' in category:
@@ -592,15 +600,20 @@ class UnifiedContentViewSet(viewsets.ReadOnlyModelViewSet):
                     if cat_type == 'movie':
                         where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
                         where_conditions[1] = "1=0"  # Exclude series
-                        params.append(cat_name)
+                        movie_params.append(cat_name)
+                        series_params = []  # no params needed for "1=0"
                     elif cat_type == 'series':
                         where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
                         where_conditions[0] = "1=0"  # Exclude movies
-                        params.append(cat_name)
+                        series_params.append(cat_name)
+                        movie_params = []  # no params needed for "1=0"
                 else:
                     where_conditions[0] += " AND movies.id IN (SELECT movie_id FROM vod_m3umovierelation mmr JOIN vod_vodcategory c ON mmr.category_id = c.id WHERE c.name = %s)"
                     where_conditions[1] += " AND series.id IN (SELECT series_id FROM vod_m3useriesrelation msr JOIN vod_vodcategory c ON msr.category_id = c.id WHERE c.name = %s)"
-                    params.extend([category, category])
+                    movie_params.append(category)
+                    series_params.append(category)
+
+            params = movie_params + series_params
 
             # Use UNION ALL with ORDER BY and LIMIT/OFFSET for true unified pagination
             # This is much more efficient than Python sorting
@@ -823,17 +836,62 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 return HttpResponse(status=500)
         else:
             # It's a remote URL - proxy it
+            # Skip URLs that recently failed to avoid blocking workers
+            fail_expiry = _vod_logo_fetch_failures.get(logo.url)
+            if fail_expiry and time.monotonic() < fail_expiry:
+                return HttpResponse(status=404)
+
             try:
-                response = requests.get(logo.url, stream=True, timeout=10)
-                response.raise_for_status()
+                _LOGO_TOTAL_TIMEOUT = 10  # seconds
+                _LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
-                content_type = response.headers.get('Content-Type', 'image/png')
-
-                return StreamingHttpResponse(
-                    response.iter_content(chunk_size=8192),
-                    content_type=content_type
+                remote_response = requests.get(
+                    logo.url,
+                    stream=True,
+                    timeout=(3, 5),  # (connect_timeout, read_timeout per chunk)
                 )
+
+                if remote_response.status_code != 200:
+                    now = time.monotonic()
+                    _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
+                    return HttpResponse(status=404)
+
+                # Eagerly read the full image with a total time + size cap
+                # so the greenlet is released quickly.
+                chunks = []
+                total = 0
+                deadline = time.monotonic() + _LOGO_TOTAL_TIMEOUT
+                for chunk in remote_response.iter_content(chunk_size=8192):
+                    total += len(chunk)
+                    if total > _LOGO_MAX_BYTES:
+                        remote_response.close()
+                        return HttpResponse(status=404)
+                    if time.monotonic() > deadline:
+                        remote_response.close()
+                        now = time.monotonic()
+                        _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
+                        return HttpResponse(status=404)
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+
+                # Full read succeeded, clear any previous failure entry
+                _vod_logo_fetch_failures.pop(logo.url, None)
+
+                content_type = remote_response.headers.get('Content-Type', 'image/png')
+
+                response = HttpResponse(body, content_type=content_type)
+                response["Content-Length"] = str(len(body))
+                if remote_response.headers.get("Cache-Control"):
+                    response["Cache-Control"] = remote_response.headers.get("Cache-Control")
+                if remote_response.headers.get("Last-Modified"):
+                    response["Last-Modified"] = remote_response.headers.get("Last-Modified")
+                response["Content-Disposition"] = 'inline; filename="{}"'.format(
+                    os.path.basename(logo.url)
+                )
+                return response
             except requests.exceptions.RequestException as e:
+                now = time.monotonic()
+                _vod_logo_fetch_failures[logo.url] = now + _VOD_LOGO_FAIL_TTL
                 logger.error(f"Error fetching remote VOD logo {logo.url}: {str(e)}")
                 return HttpResponse(status=404)
 
@@ -896,4 +954,3 @@ class VODLogoViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-

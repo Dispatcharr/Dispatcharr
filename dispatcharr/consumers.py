@@ -1,6 +1,6 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
-import re, logging
+import regex, logging
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +54,9 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
 
             # Apply the transformation using the replace_with_mark function
             try:
-                search_preview = re.sub(data["search"], replace_with_mark, data["url"])
+                search_preview = regex.sub(data["search"], replace_with_mark, data["url"])
             except Exception as e:
-                search_preview = data["search"]
+                search_preview = data["url"]
                 logger.error(f"Failed to generate replace preview: {e}")
 
             result = transform_url(data["url"], data["search"], data["replace"])

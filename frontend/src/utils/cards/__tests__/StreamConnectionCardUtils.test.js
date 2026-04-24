@@ -168,42 +168,22 @@ describe('StreamConnectionCardUtils', () => {
   });
 
   describe('connectedAccessor', () => {
-    it('should format connected_since correctly', () => {
-      const mockNow = new Date('2024-01-01T12:00:00');
-      const mockConnectedTime = new Date('2024-01-01T10:00:00');
-
-      dateTimeUtils.getNow.mockReturnValue(mockNow);
-      dateTimeUtils.subtract.mockReturnValue(mockConnectedTime);
-      dateTimeUtils.format.mockReturnValue('01/01/2024 10:00:00');
-
-      const accessor = StreamConnectionCardUtils.connectedAccessor(
-        'MM/DD/YYYY, HH:mm:ss'
-      );
-      const result = accessor({ connected_since: 7200 });
-
-      expect(dateTimeUtils.subtract).toHaveBeenCalledWith(
-        mockNow,
-        7200,
-        'second'
-      );
-      expect(dateTimeUtils.format).toHaveBeenCalledWith(
-        mockConnectedTime,
-        'MM/DD/YYYY, HH:mm:ss'
-      );
-      expect(result).toBe('01/01/2024 10:00:00');
-    });
-
-    it('should fallback to connected_at when connected_since is missing', () => {
+    it('should format connected_at correctly', () => {
       const mockTime = new Date('2024-01-01T10:00:00');
 
       dateTimeUtils.initializeTime.mockReturnValue(mockTime);
       dateTimeUtils.format.mockReturnValue('01/01/2024 10:00:00');
 
-      const accessor =
-        StreamConnectionCardUtils.connectedAccessor('MM/DD/YYYY');
+      const accessor = StreamConnectionCardUtils.connectedAccessor(
+        'MM/DD/YYYY, HH:mm:ss'
+      );
       const result = accessor({ connected_at: 1704103200 });
 
       expect(dateTimeUtils.initializeTime).toHaveBeenCalledWith(1704103200000);
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(
+        mockTime,
+        'MM/DD/YYYY, HH:mm:ss'
+      );
       expect(result).toBe('01/01/2024 10:00:00');
     });
 
@@ -216,33 +196,22 @@ describe('StreamConnectionCardUtils', () => {
   });
 
   describe('durationAccessor', () => {
-    it('should format connected_since duration', () => {
+    it('should compute duration from connected_at', () => {
       dateTimeUtils.toFriendlyDuration.mockReturnValue('2h 30m');
 
       const accessor = StreamConnectionCardUtils.durationAccessor();
-      const result = accessor({ connected_since: 9000 });
+      // connected_at 9000 seconds before "now" (Date.now() / 1000)
+      const connectedAt = Date.now() / 1000 - 9000;
+      const result = accessor({ connected_at: connectedAt });
 
       expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(
-        9000,
+        expect.closeTo(9000, 1),
         'seconds'
       );
       expect(result).toBe('2h 30m');
     });
 
-    it('should fallback to connection_duration', () => {
-      dateTimeUtils.toFriendlyDuration.mockReturnValue('1h 15m');
-
-      const accessor = StreamConnectionCardUtils.durationAccessor();
-      const result = accessor({ connection_duration: 4500 });
-
-      expect(dateTimeUtils.toFriendlyDuration).toHaveBeenCalledWith(
-        4500,
-        'seconds'
-      );
-      expect(result).toBe('1h 15m');
-    });
-
-    it('should return - when no duration data available', () => {
+    it('should return - when no connected_at available', () => {
       const accessor = StreamConnectionCardUtils.durationAccessor();
       const result = accessor({});
       expect(result).toBe('-');

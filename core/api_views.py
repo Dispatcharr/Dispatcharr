@@ -3,12 +3,13 @@
 import json
 import ipaddress
 import logging
+from django.conf import settings as django_settings
 from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes, action
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -34,6 +35,9 @@ import os
 from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
+    IsAdmin,
+    IsStandardUser,
+    permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
 
@@ -49,6 +53,12 @@ class UserAgentViewSet(viewsets.ModelViewSet):
     queryset = UserAgent.objects.all()
     serializer_class = UserAgentSerializer
 
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
+
 
 class StreamProfileViewSet(viewsets.ModelViewSet):
     """
@@ -57,6 +67,12 @@ class StreamProfileViewSet(viewsets.ModelViewSet):
 
     queryset = StreamProfile.objects.all()
     serializer_class = StreamProfileSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
@@ -67,6 +83,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
 
     queryset = CoreSettings.objects.all()
     serializer_class = CoreSettingsSerializer
+
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_action[self.action]]
+        except KeyError:
+            return [Authenticated()]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -170,6 +192,11 @@ class ProxySettingsViewSet(viewsets.ViewSet):
     """
     serializer_class = ProxySettingsSerializer
 
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [IsStandardUser()]
+        return [IsAdmin()]
+
     def _get_or_create_settings(self):
         """Get or create the proxy settings CoreSettings entry"""
         try:
@@ -183,6 +210,7 @@ class ProxySettingsViewSet(viewsets.ViewSet):
                 "redis_chunk_ttl": 60,
                 "channel_shutdown_delay": 0,
                 "channel_init_grace_period": 5,
+                "new_client_behind_seconds": 5,
             }
             settings_obj, created = CoreSettings.objects.get_or_create(
                 key=PROXY_SETTINGS_KEY,
@@ -300,7 +328,9 @@ def environment(request):
             country_code = None
             country_name = None
 
-    # 4) Get environment mode from system environment variable
+    # 4) Get environment mode and TLS status from settings
+    postgres_ssl = getattr(django_settings, "POSTGRES_SSL", False)
+
     return Response(
         {
             "authenticated": True,
@@ -308,7 +338,17 @@ def environment(request):
             "local_ip": local_ip,
             "country_code": country_code,
             "country_name": country_name,
-            "env_mode": "dev" if os.getenv("DISPATCHARR_ENV") == "dev" else "prod",
+            "env_mode": os.getenv("DISPATCHARR_ENV", "aio"),
+            "redis_tls": {
+                "enabled": getattr(django_settings, "REDIS_SSL", False),
+                "verify": getattr(django_settings, "REDIS_SSL_VERIFY", True),
+                "mtls": bool(getattr(django_settings, "REDIS_SSL_CERT", "") and getattr(django_settings, "REDIS_SSL_KEY", "")),
+            },
+            "postgres_tls": {
+                "enabled": postgres_ssl,
+                "ssl_mode": getattr(django_settings, "POSTGRES_SSL_MODE", "verify-full") if postgres_ssl else None,
+                "mtls": bool(getattr(django_settings, "POSTGRES_SSL_CERT", "") and getattr(django_settings, "POSTGRES_SSL_KEY", "")),
+            },
         }
     )
 
@@ -316,8 +356,8 @@ def environment(request):
 @extend_schema(
     description="Get application version information",
 )
-
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def version(request):
     # Import version information
     from version import __version__, __timestamp__
@@ -506,7 +546,7 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
         )
 
         # Filter admin-only notifications for non-admins
-        if not getattr(user, 'is_superuser', False) and getattr(user, 'user_level', 0) < 10:
+        if getattr(user, 'user_level', 0) < 10:
             queryset = queryset.filter(admin_only=False)
 
         # For developer notifications, evaluate conditions

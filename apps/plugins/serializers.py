@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .models import PluginRepo
 
 
 class PluginActionSerializer(serializers.Serializer):
@@ -9,6 +10,9 @@ class PluginActionSerializer(serializers.Serializer):
     button_label = serializers.CharField(required=False, allow_blank=True)
     button_variant = serializers.CharField(required=False, allow_blank=True)
     button_color = serializers.CharField(required=False, allow_blank=True)
+    events = serializers.ListField(
+        child=serializers.CharField(), required=False, allow_empty=True
+    )
 
 
 class PluginFieldOptionSerializer(serializers.Serializer):
@@ -43,3 +47,40 @@ class PluginSerializer(serializers.Serializer):
     fields = PluginFieldSerializer(many=True)
     settings = serializers.JSONField()
     actions = PluginActionSerializer(many=True)
+    source_repo = serializers.IntegerField(required=False, allow_null=True)
+    slug = serializers.CharField(required=False, allow_blank=True)
+    is_managed = serializers.BooleanField(required=False)
+    deprecated = serializers.BooleanField(required=False)
+
+
+class PluginRepoSerializer(serializers.ModelSerializer):
+    registry_url = serializers.SerializerMethodField()
+    plugin_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PluginRepo
+        fields = [
+            "id",
+            "name",
+            "url",
+            "is_official",
+            "enabled",
+            "public_key",
+            "signature_verified",
+            "registry_url",
+            "plugin_count",
+            "last_fetched",
+            "last_fetch_status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "name", "is_official", "signature_verified", "registry_url", "plugin_count", "last_fetched", "last_fetch_status", "created_at", "updated_at"]
+
+    def get_registry_url(self, obj):
+        manifest = (obj.cached_manifest or {}).get("manifest", obj.cached_manifest or {})
+        return manifest.get("registry_url", "") or ""
+
+    def get_plugin_count(self, obj):
+        manifest = (obj.cached_manifest or {}).get("manifest", obj.cached_manifest or {})
+        plugins = manifest.get("plugins", [])
+        return len(plugins) if isinstance(plugins, list) else 0

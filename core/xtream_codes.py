@@ -62,7 +62,7 @@ class Client:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
 
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()
 
             # Check if response is empty

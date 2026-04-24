@@ -10,13 +10,14 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from datetime import timedelta
-from .models import EPGSource, ProgramData, EPGData  # Added ProgramData
+from .models import EPGSource, ProgramData, EPGData
 from .serializers import (
     ProgramDataSerializer,
+    ProgramDetailSerializer,
     EPGSourceSerializer,
     EPGDataSerializer,
     ProgramSearchResultSerializer,
-)  # Updated serializer
+)
 from .tasks import refresh_epg_data
 from apps.accounts.permissions import (
     Authenticated,
@@ -35,7 +36,9 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
     API endpoint that allows EPG sources to be viewed or edited.
     """
 
-    queryset = EPGSource.objects.all()
+    queryset = EPGSource.objects.select_related(
+        "refresh_task__crontab", "refresh_task__interval"
+    ).all()
     serializer_class = EPGSourceSerializer
 
     def get_permissions(self):
@@ -43,6 +46,17 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def get_queryset(self):
+        from django.db.models import Exists, OuterRef
+        from apps.channels.models import Channel
+        return EPGSource.objects.select_related(
+            "refresh_task__crontab", "refresh_task__interval"
+        ).annotate(
+            has_channels=Exists(
+                Channel.objects.filter(epg_data__epg_source_id=OuterRef('pk'))
+            )
+        )
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG sources.")
@@ -98,7 +112,7 @@ class EPGSourceViewSet(viewsets.ModelViewSet):
 class ProgramViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for EPG programs"""
 
-    queryset = ProgramData.objects.all()
+    queryset = ProgramData.objects.select_related("epg").all()
     serializer_class = ProgramDataSerializer
 
     def get_permissions(self):
@@ -106,6 +120,16 @@ class ProgramViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return ProgramDetailSerializer
+        return ProgramDataSerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
     def list(self, request, *args, **kwargs):
         logger.debug("Listing all EPG programs.")
@@ -139,16 +163,9 @@ class EPGGridAPIView(APIView):
             f"EPGGridAPIView: Querying programs between {one_hour_ago} and {twenty_four_hours_later}."
         )
 
-        # Use select_related to prefetch EPGData and include programs from the last hour
-        programs = ProgramData.objects.select_related("epg").filter(
-            # Programs that end after one hour ago (includes recently ended programs)
+        programs = ProgramData.objects.filter(
             end_time__gt=one_hour_ago,
-            # AND start before the end time window
             start_time__lt=twenty_four_hours_later,
-        )
-        count = programs.count()
-        logger.debug(
-            f"EPGGridAPIView: Found {count} program(s), including recently ended, currently running, and upcoming shows."
         )
 
         # Generate dummy programs for channels that have no EPG data OR dummy EPG sources
@@ -162,7 +179,7 @@ class EPGGridAPIView(APIView):
         # Get channels with custom dummy EPG sources (generate on-demand with patterns)
         channels_with_custom_dummy = Channel.objects.filter(
             epg_data__epg_source__source_type='dummy'
-        ).distinct()
+        ).select_related('epg_data__epg_source').distinct()
 
         # Log what we found
         without_count = channels_without_epg.count()
@@ -184,8 +201,33 @@ class EPGGridAPIView(APIView):
             f"EPGGridAPIView: Found {without_count} channels needing standard dummy, {custom_count} needing custom dummy EPG."
         )
 
-        # Serialize the regular programs
-        serialized_programs = ProgramDataSerializer(programs, many=True).data
+        # Serialize the regular programs using .values() to bypass DRF overhead
+        programs_qs = programs.values(
+            'id', 'start_time', 'end_time', 'title', 'sub_title',
+            'description', 'tvg_id', 'custom_properties',
+        )
+        serialized_programs = []
+        for p in programs_qs:
+            cp = p['custom_properties'] or {}
+            premiere_text = cp.get('premiere_text', '')
+            serialized_programs.append({
+                'id': p['id'],
+                'start_time': p['start_time'],
+                'end_time': p['end_time'],
+                'title': p['title'],
+                'sub_title': p['sub_title'],
+                'description': p['description'],
+                'tvg_id': p['tvg_id'],
+                'season': cp.get('season'),
+                'episode': cp.get('episode'),
+                'is_new': bool(cp.get('new')),
+                'is_live': bool(cp.get('live')),
+                'is_premiere': bool(cp.get('premiere')),
+                'is_finale': bool(premiere_text and 'finale' in premiere_text.lower()),
+            })
+        logger.debug(
+            f"EPGGridAPIView: Found {len(serialized_programs)} program(s), including recently ended, currently running, and upcoming shows."
+        )
 
         # Humorous program descriptions based on time of day - same as in output/views.py
         time_descriptions = {
@@ -277,6 +319,7 @@ class EPGGridAPIView(APIView):
                     logger.debug(f"Generated {len(generated)} custom dummy programs for {channel.name}")
                     # Convert generated programs to API format
                     for program in generated:
+                        prog_custom = program.get('custom_properties') or {}
                         dummy_program = {
                             "id": f"dummy-custom-{channel.id}-{program['start_time'].hour}",
                             "epg": {"tvg_id": dummy_tvg_id, "name": channel.name},
@@ -285,8 +328,14 @@ class EPGGridAPIView(APIView):
                             "title": program['title'],
                             "description": program['description'],
                             "tvg_id": dummy_tvg_id,
-                            "sub_title": None,
-                            "custom_properties": None,
+                            "sub_title": program.get('sub_title'),
+                            "custom_properties": prog_custom if prog_custom else None,
+                            "season": None,
+                            "episode": None,
+                            "is_new": prog_custom.get('new', False),
+                            "is_live": bool(prog_custom.get('live')),
+                            "is_premiere": False,
+                            "is_finale": False,
                         }
                         dummy_programs.append(dummy_program)
                 else:
@@ -344,6 +393,12 @@ class EPGGridAPIView(APIView):
                         "tvg_id": dummy_tvg_id,
                         "sub_title": None,
                         "custom_properties": None,
+                        "season": None,
+                        "episode": None,
+                        "is_new": False,
+                        "is_live": False,
+                        "is_premiere": False,
+                        "is_finale": False,
                     }
                     dummy_programs.append(dummy_program)
 
@@ -376,7 +431,13 @@ class EPGImportAPIView(APIView):
             return [Authenticated()]
 
     @extend_schema(
-        description="Triggers an EPG data import",
+        description="Triggers an EPG data refresh for the given source.",
+        request=inline_serializer(
+            name="EPGImportRequest",
+            fields={
+                "id": serializers.IntegerField(help_text="ID of the EPG source to refresh."),
+            },
+        ),
     )
     def post(self, request, format=None):
         logger.info("EPGImportAPIView: Received request to import EPG data.")
@@ -398,7 +459,7 @@ class EPGImportAPIView(APIView):
         refresh_epg_data.delay(epg_id)  # Trigger Celery task
         logger.info("EPGImportAPIView: Task dispatched to refresh EPG data.")
         return Response(
-            {"success": True, "message": "EPG data import initiated."},
+            {"success": True, "message": "EPG data refresh initiated."},
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -443,43 +504,32 @@ class CurrentProgramsAPIView(APIView):
         request=inline_serializer(
             name="CurrentProgramsRequest",
             fields={
-                "channel_ids": serializers.ListField(
-                    child=serializers.IntegerField(),
+                "channel_uuids": serializers.ListField(
+                    child=serializers.CharField(),
                     required=False,
                     allow_null=True,
-                    help_text="Array of channel IDs. If null or omitted, returns all channels with current programs.",
+                    help_text="Array of channel UUIDs. If null or omitted, returns all channels with current programs.",
                 ),
             },
         ),
         responses={200: ProgramDataSerializer(many=True)},
     )
     def post(self, request, format=None):
-        # Get channel IDs from request body
-        channel_ids = request.data.get('channel_ids', None)
-
         # Import Channel model
         from apps.channels.models import Channel
 
         # Build query for channels with EPG data
         query = Channel.objects.filter(epg_data__isnull=False)
 
-        # Filter by specific channel IDs if provided
-        if channel_ids is not None:
-            if not isinstance(channel_ids, list):
+        channel_uuids = request.data.get('channel_uuids', None)
+
+        if channel_uuids is not None:
+            if not isinstance(channel_uuids, list):
                 return Response(
-                    {"error": "channel_ids must be an array of integers or null"},
+                    {"error": "channel_uuids must be an array of strings or null"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-
-            try:
-                channel_ids = [int(id) for id in channel_ids]
-            except (ValueError, TypeError):
-                return Response(
-                    {"error": "channel_ids must contain valid integers"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            query = query.filter(id__in=channel_ids)
+            query = query.filter(uuid__in=channel_uuids)
 
         # Get channels with EPG data
         channels = query.select_related('epg_data')
@@ -492,16 +542,15 @@ class CurrentProgramsAPIView(APIView):
 
         for channel in channels:
             # Query for current program
-            program = ProgramData.objects.filter(
+            program = ProgramData.objects.select_related("epg").filter(
                 epg=channel.epg_data,
                 start_time__lte=now,
                 end_time__gt=now
             ).first()
 
             if program:
-                # Serialize program and add channel_id for easy mapping
                 program_data = ProgramDataSerializer(program).data
-                program_data['channel_id'] = channel.id
+                program_data['channel_uuid'] = str(channel.uuid)
                 current_programs.append(program_data)
 
 
@@ -517,7 +566,7 @@ import re as regex_module
 def _build_q_object(field_name, term, use_regex=False, whole_words=False):
     """
     Build a single Q object for a search term.
-    
+
     Args:
         field_name: Django ORM field name
         term: Search term
@@ -527,7 +576,7 @@ def _build_q_object(field_name, term, use_regex=False, whole_words=False):
     term = term.strip()
     if not term:
         return Q()
-    
+
     if use_regex:
         # Use Django's __iregex (case-insensitive regex)
         return Q(**{f'{field_name}__iregex': term})
@@ -559,27 +608,27 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
     Supports mixed operators evaluated left-to-right: "sports AND football OR basketball"
     Supports nested groups: "(A OR B) AND (C OR D)"
     """
-    
+
     def parse_expression(expr):
         """Recursively parse expression with parentheses support"""
         expr = expr.strip()
-        
+
         # Handle parentheses by recursively processing innermost groups
         while '(' in expr:
             paren_start = expr.rfind('(')
             paren_end = expr.find(')', paren_start)
             if paren_end == -1:
                 return Q()  # Mismatched parentheses
-            
+
             # Recursively parse the group
             group_expr = expr[paren_start + 1:paren_end]
             group_result = parse_expression(group_expr)
-            
+
             # Replace group with placeholder to avoid re-parsing
             # We build up results as we go
             before = expr[:paren_start]
             after = expr[paren_end + 1:]
-            
+
             # For now, we need to handle this differently - evaluate left to right
             # Extract operators around the group
             if before:
@@ -595,7 +644,7 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
             else:
                 operator = None
                 before = None
-            
+
             if after:
                 after = after.lstrip()
                 if after.upper().startswith('AND '):
@@ -606,24 +655,24 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
                     operator = ' OR ' if not operator else operator
             else:
                 after = None
-            
+
             # Reconstruct without parentheses for simpler processing
             parts = [before, after]
             expr = ' AND '.join(p for p in parts if p)
-        
+
         # Tokenize on " AND " and " OR " boundaries (no parentheses now)
         tokens = []
         operators = []
         remaining = expr
-        
+
         while remaining:
             and_pos = remaining.upper().find(' AND ')
             or_pos = remaining.upper().find(' OR ')
-            
+
             if and_pos == -1 and or_pos == -1:
                 tokens.append(remaining.strip())
                 break
-            
+
             if and_pos == -1:
                 pos, op, op_len = or_pos, '|', 4
             elif or_pos == -1:
@@ -632,16 +681,16 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
                 pos, op, op_len = and_pos, '&', 5
             else:
                 pos, op, op_len = or_pos, '|', 4
-            
+
             token = remaining[:pos].strip()
             if token:
                 tokens.append(token)
                 operators.append(op)
             remaining = remaining[pos + op_len:]
-        
+
         if not tokens:
             return Q()
-        
+
         # Build Q chain
         result = _build_q_object(field_name, tokens[0], use_regex, whole_words)
         for i, op in enumerate(operators):
@@ -650,9 +699,9 @@ def _parse_text_query(field_name, raw_value, use_regex=False, whole_words=False)
                 result = result & next_q
             else:
                 result = result | next_q
-        
+
         return result
-    
+
     return parse_expression(raw_value)
 
 
@@ -737,8 +786,8 @@ class ProgramSearchAPIView(APIView):
         """,
         parameters=[
             OpenApiParameter(
-                'title', 
-                OpenApiTypes.STR, 
+                'title',
+                OpenApiTypes.STR,
                 description='Title search query. Supports AND/OR operators and parentheses: `(Newcastle OR NEW) AND (Villa OR AST)`. Space-separated terms default to AND.',
                 examples=[
                     'football',
@@ -750,8 +799,8 @@ class ProgramSearchAPIView(APIView):
             OpenApiParameter('title_regex', OpenApiTypes.BOOL, description='Enable regex matching for title (case-insensitive). Example: `^The` matches titles starting with "The".'),
             OpenApiParameter('title_whole_words', OpenApiTypes.BOOL, description='Match whole words only in title. Prevents "NEW" from matching "News".'),
             OpenApiParameter(
-                'description', 
-                OpenApiTypes.STR, 
+                'description',
+                OpenApiTypes.STR,
                 description='Description search query. Same syntax and features as title search.'
             ),
             OpenApiParameter('description_regex', OpenApiTypes.BOOL, description='Enable regex matching for description (case-insensitive).'),

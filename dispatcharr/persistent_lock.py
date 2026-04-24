@@ -48,7 +48,7 @@ class PersistentLock:
         Returns True if the expiration was successfully extended.
         """
         current_value = self.redis_client.get(self.lock_key)
-        if current_value and current_value.decode("utf-8") == self.lock_token:
+        if current_value and current_value == self.lock_token:
             self.redis_client.expire(self.lock_key, self.lock_timeout)
             self.has_lock = False
             return True
@@ -74,18 +74,40 @@ class PersistentLock:
 # Example usage (for testing purposes only):
 if __name__ == "__main__":
     import os
+    import sys
     # Connect to Redis using environment variables; adjust connection parameters as needed.
     redis_host = os.environ.get("REDIS_HOST", "localhost")
     redis_port = int(os.environ.get("REDIS_PORT", 6379))
     redis_db = int(os.environ.get("REDIS_DB", 0))
     redis_password = os.environ.get("REDIS_PASSWORD", "")
     redis_user = os.environ.get("REDIS_USER", "")
+    ssl_kwargs = {}
+    if os.environ.get("REDIS_SSL", "false").lower() == "true":
+        import ssl as _ssl
+        ssl_kwargs["ssl"] = True
+        ssl_kwargs["ssl_cert_reqs"] = (
+            _ssl.CERT_REQUIRED if os.environ.get("REDIS_SSL_VERIFY", "true").lower() == "true"
+            else _ssl.CERT_NONE
+        )
+        for env_var, key in [
+            ("REDIS_SSL_CA_CERT", "ssl_ca_certs"),
+            ("REDIS_SSL_CERT", "ssl_certfile"),
+            ("REDIS_SSL_KEY", "ssl_keyfile"),
+        ]:
+            path = os.environ.get(env_var, "")
+            if path:
+                if not os.path.isfile(path):
+                    print(f"Redis TLS: {env_var}={path!r} — file not found.")
+                    sys.exit(1)
+                ssl_kwargs[key] = path
+
     client = redis.Redis(
         host=redis_host,
         port=redis_port,
         db=redis_db,
         password=redis_password if redis_password else None,
-        username=redis_user if redis_user else None
+        username=redis_user if redis_user else None,
+        **ssl_kwargs
     )
     lock = PersistentLock(client, "lock:example_account", lock_timeout=120)
 

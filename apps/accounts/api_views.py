@@ -1,13 +1,16 @@
 from django.contrib.auth import authenticate, login, logout
+import logging
 from django.contrib.auth.models import Group, Permission
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from rest_framework import viewsets, status, serializers
+from rest_framework.throttling import AnonRateThrottle
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 import json
+import secrets
 from .permissions import IsAdmin, Authenticated
 from dispatcharr.utils import network_access_allowed
 
@@ -15,16 +18,24 @@ from .models import User
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+logger = logging.getLogger(__name__)
+
+
+class LoginRateThrottle(AnonRateThrottle):
+    scope = "login"
+
 
 class TokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [LoginRateThrottle]
+
     def post(self, request, *args, **kwargs):
-        # Custom logic here
         if not network_access_allowed(request, "UI"):
             # Log blocked login attempt due to network restrictions
             from core.utils import log_system_event
             username = request.data.get("username", 'unknown')
             client_ip = request.META.get('REMOTE_ADDR', 'unknown')
             user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            logger.info(f"Login blocked by network policy: user={username} ip={client_ip} ua={user_agent}")
             log_system_event(
                 event_type='login_failed',
                 user=username,
@@ -43,6 +54,7 @@ class TokenObtainPairView(TokenObtainPairView):
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
         try:
+            logger.debug(f"Attempting JWT login for user={username}")
             response = super().post(request, *args, **kwargs)
 
             # If login was successful, update last_login and log success
@@ -61,6 +73,7 @@ class TokenObtainPairView(TokenObtainPairView):
                             client_ip=client_ip,
                             user_agent=user_agent,
                         )
+                        logger.info(f"Login success: user={username} ip={client_ip}")
                     except User.DoesNotExist:
                         pass  # User doesn't exist, but login somehow succeeded
             else:
@@ -72,6 +85,7 @@ class TokenObtainPairView(TokenObtainPairView):
                     user_agent=user_agent,
                     reason='Invalid credentials',
                 )
+                logger.info(f"Login failed: user={username} ip={client_ip}")
 
             return response
 
@@ -84,6 +98,7 @@ class TokenObtainPairView(TokenObtainPairView):
                 user_agent=user_agent,
                 reason=f'Authentication error: {str(e)[:100]}',
             )
+            logger.error(f"Login error for user={username}: {e}")
             raise  # Re-raise the exception to maintain normal error flow
 
 
@@ -95,6 +110,7 @@ class TokenRefreshView(TokenRefreshView):
             from core.utils import log_system_event
             client_ip = request.META.get('REMOTE_ADDR', 'unknown')
             user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+            logger.info(f"Token refresh blocked by network policy: ip={client_ip} ua={user_agent}")
             log_system_event(
                 event_type='login_failed',
                 user='token_refresh',
@@ -109,8 +125,8 @@ class TokenRefreshView(TokenRefreshView):
 
 @csrf_exempt  # In production, consider CSRF protection strategies or ensure this endpoint is only accessible when no superuser exists.
 def initialize_superuser(request):
-    # If a superuser already exists, always indicate that
-    if User.objects.filter(is_superuser=True).exists():
+    # If an admin-level user already exists, the system is configured
+    if User.objects.filter(user_level__gte=10).exists():
         return JsonResponse({"superuser_exists": True})
 
     if request.method == "POST":
@@ -143,12 +159,11 @@ class AuthViewSet(viewsets.ViewSet):
         Login doesn't require auth, but logout does
         """
         if self.action == 'logout':
-            from rest_framework.permissions import IsAuthenticated
-            return [IsAuthenticated()]
+            return [Authenticated()]
         return []
 
     @extend_schema(
-        description="Authenticate and log in a user",
+        description="Alias for POST /api/accounts/token/ — returns JWT access and refresh tokens.",
         request=inline_serializer(
             name="LoginRequest",
             fields={
@@ -158,52 +173,10 @@ class AuthViewSet(viewsets.ViewSet):
         ),
     )
     def login(self, request):
-        """Logs in a user and returns user details"""
-        username = request.data.get("username")
-        password = request.data.get("password")
-        user = authenticate(request, username=username, password=password)
-
-        # Get client info for logging
-        from core.utils import log_system_event
-        client_ip = request.META.get('REMOTE_ADDR', 'unknown')
-        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
-
-        if user:
-            login(request, user)
-            # Update last_login timestamp
-            from django.utils import timezone
-            user.last_login = timezone.now()
-            user.save(update_fields=['last_login'])
-
-            # Log successful login
-            log_system_event(
-                event_type='login_success',
-                user=username,
-                client_ip=client_ip,
-                user_agent=user_agent,
-            )
-
-            return Response(
-                {
-                    "message": "Login successful",
-                    "user": {
-                        "id": user.id,
-                        "username": user.username,
-                        "email": user.email,
-                        "groups": list(user.groups.values_list("name", flat=True)),
-                    },
-                }
-            )
-
-        # Log failed login attempt
-        log_system_event(
-            event_type='login_failed',
-            user=username or 'unknown',
-            client_ip=client_ip,
-            user_agent=user_agent,
-            reason='Invalid credentials',
-        )
-        return Response({"error": "Invalid credentials"}, status=400)
+        """Delegates to TokenObtainPairView (JWT login). Throttling, logging, and
+        network access checks are handled there."""
+        view = TokenObtainPairView.as_view()
+        return view(request._request)
 
     @extend_schema(
         description="Log out the current user",
@@ -222,6 +195,7 @@ class AuthViewSet(viewsets.ViewSet):
             client_ip=client_ip,
             user_agent=user_agent,
         )
+        logger.info(f"Logout: user={username} ip={client_ip}")
 
         logout(request)
         return Response({"message": "Logout successful"})
@@ -264,11 +238,31 @@ class UserViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     @extend_schema(
-        description="Get active user information",
+        description="Get or update active user information. PATCH updates custom_properties with merge semantics.",
+        methods=["GET", "PATCH"],
     )
-    @action(detail=False, methods=["get"], url_path="me")
+    @action(detail=False, methods=["get", "patch"], url_path="me")
     def me(self, request):
         user = request.user
+        if request.method == "PATCH":
+            ALLOWED_FIELDS = {"custom_properties", "first_name", "last_name", "email", "password"}
+            disallowed = set(request.data.keys()) - ALLOWED_FIELDS
+
+            for key in disallowed:
+                request.data.pop(key, None)
+
+            # Strip admin-managed keys from custom_properties so users cannot
+            # set their own XC credentials via this endpoint.
+            ADMIN_ONLY_PROPS = {"xc_password"}
+            cp = request.data.get("custom_properties")
+            if isinstance(cp, dict):
+                for key in ADMIN_ONLY_PROPS:
+                    cp.pop(key, None)
+
+            serializer = UserSerializer(user, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
         serializer = UserSerializer(user)
         return Response(serializer.data)
 
@@ -303,6 +297,59 @@ class GroupViewSet(viewsets.ModelViewSet):
     @extend_schema(description="Delete a group")
     def destroy(self, request, *args, **kwargs):
         return super().destroy(request, *args, **kwargs)
+
+
+# API Key management
+class APIKeyViewSet(viewsets.ViewSet):
+    permission_classes = [Authenticated]
+
+    def list(self, request):
+        user = request.user
+        return Response({"key": user.api_key})
+
+    @action(detail=False, methods=["post"], url_path="generate")
+    def generate(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to create keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        raw = secrets.token_urlsafe(40)
+        target_user.api_key = raw
+        target_user.save(update_fields=["api_key"])
+
+        user_data = UserSerializer(target_user).data
+        return Response({"key": raw, "user": user_data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="revoke")
+    def revoke(self, request):
+        target_user = request.user
+        user_id = request.data.get("user_id")
+
+        if user_id:
+            from .permissions import IsAdmin
+
+            if not IsAdmin().has_permission(request, self):
+                return Response({"detail": "Not allowed to revoke keys for other users."}, status=status.HTTP_403_FORBIDDEN)
+
+            try:
+                target_user = User.objects.get(id=int(user_id))
+            except Exception:
+                return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        target_user.api_key = None
+        target_user.save(update_fields=["api_key"])
+
+        return Response({"success": True})
 
 
 # 🔹 4) Permissions List API

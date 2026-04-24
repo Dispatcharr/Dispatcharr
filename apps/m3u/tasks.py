@@ -1,6 +1,7 @@
 # apps/m3u/tasks.py
 import logging
 import re
+import regex
 import requests
 import os
 import gc
@@ -11,7 +12,7 @@ from celery.result import AsyncResult
 from celery import shared_task, current_app, group
 from django.conf import settings
 from django.core.cache import cache
-from django.db import transaction
+from django.db import models, transaction
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from asgiref.sync import async_to_sync
@@ -23,6 +24,7 @@ from core.utils import (
     RedisClient,
     acquire_task_lock,
     release_task_lock,
+    TaskLockRenewer,
     natural_sort_key,
     log_system_event,
 )
@@ -36,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 1500  # Optimized batch size for threading
 m3u_dir = os.path.join(settings.MEDIA_ROOT, "cached_m3u")
+
+_EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 
 
 def fetch_m3u_lines(account, use_cache=False):
@@ -66,7 +70,8 @@ def fetch_m3u_lines(account, use_cache=False):
                 account.save(update_fields=["status", "last_message"])
 
                 response = requests.get(
-                    account.server_url, headers=headers, stream=True
+                    account.server_url, headers=headers, stream=True,
+                    timeout=(30, 60),  # 30s connect, 60s read between chunks
                 )
 
                 # Log the actual response details for debugging
@@ -126,119 +131,60 @@ def fetch_m3u_lines(account, use_cache=False):
                 start_time = time.time()
                 last_update_time = start_time
                 progress = 0
-                temp_content = b""  # Store content temporarily to validate before saving
                 has_content = False
 
-                # First, let's collect the content and validate it
-                send_m3u_update(account.id, "downloading", 0)
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        temp_content += chunk
-                        has_content = True
+                # Stream directly to a temp file to avoid holding the entire
+                # M3U in memory (large files can be 100MB+, which would use
+                # ~3x that in RAM in certain approaches).
+                temp_path = file_path + ".tmp"
+                try:
+                    send_m3u_update(account.id, "downloading", 0)
+                    with open(temp_path, "wb") as tmp_file:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                tmp_file.write(chunk)
+                                has_content = True
 
-                        downloaded += len(chunk)
-                        elapsed_time = time.time() - start_time
+                                downloaded += len(chunk)
+                                elapsed_time = time.time() - start_time
 
-                        # Calculate download speed in KB/s
-                        speed = downloaded / elapsed_time / 1024  # in KB/s
+                                # Calculate download speed in KB/s
+                                speed = downloaded / elapsed_time / 1024  # in KB/s
 
-                        # Calculate progress percentage
-                        if total_size and total_size > 0:
-                            progress = (downloaded / total_size) * 100
+                                # Calculate progress percentage
+                                if total_size and total_size > 0:
+                                    progress = (downloaded / total_size) * 100
 
-                        # Time remaining (in seconds)
-                        time_remaining = (
-                            (total_size - downloaded) / (speed * 1024)
-                            if speed > 0
-                            else 0
-                        )
-
-                        current_time = time.time()
-                        if current_time - last_update_time >= 0.5:
-                            last_update_time = current_time
-                            if progress > 0:
-                                # Update the account's last_message with detailed progress info
-                                progress_msg = f"Downloading: {progress:.1f}% - {speed:.1f} KB/s - {time_remaining:.1f}s remaining"
-                                account.last_message = progress_msg
-                                account.save(update_fields=["last_message"])
-
-                                send_m3u_update(
-                                    account.id,
-                                    "downloading",
-                                    progress,
-                                    speed=speed,
-                                    elapsed_time=elapsed_time,
-                                    time_remaining=time_remaining,
-                                    message=progress_msg,
+                                # Time remaining (in seconds)
+                                time_remaining = (
+                                    (total_size - downloaded) / (speed * 1024)
+                                    if speed > 0
+                                    else 0
                                 )
 
-                # Check if we actually received any content
-                logger.info(f"Download completed. Has content: {has_content}, Content length: {len(temp_content)} bytes")
-                if not has_content or len(temp_content) == 0:
-                    error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
-                    logger.error(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id,
-                        "downloading",
-                        100,
-                        status="error",
-                        error=error_msg,
-                    )
-                    return [], False
+                                current_time = time.time()
+                                if current_time - last_update_time >= 0.5:
+                                    last_update_time = current_time
+                                    if progress > 0:
+                                        # Update the account's last_message with detailed progress info
+                                        progress_msg = f"Downloading: {progress:.1f}% - {speed:.1f} KB/s - {time_remaining:.1f}s remaining"
+                                        account.last_message = progress_msg
+                                        account.save(update_fields=["last_message"])
 
-                # Basic validation: check if content looks like an M3U file
-                try:
-                    content_str = temp_content.decode('utf-8', errors='ignore')
-                    content_lines = content_str.strip().split('\n')
+                                        send_m3u_update(
+                                            account.id,
+                                            "downloading",
+                                            progress,
+                                            speed=speed,
+                                            elapsed_time=elapsed_time,
+                                            time_remaining=time_remaining,
+                                            message=progress_msg,
+                                        )
 
-                    # Log first few lines for debugging (be careful not to log too much)
-                    preview_lines = content_lines[:5]
-                    logger.info(f"Content preview (first 5 lines): {preview_lines}")
-                    logger.info(f"Total lines in content: {len(content_lines)}")
-
-                    # Check if it's a valid M3U file (should start with #EXTM3U or contain M3U-like content)
-                    is_valid_m3u = False
-
-                    # First, check if this looks like an error response disguised as 200 OK
-                    content_lower = content_str.lower()
-                    if any(error_indicator in content_lower for error_indicator in [
-                        '<html', '<!doctype html', 'error', 'not found', '404', '403', '500',
-                        'access denied', 'unauthorized', 'forbidden', 'invalid', 'expired'
-                    ]):
-                        logger.warning(f"Content appears to be an error response disguised as HTTP 200: {content_str[:200]!r}")
-                        # Continue with M3U validation, but this gives us a clue
-
-                    if content_lines and content_lines[0].strip().upper().startswith('#EXTM3U'):
-                        is_valid_m3u = True
-                        logger.info("Content validated as M3U: starts with #EXTM3U")
-                    elif any(line.strip().startswith('#EXTINF:') for line in content_lines):
-                        is_valid_m3u = True
-                        logger.info("Content validated as M3U: contains #EXTINF entries")
-                    elif any(line.strip().startswith('http') for line in content_lines):
-                        # Has HTTP URLs, might be a simple M3U without headers
-                        is_valid_m3u = True
-                        logger.info("Content validated as M3U: contains HTTP URLs")
-                    elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in content_lines):
-                        # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
-                        is_valid_m3u = True
-                        logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
-
-                    if not is_valid_m3u:
-                        # Log what we actually received for debugging
-                        logger.error(f"Invalid M3U content received. First 200 characters: {content_str[:200]!r}")
-
-                        # Try to provide more specific error messages based on content
-                        if '<html' in content_lower or '<!doctype html' in content_lower:
-                            error_msg = f"Server returned HTML page instead of M3U file from URL: {account.server_url}. This usually indicates an error or authentication issue."
-                        elif 'error' in content_lower or 'not found' in content_lower:
-                            error_msg = f"Server returned an error message instead of M3U file from URL: {account.server_url}. Content: {content_str[:100]}"
-                        elif len(content_str.strip()) == 0:
-                            error_msg = f"Server returned completely empty response from URL: {account.server_url}"
-                        else:
-                            error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
+                    # Check if we actually received any content
+                    logger.info(f"Download completed. Has content: {has_content}, Content length: {downloaded} bytes")
+                    if not has_content or downloaded == 0:
+                        error_msg = f"Server responded successfully (HTTP {response.status_code}) but provided empty M3U file from URL: {account.server_url}"
                         logger.error(error_msg)
                         account.status = M3UAccount.Status.ERROR
                         account.last_message = error_msg
@@ -252,31 +198,113 @@ def fetch_m3u_lines(account, use_cache=False):
                         )
                         return [], False
 
-                except UnicodeDecodeError:
-                    logger.error(f"Non-text content received. First 200 bytes: {temp_content[:200]!r}")
-                    error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
-                    logger.error(error_msg)
-                    account.status = M3UAccount.Status.ERROR
-                    account.last_message = error_msg
-                    account.save(update_fields=["status", "last_message"])
-                    send_m3u_update(
-                        account.id,
-                        "downloading",
-                        100,
-                        status="error",
-                        error=error_msg,
-                    )
-                    return [], False
+                    # Validate the file by reading only the first portion from
+                    # disk — no need to load the entire file into memory just
+                    # to check the header.
+                    VALIDATION_READ_SIZE = 32768  # 32KB covers headers comfortably
+                    try:
+                        with open(temp_path, "rb") as vf:
+                            head_bytes = vf.read(VALIDATION_READ_SIZE)
+                        head_str = head_bytes.decode('utf-8', errors='ignore')
+                        head_lines = head_str.strip().split('\n')
 
-                # Content is valid, save it to file
-                with open(file_path, "wb") as file:
-                    file.write(temp_content)
+                        # Count total lines efficiently without loading full file
+                        with open(temp_path, "rb") as vf:
+                            total_lines = sum(1 for _ in vf)
 
-                # Final update with 100% progress
-                final_msg = f"Download complete. Size: {total_size/1024/1024:.2f} MB, Time: {time.time() - start_time:.1f}s"
-                account.last_message = final_msg
-                account.save(update_fields=["last_message"])
-                send_m3u_update(account.id, "downloading", 100, message=final_msg)
+                        # Log first few lines for debugging (be careful not to log too much)
+                        preview_lines = head_lines[:5]
+                        logger.info(f"Content preview (first 5 lines): {preview_lines}")
+                        logger.info(f"Total lines in content: {total_lines}")
+
+                        # Check if it's a valid M3U file (should start with #EXTM3U or contain M3U-like content)
+                        is_valid_m3u = False
+
+                        # First, check if this looks like an error response disguised as 200 OK
+                        head_lower = head_str.lower()
+                        if any(error_indicator in head_lower for error_indicator in [
+                            '<html', '<!doctype html', 'error', 'not found', '404', '403', '500',
+                            'access denied', 'unauthorized', 'forbidden', 'invalid', 'expired'
+                        ]):
+                            logger.warning(f"Content appears to be an error response disguised as HTTP 200: {head_str[:200]!r}")
+                            # Continue with M3U validation, but this gives us a clue
+
+                        if head_lines and head_lines[0].strip().upper().startswith('#EXTM3U'):
+                            is_valid_m3u = True
+                            logger.info("Content validated as M3U: starts with #EXTM3U")
+                        elif any(line.strip().startswith('#EXTINF:') for line in head_lines):
+                            is_valid_m3u = True
+                            logger.info("Content validated as M3U: contains #EXTINF entries")
+                        elif any(line.strip().startswith('http') for line in head_lines):
+                            # Has HTTP URLs, might be a simple M3U without headers
+                            is_valid_m3u = True
+                            logger.info("Content validated as M3U: contains HTTP URLs")
+                        elif any(line.strip().startswith(('rtsp', 'rtp', 'udp')) for line in head_lines):
+                            # Has RTSP/RTP/UDP URLs, might be a simple M3U without headers
+                            is_valid_m3u = True
+                            logger.info("Content validated as M3U: contains RTSP/RTP/UDP URLs")
+
+                        if not is_valid_m3u:
+                            # Log what we actually received for debugging
+                            logger.error(f"Invalid M3U content received. First 200 characters: {head_str[:200]!r}")
+
+                            # Try to provide more specific error messages based on content
+                            if '<html' in head_lower or '<!doctype html' in head_lower:
+                                error_msg = f"Server returned HTML page instead of M3U file from URL: {account.server_url}. This usually indicates an error or authentication issue."
+                            elif 'error' in head_lower or 'not found' in head_lower:
+                                error_msg = f"Server returned an error message instead of M3U file from URL: {account.server_url}. Content: {head_str[:100]}"
+                            elif len(head_str.strip()) == 0:
+                                error_msg = f"Server returned completely empty response from URL: {account.server_url}"
+                            else:
+                                error_msg = f"Server provided invalid M3U content from URL: {account.server_url}. Content does not appear to be a valid M3U file."
+                            logger.error(error_msg)
+                            account.status = M3UAccount.Status.ERROR
+                            account.last_message = error_msg
+                            account.save(update_fields=["status", "last_message"])
+                            send_m3u_update(
+                                account.id,
+                                "downloading",
+                                100,
+                                status="error",
+                                error=error_msg,
+                            )
+                            return [], False
+
+                    except UnicodeDecodeError:
+                        with open(temp_path, "rb") as vf:
+                            first_bytes = vf.read(200)
+                        logger.error(f"Non-text content received. First 200 bytes: {first_bytes!r}")
+                        error_msg = f"Server provided non-text content from URL: {account.server_url}. Unable to process as M3U file."
+                        logger.error(error_msg)
+                        account.status = M3UAccount.Status.ERROR
+                        account.last_message = error_msg
+                        account.save(update_fields=["status", "last_message"])
+                        send_m3u_update(
+                            account.id,
+                            "downloading",
+                            100,
+                            status="error",
+                            error=error_msg,
+                        )
+                        return [], False
+
+                    # Validation passed — promote temp file to final path
+                    os.replace(temp_path, file_path)
+
+                    # Final update with 100% progress
+                    dl_size = downloaded / 1024 / 1024
+                    final_msg = f"Download complete. Size: {dl_size:.2f} MB, Time: {time.time() - start_time:.1f}s"
+                    account.last_message = final_msg
+                    account.save(update_fields=["last_message"])
+                    send_m3u_update(account.id, "downloading", 100, message=final_msg)
+
+                finally:
+                    # Clean up temp file on any failure path
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
             except requests.exceptions.HTTPError as e:
                 # Handle HTTP errors specifically with more context
                 status_code = e.response.status_code if e.response else "unknown"
@@ -437,6 +465,13 @@ def get_case_insensitive_attr(attributes, key, default=""):
     return default
 
 
+def parse_is_adult(value):
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_extinf_line(line: str) -> dict:
     """
     Parse an EXTINF line from an M3U file.
@@ -452,16 +487,13 @@ def parse_extinf_line(line: str) -> dict:
         return None
     content = line[len("#EXTINF:") :].strip()
 
-    # Single pass: extract all attributes AND track the last attribute position
-    # This regex matches both key="value" and key='value' patterns
+    # Single pass: extract all attributes AND track the last attribute position.
+    # Keys are normalised to lowercase so downstream code can use plain dict.get()
     attrs = {}
     last_attr_end = 0
 
-    # Use a single regex that handles both quote types
-    for match in re.finditer(r'([^\s]+)=(["\'])([^\2]*?)\2', content):
-        key = match.group(1)
-        value = match.group(3)
-        attrs[key] = value
+    for match in _EXTINF_ATTR_RE.finditer(content):
+        attrs[match.group(1).lower()] = match.group(3)
         last_attr_end = match.end()
 
     # Everything after the last attribute (skipping leading comma and whitespace) is the display name
@@ -479,13 +511,78 @@ def parse_extinf_line(line: str) -> dict:
         else:
             display_name = content.strip()
 
-    # Use tvg-name attribute if available; otherwise try tvc-guide-title, then fall back to display name.
-    name = get_case_insensitive_attr(attrs, "tvg-name", None)
-    if not name:
-        name = get_case_insensitive_attr(attrs, "tvc-guide-title", None)
-    if not name:
-        name = display_name
+    # Per the base #EXTINF spec, the comma text is the canonical human-readable title.
+    # Fall back to tvc-guide-title, then tvg-name (which some providers use as an EPG key,
+    # not a display label), and finally the raw content if everything else is empty.
+    name = display_name or attrs.get("tvc-guide-title") or attrs.get("tvg-name") or content.strip()
     return {"attributes": attrs, "display_name": display_name, "name": name}
+
+
+def iter_m3u_entries(lines):
+    """
+    Generator that yields fully-assembled M3U stream entries from raw lines.
+
+    Each yielded dict is guaranteed to contain a ``url`` key in addition to the
+    fields produced by :func:`parse_extinf_line` (``attributes``, ``display_name``,
+    ``name``).  Recognised extended-tag lines that appear *between* an ``#EXTINF``
+    and its URL are accumulated into the pending entry so they are available for
+    downstream processing:
+
+    - ``#EXTGRP`` — sets ``attributes["group-title"]`` when no ``group-title``
+      attribute was present on the ``#EXTINF`` line (explicit attribute wins).
+    - ``#EXTVLCOPT`` — stored as a list under the ``vlc_opts`` key.
+
+    Unknown directives (``#KODIPROP``, etc.) and blank lines are
+    silently skipped while keeping the pending entry intact.  A second ``#EXTINF``
+    before a URL discards the first entry with a warning.  A trailing ``#EXTINF``
+    at end-of-file with no URL is also discarded.
+
+    Adding support for a new directive requires only a new ``elif`` branch here;
+    no other code needs to change.
+    """
+    pending = None
+    pending_line_num = None
+    for line_num, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("#EXTINF"):
+            if pending is not None:
+                logger.warning(
+                    f"Line {pending_line_num}: #EXTINF had no URL (next #EXTINF at line {line_num}); "
+                    f"discarding entry: {list(pending['attributes'].items())[:3]}"
+                )
+            parsed = parse_extinf_line(line)
+            if parsed is None:
+                logger.warning(f"Line {line_num}: Failed to parse #EXTINF: {line[:200]}")
+            pending = parsed  # None if malformed; URL branch guards on `pending is not None`
+            pending_line_num = line_num
+
+        elif line.startswith("#EXTGRP:"):
+            # Only apply when group-title is absent — explicit attribute wins.
+            if pending is not None and "group-title" not in pending["attributes"]:
+                pending["attributes"]["group-title"] = line[len("#EXTGRP:"):].strip()
+            # else: #EXTGRP outside an entry, or group-title already set — silently skip
+
+        elif line.startswith("#EXTVLCOPT:"):
+            if pending is not None:
+                pending.setdefault("vlc_opts", []).append(line[len("#EXTVLCOPT:"):])
+            # else: #EXTVLCOPT outside an entry — silently skip
+
+        elif pending is not None and line.startswith(("http", "rtsp", "rtp", "udp")):
+            pending["url"] = normalize_stream_url(line) if line.startswith("udp") else line
+            yield pending
+            pending = None
+            pending_line_num = None
+
+        # else: unknown directive or bare content — skip, keeping pending intact
+
+    if pending is not None:
+        logger.warning(
+            f"Line {pending_line_num}: #EXTINF at end of file had no URL; "
+            f"discarding entry: {list(pending['attributes'].items())[:3]}"
+        )
 
 
 @shared_task
@@ -724,6 +821,14 @@ def collect_xc_streams(account_id, enabled_groups):
             # Filter streams based on enabled categories
             filtered_count = 0
             for stream in all_xc_streams:
+                # Fall back to a generated name if the provider returns null/empty
+                stream_name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                if not stream.get("name"):
+                    logger.warning(
+                        f"XC stream has null/empty name; using generated name '{stream_name}' "
+                        f"(stream_id={stream.get('stream_id', 'unknown')})"
+                    )
+
                 # Get the category_id for this stream
                 category_id = str(stream.get("category_id", ""))
 
@@ -733,7 +838,7 @@ def collect_xc_streams(account_id, enabled_groups):
 
                     # Convert XC stream to our standard format with all properties preserved
                     stream_data = {
-                        "name": stream["name"],
+                        "name": stream_name,
                         "url": xc_client.get_stream_url(stream["stream_id"]),
                         "attributes": {
                             "tvg-id": stream.get("epg_channel_id", ""),
@@ -817,7 +922,12 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                     )
 
                     for stream in streams:
-                        name = stream["name"]
+                        name = stream.get("name") or f"{account.name} - {stream.get('stream_id', 'Unknown')}"
+                        if not stream.get("name"):
+                            logger.warning(
+                                f"XC stream has null/empty name in category {group_name}; "
+                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
+                            )
                         raw_stream_id = stream.get("stream_id", "")
                         provider_stream_id = None
                         if raw_stream_id:
@@ -850,7 +960,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             "channel_group_id": int(group_id),
                             "stream_hash": stream_hash,
                             "custom_properties": stream,
-                            "is_adult": int(stream.get("is_adult", 0)) == 1,
+                            "is_adult": parse_is_adult(stream.get("is_adult", 0)),
                             "is_stale": False,
                             "stream_id": provider_stream_id,
                             "stream_chno": stream_chno,
@@ -977,6 +1087,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
     streams_to_update = []
     stream_hashes = {}
 
+    name_max_length = Stream._meta.get_field('name').max_length
+
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
         logger.debug(f"Using compiled filters: {[f[1].regex_pattern for f in compiled_filters]}")
@@ -988,6 +1100,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
             if url and len(url) > 4096:
                 logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
                 continue
+
+            # Truncate name if it exceeds the model field limit
+            if name and len(name) > name_max_length:
+                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {name[:80]}...")
+                name = name[:name_max_length]
 
             tvg_id, tvg_logo = get_case_insensitive_attr(
                 stream_info["attributes"], "tvg-id", ""
@@ -1067,8 +1184,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
                 "m3u_account": account,
                 "channel_group_id": int(groups.get(group_title)),
                 "stream_hash": stream_hash,
-                "custom_properties": stream_info["attributes"],
-                "is_adult": int(stream_info["attributes"].get("is_adult", 0)) == 1,
+                "custom_properties": {**stream_info["attributes"], "vlc_opts": stream_info["vlc_opts"]} if "vlc_opts" in stream_info else stream_info["attributes"],
+                "is_adult": parse_is_adult(stream_info["attributes"].get("is_adult", 0)),
                 "is_stale": False,
                 "stream_id": provider_stream_id,
                 "stream_chno": channel_num,
@@ -1145,13 +1262,11 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys):
 
     retval = f"M3U account: {account_id}, Batch processed: {len(streams_to_create)} created, {len(streams_to_update)} updated."
 
-    # Aggressive garbage collection
-    # del streams_to_create, streams_to_update, stream_hashes, existing_streams
-    # from core.utils import cleanup_memory
-    # cleanup_memory(log_usage=True, force_collection=True)
-
     # Clean up database connections for threading
     connections.close_all()
+
+    # Free batch data structures (reference-counted deallocation)
+    del streams_to_create, streams_to_update, stream_hashes, existing_streams
 
     return retval
 
@@ -1210,9 +1325,13 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
     if not acquire_task_lock("refresh_m3u_account_groups", account_id):
         return f"Task already running for account_id={account_id}.", None
 
+    lock_renewer = TaskLockRenewer("refresh_m3u_account_groups", account_id)
+    lock_renewer.start()
+
     try:
         account = M3UAccount.objects.get(id=account_id, is_active=True)
     except M3UAccount.DoesNotExist:
+        lock_renewer.stop()
         release_task_lock("refresh_m3u_account_groups", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive.", None
 
@@ -1238,6 +1357,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
+            lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
@@ -1250,6 +1370,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
+            lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
@@ -1359,6 +1480,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                                 status="error",
                                 error=error_msg,
                             )
+                            lock_renewer.stop()
                             release_task_lock("refresh_m3u_account_groups", account_id)
                             return error_msg, None
 
@@ -1397,6 +1519,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                             status="error",
                             error=error_msg,
                         )
+                        lock_renewer.stop()
                         release_task_lock("refresh_m3u_account_groups", account_id)
                         return error_msg, None
 
@@ -1413,6 +1536,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     status="error",
                     error=error_msg,
                 )
+                lock_renewer.stop()
                 release_task_lock("refresh_m3u_account_groups", account_id)
                 return error_msg, None
         except Exception as e:
@@ -1424,84 +1548,34 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
+            lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
     else:
-        # Here's the key change - use the success flag from fetch_m3u_lines
         lines, success = fetch_m3u_lines(account, use_cache)
         if not success:
             # If fetch failed, don't continue processing
+            lock_renewer.stop()
             release_task_lock("refresh_m3u_account_groups", account_id)
             return f"Failed to fetch M3U data for account_id={account_id}.", None
 
         # Log basic file structure for debugging
         logger.debug(f"Processing {len(lines)} lines from M3U file")
 
-        line_count = 0
-        extinf_count = 0
-        url_count = 0
         valid_stream_count = 0
-        problematic_lines = []
 
-        for line_index, line in enumerate(lines):
-            line_count += 1
-            line = line.strip()
+        for entry in iter_m3u_entries(lines):
+            valid_stream_count += 1
+            group_title_attr = get_case_insensitive_attr(entry["attributes"], "group-title", "")
+            if group_title_attr and group_title_attr not in groups:
+                logger.debug(f"Found new group for M3U account {account_id}: '{group_title_attr}'")
+                groups[group_title_attr] = {}
+            extinf_data.append(entry)
 
-            if line.startswith("#EXTINF"):
-                extinf_count += 1
-                parsed = parse_extinf_line(line)
-                if parsed:
-                    group_title_attr = get_case_insensitive_attr(
-                        parsed["attributes"], "group-title", ""
-                    )
-                    if group_title_attr:
-                        group_name = group_title_attr
-                        # Log new groups as they're discovered
-                        if group_name not in groups:
-                            logger.debug(
-                                f"Found new group for M3U account {account_id}: '{group_name}'"
-                            )
-                        groups[group_name] = {}
+            if valid_stream_count % 1000 == 0:
+                logger.debug(f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}")
 
-                    extinf_data.append(parsed)
-                else:
-                    # Log problematic EXTINF lines
-                    logger.warning(
-                        f"Failed to parse EXTINF at line {line_index+1}: {line[:200]}"
-                    )
-                    problematic_lines.append((line_index + 1, line[:200]))
-
-            elif extinf_data and (line.startswith("http") or line.startswith("rtsp") or line.startswith("rtp") or line.startswith("udp")):
-                url_count += 1
-                # Normalize UDP URLs only (e.g., remove VLC-specific @ prefix)
-                normalized_url = normalize_stream_url(line) if line.startswith("udp") else line
-                # Associate URL with the last EXTINF line
-                extinf_data[-1]["url"] = normalized_url
-                valid_stream_count += 1
-
-                # Periodically log progress for large files
-                if valid_stream_count % 1000 == 0:
-                    logger.debug(
-                        f"Processed {valid_stream_count} valid streams so far for M3U account: {account_id}"
-                    )
-
-        # Log summary statistics
-        logger.info(
-            f"M3U parsing complete - Lines: {line_count}, EXTINF: {extinf_count}, URLs: {url_count}, Valid streams: {valid_stream_count}"
-        )
-
-        if problematic_lines:
-            logger.warning(
-                f"Found {len(problematic_lines)} problematic lines during parsing"
-            )
-            for i, (line_num, content) in enumerate(
-                problematic_lines[:10]
-            ):  # Log max 10 examples
-                logger.warning(f"Problematic line #{i+1} at line {line_num}: {content}")
-            if len(problematic_lines) > 10:
-                logger.warning(
-                    f"... and {len(problematic_lines) - 10} more problematic lines"
-                )
+        logger.info(f"M3U parsing complete - Valid streams: {valid_stream_count}")
 
         # Log group statistics
         logger.info(
@@ -1525,6 +1599,7 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
 
     process_groups(account, groups, scan_start_time)
 
+    lock_renewer.stop()
     release_task_lock("refresh_m3u_account_groups", account_id)
 
     if not full_refresh:
@@ -1648,6 +1723,13 @@ def sync_auto_channels(account_id, scan_start_time=None):
         channels_updated = 0
         channels_deleted = 0
 
+        # Get all channel numbers that are already in use by other channels (not auto-created by this account)
+        used_numbers = set(
+            Channel.objects.exclude(
+                auto_created=True, auto_created_by=account
+            ).values_list("channel_number", flat=True)
+        )
+
         for group_relation in auto_sync_groups:
             channel_group = group_relation.channel_group
             start_number = group_relation.auto_sync_channel_start or 1.0
@@ -1665,6 +1747,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
             stream_profile_id = None
             custom_logo_id = None
             custom_epg_id = None  # New option: select specific EPG source (takes priority over force_dummy_epg)
+            channel_numbering_mode = "fixed"  # Default mode
+            channel_numbering_fallback = 1  # Default fallback for provider mode
             if group_relation.custom_properties:
                 group_custom_props = group_relation.custom_properties
                 force_dummy_epg = group_custom_props.get("force_dummy_epg", False)
@@ -1682,6 +1766,8 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 )
                 stream_profile_id = group_custom_props.get("stream_profile_id")
                 custom_logo_id = group_custom_props.get("custom_logo_id")
+                channel_numbering_mode = group_custom_props.get("channel_numbering_mode", "fixed")
+                channel_numbering_fallback = group_custom_props.get("channel_numbering_fallback", 1)
 
             # Determine which group to use for created channels
             target_group = channel_group
@@ -1697,7 +1783,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     )
 
             logger.info(
-                f"Processing auto sync for group: {channel_group.name} (start: {start_number})"
+                f"Processing auto sync for group: {channel_group.name} (mode: {channel_numbering_mode}, start: {start_number})"
             )
 
             # Get all current streams in this group for this M3U account, filter out stale streams
@@ -1837,21 +1923,35 @@ def sync_auto_channels(account_id, scan_start_time=None):
             channels_to_renumber = []
             temp_channel_number = start_number
 
-            # Get all channel numbers that are already in use by other channels (not auto-created by this account)
-            used_numbers = set(
-                Channel.objects.exclude(
-                    auto_created=True, auto_created_by=account
-                ).values_list("channel_number", flat=True)
-            )
-
             for stream in current_streams:
                 if stream.id in existing_channel_map:
                     channel = existing_channel_map[stream.id]
 
-                    # Find next available number starting from temp_channel_number
-                    target_number = temp_channel_number
-                    while target_number in used_numbers:
-                        target_number += 1
+                    # Determine target number based on numbering mode
+                    if channel_numbering_mode == "provider":
+                        # Use provider number if available, otherwise use fallback with next available logic
+                        if stream.stream_chno is not None:
+                            target_number = stream.stream_chno
+                            # If provider number is already used, find next available
+                            if target_number in used_numbers:
+                                target_number = channel_numbering_fallback
+                                while target_number in used_numbers:
+                                    target_number += 1
+                        else:
+                            # No provider number, use fallback and find next available
+                            target_number = channel_numbering_fallback
+                            while target_number in used_numbers:
+                                target_number += 1
+                    elif channel_numbering_mode == "next_available":
+                        # Find next available starting from 1
+                        target_number = 1
+                        while target_number in used_numbers:
+                            target_number += 1
+                    else:  # fixed mode (default)
+                        # Find next available number starting from temp_channel_number
+                        target_number = temp_channel_number
+                        while target_number in used_numbers:
+                            target_number += 1
 
                     # Add this number to used_numbers so we don't reuse it in this batch
                     used_numbers.add(target_number)
@@ -1863,9 +1963,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             f"Will renumber channel '{channel.name}' to {target_number}"
                         )
 
-                    temp_channel_number += 1.0
-                    if temp_channel_number % 1 != 0:  # Has decimal
-                        temp_channel_number = int(temp_channel_number) + 1.0
+                    # Only increment temp_channel_number in fixed mode
+                    if channel_numbering_mode == "fixed":
+                        temp_channel_number += 1.0
+                        if temp_channel_number % 1 != 0:  # Has decimal
+                            temp_channel_number = int(temp_channel_number) + 1.0
 
             # Bulk update channel numbers if any need renumbering
             if channels_to_renumber:
@@ -2060,10 +2162,31 @@ def sync_auto_channels(account_id, scan_start_time=None):
 
                     else:
                         # Create new channel
-                        # Find next available channel number
-                        target_number = current_channel_number
-                        while target_number in used_numbers:
-                            target_number += 1
+                        # Determine channel number based on numbering mode
+                        if channel_numbering_mode == "provider":
+                            # Use provider number if available, otherwise use fallback with next available logic
+                            if stream.stream_chno is not None:
+                                target_number = stream.stream_chno
+                                # If provider number is already used, find next available from fallback
+                                if target_number in used_numbers:
+                                    target_number = channel_numbering_fallback
+                                    while target_number in used_numbers:
+                                        target_number += 1
+                            else:
+                                # No provider number, use fallback and find next available
+                                target_number = channel_numbering_fallback
+                                while target_number in used_numbers:
+                                    target_number += 1
+                        elif channel_numbering_mode == "next_available":
+                            # Find next available starting from 1
+                            target_number = 1
+                            while target_number in used_numbers:
+                                target_number += 1
+                        else:  # fixed mode (default)
+                            # Find next available channel number starting from current_channel_number
+                            target_number = current_channel_number
+                            while target_number in used_numbers:
+                                target_number += 1
 
                         # Add this number to used_numbers
                         used_numbers.add(target_number)
@@ -2190,10 +2313,11 @@ def sync_auto_channels(account_id, scan_start_time=None):
                             f"Created auto channel: {channel.channel_number} - {channel.name}"
                         )
 
-                    # Increment channel number for next iteration
-                    current_channel_number += 1.0
-                    if current_channel_number % 1 != 0:  # Has decimal
-                        current_channel_number = int(current_channel_number) + 1.0
+                    # Increment channel number for next iteration (only in fixed mode)
+                    if channel_numbering_mode == "fixed":
+                        current_channel_number += 1.0
+                        if current_channel_number % 1 != 0:  # Has decimal
+                            current_channel_number = int(current_channel_number) + 1.0
 
                 except Exception as e:
                     logger.error(
@@ -2293,11 +2417,13 @@ def get_transformed_credentials(account, profile=None):
         # Apply profile-specific transformations if profile is provided
         if profile and profile.search_pattern and profile.replace_pattern:
             try:
-                # Handle backreferences in the replacement pattern
-                safe_replace_pattern = re.sub(r'\$(\d+)', r'\\\1', profile.replace_pattern)
+                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
+                # regex module accepts JS-style (?<name>...) named groups natively
+                safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
+                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
 
                 # Apply transformation to the complete URL
-                transformed_complete_url = re.sub(profile.search_pattern, safe_replace_pattern, complete_url)
+                transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
                 logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
 
                 # Extract components from the transformed URL
@@ -2305,10 +2431,12 @@ def get_transformed_credentials(account, profile=None):
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
                 path_parts = [part for part in parsed_url.path.split('/') if part]
 
-                if len(path_parts) >= 2:
-                    # Extract username and password from path
-                    transformed_username = path_parts[1]
-                    transformed_password = path_parts[2]
+                if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
+                    # Extract username and password from the known structure:
+                    # .../{live}/{username}/{password}/1234.ts
+                    # Using negative indices so sub-paths in the server URL don't shift extraction
+                    transformed_username = path_parts[-3]
+                    transformed_password = path_parts[-2]
 
                     # Rebuild server URL without the username/password path
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -2542,12 +2670,28 @@ def refresh_account_info(profile_id):
 
         release_task_lock("refresh_account_info", profile_id)
         return error_msg
-@shared_task
+@shared_task(time_limit=3600, soft_time_limit=3500)
 def refresh_single_m3u_account(account_id):
     """Splits M3U processing into chunks and dispatches them as parallel tasks."""
     if not acquire_task_lock("refresh_single_m3u_account", account_id):
         return f"Task already running for account_id={account_id}."
 
+    # Keep the lock alive while this long-running task is working.
+    # Without renewal, the 300s lock TTL can expire during large
+    # downloads/parses, allowing duplicate tasks to start.
+    lock_renewer = TaskLockRenewer("refresh_single_m3u_account", account_id)
+    lock_renewer.start()
+
+    try:
+        return _refresh_single_m3u_account_impl(account_id)
+    finally:
+        # Guaranteed cleanup on all exit paths (success, exception, early return)
+        lock_renewer.stop()
+        release_task_lock("refresh_single_m3u_account", account_id)
+
+
+def _refresh_single_m3u_account_impl(account_id):
+    """Implementation of M3U account refresh with guaranteed memory cleanup."""
     # Record start time
     refresh_start_timestamp = timezone.now()  # For the cleanup function
     start_time = time.time()  # For tracking elapsed time as float
@@ -2559,7 +2703,6 @@ def refresh_single_m3u_account(account_id):
         account = M3UAccount.objects.get(id=account_id, is_active=True)
         if not account.is_active:
             logger.debug(f"Account {account_id} is not active, skipping.")
-            release_task_lock("refresh_single_m3u_account", account_id)
             return
 
         # Set status to fetching
@@ -2588,7 +2731,6 @@ def refresh_single_m3u_account(account_id):
         else:
             logger.debug(f"No orphaned task found for M3U account {account_id}")
 
-        release_task_lock("refresh_single_m3u_account", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive, task cleaned up"
 
     # Fetch M3U lines and handle potential issues
@@ -2603,6 +2745,7 @@ def refresh_single_m3u_account(account_id):
 
             extinf_data = data["extinf_data"]
             groups = data["groups"]
+            del data  # Free top-level dict; extinf_data/groups retain their references
         except json.JSONDecodeError as e:
             # Handle corrupted JSON file
             logger.error(
@@ -2638,7 +2781,6 @@ def refresh_single_m3u_account(account_id):
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                release_task_lock("refresh_single_m3u_account", account_id)
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -2671,7 +2813,6 @@ def refresh_single_m3u_account(account_id):
                 status="error",
                 error=f"Error refreshing M3U groups: {str(e)}",
             )
-            release_task_lock("refresh_single_m3u_account", account_id)
             return "Failed to update m3u account"
 
     # Only proceed with parsing if we actually have data and no errors were encountered
@@ -2694,7 +2835,6 @@ def refresh_single_m3u_account(account_id):
             status="error",
             error="No data available for processing",
         )
-        release_task_lock("refresh_single_m3u_account", account_id)
         return "Failed to update m3u account, no data available"
 
     hash_keys = CoreSettings.get_m3u_hash_key().split(",")
@@ -2839,6 +2979,9 @@ def refresh_single_m3u_account(account_id):
                 ]
 
                 logger.info(f"Processing {len(all_xc_streams)} XC streams in {len(batches)} batches")
+
+                # Free the original list; batches hold independent sliced copies
+                del all_xc_streams
 
                 # Use threading for XC stream processing - now with consistent batch sizes
                 max_workers = min(4, len(batches))
@@ -3000,31 +3143,38 @@ def refresh_single_m3u_account(account_id):
 
     except Exception as e:
         logger.error(f"Error processing M3U for account {account_id}: {str(e)}")
-        account.status = M3UAccount.Status.ERROR
-        account.last_message = f"Error processing M3U: {str(e)}"
-        account.save(update_fields=["status", "last_message"])
+        try:
+            account.status = M3UAccount.Status.ERROR
+            account.last_message = f"Error processing M3U: {str(e)}"
+            account.save(update_fields=["status", "last_message"])
+        except Exception:
+            logger.debug(f"Failed to update account {account_id} status during error handling")
         raise  # Re-raise the exception for Celery to handle
+    finally:
+        # Free large data structures regardless of success or failure
+        if 'existing_groups' in locals():
+            del existing_groups
+        if 'extinf_data' in locals():
+            del extinf_data
+        if 'groups' in locals():
+            del groups
+        if 'batches' in locals():
+            del batches
+        if 'all_xc_streams' in locals():
+            del all_xc_streams
+        if 'data' in locals():
+            del data
+        if 'filtered_groups' in locals():
+            del filtered_groups
+        if 'channel_group_relationships' in locals():
+            del channel_group_relationships
 
-    release_task_lock("refresh_single_m3u_account", account_id)
-
-    # Aggressive garbage collection
-    # Only delete variables if they exist
-    if 'existing_groups' in locals():
-        del existing_groups
-    if 'extinf_data' in locals():
-        del extinf_data
-    if 'groups' in locals():
-        del groups
-    if 'batches' in locals():
-        del batches
-
-    from core.utils import cleanup_memory
-
-    cleanup_memory(log_usage=True, force_collection=True)
-
-    # Clean up cache file since we've fully processed it
-    if os.path.exists(cache_path):
-        os.remove(cache_path)
+        # Remove cache file after processing (success or failure)
+        cache_path = os.path.join(m3u_dir, f"{account_id}.json")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
 
     return f"Dispatched jobs complete."
 
@@ -3055,3 +3205,163 @@ def send_m3u_update(account_id, action, progress, **kwargs):
 
     # Explicitly clear data reference to help garbage collection
     data = None
+
+
+def evaluate_profile_expiration_notification(profile):
+    """
+    Evaluate a single M3UAccountProfile's expiration date and create, update,
+    or delete the corresponding SystemNotification accordingly.
+
+    Returns the notification key that should remain active (warning or expired),
+    or None if the profile is not expiring soon and any stale notifications were removed.
+    This return value is used by the bulk task to track active keys for stale cleanup.
+    """
+    from core.models import SystemNotification
+    from core.utils import send_websocket_notification, send_notification_dismissed
+
+    exp = profile.exp_date
+    if not exp:
+        return None
+
+    now = timezone.now()
+    warning_threshold = now + timezone.timedelta(days=7)
+    warning_key = f"xc-exp-warning-{profile.id}"
+    expired_key = f"xc-exp-expired-{profile.id}"
+
+    if exp <= now:
+        # Already expired — delete warning, create/update expired notification
+        deleted_warning = list(
+            SystemNotification.objects.filter(notification_key=warning_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=warning_key).delete()
+        for key in deleted_warning:
+            send_notification_dismissed(key)
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=expired_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.HIGH,
+                "title": f"Account Expired: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" has expired '
+                    f"(expired {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return expired_key
+
+    elif exp <= warning_threshold:
+        # Expiring within 7 days — delete expired notification, create/update warning
+        deleted_expired = list(
+            SystemNotification.objects.filter(notification_key=expired_key)
+            .values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(notification_key=expired_key).delete()
+        for key in deleted_expired:
+            send_notification_dismissed(key)
+
+        days_left = (exp - now).days
+        if days_left == 0:
+            expires_in_str = "today"
+        elif days_left == 1:
+            expires_in_str = "in 1 day"
+        else:
+            expires_in_str = f"in {days_left} days"
+
+        notification, created = SystemNotification.objects.update_or_create(
+            notification_key=warning_key,
+            defaults={
+                "notification_type": SystemNotification.NotificationType.WARNING,
+                "priority": SystemNotification.Priority.NORMAL,
+                "title": f"Account Expiring: {profile.name}",
+                "message": (
+                    f'Profile "{profile.name}" on M3U account '
+                    f'"{profile.m3u_account.name}" expires {expires_in_str} '
+                    f"(expires {exp.strftime('%Y-%m-%d %H:%M UTC')})."
+                ),
+                "action_data": {
+                    "profile_id": profile.id,
+                    "account_id": profile.m3u_account.id,
+                    "account_name": profile.m3u_account.name,
+                    "profile_name": profile.name,
+                    "exp_date": exp.isoformat(),
+                },
+                "is_active": True,
+                "admin_only": True,
+            },
+        )
+        send_websocket_notification(notification)
+        return warning_key
+
+    else:
+        # Not expiring soon — delete any stale notifications
+        deleted_keys = list(
+            SystemNotification.objects.filter(
+                notification_key__in=[warning_key, expired_key]
+            ).values_list("notification_key", flat=True)
+        )
+        SystemNotification.objects.filter(
+            notification_key__in=[warning_key, expired_key]
+        ).delete()
+        for key in deleted_keys:
+            send_notification_dismissed(key)
+        return None
+
+
+@shared_task
+def check_account_expirations():
+    """
+    Daily task: check all account profiles for upcoming expirations.
+    Creates/updates SystemNotifications for profiles expiring within 7 days.
+    Uses separate notification keys for warning vs expired so users can
+    dismiss the 7-day warning and still receive the expired notification.
+    """
+    from apps.m3u.models import M3UAccountProfile
+    from core.models import SystemNotification
+    from core.utils import send_notification_dismissed
+
+    # Find all active profiles with an exp_date that is set
+    expiring_profiles = (
+        M3UAccountProfile.objects.filter(
+            m3u_account__is_active=True,
+            is_active=True,
+            exp_date__isnull=False,
+        )
+        .select_related("m3u_account")
+    )
+
+    active_notification_keys = set()
+
+    for profile in expiring_profiles:
+        active_key = evaluate_profile_expiration_notification(profile)
+        if active_key:
+            active_notification_keys.add(active_key)
+
+    # Delete stale notifications for profiles whose expiration was extended
+    stale = SystemNotification.objects.filter(
+        is_active=True,
+    ).filter(
+        models.Q(notification_key__startswith="xc-exp-warning-") |
+        models.Q(notification_key__startswith="xc-exp-expired-")
+    ).exclude(notification_key__in=active_notification_keys)
+    stale_keys = list(stale.values_list("notification_key", flat=True))
+    stale.delete()
+    for key in stale_keys:
+        send_notification_dismissed(key)
+
+    logger.info(
+        f"Account expiration check complete: {len(active_notification_keys)} active notifications"
+    )

@@ -12,6 +12,8 @@ import { notifications } from '@mantine/notifications';
 import useChannelsTableStore from './store/channelsTable';
 import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
+import useConnectStore from './store/connect';
+import Limiter from './utils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -104,6 +106,41 @@ export default class API {
     return await useAuthStore.getState().getToken();
   }
 
+  /**
+   * Fetch all pages for a paginated endpoint when you already know totalCount.
+   * Builds page calls from totalCount and pageSize and aggregates all results.
+   * - endpoint: path like "/api/channels/channels/"
+   * - params: URLSearchParams for filters (will not be mutated)
+   * - totalCount: total number of matching items
+   * - pageSize: items per page
+   * Returns a flat array of results. Supports both array and {results, next} responses.
+   */
+  static async fetchAllByCount(endpoint, params, totalCount, pageSize = 200) {
+    const total = Number(totalCount) || 0;
+    const size = Number(pageSize) || 200;
+    const totalPages = Math.max(1, Math.ceil(total / size));
+
+    const requests = [];
+    for (let page = 1; page <= totalPages; page++) {
+      const q = new URLSearchParams(params || new URLSearchParams());
+      q.set('page', String(page));
+      q.set('page_size', String(size));
+      const url = `${host}${endpoint}?${q.toString()}`;
+      requests.push(request(url));
+    }
+
+    const responses = await Promise.all(requests);
+    const all = [];
+    for (const data of responses) {
+      if (Array.isArray(data)) {
+        all.push(...data);
+      } else if (Array.isArray(data?.results)) {
+        all.push(...data.results);
+      }
+    }
+    return all;
+  }
+
   static async fetchSuperUser() {
     try {
       return await request(`${host}/api/accounts/initialize-superuser/`, {
@@ -178,11 +215,59 @@ export default class API {
 
   static async getChannels() {
     try {
-      const response = await request(`${host}/api/channels/channels/`);
+      // Paginate through channels to avoid heavy single response
+      const pageSize = 200;
+      const allChannels = [];
 
-      return response;
+      // Get first page to get total results count
+      const data = await request(
+        `${host}/api/channels/channels/?page=1&page_size=${pageSize}`
+      );
+
+      // Backward compatibility: if endpoint returns an array (legacy), just return it
+      if (Array.isArray(data)) {
+        return data;
+      }
+
+      allChannels.concat(Array.isArray(data?.results) ? data.results : []);
+
+      const totalPages = Math.max(1, Math.ceil(data.count / pageSize)) - 1;
+      const apiCalls = [];
+      for (let page = 2; page <= totalPages; page++) {
+        apiCalls.push(
+          new Promise(async (resolve) => {
+            const response = await request(
+              `${host}/api/channels/channels/?page=${page}&page_size=${pageSize}`
+            );
+
+            return resolve(
+              Array.isArray(response?.results) ? response.results : []
+            );
+          })
+        );
+      }
+
+      const allResults = await Limiter.all(5, apiCalls);
+
+      return allResults;
     } catch (e) {
       errorNotification('Failed to retrieve channels', e);
+    }
+  }
+
+  /**
+   * Retrieve a lightweight summary of channels (id, name, logo_id,
+   * channel_number, uuid, epg_data_id, channel_group_id).
+   * Designed for the TV Guide where full channel data is not needed.
+   */
+  static async getChannelsSummary(params = new URLSearchParams()) {
+    try {
+      const url = `${host}/api/channels/channels/summary/?${params.toString()}`;
+      const data = await request(url);
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      errorNotification('Failed to retrieve channel summary', e);
+      return [];
     }
   }
 
@@ -224,6 +309,44 @@ export default class API {
       }
 
       errorNotification('Failed to fetch channels', e);
+    }
+  }
+
+  /**
+   * Retrieve channels matching the provided query params, paging until complete.
+   * Does NOT touch any table/store state; returns a plain array.
+   */
+  static async getChannelsForParams(params) {
+    try {
+      const pageSize = 200;
+      const query = new URLSearchParams(params);
+      let page = 1;
+      let all = [];
+
+      while (true) {
+        query.set('page', String(page));
+        query.set('page_size', String(pageSize));
+        const url = `${host}/api/channels/channels/?${query.toString()}`;
+        const data = await request(url);
+
+        if (Array.isArray(data)) {
+          // Legacy array response
+          all = data;
+          break;
+        }
+
+        const results = Array.isArray(data?.results) ? data.results : [];
+        all = all.concat(results);
+
+        const hasMore = Boolean(data?.next);
+        if (!hasMore || results.length === 0) break;
+        page += 1;
+      }
+
+      return all;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels for query', e);
+      throw e;
     }
   }
 
@@ -276,7 +399,7 @@ export default class API {
     }
   }
 
-  static async getAllChannelIds(params) {
+  static async getAllChannelIds(params = new URLSearchParams()) {
     try {
       const response = await request(
         `${host}/api/channels/channels/ids/?${params.toString()}`
@@ -514,6 +637,77 @@ export default class API {
     }
   }
 
+  /**
+   * PATCHes only the stream order for a channel
+   * without triggering requeryStreams or requeryChannels. The caller is
+   * responsible for optimistic UI updates.
+   */
+  static async reorderChannelStreams(channelId, streamIds) {
+    try {
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: streamIds },
+      });
+      // Update the channelsTable store in-place with the new stream order
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        // Reorder the existing stream objects to match streamIds
+        const streamMap = new Map(channel.streams.map((s) => [s.id, s]));
+        const reorderedStreams = streamIds
+          .map((id) => streamMap.get(id))
+          .filter(Boolean);
+        store.updateChannel({ ...channel, streams: reorderedStreams });
+      }
+    } catch (e) {
+      errorNotification('Failed to reorder streams', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
+    }
+  }
+
+  /**
+   * PATCHes the channel with the
+   * combined stream list and updates the channelsTable store in-place
+   * using the stream objects the caller already has. Skips requeryStreams
+   * (stream data doesn't change) and requeryChannels (we build the
+   * result locally).
+   *
+   * @param {number} channelId
+   * @param {Array} existingStreams - current channel.streams (full objects)
+   * @param {Array} newStreams      - stream objects to append
+   */
+  static async addStreamsToChannel(channelId, existingStreams, newStreams) {
+    try {
+      const existing = existingStreams || [];
+      // Deduplicate by ID, preserving order (existing first, new appended)
+      const seen = new Set(existing.map((s) => s.id));
+      const merged = [...existing];
+      for (const s of newStreams) {
+        if (!seen.has(s.id)) {
+          seen.add(s.id);
+          merged.push(s);
+        }
+      }
+
+      await request(`${host}/api/channels/channels/${channelId}/`, {
+        method: 'PATCH',
+        body: { id: channelId, streams: merged.map((s) => s.id) },
+      });
+
+      // Update the channelsTable store in-place with the merged streams
+      const store = useChannelsTableStore.getState();
+      const channel = store.channels.find((c) => c.id === channelId);
+      if (channel) {
+        store.updateChannel({ ...channel, streams: merged });
+      }
+    } catch (e) {
+      errorNotification('Failed to add streams to channel', e);
+      // On failure, requery to restore correct state
+      await API.requeryChannels();
+    }
+  }
+
   static async updateChannels(ids, values) {
     const body = [];
     for (const id of ids) {
@@ -562,6 +756,43 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channels', e);
+    }
+  }
+
+  // Server-side regex rename of channel names for selected IDs
+  static async bulkRegexRenameChannels(
+    channelIds,
+    find,
+    replace = '',
+    flags = 'g'
+  ) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/edit/bulk-regex/`,
+        {
+          method: 'POST',
+          body: {
+            channel_ids: channelIds,
+            find,
+            replace,
+            flags,
+          },
+        }
+      );
+
+      // Optional success notification
+      if (response?.success) {
+        notifications.show({
+          title: 'Channel Names Updated',
+          message: `Renamed ${response.updated_count} channel(s) via regex`,
+          color: 'green',
+          autoClose: 4000,
+        });
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to apply regex renames', e);
     }
   }
 
@@ -709,7 +940,6 @@ export default class API {
         useChannelsStore.getState().addChannel(response);
       }
 
-      await API.requeryStreams();
       return response;
     } catch (e) {
       errorNotification('Failed to create channel', e);
@@ -1033,6 +1263,7 @@ export default class API {
       if (values.file) {
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -1095,9 +1326,6 @@ export default class API {
       });
 
       usePlaylistsStore.getState().removePlaylists([id]);
-      // @TODO: MIGHT need to optimize this later if someone has thousands of channels
-      // but I'm feeling laze right now
-      // useChannelsStore.getState().fetchChannels();
     } catch (e) {
       errorNotification(`Failed to delete playlist ${id}`, e);
     }
@@ -1129,6 +1357,7 @@ export default class API {
 
         body = new FormData();
         for (const prop in values) {
+          if (values[prop] === null || values[prop] === undefined) continue;
           body.append(prop, values[prop]);
         }
       } else {
@@ -1157,7 +1386,6 @@ export default class API {
   static async getEPGs() {
     try {
       const response = await request(`${host}/api/epg/sources/`);
-
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve EPGs', e);
@@ -1174,11 +1402,11 @@ export default class API {
     }
   }
 
-  static async getCurrentPrograms(channelIds = null) {
+  static async getCurrentPrograms(channelUUIDs = null) {
     try {
       const response = await request(`${host}/api/epg/current-programs/`, {
         method: 'POST',
-        body: { channel_ids: channelIds },
+        body: { channel_uuids: channelUUIDs },
       });
 
       return response;
@@ -1389,6 +1617,16 @@ export default class API {
     }
   }
 
+  static async getProgramDetail(programId) {
+    try {
+      const response = await request(`${host}/api/epg/programs/${programId}/`);
+      return response;
+    } catch (e) {
+      console.warn('Failed to retrieve program detail', e);
+      return null;
+    }
+  }
+
   static async addM3UProfile(accountId, values) {
     try {
       const response = await request(
@@ -1434,9 +1672,7 @@ export default class API {
       });
 
       const playlist = await API.getPlaylist(accountId);
-      usePlaylistsStore
-        .getState()
-        .updateProfiles(playlist.id, playlist.profiles);
+      usePlaylistsStore.getState().updatePlaylist(playlist);
     } catch (e) {
       errorNotification(`Failed to update profile for account ${accountId}`, e);
     }
@@ -1743,26 +1979,28 @@ export default class API {
     }
   }
 
-  static async importPlugin(file) {
+  static async importPlugin(file, overwrite = false, silent = false) {
     try {
       const form = new FormData();
       form.append('file', file);
+      if (overwrite) form.append('overwrite', 'true');
       const response = await request(`${host}/api/plugins/plugins/import/`, {
         method: 'POST',
         body: form,
       });
       return response;
     } catch (e) {
-      // Show only the concise error message for plugin import
-      const msg =
-        (e?.body && (e.body.error || e.body.detail)) ||
-        e?.message ||
-        'Failed to import plugin';
-      notifications.show({
-        title: 'Import failed',
-        message: msg,
-        color: 'red',
-      });
+      if (!silent) {
+        const msg =
+          (e?.body && (e.body.error || e.body.detail)) ||
+          e?.message ||
+          'Failed to import plugin';
+        notifications.show({
+          title: 'Import failed',
+          message: msg,
+          color: 'red',
+        });
+      }
       throw e;
     }
   }
@@ -1824,6 +2062,130 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update plugin enabled state', e);
+    }
+  }
+
+  // Plugin Repos API
+  static async getPluginRepos() {
+    try {
+      return await request(`${host}/api/plugins/repos/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin repos', e);
+      return [];
+    }
+  }
+
+  static async addPluginRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to add plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async deletePluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      errorNotification('Failed to delete plugin repo', e);
+      throw e;
+    }
+  }
+
+  static async updatePluginRepo(id, data) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update plugin repo', e);
+    }
+  }
+
+  static async refreshPluginRepo(id) {
+    try {
+      return await request(`${host}/api/plugins/repos/${id}/refresh/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to refresh plugin repo', e);
+    }
+  }
+
+  static async getAvailablePlugins() {
+    try {
+      const response = await request(`${host}/api/plugins/repos/available/`);
+      return response.plugins || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve available plugins', e);
+      return [];
+    }
+  }
+
+  static async getPluginDetailManifest(repoId, manifestUrl) {
+    try {
+      const response = await request(
+        `${host}/api/plugins/repos/plugin-detail/`,
+        {
+          method: 'POST',
+          body: { repo_id: repoId, manifest_url: manifestUrl },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve plugin details', e);
+      return null;
+    }
+  }
+
+  static async getPluginRepoSettings() {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve repo settings', e);
+      return null;
+    }
+  }
+
+  static async updatePluginRepoSettings(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/settings/`, {
+        method: 'PUT',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to update repo settings', e);
+      return null;
+    }
+  }
+
+  static async installPluginFromRepo(data) {
+    try {
+      return await request(`${host}/api/plugins/repos/install/`, {
+        method: 'POST',
+        body: data,
+      });
+    } catch (e) {
+      errorNotification('Failed to install plugin', e);
+      return null;
+    }
+  }
+
+  static async previewPluginRepo(url, publicKey) {
+    try {
+      return await request(`${host}/api/plugins/repos/preview/`, {
+        method: 'POST',
+        body: { url, public_key: publicKey || '' },
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -2506,6 +2868,58 @@ export default class API {
     }
   }
 
+  static async stopRecording(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/stop/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to stop recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async extendRecording(id, extraMinutes) {
+    try {
+      const resp = await request(
+        `${host}/api/channels/recordings/${id}/extend/`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ extra_minutes: extraMinutes }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      return resp;
+    } catch (e) {
+      errorNotification(`Failed to extend recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async refreshArtwork(id) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/refresh-artwork/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification(`Failed to refresh artwork for recording ${id}`, e);
+      throw e;
+    }
+  }
+
+  static async updateRecordingMetadata(id, { title, description }) {
+    try {
+      await request(`${host}/api/channels/recordings/${id}/update-metadata/`, {
+        method: 'POST',
+        body: JSON.stringify({ title, description }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) {
+      errorNotification(`Failed to update recording metadata`, e);
+      throw e;
+    }
+  }
+
   static async runComskip(recordingId) {
     try {
       const resp = await request(
@@ -2668,8 +3082,6 @@ export default class API {
           color: 'blue',
         });
 
-        // First fetch the complete channel data
-        await useChannelsStore.getState().fetchChannels();
         // Then refresh the current table view
         this.requeryChannels();
       }
@@ -2696,6 +3108,13 @@ export default class API {
     return await request(`${host}/api/accounts/users/me/`);
   }
 
+  static async updateMe(data) {
+    return await request(`${host}/api/accounts/users/me/`, {
+      method: 'PATCH',
+      body: data,
+    });
+  }
+
   static async getUsers() {
     try {
       const response = await request(`${host}/api/accounts/users/`);
@@ -2720,12 +3139,71 @@ export default class API {
     }
   }
 
-  static async updateUser(id, body) {
+  static async generateApiKey({ user_id = null, name = '' } = {}) {
     try {
-      const response = await request(`${host}/api/accounts/users/${id}/`, {
-        method: 'PATCH',
+      const body = {};
+      if (user_id) body.user_id = user_id;
+      if (name) body.name = name;
+
+      const response = await request(
+        `${host}/api/accounts/api-keys/generate/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to generate API key', e);
+    }
+  }
+
+  static async revokeApiKey({ user_id = null } = {}) {
+    try {
+      const body = {};
+      if (user_id) {
+        body.user_id = user_id;
+      }
+
+      const response = await request(`${host}/api/accounts/api-keys/revoke/`, {
+        method: 'POST',
         body,
       });
+
+      // If the backend returned an updated user, refresh the users store
+      try {
+        if (response && response.user) {
+          useUsersStore.getState().updateUser(response.user);
+        }
+      } catch (e) {
+        // ignore store update errors
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to revoke API key', e);
+    }
+  }
+
+  static async updateUser(id, body, self = false) {
+    try {
+      const response = await request(
+        `${host}/api/accounts/users/${self ? 'me' : id}/`,
+        {
+          method: 'PATCH',
+          body,
+        }
+      );
 
       useUsersStore.getState().updateUser(response);
 
@@ -2780,6 +3258,23 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to retrieve streams by IDs', e);
       throw e; // Re-throw to allow proper error handling in calling code
+    }
+  }
+
+  static async getChannelsByUUIDs(uuids) {
+    try {
+      // Use POST for large lists
+      const response = await request(
+        `${host}/api/channels/channels/by-uuids/`,
+        {
+          method: 'POST',
+          body: { uuids },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve channels by UUIDs', e);
+      throw e;
     }
   }
 
@@ -2914,21 +3409,6 @@ export default class API {
     }
   }
 
-  static async updateVODPosition(vodUuid, clientId, position) {
-    try {
-      const response = await request(
-        `${host}/proxy/vod/stream/${vodUuid}/position/`,
-        {
-          method: 'POST',
-          body: { client_id: clientId, position },
-        }
-      );
-      return response;
-    } catch (e) {
-      errorNotification('Failed to update playback position', e);
-    }
-  }
-
   static async getSystemEvents(limit = 100, offset = 0, eventType = null) {
     try {
       const params = new URLSearchParams();
@@ -3044,6 +3524,126 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to dismiss all notifications', e);
+    }
+  }
+
+  static async getConnectIntegrations() {
+    try {
+      return await request(`${host}/api/connect/integrations/`);
+    } catch (e) {
+      errorNotification('Failed to fetch connect integrations', e);
+    }
+  }
+
+  static async createConnectIntegration(values) {
+    try {
+      const response = await request(`${host}/api/connect/integrations/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      useConnectStore.getState().addIntegration(response);
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create integration', e);
+    }
+  }
+
+  static async updateConnectIntegration(id, values) {
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${id}/`,
+        {
+          method: 'PUT',
+          body: values,
+        }
+      );
+
+      if (response.id) {
+        useConnectStore.getState().updateIntegration(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update integration', e);
+    }
+  }
+
+  static async deleteConnectIntegration(id) {
+    try {
+      await request(`${host}/api/connect/integrations/${id}/`, {
+        method: 'DELETE',
+      });
+
+      useConnectStore.getState().removeIntegration(id);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to delete integration', e);
+      throw e;
+    }
+  }
+
+  static async createConnectSubscription(values) {
+    try {
+      await request(`${host}/api/connect/subscriptions/`, {
+        method: 'POST',
+        body: values,
+      });
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to create subscription', e);
+    }
+  }
+
+  static async listConnectSubscriptions(integrationId) {
+    try {
+      return await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch subscriptions', e);
+    }
+  }
+
+  static async setConnectSubscriptions(integrationId, subscriptions) {
+    // subscriptions: [{ event, enabled, payload_template }]
+    console.log(subscriptions);
+    try {
+      const response = await request(
+        `${host}/api/connect/integrations/${integrationId}/subscriptions/set/`,
+        {
+          method: 'PUT',
+          body: subscriptions,
+        }
+      );
+
+      useConnectStore
+        .getState()
+        .updateIntegrationSubscriptions(integrationId, response);
+
+      return true;
+    } catch (e) {
+      errorNotification('Failed to set subscriptions', e);
+      throw e;
+    }
+  }
+
+  static async getConnectLogs(params = {}) {
+    try {
+      const search = new URLSearchParams();
+      if (params.page) search.set('page', params.page);
+      if (params.page_size) search.set('page_size', params.page_size);
+      if (params.type) search.set('type', params.type);
+      if (params.integration) search.set('integration', params.integration);
+
+      return await request(
+        `${host}/api/connect/logs/${search.toString() ? `?${search.toString()}` : ''}`
+      );
+    } catch (e) {
+      errorNotification('Failed to fetch connect logs', e);
     }
   }
 }

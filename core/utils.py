@@ -3,6 +3,7 @@ import logging
 import time
 import os
 import threading
+from pathlib import Path
 import re
 from django.conf import settings
 from redis.exceptions import ConnectionError, TimeoutError
@@ -12,6 +13,8 @@ from channels.layers import get_channel_layer
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 import gc
+
+_REDIS_TLS_HINT = " (TLS is enabled — verify certificate paths and that Redis is configured for TLS)"
 
 logger = logging.getLogger(__name__)
 
@@ -43,103 +46,115 @@ def natural_sort_key(text):
 
 class RedisClient:
     _client = None
+    _buffer = None
     _pubsub_client = None
 
     @classmethod
-    def get_client(cls, max_retries=5, retry_interval=1):
-        if cls._client is None:
-            retry_count = 0
-            while retry_count < max_retries:
+    def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                # Get connection parameters from settings or environment
+                redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+                redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+                redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+                redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+                redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+
+                # Use standardized settings
+                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
+                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
+                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+
+                # TLS params from settings (empty dict when TLS is disabled)
+                ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
+                # Create Redis client with better defaults
+                client = redis.Redis(
+                    host=redis_host,
+                    port=redis_port,
+                    db=redis_db,
+                    password=redis_password if redis_password else None,
+                    username=redis_user if redis_user else None,
+                    socket_timeout=socket_timeout,
+                    socket_connect_timeout=socket_connect_timeout,
+                    socket_keepalive=socket_keepalive,
+                    health_check_interval=health_check_interval,
+                    retry_on_timeout=retry_on_timeout,
+                    decode_responses=decode_responses,
+                    **ssl_params
+                )
+
+                # Validate connection with ping
+                client.ping()
+
+                # Disable persistence on first connection - improves performance
+                # Only try to disable if not in a read-only environment
                 try:
-                    # Get connection parameters from settings or environment
-                    redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
-                    redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
-                    redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+                    client.config_set('save', '')  # Disable RDB snapshots
+                    client.config_set('appendonly', 'no')  # Disable AOF logging
 
-                    # Use standardized settings
-                    socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+                    # Disable protected mode when in debug mode
+                    if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
+                        client.config_set('protected-mode', 'no')  # Disable protected mode in debug
+                        logger.warning("Redis protected mode disabled for debug environment")
 
-                    # Create Redis client with better defaults
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=redis_password if redis_password else None,
-                        username=redis_user if redis_user else None,
-                        socket_timeout=socket_timeout,
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
-                    )
-
-                    # Validate connection with ping
-                    client.ping()
-                    client.flushdb()
-
-                    # Disable persistence on first connection - improves performance
-                    # Only try to disable if not in a read-only environment
-                    try:
-                        client.config_set('save', '')  # Disable RDB snapshots
-                        client.config_set('appendonly', 'no')  # Disable AOF logging
-
-                        # Set optimal memory settings with environment variable support
-                        # Get max memory from environment or use a larger default (512MB instead of 256MB)
-                        #max_memory = os.environ.get('REDIS_MAX_MEMORY', '512mb')
-                        #eviction_policy = os.environ.get('REDIS_EVICTION_POLICY', 'allkeys-lru')
-
-                        # Apply memory settings
-                        #client.config_set('maxmemory-policy', eviction_policy)
-                        #client.config_set('maxmemory', max_memory)
-
-                        #logger.info(f"Redis configured with maxmemory={max_memory}, policy={eviction_policy}")
-
-                        # Disable protected mode when in debug mode
-                        if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
-                            client.config_set('protected-mode', 'no')  # Disable protected mode in debug
-                            logger.warning("Redis protected mode disabled for debug environment")
-
-                        logger.trace("Redis persistence disabled for better performance")
-                    except redis.exceptions.ResponseError as e:
-                        # Improve error handling for Redis configuration errors
-                        if "OOM" in str(e):
-                            logger.error(f"Redis OOM during configuration: {e}")
-                            # Try to increase maxmemory as an emergency measure
-                            try:
-                                client.config_set('maxmemory', '768mb')
-                                logger.warning("Applied emergency Redis memory increase to 768MB")
-                            except:
-                                pass
-                        else:
-                            logger.error(f"Redis configuration error: {e}")
-
-                    logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
-
-                    cls._client = client
-                    break
-
-                except (ConnectionError, TimeoutError) as e:
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}")
-                        return None
+                    logger.trace("Redis persistence disabled for better performance")
+                except redis.exceptions.ResponseError as e:
+                    # Improve error handling for Redis configuration errors
+                    if "OOM" in str(e):
+                        logger.error(f"Redis OOM during configuration: {e}")
+                        # Try to increase maxmemory as an emergency measure
+                        try:
+                            client.config_set('maxmemory', '768mb')
+                            logger.warning("Applied emergency Redis memory increase to 768MB")
+                        except:
+                            pass
                     else:
-                        # Use exponential backoff for retries
-                        wait_time = retry_interval * (2 ** (retry_count - 1))
-                        logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
-                        time.sleep(wait_time)
+                        logger.error(f"Redis configuration error: {e}")
 
-                except Exception as e:
-                    logger.error(f"Unexpected error connecting to Redis: {e}")
+                logger.info(f"Connected to Redis at {redis_host}:{redis_port}/{redis_db}")
+
+                return client
+
+            except (ConnectionError, TimeoutError) as e:
+                retry_count += 1
+                _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+                if retry_count >= max_retries:
+                    logger.error(f"Failed to connect to Redis after {max_retries} attempts: {e}{_tls_hint}")
                     return None
+                else:
+                    # Use exponential backoff for retries
+                    wait_time = retry_interval * (2 ** (retry_count - 1))
+                    logger.warning(f"Redis connection failed. Retrying in {wait_time}s... ({retry_count}/{max_retries})")
+                    time.sleep(wait_time)
 
+            except Exception as e:
+                _tls_hint = ""
+                try:
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+                except NameError:
+                    pass
+                logger.error(f"Unexpected error connecting to Redis: {e}{_tls_hint}")
+                return None
+
+        return None
+
+    @classmethod
+    def get_client(cls, max_retries=5, retry_interval=1):
+        """Get Redis client optimized for non-binary data (decoded responses)"""
+        if cls._client is None:
+            cls._client = cls._init_client(decode_responses=True, max_retries=max_retries, retry_interval=retry_interval)
         return cls._client
+
+    @classmethod
+    def get_buffer(cls, max_retries=5, retry_interval=1):
+        """Get Redis client optimized for binary data (no decoding)"""
+        if cls._buffer is None:
+            cls._buffer = cls._init_client(decode_responses=False, max_retries=max_retries, retry_interval=retry_interval)
+        return cls._buffer
 
     @classmethod
     def get_pubsub_client(cls, max_retries=5, retry_interval=1):
@@ -162,6 +177,8 @@ class RedisClient:
                     health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
                     retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
 
+                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
                     # Create Redis client with PubSub-optimized settings - no timeout
                     client = redis.Redis(
                         host=redis_host,
@@ -173,7 +190,9 @@ class RedisClient:
                         socket_connect_timeout=socket_connect_timeout,
                         socket_keepalive=socket_keepalive,
                         health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout
+                        retry_on_timeout=retry_on_timeout,
+                        decode_responses=True,
+                        **ssl_params
                     )
 
                     # Validate connection with ping
@@ -186,8 +205,9 @@ class RedisClient:
 
                 except (ConnectionError, TimeoutError) as e:
                     retry_count += 1
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
                     if retry_count >= max_retries:
-                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}")
+                        logger.error(f"Failed to connect to Redis for PubSub after {max_retries} attempts: {e}{_tls_hint}")
                         return None
                     else:
                         # Use exponential backoff for retries
@@ -196,7 +216,8 @@ class RedisClient:
                         time.sleep(wait_time)
 
                 except Exception as e:
-                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}")
+                    _tls_hint = _REDIS_TLS_HINT if ssl_params else ""
+                    logger.error(f"Unexpected error connecting to Redis for PubSub: {e}{_tls_hint}")
                     return None
 
         return cls._pubsub_client
@@ -222,34 +243,107 @@ def release_task_lock(task_name, id):
     # Remove the lock
     redis_client.delete(lock_id)
 
+
+class TaskLockRenewer:
+    """Periodically renews a Redis task lock to prevent expiry during long-running tasks.
+
+    Use as a context manager after acquiring a lock:
+
+        if acquire_task_lock("my_task", task_id):
+            with TaskLockRenewer("my_task", task_id):
+                # ... long-running work ...
+            release_task_lock("my_task", task_id)
+
+    A daemon thread extends the lock TTL at regular intervals so that
+    slow downloads or large parsing jobs don't lose their lock mid-operation.
+    """
+
+    def __init__(self, task_name, id, ttl=300, renewal_interval=120):
+        self.task_name = task_name
+        self.id = id
+        self.ttl = ttl
+        self.renewal_interval = renewal_interval
+        self.lock_id = f"task_lock_{task_name}_{id}"
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _renew_loop(self):
+        """Background loop that extends the lock TTL until stopped."""
+        while not self._stop_event.wait(self.renewal_interval):
+            try:
+                redis_client = RedisClient.get_client()
+                if redis_client.exists(self.lock_id):
+                    redis_client.expire(self.lock_id, self.ttl)
+                    logger.debug(
+                        f"Renewed lock {self.lock_id} TTL to {self.ttl}s"
+                    )
+                else:
+                    # Lock was deleted externally (e.g. manual release) — stop renewing
+                    logger.warning(
+                        f"Lock {self.lock_id} no longer exists, stopping renewal"
+                    )
+                    break
+            except Exception as e:
+                logger.error(f"Error renewing lock {self.lock_id}: {e}")
+
+    def start(self):
+        """Start the background renewal thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._renew_loop, daemon=True,
+            name=f"lock-renew-{self.task_name}-{self.id}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self):
+        """Stop the renewal thread."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        self._thread = None
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+
 def send_websocket_update(group_name, event_type, data, collect_garbage=False):
     """
     Standardized function to send WebSocket updates with proper memory management.
 
-    Args:
-        group_name: The WebSocket group to send to (e.g. 'updates')
-        event_type: The type of message (e.g. 'update')
-        data: The data to send
-        collect_garbage: Whether to force garbage collection after sending
+    In uWSGI + gevent deployments, async_to_sync creates an asyncio event loop
+    whose native EpollSelector blocks the entire OS thread, freezing all gevent
+    greenlets in the worker.  To avoid this, the actual send is offloaded to a
+    real OS thread from gevent's native threadpool when monkey-patching is active.
     """
     channel_layer = get_channel_layer()
-    try:
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                'type': event_type,
-                'data': data
-            }
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send WebSocket update: {e}")
-    finally:
-        # Explicitly release references to help garbage collection
-        channel_layer = None
+    message = {'type': event_type, 'data': data}
 
-        # Force garbage collection if requested
-        if collect_garbage:
-            gc.collect()
+    def _do_send():
+        try:
+            async_to_sync(channel_layer.group_send)(group_name, message)
+        except Exception as e:
+            logger.warning(f"Failed to send WebSocket update: {e}")
+
+    try:
+        import gevent.monkey
+        if gevent.monkey.is_module_patched('threading'):
+            from gevent import get_hub
+            get_hub().threadpool.spawn(_do_send)
+            return
+    except Exception:
+        pass
+
+    # Not in a gevent-patched environment — call directly
+    _do_send()
+
+    if collect_garbage:
+        gc.collect()
 
 def send_websocket_event(event, success, data):
     """Acquire a lock to prevent concurrent task execution."""
@@ -338,6 +432,20 @@ def cleanup_memory(log_usage=False, force_collection=True):
             pass
     logger.trace("Memory cleanup complete for django")
 
+def safe_upload_path(filename: str, base_dir) -> str:
+    """Return a safe absolute path for an uploaded file within base_dir.
+
+    Strips all directory components from *filename* and verifies the resolved
+    path stays inside *base_dir*.  Raises ValueError on path traversal attempts.
+    """
+    safe_name = Path(filename).name
+    base = Path(base_dir).resolve()
+    file_path = (base / safe_name).resolve()
+    if not file_path.is_relative_to(base):
+        raise ValueError("Invalid filename.")
+    return str(file_path)
+
+
 def is_protected_path(file_path):
     """
     Determine if a file path is in a protected directory that shouldn't be deleted.
@@ -397,6 +505,83 @@ def validate_flexible_url(value):
         # If it doesn't match our flexible patterns, raise the original error
         raise ValidationError("Enter a valid URL.")
 
+def dispatch_event_system(event_type, channel_id=None, channel_name=None, **details):
+    try:
+        from apps.connect.utils import trigger_event
+        from apps.channels.models import Channel, Stream
+        from core.models import StreamProfile
+        from core.utils import RedisClient
+
+        payload = dict(details)
+
+        channel_obj = None
+        if channel_id:
+            try:
+                channel_obj = Channel.objects.get(uuid=channel_id)
+                payload["channel_name"] = channel_obj.name
+            except Exception:
+                payload["channel_name"] = channel_name or None
+        else:
+            payload["channel_name"] = channel_name or None
+
+        # Resolve current stream info
+        stream_id = details.get("stream_id")
+        stream_obj = None
+        if not stream_id and channel_obj:
+            try:
+                redis = RedisClient.get_client()
+                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                if sid:
+                    stream_id = int(sid)
+            except Exception:
+                stream_id = None
+
+        if stream_id:
+            try:
+                stream_obj = Stream.objects.get(id=stream_id)
+            except Exception:
+                stream_obj = None
+
+        # Populate stream details
+        payload["stream_name"] = getattr(stream_obj, "name", None)
+        payload["stream_url"] = getattr(stream_obj, "url", None)
+
+        # Channel URL: use stream URL as best-effort
+        payload["channel_url"] = payload.get("stream_url")
+
+        # Provider name from M3U account
+        provider_name = None
+        try:
+            if stream_obj and stream_obj.m3u_account:
+                provider_name = stream_obj.m3u_account.name
+        except Exception:
+            provider_name = None
+        payload["provider_name"] = provider_name
+
+        # Profile used
+        profile_used = None
+        try:
+            if stream_id:
+                redis = RedisClient.get_client()
+                pid = redis.get(f"stream_profile:{stream_id}")
+                if pid:
+                    profile = StreamProfile.objects.filter(id=int(pid)).first()
+                    profile_used = profile.name if profile else None
+        except Exception:
+            profile_used = None
+
+        payload["profile_used"] = profile_used
+
+        # remove empty keys
+        for k in list(payload.keys()):
+            if not payload[k]:
+                del payload[k]
+
+        trigger_event(event_type, payload)
+
+    except Exception as e:
+        # Don't fail main path if connect dispatch fails
+        pass
 
 def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     """
@@ -422,6 +607,9 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
             channel_name=channel_name,
             details=details
         )
+
+        # Trigger connect integrations for specific events
+        dispatch_event_system(event_type, channel_id=channel_id, channel_name=channel_name, **details)
 
         # Get max events from settings (default 100)
         try:
@@ -517,4 +705,3 @@ def send_notification_dismissed(notification_key):
         )
     except Exception as e:
         logger.error(f"Failed to send notification dismissed event: {e}")
-

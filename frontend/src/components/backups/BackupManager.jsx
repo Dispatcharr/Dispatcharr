@@ -33,6 +33,8 @@ import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import useWarningsStore from '../../store/warnings';
 import { CustomTable, useTable } from '../tables/CustomTable';
+import { validateCronExpression } from '../../utils/cronUtils';
+import ScheduleInput from '../forms/ScheduleInput';
 
 const RowActions = ({
   row,
@@ -113,95 +115,6 @@ function getDefaultTimeZone() {
   }
 }
 
-// Validate cron expression
-function validateCronExpression(expression) {
-  if (!expression || expression.trim() === '') {
-    return { valid: false, error: 'Cron expression is required' };
-  }
-
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) {
-    return {
-      valid: false,
-      error:
-        'Cron expression must have exactly 5 parts: minute hour day month weekday',
-    };
-  }
-
-  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
-
-  // Validate each part (allowing *, */N steps, ranges, lists, steps)
-  // Supports: *, */2, 5, 1-5, 1-5/2, 1,3,5, etc.
-  const cronPartRegex =
-    /^(\*\/\d+|\*|\d+(-\d+)?(\/\d+)?(,\d+(-\d+)?(\/\d+)?)*)$/;
-
-  if (!cronPartRegex.test(minute)) {
-    return {
-      valid: false,
-      error: 'Invalid minute field (0-59, *, or cron syntax)',
-    };
-  }
-  if (!cronPartRegex.test(hour)) {
-    return {
-      valid: false,
-      error: 'Invalid hour field (0-23, *, or cron syntax)',
-    };
-  }
-  if (!cronPartRegex.test(dayOfMonth)) {
-    return {
-      valid: false,
-      error: 'Invalid day field (1-31, *, or cron syntax)',
-    };
-  }
-  if (!cronPartRegex.test(month)) {
-    return {
-      valid: false,
-      error: 'Invalid month field (1-12, *, or cron syntax)',
-    };
-  }
-  if (!cronPartRegex.test(dayOfWeek)) {
-    return {
-      valid: false,
-      error: 'Invalid weekday field (0-6, *, or cron syntax)',
-    };
-  }
-
-  // Additional range validation for numeric values
-  const validateRange = (value, min, max, name) => {
-    // Skip if it's * or contains special characters
-    if (
-      value === '*' ||
-      value.includes('/') ||
-      value.includes('-') ||
-      value.includes(',')
-    ) {
-      return null;
-    }
-    const num = parseInt(value, 10);
-    if (isNaN(num) || num < min || num > max) {
-      return `${name} must be between ${min} and ${max}`;
-    }
-    return null;
-  };
-
-  const minuteError = validateRange(minute, 0, 59, 'Minute');
-  if (minuteError) return { valid: false, error: minuteError };
-
-  const hourError = validateRange(hour, 0, 23, 'Hour');
-  if (hourError) return { valid: false, error: hourError };
-
-  const dayError = validateRange(dayOfMonth, 1, 31, 'Day');
-  if (dayError) return { valid: false, error: dayError };
-
-  const monthError = validateRange(month, 1, 12, 'Month');
-  if (monthError) return { valid: false, error: monthError };
-
-  const weekdayError = validateRange(dayOfWeek, 0, 6, 'Weekday');
-  if (weekdayError) return { valid: false, error: weekdayError };
-
-  return { valid: true, error: null };
-}
-
 const DAYS_OF_WEEK = [
   { value: '0', label: 'Sunday' },
   { value: '1', label: 'Monday' },
@@ -262,8 +175,7 @@ export default function BackupManager() {
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleChanged, setScheduleChanged] = useState(false);
-  const [advancedMode, setAdvancedMode] = useState(false);
-  const [cronError, setCronError] = useState(null);
+  const [scheduleType, setScheduleType] = useState('interval');
 
   // For 12-hour display mode
   const [displayTime, setDisplayTime] = useState('3:00');
@@ -373,12 +285,8 @@ export default function BackupManager() {
     try {
       const settings = await API.getBackupSchedule();
 
-      // Check if using cron expression (advanced mode)
-      if (settings.cron_expression) {
-        setAdvancedMode(true);
-      }
-
       setSchedule(settings);
+      setScheduleType(settings.cron_expression ? 'cron' : 'interval');
 
       // Initialize 12-hour display values
       const { time, period } = to12Hour(settings.time);
@@ -398,25 +306,9 @@ export default function BackupManager() {
     loadSchedule();
   }, []);
 
-  // Validate cron expression when switching to advanced mode
-  useEffect(() => {
-    if (advancedMode && schedule.cron_expression) {
-      const validation = validateCronExpression(schedule.cron_expression);
-      setCronError(validation.valid ? null : validation.error);
-    } else {
-      setCronError(null);
-    }
-  }, [advancedMode, schedule.cron_expression]);
-
   const handleScheduleChange = (field, value) => {
     setSchedule((prev) => ({ ...prev, [field]: value }));
     setScheduleChanged(true);
-
-    // Validate cron expression if in advanced mode
-    if (field === 'cron_expression' && advancedMode) {
-      const validation = validateCronExpression(value);
-      setCronError(validation.valid ? null : validation.error);
-    }
   };
 
   // Handle time changes in 12-hour mode
@@ -442,9 +334,11 @@ export default function BackupManager() {
   const handleSaveSchedule = async () => {
     setScheduleSaving(true);
     try {
-      const scheduleToSave = advancedMode
-        ? schedule
-        : { ...schedule, cron_expression: '' };
+      // Clear cron_expression if not in cron mode
+      const scheduleToSave =
+        scheduleType === 'cron'
+          ? schedule
+          : { ...schedule, cron_expression: '' };
 
       const updated = await API.updateBackupSchedule(scheduleToSave);
       setSchedule(updated);
@@ -603,207 +497,161 @@ export default function BackupManager() {
           />
         </Group>
 
-        <Group justify="space-between">
-          <Text size="sm" fw={500}>
-            Advanced (Cron Expression)
-          </Text>
-          <Switch
-            checked={advancedMode}
-            onChange={(e) => setAdvancedMode(e.currentTarget.checked)}
-            label={advancedMode ? 'Enabled' : 'Disabled'}
-            disabled={!schedule.enabled}
-            size="sm"
-          />
-        </Group>
+        <ScheduleInput
+          scheduleType={scheduleType}
+          onScheduleTypeChange={(type) => {
+            setScheduleType(type);
+            if (type !== 'cron') {
+              handleScheduleChange('cron_expression', '');
+            }
+          }}
+          cronValue={schedule.cron_expression}
+          onCronChange={(expr) => handleScheduleChange('cron_expression', expr)}
+          disabled={!schedule.enabled}
+          switchToCronLabel="Use custom cron schedule"
+          switchToIntervalLabel="Use simple schedule"
+        >
+          {/* Simple mode: frequency / time / day selectors */}
+          <Stack gap="sm">
+            <Group align="flex-end" gap="xs" wrap="nowrap">
+              <Select
+                label="Frequency"
+                value={schedule.frequency}
+                onChange={(value) => handleScheduleChange('frequency', value)}
+                data={[
+                  { value: 'daily', label: 'Daily' },
+                  { value: 'weekly', label: 'Weekly' },
+                ]}
+                disabled={!schedule.enabled}
+              />
+              {schedule.frequency === 'weekly' && (
+                <Select
+                  label="Day"
+                  value={String(schedule.day_of_week)}
+                  onChange={(value) =>
+                    handleScheduleChange('day_of_week', parseInt(value, 10))
+                  }
+                  data={DAYS_OF_WEEK}
+                  disabled={!schedule.enabled}
+                />
+              )}
+              {is12Hour ? (
+                <>
+                  <Select
+                    label="Hour"
+                    value={displayTime ? displayTime.split(':')[0] : '12'}
+                    onChange={(value) => {
+                      const minute = displayTime
+                        ? displayTime.split(':')[1]
+                        : '00';
+                      handleTimeChange12h(`${value}:${minute}`, null);
+                    }}
+                    data={Array.from({ length: 12 }, (_, i) => ({
+                      value: String(i + 1),
+                      label: String(i + 1),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                  <Select
+                    label="Minute"
+                    value={displayTime ? displayTime.split(':')[1] : '00'}
+                    onChange={(value) => {
+                      const hour = displayTime
+                        ? displayTime.split(':')[0]
+                        : '12';
+                      handleTimeChange12h(`${hour}:${value}`, null);
+                    }}
+                    data={Array.from({ length: 60 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                  <Select
+                    label="Period"
+                    value={timePeriod}
+                    onChange={(value) => handleTimeChange12h(null, value)}
+                    data={[
+                      { value: 'AM', label: 'AM' },
+                      { value: 'PM', label: 'PM' },
+                    ]}
+                    disabled={!schedule.enabled}
+                  />
+                </>
+              ) : (
+                <>
+                  <Select
+                    label="Hour"
+                    value={schedule.time ? schedule.time.split(':')[0] : '00'}
+                    onChange={(value) => {
+                      const minute = schedule.time
+                        ? schedule.time.split(':')[1]
+                        : '00';
+                      handleTimeChange24h(`${value}:${minute}`);
+                    }}
+                    data={Array.from({ length: 24 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                  <Select
+                    label="Minute"
+                    value={schedule.time ? schedule.time.split(':')[1] : '00'}
+                    onChange={(value) => {
+                      const hour = schedule.time
+                        ? schedule.time.split(':')[0]
+                        : '00';
+                      handleTimeChange24h(`${hour}:${value}`);
+                    }}
+                    data={Array.from({ length: 60 }, (_, i) => ({
+                      value: String(i).padStart(2, '0'),
+                      label: String(i).padStart(2, '0'),
+                    }))}
+                    disabled={!schedule.enabled}
+                    searchable
+                  />
+                </>
+              )}
+            </Group>
+          </Stack>
+        </ScheduleInput>
 
         {scheduleLoading ? (
           <Loader size="sm" />
         ) : (
           <>
-            {advancedMode ? (
-              <>
-                <Stack gap="sm">
-                  <TextInput
-                    label="Cron Expression"
-                    value={schedule.cron_expression}
-                    onChange={(e) =>
-                      handleScheduleChange(
-                        'cron_expression',
-                        e.currentTarget.value
-                      )
-                    }
-                    placeholder="0 3 * * *"
-                    description="Format: minute hour day month weekday (e.g., '0 3 * * *' = 3:00 AM daily)"
-                    disabled={!schedule.enabled}
-                    error={cronError}
-                  />
-                  <Text size="xs" c="dimmed">
-                    Examples: <br />• <code>0 3 * * *</code> - Every day at 3:00
-                    AM
-                    <br />• <code>0 2 * * 0</code> - Every Sunday at 2:00 AM
-                    <br />• <code>0 */6 * * *</code> - Every 6 hours
-                    <br />• <code>30 14 1 * *</code> - 1st of every month at
-                    2:30 PM
-                  </Text>
-                </Stack>
-                <Group grow align="flex-end">
-                  <NumberInput
-                    label="Retention"
-                    description="0 = keep all"
-                    value={schedule.retention_count}
-                    onChange={(value) =>
-                      handleScheduleChange('retention_count', value || 0)
-                    }
-                    min={0}
-                    disabled={!schedule.enabled}
-                  />
-                  <Button
-                    onClick={handleSaveSchedule}
-                    loading={scheduleSaving}
-                    disabled={!scheduleChanged || (advancedMode && cronError)}
-                    variant="default"
-                  >
-                    Save
-                  </Button>
-                </Group>
-              </>
-            ) : (
-              <Stack gap="sm">
-                <Group align="flex-end" gap="xs" wrap="nowrap">
-                  <Select
-                    label="Frequency"
-                    value={schedule.frequency}
-                    onChange={(value) =>
-                      handleScheduleChange('frequency', value)
-                    }
-                    data={[
-                      { value: 'daily', label: 'Daily' },
-                      { value: 'weekly', label: 'Weekly' },
-                    ]}
-                    disabled={!schedule.enabled}
-                  />
-                  {schedule.frequency === 'weekly' && (
-                    <Select
-                      label="Day"
-                      value={String(schedule.day_of_week)}
-                      onChange={(value) =>
-                        handleScheduleChange('day_of_week', parseInt(value, 10))
-                      }
-                      data={DAYS_OF_WEEK}
-                      disabled={!schedule.enabled}
-                    />
-                  )}
-                  {is12Hour ? (
-                    <>
-                      <Select
-                        label="Hour"
-                        value={displayTime ? displayTime.split(':')[0] : '12'}
-                        onChange={(value) => {
-                          const minute = displayTime
-                            ? displayTime.split(':')[1]
-                            : '00';
-                          handleTimeChange12h(`${value}:${minute}`, null);
-                        }}
-                        data={Array.from({ length: 12 }, (_, i) => ({
-                          value: String(i + 1),
-                          label: String(i + 1),
-                        }))}
-                        disabled={!schedule.enabled}
-                        searchable
-                      />
-                      <Select
-                        label="Minute"
-                        value={displayTime ? displayTime.split(':')[1] : '00'}
-                        onChange={(value) => {
-                          const hour = displayTime
-                            ? displayTime.split(':')[0]
-                            : '12';
-                          handleTimeChange12h(`${hour}:${value}`, null);
-                        }}
-                        data={Array.from({ length: 60 }, (_, i) => ({
-                          value: String(i).padStart(2, '0'),
-                          label: String(i).padStart(2, '0'),
-                        }))}
-                        disabled={!schedule.enabled}
-                        searchable
-                      />
-                      <Select
-                        label="Period"
-                        value={timePeriod}
-                        onChange={(value) => handleTimeChange12h(null, value)}
-                        data={[
-                          { value: 'AM', label: 'AM' },
-                          { value: 'PM', label: 'PM' },
-                        ]}
-                        disabled={!schedule.enabled}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <Select
-                        label="Hour"
-                        value={
-                          schedule.time ? schedule.time.split(':')[0] : '00'
-                        }
-                        onChange={(value) => {
-                          const minute = schedule.time
-                            ? schedule.time.split(':')[1]
-                            : '00';
-                          handleTimeChange24h(`${value}:${minute}`);
-                        }}
-                        data={Array.from({ length: 24 }, (_, i) => ({
-                          value: String(i).padStart(2, '0'),
-                          label: String(i).padStart(2, '0'),
-                        }))}
-                        disabled={!schedule.enabled}
-                        searchable
-                      />
-                      <Select
-                        label="Minute"
-                        value={
-                          schedule.time ? schedule.time.split(':')[1] : '00'
-                        }
-                        onChange={(value) => {
-                          const hour = schedule.time
-                            ? schedule.time.split(':')[0]
-                            : '00';
-                          handleTimeChange24h(`${hour}:${value}`);
-                        }}
-                        data={Array.from({ length: 60 }, (_, i) => ({
-                          value: String(i).padStart(2, '0'),
-                          label: String(i).padStart(2, '0'),
-                        }))}
-                        disabled={!schedule.enabled}
-                        searchable
-                      />
-                    </>
-                  )}
-                </Group>
-                <Group grow align="flex-end" gap="xs">
-                  <NumberInput
-                    label="Retention"
-                    description="0 = keep all"
-                    value={schedule.retention_count}
-                    onChange={(value) =>
-                      handleScheduleChange('retention_count', value || 0)
-                    }
-                    min={0}
-                    disabled={!schedule.enabled}
-                  />
-                  <Button
-                    onClick={handleSaveSchedule}
-                    loading={scheduleSaving}
-                    disabled={!scheduleChanged}
-                    variant="default"
-                  >
-                    Save
-                  </Button>
-                </Group>
-              </Stack>
-            )}
+            <Group grow align="flex-end" gap="xs">
+              <NumberInput
+                label="Retention"
+                description="0 = keep all"
+                value={schedule.retention_count}
+                onChange={(value) =>
+                  handleScheduleChange('retention_count', value || 0)
+                }
+                min={0}
+                disabled={!schedule.enabled}
+              />
+              <Button
+                onClick={handleSaveSchedule}
+                loading={scheduleSaving}
+                disabled={
+                  !scheduleChanged ||
+                  (scheduleType === 'cron' &&
+                    schedule.cron_expression &&
+                    !validateCronExpression(schedule.cron_expression).valid)
+                }
+                variant="default"
+              >
+                Save
+              </Button>
+            </Group>
 
             {/* Timezone info - only show in simple mode */}
-            {!advancedMode && schedule.enabled && schedule.time && (
+            {scheduleType !== 'cron' && schedule.enabled && schedule.time && (
               <Text size="xs" c="dimmed" mt="xs">
                 System Timezone: {userTimezone} • Backup will run at{' '}
                 {schedule.time} {userTimezone}

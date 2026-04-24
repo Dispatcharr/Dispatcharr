@@ -1,9 +1,13 @@
 import { create } from 'zustand';
 
+// Stable empty array to avoid creating new references in getChannelStreams
+const emptyStreams = [];
+
 const useChannelsTableStore = create((set, get) => ({
   channels: [],
   pageCount: 0,
   totalCount: 0,
+  hasUnassignedEPGChannels: false,
   sorting: [{ id: 'channel_number', desc: false }],
   pagination: {
     pageIndex: 0,
@@ -11,17 +15,19 @@ const useChannelsTableStore = create((set, get) => ({
       JSON.parse(localStorage.getItem('channel-table-prefs'))?.pageSize || 50,
   },
   selectedChannelIds: [],
+  expandedChannelId: null,
   allQueryIds: [],
   isUnlocked: false,
 
-  queryChannels: ({ results, count }, params) => {
-    set((state) => {
-      return {
-        channels: results,
-        totalCount: count,
-        pageCount: Math.ceil(count / params.get('page_size')),
-      };
-    });
+  queryChannels: ({ results, count, has_unassigned_epg_channels }, params) => {
+    set((state) => ({
+      channels: results,
+      totalCount: count,
+      pageCount: Math.ceil(count / params.get('page_size')),
+      ...(has_unassigned_epg_channels !== undefined && {
+        hasUnassignedEPGChannels: has_unassigned_epg_channels,
+      }),
+    }));
   },
 
   setAllQueryIds: (allQueryIds) => {
@@ -36,9 +42,15 @@ const useChannelsTableStore = create((set, get) => ({
     });
   },
 
+  setExpandedChannelId: (expandedChannelId) => {
+    set({
+      expandedChannelId,
+    });
+  },
+
   getChannelStreams: (id) => {
     const channel = get().channels.find((c) => c.id === id);
-    return channel?.streams ?? [];
+    return channel?.streams || emptyStreams;
   },
 
   setPagination: (pagination) => {

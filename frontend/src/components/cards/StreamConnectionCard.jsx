@@ -1,15 +1,14 @@
 import { useLocation } from 'react-router-dom';
 import React, { useEffect, useMemo, useState } from 'react';
-import useLocalStorage from '../../hooks/useLocalStorage.jsx';
 import usePlaylistsStore from '../../store/playlists.jsx';
 import useSettingsStore from '../../store/settings.jsx';
+import useUsersStore from '../../store/users.jsx';
 import {
   ActionIcon,
   Badge,
   Box,
   Card,
   Center,
-  Flex,
   Group,
   Progress,
   Select,
@@ -33,6 +32,7 @@ import {
 } from 'lucide-react';
 import {
   toFriendlyDuration,
+  formatExactDuration,
   useDateTimeFormat,
 } from '../../utils/dateTimeUtils.js';
 import { CustomTable, useTable } from '../tables/CustomTable/index.jsx';
@@ -47,7 +47,6 @@ import {
   getChannelStreams,
   getLogoUrl,
   getM3uAccountsMap,
-  getMatchingStreamByUrl,
   getSelectedStream,
   getStartDate,
   getStreamOptions,
@@ -55,6 +54,51 @@ import {
   switchStream,
 } from '../../utils/cards/StreamConnectionCardUtils.js';
 import useVideoStore from '../../store/useVideoStore';
+
+const formatProgramTime = (seconds) => {
+  const absSeconds = Math.abs(seconds);
+  const hours = Math.floor(absSeconds / 3600);
+  const minutes = Math.floor((absSeconds % 3600) / 60);
+  const secs = Math.floor(absSeconds % 60);
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
+
+const ProgramProgress = ({ currentProgram }) => {
+  const now = new Date();
+  const startTime = new Date(currentProgram.start_time);
+  const endTime = new Date(currentProgram.end_time);
+  const totalDuration = (endTime - startTime) / 1000; // in seconds
+  const elapsed = (now - startTime) / 1000; // in seconds
+  const remaining = (endTime - now) / 1000; // in seconds
+  const percentage = Math.min(
+    100,
+    Math.max(0, (elapsed / totalDuration) * 100)
+  );
+
+  return (
+    <Stack gap="xs" mt={4}>
+      <Group justify="space-between" align="center">
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(elapsed)} elapsed
+        </Text>
+        <Text size="xs" c="dimmed">
+          {formatProgramTime(remaining)} remaining
+        </Text>
+      </Group>
+      <Progress
+        value={percentage}
+        size="sm"
+        color="#3BA882"
+        style={{
+          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        }}
+      />
+    </Stack>
+  );
+};
 
 // Create a separate component for each channel card to properly handle the hook
 const StreamConnectionCard = ({
@@ -80,6 +124,9 @@ const StreamConnectionCard = ({
 
   // Get M3U account data from the playlists store
   const m3uAccounts = usePlaylistsStore((s) => s.playlists);
+  const m3uProfiles = usePlaylistsStore((s) => s.profiles);
+  // Get users for resolving user_id → username on client rows
+  const users = useUsersStore((s) => s.users);
   // Get settings for speed threshold and environment mode
   const settings = useSettingsStore((s) => s.settings);
   const env_mode =
@@ -90,23 +137,58 @@ const StreamConnectionCard = ({
   // Get user's date/time format preferences
   const { fullDateTimeFormat } = useDateTimeFormat();
 
+  // Flat map of profile id -> profile for quick lookup
+  const m3uProfilesById = useMemo(() => {
+    const map = {};
+    Object.values(m3uProfiles).forEach((profileList) => {
+      if (Array.isArray(profileList)) {
+        profileList.forEach((p) => {
+          map[p.id] = p;
+        });
+      }
+    });
+    return map;
+  }, [m3uProfiles]);
+
   // Create a map of M3U account IDs to names for quick lookup
   const m3uAccountsMap = useMemo(() => {
     return getM3uAccountsMap(m3uAccounts);
   }, [m3uAccounts]);
 
+  // Create a map of user IDs to usernames for quick lookup
+  const usersMap = useMemo(() => {
+    const map = {};
+    users.forEach((u) => {
+      map[String(u.id)] = u.username;
+    });
+    return map;
+  }, [users]);
+
   // Update M3U profile information when channel data changes
   useEffect(() => {
-    // If the channel data includes M3U profile information, update our state
-    if (channel.m3u_profile || channel.m3u_profile_name) {
+    if (
+      channel.m3u_profile ||
+      channel.m3u_profile_name ||
+      channel.m3u_profile_id
+    ) {
+      const profileFromStore = channel.m3u_profile_id
+        ? m3uProfilesById[channel.m3u_profile_id]
+        : null;
       setCurrentM3UProfile({
         name:
           channel.m3u_profile?.name ||
+          profileFromStore?.name ||
           channel.m3u_profile_name ||
           'Default M3U',
       });
     }
-  }, [channel.m3u_profile, channel.m3u_profile_name, channel.stream_id]);
+  }, [
+    channel.m3u_profile,
+    channel.m3u_profile_name,
+    channel.m3u_profile_id,
+    channel.stream_id,
+    m3uProfilesById,
+  ]);
 
   // Fetch available streams for this channel
   useEffect(() => {
@@ -121,18 +203,13 @@ const StreamConnectionCard = ({
           // Use streams in the order returned by the API without sorting
           setAvailableStreams(streamData);
 
-          // If we have a channel URL, try to find the matching stream
-          if (channel.url && streamData.length > 0) {
-            // Try to find matching stream based on URL
-            const matchingStream = getMatchingStreamByUrl(
-              streamData,
-              channel.url
+          // Match by server-reported stream_id.
+          if (channel.stream_id && streamData.length > 0) {
+            const matchingStream = streamData.find(
+              (s) => s.id.toString() === channel.stream_id.toString()
             );
-
             if (matchingStream) {
               setActiveStreamId(matchingStream.id.toString());
-
-              // If the stream has M3U profile info, save it
               if (matchingStream.m3u_profile) {
                 setCurrentM3UProfile(matchingStream.m3u_profile);
               }
@@ -147,7 +224,7 @@ const StreamConnectionCard = ({
     };
 
     fetchStreams();
-  }, [channel.channel_id, channel.url, channelsByUUID]);
+  }, [channel.channel_id, channel.stream_id, channelsByUUID]);
 
   useEffect(() => {
     setData(
@@ -271,7 +348,8 @@ const StreamConnectionCard = ({
       {
         header: 'IP Address',
         accessorKey: 'ip_address',
-        size: 150,
+        grow: true,
+        minSize: 85,
         cell: ({ cell }) => (
           <Tooltip label={cell.getValue()}>
             <Text size="xs" truncate style={{ maxWidth: '100%' }}>
@@ -280,10 +358,29 @@ const StreamConnectionCard = ({
           </Tooltip>
         ),
       },
+      {
+        id: 'user',
+        header: 'User',
+        grow: true,
+        minSize: 60,
+        accessorFn: (row) => {
+          const uid = row.user_id ? String(row.user_id) : null;
+          if (!uid || uid === '0') return 'Anonymous';
+          return usersMap[uid] || `User ${uid}`;
+        },
+        cell: ({ cell }) => (
+          <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+            {cell.getValue()}
+          </Text>
+        ),
+      },
       // Updated Connected column with tooltip
       {
         id: 'connected',
         header: 'Connected',
+        grow: 1.5,
+        minSize: 70,
+        maxSize: 150,
         accessorFn: connectedAccessor(fullDateTimeFormat),
         cell: ({ cell }) => (
           <Tooltip
@@ -293,7 +390,9 @@ const StreamConnectionCard = ({
                 : 'Unknown connection time'
             }
           >
-            <Text size="xs">{cell.getValue()}</Text>
+            <Text size="xs" truncate style={{ maxWidth: '100%' }}>
+              {cell.getValue()}
+            </Text>
           </Tooltip>
         ),
       },
@@ -301,19 +400,24 @@ const StreamConnectionCard = ({
       {
         id: 'duration',
         header: 'Duration',
+        size: 82,
+        minSize: 60,
         accessorFn: durationAccessor(),
         cell: ({ cell, row }) => {
-          const exactDuration =
-            row.original.connected_since || row.original.connection_duration;
+          const exactDuration = row.original.connected_at
+            ? Date.now() / 1000 - row.original.connected_at
+            : null;
           return (
             <Tooltip
               label={
                 exactDuration
-                  ? `${exactDuration.toFixed(1)} seconds`
+                  ? formatExactDuration(exactDuration)
                   : 'Unknown duration'
               }
             >
-              <Text size="xs">{cell.getValue()}</Text>
+              <Text size="xs" style={{ whiteSpace: 'nowrap' }}>
+                {cell.getValue()}
+              </Text>
             </Tooltip>
           );
         },
@@ -321,10 +425,11 @@ const StreamConnectionCard = ({
       {
         id: 'actions',
         header: 'Actions',
-        size: 100,
+        size: 60,
+        minSize: 40,
       },
     ],
-    [fullDateTimeFormat]
+    [fullDateTimeFormat, usersMap]
   );
 
   const channelClientsTable = useTable({
@@ -340,6 +445,7 @@ const StreamConnectionCard = ({
     }),
     headerCellRenderFns: {
       ip_address: renderHeaderCell,
+      user: renderHeaderCell,
       connected: renderHeaderCell,
       duration: renderHeaderCell,
       actions: renderHeaderCell,
@@ -431,7 +537,7 @@ const StreamConnectionCard = ({
       url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
     }
 
-    showVideo(url);
+    showVideo(url, 'live', { name: actualChannel.name });
   };
 
   if (location.pathname !== '/stats') {
@@ -567,51 +673,9 @@ const StreamConnectionCard = ({
         {currentProgram &&
           isProgramDescExpanded &&
           currentProgram.start_time &&
-          currentProgram.end_time &&
-          (() => {
-            const now = new Date();
-            const startTime = new Date(currentProgram.start_time);
-            const endTime = new Date(currentProgram.end_time);
-            const totalDuration = (endTime - startTime) / 1000; // in seconds
-            const elapsed = (now - startTime) / 1000; // in seconds
-            const remaining = (endTime - now) / 1000; // in seconds
-            const percentage = Math.min(
-              100,
-              Math.max(0, (elapsed / totalDuration) * 100)
-            );
-
-            const formatProgramTime = (seconds) => {
-              const absSeconds = Math.abs(seconds);
-              const hours = Math.floor(absSeconds / 3600);
-              const minutes = Math.floor((absSeconds % 3600) / 60);
-              const secs = Math.floor(absSeconds % 60);
-              if (hours > 0) {
-                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-              }
-              return `${minutes}:${secs.toString().padStart(2, '0')}`;
-            };
-
-            return (
-              <Stack gap="xs" mt={4}>
-                <Group justify="space-between" align="center">
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(elapsed)} elapsed
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    {formatProgramTime(remaining)} remaining
-                  </Text>
-                </Group>
-                <Progress
-                  value={percentage}
-                  size="sm"
-                  color="#3BA882"
-                  style={{
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                  }}
-                />
-              </Stack>
-            );
-          })()}
+          currentProgram.end_time && (
+            <ProgramProgress currentProgram={currentProgram} />
+          )}
 
         {/* Add stream selection dropdown and preview button */}
         {availableStreams.length > 0 && (

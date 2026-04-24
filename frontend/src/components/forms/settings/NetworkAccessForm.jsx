@@ -1,6 +1,6 @@
 import { NETWORK_ACCESS_OPTIONS } from '../../../constants.js';
 import useSettingsStore from '../../../store/settings.jsx';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useForm } from '@mantine/form';
 import {
   checkSetting,
@@ -19,12 +19,14 @@ const NetworkAccessForm = React.memo(({ active }) => {
 
   const [networkAccessError, setNetworkAccessError] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [restoredDefaults, setRestoredDefaults] = useState([]);
   const [networkAccessConfirmOpen, setNetworkAccessConfirmOpen] =
     useState(false);
   const [saving, setSaving] = useState(false);
   const [netNetworkAccessConfirmCIDRs, setNetNetworkAccessConfirmCIDRs] =
     useState([]);
   const [clientIpAddress, setClientIpAddress] = useState(null);
+  const pendingSaveValuesRef = useRef(null);
 
   const networkAccessForm = useForm({
     mode: 'controlled',
@@ -33,7 +35,10 @@ const NetworkAccessForm = React.memo(({ active }) => {
   });
 
   useEffect(() => {
-    if (!active) setSaved(false);
+    if (!active) {
+      setSaved(false);
+      setRestoredDefaults([]);
+    }
   }, [active]);
 
   useEffect(() => {
@@ -58,9 +63,31 @@ const NetworkAccessForm = React.memo(({ active }) => {
   const onNetworkAccessSubmit = async () => {
     setSaved(false);
     setNetworkAccessError(null);
+    setRestoredDefaults([]);
+
+    // Check for blank fields and substitute defaults before saving
+    const currentValues = networkAccessForm.getValues();
+    const defaults = getNetworkAccessDefaults();
+    const restoredLabels = [];
+    const submitValues = { ...currentValues };
+
+    Object.keys(currentValues).forEach((key) => {
+      if (!currentValues[key] || currentValues[key].trim() === '') {
+        submitValues[key] = defaults[key];
+        restoredLabels.push(NETWORK_ACCESS_OPTIONS[key]?.label || key);
+      }
+    });
+
+    if (restoredLabels.length > 0) {
+      networkAccessForm.setValues(submitValues);
+      setRestoredDefaults(restoredLabels);
+    }
+
+    pendingSaveValuesRef.current = submitValues;
+
     const check = await checkSetting({
       ...settings['network_access'],
-      value: networkAccessForm.getValues(), // Send as object
+      value: submitValues,
     });
 
     if (check.error && check.message) {
@@ -84,10 +111,12 @@ const NetworkAccessForm = React.memo(({ active }) => {
   const saveNetworkAccess = async () => {
     setSaved(false);
     setSaving(true);
+    const values =
+      pendingSaveValuesRef.current || networkAccessForm.getValues();
     try {
       await updateSetting({
         ...settings['network_access'],
-        value: networkAccessForm.getValues(), // Send as object
+        value: values,
       });
       setSaved(true);
     } catch (e) {
@@ -112,6 +141,12 @@ const NetworkAccessForm = React.memo(({ active }) => {
               color="green"
               title="Saved Successfully"
             ></Alert>
+          )}
+          {restoredDefaults.length > 0 && (
+            <Alert variant="light" color="yellow" title="Defaults Restored">
+              The following fields were empty and have been restored to their
+              defaults: {restoredDefaults.join(', ')}
+            </Alert>
           )}
           {networkAccessError && (
             <Alert

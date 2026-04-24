@@ -16,6 +16,10 @@ export const getNetworkAccessFormInitialValues = () => {
 export const getNetworkAccessFormValidation = () => {
   return Object.keys(NETWORK_ACCESS_OPTIONS).reduce((acc, key) => {
     acc[key] = (value) => {
+      if (!value || value.trim() === '') {
+        return null; // Empty values will be replaced with defaults on submit
+      }
+
       if (
         value
           .split(',')

@@ -365,7 +365,6 @@ class ChannelSerializer(serializers.ModelSerializer):
             normalized_ids = [
                 stream.id if hasattr(stream, "id") else stream for stream in streams
             ]
-            print(normalized_ids)
 
             # Get current mapping of stream_id -> ChannelStream
             current_links = {
@@ -382,16 +381,20 @@ class ChannelSerializer(serializers.ModelSerializer):
                 instance.channelstream_set.filter(stream_id__in=to_remove).delete()
 
             # Update or create with new order
+            to_update = []
             for order, stream_id in enumerate(normalized_ids):
                 if stream_id in current_links:
                     cs = current_links[stream_id]
                     if cs.order != order:
                         cs.order = order
-                        cs.save(update_fields=["order"])
+                        to_update.append(cs)
                 else:
                     ChannelStream.objects.create(
                         channel=instance, stream_id=stream_id, order=order
                     )
+
+            if to_update:
+                ChannelStream.objects.bulk_update(to_update, ["order"])
 
         return instance
 

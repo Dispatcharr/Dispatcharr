@@ -42,6 +42,15 @@ class ConfigHelper:
         return ConfigHelper.get('INITIAL_BEHIND_CHUNKS', 4)
 
     @staticmethod
+    def new_client_behind_seconds():
+        """Get number of seconds behind live to start new clients.
+        0 means start at live (buffer head).
+        Loaded from DB proxy_settings so users can change it at runtime."""
+        from apps.proxy.config import TSConfig
+        settings = TSConfig.get_proxy_settings()
+        return settings.get('new_client_behind_seconds', 5)
+
+    @staticmethod
     def keepalive_interval():
         """Get keepalive interval in seconds"""
         return ConfigHelper.get('KEEPALIVE_INTERVAL', 0.5)

@@ -60,7 +60,7 @@ class M3USeriesRelationAdmin(admin.ModelAdmin):
 
 @admin.register(M3UEpisodeRelation)
 class M3UEpisodeRelationAdmin(admin.ModelAdmin):
-    list_display = ['episode', 'm3u_account', 'stream_id', 'created_at']
+    list_display = ['episode', 'm3u_account', 'series_relation', 'stream_id', 'created_at']
     list_filter = ['m3u_account', 'created_at']
     search_fields = ['episode__name', 'episode__series__name', 'm3u_account__name', 'stream_id']
     readonly_fields = ['created_at', 'updated_at']

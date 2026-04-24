@@ -1,115 +1,35 @@
 import { Box, Flex } from '@mantine/core';
-import { VariableSizeList as List } from 'react-window';
-import AutoSizer from 'react-virtualized-auto-sizer';
-import { useMemo } from 'react';
-import table from '../../../helpers/table';
+import React, { useRef } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import useChannelsTableStore from '../../../store/channelsTable';
 
-const CustomTableBody = ({
-  getRowModel,
-  expandedRowIds,
-  expandedRowRenderer,
-  renderBodyCell,
-  getExpandedRowHeight,
-  getRowStyles,
-  tableBodyProps,
-  tableCellProps,
-  enableDragDrop = false,
-}) => {
-  const renderExpandedRow = (row) => {
-    if (expandedRowRenderer) {
-      return expandedRowRenderer({ row });
-    }
-
-    return <></>;
-  };
-
-  const rows = getRowModel().rows;
-
-  // Calculate minimum width based only on fixed-size columns
-  const minTableWidth = useMemo(() => {
-    if (rows.length === 0) return 0;
-
-    return rows[0].getVisibleCells().reduce((total, cell) => {
-      // Only count columns with fixed sizes, flexible columns will expand
-      const columnSize = cell.column.columnDef.size
-        ? cell.column.getSize()
-        : cell.column.columnDef.minSize || 150; // Default min for flexible columns
-      return total + columnSize;
-    }, 0);
-  }, [rows]);
-
-  const renderTableBodyContents = () => {
-    const virtualized = false;
-
-    if (virtualized) {
-      return (
-        <Box
-          className="tbody"
-          style={{ flex: 1, ...(tableBodyProps && tableBodyProps()) }}
-        >
-          <AutoSizer disableWidth>
-            {({ height }) => {
-              const getItemSize = (index) => {
-                const row = rows[index];
-                const isExpanded = expandedRowIds.includes(row.original.id);
-                console.log(isExpanded);
-
-                // Default row height
-                let rowHeight = 28;
-
-                if (isExpanded && getExpandedRowHeight) {
-                  // If row is expanded, adjust the height to be larger (based on your logic)
-                  // You can get this height from your state, or calculate based on number of items in the expanded row
-                  rowHeight += getExpandedRowHeight(row); // This function would calculate the expanded row's height
-                }
-
-                return rowHeight;
-              };
-
-              return (
-                <List
-                  height={height}
-                  itemCount={rows.length}
-                  itemSize={getItemSize}
-                  width="100%"
-                  overscanCount={10}
-                >
-                  {({ index, style }) => {
-                    const row = rows[index];
-                    return renderTableBodyRow(row, index, style);
-                  }}
-                </List>
-              );
-            }}
-          </AutoSizer>
-        </Box>
-      );
-    }
-
-    return (
-      <Box className="tbody" style={{ flex: 1 }}>
-        {rows.map((row, index) => renderTableBodyRow(row, index))}
-      </Box>
-    );
-  };
-
-  const renderTableBodyRow = (row, index, style = {}) => {
-    // Get custom styles for this row if the function exists
+// Memoized row — only re-renders when this specific row's data, expansion
+// state, or drag-drop config actually changes.  Callback functions are read
+// from refs so the memoized row always uses the latest version when it *does*
+// re-render, without needing them as comparator inputs.
+const MemoizedTableRow = React.memo(
+  ({
+    row,
+    index,
+    isExpanded,
+    isSelected,
+    renderBodyCellRef,
+    expandedRowRendererRef,
+    getRowStyles,
+    tableCellProps,
+    enableDragDrop,
+  }) => {
+    const renderBodyCell = renderBodyCellRef.current;
     const customRowStyles = getRowStyles ? getRowStyles(row) : {};
-
-    // Extract any className from customRowStyles
     const customClassName = customRowStyles.className || '';
-    delete customRowStyles.className; // Remove from object so it doesn't get applied as inline style
+    delete customRowStyles.className;
 
     return (
       <DraggableRowWrapper
         row={row}
         key={`row-${row.id}`}
-        style={style}
         enableDragDrop={enableDragDrop}
       >
         <Box
@@ -118,17 +38,14 @@ const CustomTableBody = ({
           style={{
             display: 'flex',
             width: '100%',
-            minWidth: '100%', // Force full width
+            minWidth: '100%',
             ...(row.getIsSelected() && {
               backgroundColor: '#163632',
             }),
-            ...customRowStyles, // Apply the remaining custom styles here
+            ...customRowStyles,
           }}
         >
           {row.getVisibleCells().map((cell) => {
-            const hasFixedSize = cell.column.columnDef.size;
-            const isFlexible = !hasFixedSize;
-
             return (
               <Box
                 className="td"
@@ -136,13 +53,16 @@ const CustomTableBody = ({
                 style={{
                   ...(cell.column.columnDef.grow
                     ? {
-                        flex: '1 1 0%',
+                        flex: `${cell.column.columnDef.grow === true ? 1 : cell.column.columnDef.grow} 1 0%`,
                         minWidth: 0,
+                        ...(cell.column.columnDef.maxSize && {
+                          maxWidth: `${cell.column.columnDef.maxSize}px`,
+                        }),
                       }
                     : {
-                        flex: `0 0 ${cell.column.getSize ? cell.column.getSize() : 150}px`,
-                        width: `${cell.column.getSize ? cell.column.getSize() : 150}px`,
-                        maxWidth: `${cell.column.getSize ? cell.column.getSize() : 150}px`,
+                        flex: `0 0 var(--header-${cell.column.id}-size)`,
+                        width: `var(--header-${cell.column.id}-size)`,
+                        maxWidth: `var(--header-${cell.column.id}-size)`,
                       }),
                   ...(tableCellProps && tableCellProps({ cell })),
                 }}
@@ -154,12 +74,63 @@ const CustomTableBody = ({
             );
           })}
         </Box>
-        {expandedRowIds.includes(row.original.id) && renderExpandedRow(row)}
+        {isExpanded && expandedRowRendererRef.current({ row })}
       </DraggableRowWrapper>
     );
-  };
+  },
+  (prev, next) => {
+    return (
+      prev.row.original === next.row.original &&
+      prev.index === next.index &&
+      prev.isExpanded === next.isExpanded &&
+      prev.isSelected === next.isSelected &&
+      prev.enableDragDrop === next.enableDragDrop
+    );
+  }
+);
 
-  return renderTableBodyContents();
+const CustomTableBody = ({
+  getRowModel,
+  expandedRowIds,
+  expandedRowRenderer,
+  renderBodyCell,
+  getRowStyles,
+  tableCellProps,
+  enableDragDrop = false,
+  selectedTableIdsSet,
+}) => {
+  // Store callbacks in refs so memoized rows always access the latest versions
+  // without the function references themselves triggering re-renders.
+  const renderBodyCellRef = useRef(renderBodyCell);
+  renderBodyCellRef.current = renderBodyCell;
+
+  const expandedRowRendererRef = useRef(expandedRowRenderer);
+  expandedRowRendererRef.current = expandedRowRenderer;
+
+  const rows = getRowModel().rows;
+
+  return (
+    <Box className="tbody" style={{ flex: 1 }}>
+      {rows.map((row, index) => (
+        <MemoizedTableRow
+          key={`row-${row.id}`}
+          row={row}
+          index={index}
+          isExpanded={expandedRowIds.includes(row.original.id)}
+          isSelected={
+            selectedTableIdsSet
+              ? selectedTableIdsSet.has(row.original.id)
+              : false
+          }
+          renderBodyCellRef={renderBodyCellRef}
+          expandedRowRendererRef={expandedRowRendererRef}
+          getRowStyles={getRowStyles}
+          tableCellProps={tableCellProps}
+          enableDragDrop={enableDragDrop}
+        />
+      ))}
+    </Box>
+  );
 };
 
 const DraggableRowWrapper = ({

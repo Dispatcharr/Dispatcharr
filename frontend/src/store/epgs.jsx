@@ -22,9 +22,9 @@ const useEPGsStore = create((set) => ({
   fetchEPGs: async () => {
     set({ isLoading: true, error: null });
     try {
-      const epgs = await api.getEPGs();
+      const sources = await api.getEPGs();
       set({
-        epgs: epgs.reduce((acc, epg) => {
+        epgs: (sources ?? []).reduce((acc, epg) => {
           acc[epg.id] = epg;
           return acc;
         }, {}),

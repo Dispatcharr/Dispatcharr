@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
 from core.models import UserAgent
@@ -264,10 +265,15 @@ class M3UAccountProfile(models.Model):
     )
     current_viewers = models.PositiveIntegerField(default=0)
     custom_properties = models.JSONField(
-        default=dict, 
-        blank=True, 
-        null=True, 
+        default=dict,
+        blank=True,
+        null=True,
         help_text="Custom properties for storing account information from provider (e.g., XC account details, expiration dates)"
+    )
+    exp_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Account expiration date, auto-synced from custom_properties on save",
     )
 
     class Meta:
@@ -280,36 +286,51 @@ class M3UAccountProfile(models.Model):
     def __str__(self):
         return f"{self.name} ({self.m3u_account.name})"
 
-    def get_account_expiration(self):
-        """Get account expiration date from custom properties if available"""
+    def save(self, *args, **kwargs):
+        """Auto-sync exp_date from custom_properties for XC accounts on every save.
+        For non-XC accounts, exp_date is set directly and left untouched here."""
+        parsed = self._parse_exp_date_from_custom_properties()
+        if parsed is not None:
+            # XC account with exp_date in custom_properties — always sync
+            self.exp_date = parsed
+        # else: keep whatever exp_date is already set (manual entry for non-XC)
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def _parse_exp_date(raw_value):
+        """Parse a raw exp_date value (unix timestamp or ISO string) into a datetime."""
+        if raw_value is None:
+            return None
+        try:
+            if isinstance(raw_value, (int, float)):
+                return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+            elif isinstance(raw_value, str):
+                try:
+                    return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+                except ValueError:
+                    return datetime.fromisoformat(raw_value)
+        except (ValueError, TypeError, OSError):
+            pass
+        return None
+
+    def _parse_exp_date_from_custom_properties(self):
+        """Extract exp_date from custom_properties JSON."""
         if not self.custom_properties:
             return None
-        
         user_info = self.custom_properties.get('user_info', {})
-        exp_date = user_info.get('exp_date')
-        
-        if exp_date:
-            try:
-                from datetime import datetime
-                # XC exp_date is typically a Unix timestamp
-                if isinstance(exp_date, (int, float)):
-                    return datetime.fromtimestamp(exp_date)
-                elif isinstance(exp_date, str):
-                    # Try to parse as timestamp first, then as ISO date
-                    try:
-                        return datetime.fromtimestamp(float(exp_date))
-                    except ValueError:
-                        return datetime.fromisoformat(exp_date)
-            except (ValueError, TypeError):
-                pass
-        
-        return None
+        return self._parse_exp_date(user_info.get('exp_date'))
+
+    def get_account_expiration(self):
+        """Get account expiration date — uses the dedicated field if set, otherwise parses JSON."""
+        if self.exp_date:
+            return self.exp_date
+        return self._parse_exp_date_from_custom_properties()
 
     def get_account_status(self):
         """Get account status from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('status')
 
@@ -317,7 +338,7 @@ class M3UAccountProfile(models.Model):
         """Get maximum connections from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('max_connections')
 
@@ -325,7 +346,7 @@ class M3UAccountProfile(models.Model):
         """Get active connections from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         user_info = self.custom_properties.get('user_info', {})
         return user_info.get('active_cons')
 
@@ -333,7 +354,7 @@ class M3UAccountProfile(models.Model):
         """Get last refresh timestamp from custom properties if available"""
         if not self.custom_properties:
             return None
-        
+
         last_refresh = self.custom_properties.get('last_refresh')
         if last_refresh:
             try:
@@ -341,7 +362,7 @@ class M3UAccountProfile(models.Model):
                 return datetime.fromisoformat(last_refresh)
             except (ValueError, TypeError):
                 pass
-        
+
         return None
 
 

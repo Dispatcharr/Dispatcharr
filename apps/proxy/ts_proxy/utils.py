@@ -83,7 +83,7 @@ def create_ts_packet(packet_type='null', message=None):
 
     # Add message to payload if provided
     if message:
-        msg_bytes = message.encode('utf-8')
+        msg_bytes = message
         packet[4:4+min(len(msg_bytes), 180)] = msg_bytes[:180]
 
     return bytes(packet)

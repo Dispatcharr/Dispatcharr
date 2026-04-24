@@ -15,6 +15,96 @@ from . import services
 User = get_user_model()
 
 
+class PgEnvTlsTestCase(TestCase):
+    """Test that _get_pg_env includes TLS and password env vars correctly."""
+    databases = []
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_includes_ssl_vars_when_tls_enabled(self, mock_settings):
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "testpass",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {
+                    "sslmode": "verify-full",
+                    "sslrootcert": "/certs/ca.crt",
+                    "sslcert": "/certs/client.crt",
+                    "sslkey": "/certs/client.key",
+                },
+            }
+        }
+        env = services._get_pg_env()
+        self.assertEqual(env["PGSSLMODE"], "verify-full")
+        self.assertEqual(env["PGSSLROOTCERT"], "/certs/ca.crt")
+        self.assertEqual(env["PGSSLCERT"], "/certs/client.crt")
+        self.assertEqual(env["PGSSLKEY"], "/certs/client.key")
+        self.assertEqual(env["PGPASSWORD"], "testpass")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_no_ssl_vars_when_tls_disabled(self, mock_settings):
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "testpass",
+                "HOST": "localhost",
+                "PORT": 5432,
+            }
+        }
+        env = services._get_pg_env()
+        self.assertNotIn("PGSSLMODE", env)
+        self.assertNotIn("PGSSLROOTCERT", env)
+        self.assertNotIn("PGSSLCERT", env)
+        self.assertNotIn("PGSSLKEY", env)
+        self.assertEqual(env["PGPASSWORD"], "testpass")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_no_password_when_empty(self, mock_settings):
+        """Cert-only auth: PGPASSWORD must not be set when password is empty."""
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {"sslmode": "verify-full"},
+            }
+        }
+        env = services._get_pg_env()
+        self.assertNotIn("PGPASSWORD", env)
+        self.assertEqual(env["PGSSLMODE"], "verify-full")
+
+    @patch('apps.backups.services.settings')
+    def test_pg_env_partial_ssl_options(self, mock_settings):
+        """Server-only TLS: only sslmode and CA cert, no client cert/key."""
+        mock_settings.DATABASES = {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "testdb",
+                "USER": "testuser",
+                "PASSWORD": "pass",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "OPTIONS": {
+                    "sslmode": "verify-ca",
+                    "sslrootcert": "/certs/ca.crt",
+                },
+            }
+        }
+        env = services._get_pg_env()
+        self.assertEqual(env["PGSSLMODE"], "verify-ca")
+        self.assertEqual(env["PGSSLROOTCERT"], "/certs/ca.crt")
+        self.assertNotIn("PGSSLCERT", env)
+        self.assertNotIn("PGSSLKEY", env)
+
+
 class BackupServicesTestCase(TestCase):
     """Test cases for backup services"""
 
@@ -733,6 +823,94 @@ class BackupAPITestCase(TestCase):
         self.assertEqual(response.status_code, 400)
         data = response.json()
         self.assertIn('frequency', data['detail'])
+
+
+class BackupAdminPermissionTestCase(TestCase):
+    """Test that backup endpoints use user_level (not is_staff/is_superuser) for admin checks.
+
+    This validates the IsAdminUser -> IsAdmin permission change.
+    API-created admins have user_level=10 but is_staff=False and is_superuser=False.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        # API-created admin: user_level=10 but NOT is_staff or is_superuser
+        self.api_admin = User.objects.create_user(
+            username='api_admin',
+            email='apiadmin@example.com',
+            password='testpass123'
+        )
+        self.api_admin.user_level = 10
+        self.api_admin.is_staff = False
+        self.api_admin.is_superuser = False
+        self.api_admin.save()
+
+        # User with is_staff=True but low user_level (should NOT have access)
+        self.staff_user = User.objects.create_user(
+            username='staffuser',
+            email='staff@example.com',
+            password='testpass123'
+        )
+        self.staff_user.is_staff = True
+        self.staff_user.user_level = 1
+        self.staff_user.save()
+
+        self.temp_backup_dir = tempfile.mkdtemp()
+
+    def get_auth_header(self, user):
+        refresh = RefreshToken.for_user(user)
+        return f'Bearer {str(refresh.access_token)}'
+
+    def tearDown(self):
+        import shutil
+        if Path(self.temp_backup_dir).exists():
+            shutil.rmtree(self.temp_backup_dir)
+
+    @patch('apps.backups.services.list_backups')
+    def test_api_created_admin_can_list_backups(self, mock_list_backups):
+        """API-created admin (user_level=10, is_staff=False) should access backup endpoints"""
+        mock_list_backups.return_value = []
+
+        auth_header = self.get_auth_header(self.api_admin)
+        response = self.client.get('/api/backups/', HTTP_AUTHORIZATION=auth_header)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_staff_user_without_user_level_cannot_list_backups(self):
+        """User with is_staff=True but user_level < 10 should NOT access backup endpoints"""
+        auth_header = self.get_auth_header(self.staff_user)
+        response = self.client.get('/api/backups/', HTTP_AUTHORIZATION=auth_header)
+
+        self.assertIn(response.status_code, [401, 403])
+
+    @patch('apps.backups.tasks.create_backup_task.delay')
+    def test_api_created_admin_can_create_backup(self, mock_create_task):
+        """API-created admin should be able to create backups"""
+        mock_task = MagicMock()
+        mock_task.id = 'test-task-id'
+        mock_create_task.return_value = mock_task
+
+        auth_header = self.get_auth_header(self.api_admin)
+        response = self.client.post('/api/backups/create/', HTTP_AUTHORIZATION=auth_header)
+
+        self.assertEqual(response.status_code, 202)
+
+    @patch('apps.backups.services.get_backup_dir')
+    def test_api_created_admin_can_delete_backup(self, mock_get_backup_dir):
+        """API-created admin should be able to delete backups"""
+        backup_dir = Path(self.temp_backup_dir)
+        mock_get_backup_dir.return_value = backup_dir
+
+        backup_file = backup_dir / "test-backup.zip"
+        backup_file.write_text("test content")
+
+        auth_header = self.get_auth_header(self.api_admin)
+        response = self.client.delete(
+            '/api/backups/test-backup.zip/delete/',
+            HTTP_AUTHORIZATION=auth_header
+        )
+
+        self.assertEqual(response.status_code, 204)
 
 
 class BackupSchedulerTestCase(TestCase):

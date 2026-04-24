@@ -15,6 +15,16 @@ export function formatBytes(bytes) {
   return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + sizes[i];
 }
 
+// Converts a size in KB (as used in plugin manifests) to a human-readable string.
+// Trailing zeros are stripped (e.g. "1 KB" not "1.00 KB").
+export function formatKB(kb) {
+  const bytes = kb * 1024;
+  if (bytes === 0) return '0 Bytes';
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return parseFloat((bytes / Math.pow(1024, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 export function formatSpeed(bytes) {
   if (bytes === 0) return '0 Bytes';
 
