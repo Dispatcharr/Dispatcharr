@@ -1976,12 +1976,6 @@ def xc_get_user(request, username=None, password=None):
         user = None
 
     # Plugin authentication hook fallback
-    # Skip if user exists but has blank xc_password (XC disabled)
-    if user is not None:
-        custom_properties = user.custom_properties or {}
-        if not custom_properties.get("xc_password", ""):
-            return None
-
     try:
         from apps.plugins.authentication import plugin_authenticate_xc
         result = plugin_authenticate_xc(username, password)

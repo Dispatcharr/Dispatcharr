@@ -95,6 +95,12 @@ def plugin_authenticate_xc(username, password):
             try:
                 result = auth_fn(username, password)
                 if isinstance(result, User):
+                    if result.username != username:
+                        logger.warning(
+                            "Plugin '%s' authenticate_xc returned user '%s' for username '%s' — rejected",
+                            lp.key, result.username, username,
+                        )
+                        continue
                     logger.info("Plugin '%s' authenticated XC user '%s'", lp.key, username)
                     return result
             except Exception:
