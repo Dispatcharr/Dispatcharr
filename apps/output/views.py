@@ -7,7 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
 from apps.accounts.models import User
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import network_access_allowed, user_xc_ip_allowed
 from django.utils import timezone as django_timezone
 from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta
@@ -1924,6 +1924,9 @@ def xc_get_user(request):
         return None
 
     if custom_properties["xc_password"] != password:
+        return None
+
+    if not user_xc_ip_allowed(request, user):
         return None
 
     return user

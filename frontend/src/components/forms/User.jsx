@@ -13,6 +13,7 @@ import {
   Switch,
   NumberInput,
   Tabs,
+  TagsInput,
   Text,
   useMantineTheme,
 } from '@mantine/core';
@@ -23,6 +24,7 @@ import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
+import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../../utils/networkUtils';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -48,6 +50,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       stream_limit: 0,
       password: '',
       xc_password: '',
+      xc_allowed_ips: [],
       channel_profiles: [],
       hide_adult_content: false,
       epg_days: 0,
@@ -69,6 +72,11 @@ const User = ({ user = null, isOpen, onClose }) => {
         values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
           ? 'XC password must be alphanumeric'
           : null,
+      xc_allowed_ips: values.xc_allowed_ips.some(
+        (cidr) => !cidr.match(IPV4_CIDR_REGEX) && !cidr.match(IPV6_CIDR_REGEX)
+      )
+        ? 'Each entry must be a valid CIDR range (e.g. 192.168.1.0/24)'
+        : null,
     }),
   });
 
@@ -93,6 +101,9 @@ const User = ({ user = null, isOpen, onClose }) => {
     // Always save xc_password, even if it's empty (to allow clearing)
     customProps.xc_password = values.xc_password || '';
     delete values.xc_password;
+
+    // Serialize xc_allowed_ips array to comma-separated string for the backend
+    values.xc_allowed_ips = (values.xc_allowed_ips || []).join(',');
 
     // Save hide_adult_content in custom_properties
     customProps.hide_adult_content = values.hide_adult_content || false;
@@ -155,6 +166,9 @@ const User = ({ user = null, isOpen, onClose }) => {
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
+        xc_allowed_ips: user.xc_allowed_ips
+          ? user.xc_allowed_ips.split(',').filter(Boolean)
+          : [],
         hide_adult_content: customProps.hide_adult_content || false,
         epg_days: customProps.epg_days || 0,
         epg_prev_days: customProps.epg_prev_days || 0,
@@ -384,6 +398,16 @@ const User = ({ user = null, isOpen, onClose }) => {
                   </ActionIcon>
                 }
               />
+              {isAdmin && (
+                <TagsInput
+                  label="XC Allowed IP Ranges"
+                  description="Restrict XC access to these CIDR ranges. Leave empty to allow all (0.0.0.0/0)."
+                  placeholder="e.g. 192.168.1.0/24"
+                  splitChars={[',', ' ']}
+                  {...form.getInputProps('xc_allowed_ips')}
+                  key={form.key('xc_allowed_ips')}
+                />
+              )}
               {canGenerateKey && (
                 <Stack gap="xs">
                   {userAPIKey && (

@@ -19,7 +19,7 @@ from rest_framework.permissions import AllowAny
 from apps.accounts.models import User
 from apps.accounts.permissions import IsAdmin
 from apps.proxy.utils import check_user_stream_limits
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import network_access_allowed, user_xc_ip_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -1031,6 +1031,9 @@ def stream_xc_movie(request, username, password, stream_id, extension):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
+    if not user_xc_ip_allowed(request, user):
+        return Response({"error": "Invalid credentials"}, status=401)
+
     # All authenticated users get access to VOD from all active M3U accounts
     filters = {"movie_id": stream_id, "m3u_account__is_active": True}
 
@@ -1063,6 +1066,9 @@ def stream_xc_episode(request, username, password, stream_id, extension):
         return Response({"error": "Invalid credentials"}, status=401)
 
     if custom_properties["xc_password"] != password:
+        return Response({"error": "Invalid credentials"}, status=401)
+
+    if not user_xc_ip_allowed(request, user):
         return Response({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to series/episodes from all active M3U accounts
