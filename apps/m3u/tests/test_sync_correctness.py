@@ -1931,15 +1931,15 @@ class EPGDispatchExistingChannelTests(TestCase):
 
 class Migration0037DemoteOrphansTests(TestCase):
     """
-    Migration 0037 originally deleted orphaned `auto_created=True,
-    auto_created_by=NULL` channels. The fix demotes them to
-    `auto_created=False` instead, preserving the channel and any
-    overrides that may exist on it.
+    The 0037 auto-sync overhaul migration's `backfill_auto_created_by_null`
+    step demotes orphaned `auto_created=True, auto_created_by=NULL` channels
+    to `auto_created=False` instead of deleting them, preserving the
+    channel and any overrides that may exist on it.
     """
 
     def test_orphan_with_no_streams_is_demoted_not_deleted(self):
         # Create an orphaned auto-created channel with no streams. This
-        # is the case that the original migration would silently delete.
+        # is the case that a delete-on-orphan strategy would silently lose.
         ch = Channel.objects.create(
             name="OrphanGhost",
             channel_number=999,
@@ -1955,13 +1955,13 @@ class Migration0037DemoteOrphansTests(TestCase):
         from django.apps import apps as django_apps
 
         module = import_module(
-            "apps.channels.migrations.0038_backfill_auto_created_by_null"
+            "apps.channels.migrations.0037_auto_sync_overhaul"
         )
 
         # The migration function takes (apps, schema_editor); apps is
         # the historical app registry. For this unit test we call with
         # the live registry.
-        module.backfill(django_apps, None)
+        module.backfill_auto_created_by_null(django_apps, None)
 
         ch.refresh_from_db()
         self.assertFalse(
