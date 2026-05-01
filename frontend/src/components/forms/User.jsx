@@ -24,7 +24,7 @@ import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
-import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../../utils/networkUtils';
+import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX, IPV4_REGEX, IPV6_REGEX } from '../../utils/networkUtils';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -73,9 +73,13 @@ const User = ({ user = null, isOpen, onClose }) => {
           ? 'XC password must be alphanumeric'
           : null,
       xc_allowed_ips: values.xc_allowed_ips.some(
-        (cidr) => !cidr.match(IPV4_CIDR_REGEX) && !cidr.match(IPV6_CIDR_REGEX)
+        (entry) =>
+          !entry.match(IPV4_CIDR_REGEX) &&
+          !entry.match(IPV6_CIDR_REGEX) &&
+          !entry.match(IPV4_REGEX) &&
+          !entry.match(IPV6_REGEX)
       )
-        ? 'Each entry must be a valid CIDR range (e.g. 192.168.1.0/24)'
+        ? 'Each entry must be a valid IP address or CIDR range (e.g. 192.168.1.1 or 192.168.1.0/24)'
         : null,
     }),
   });
@@ -402,7 +406,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 <TagsInput
                   label="XC Allowed IP Ranges"
                   description="Restrict XC access to these CIDR ranges. Leave empty to allow all (0.0.0.0/0)."
-                  placeholder="e.g. 192.168.1.0/24"
+                  placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
                   splitChars={[',', ' ']}
                   {...form.getInputProps('xc_allowed_ips')}
                   key={form.key('xc_allowed_ips')}
