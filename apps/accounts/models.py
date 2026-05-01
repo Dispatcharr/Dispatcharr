@@ -31,7 +31,6 @@ class User(AbstractUser):
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     api_key = models.CharField(max_length=200, blank=True, null=True, db_index=True)
     stream_limit = models.IntegerField(default=0)
-    xc_allowed_ips = models.TextField(blank=True, default='')
 
     def __str__(self):
         return self.username

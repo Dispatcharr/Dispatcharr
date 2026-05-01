@@ -1,5 +1,4 @@
 import json
-import ipaddress
 
 from rest_framework import serializers
 from django.contrib.auth.models import Group, Permission
@@ -67,7 +66,6 @@ class UserSerializer(serializers.ModelSerializer):
             "custom_properties",
             "avatar_config",
             "stream_limit",
-            "xc_allowed_ips",
             "is_staff",
             "is_superuser",
             "last_login",
@@ -75,19 +73,6 @@ class UserSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
         ]
-
-    def validate_xc_allowed_ips(self, value):
-        if not value or not value.strip():
-            return value
-        for cidr in value.split(','):
-            cidr = cidr.strip()
-            if not cidr:
-                continue
-            try:
-                ipaddress.ip_network(cidr, strict=False)
-            except ValueError:
-                raise serializers.ValidationError(f"'{cidr}' is not a valid CIDR range")
-        return value
 
     def validate_custom_properties(self, value):
         """Validate custom_properties structure and size."""

@@ -21,10 +21,18 @@ import { RotateCcwKey, X } from 'lucide-react';
 import { Copy, Key } from 'lucide-react';
 import { useForm } from '@mantine/form';
 import useChannelsStore from '../../store/channels';
-import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
+import { USER_LEVELS, USER_LEVEL_LABELS, NETWORK_ACCESS_OPTIONS } from '../../constants';
 import useAuthStore from '../../store/auth';
 import { copyToClipboard } from '../../utils';
-import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX, IPV4_REGEX, IPV6_REGEX } from '../../utils/networkUtils';
+import { IPV4_CIDR_REGEX, IPV6_CIDR_REGEX } from '../../utils/networkUtils';
+
+const isValidNetworkEntry = (entry) =>
+  entry.match(IPV4_CIDR_REGEX) ||
+  entry.match(IPV6_CIDR_REGEX) ||
+  (entry + '/32').match(IPV4_CIDR_REGEX) ||
+  (entry + '/128').match(IPV6_CIDR_REGEX);
+
+const NETWORK_KEYS = Object.keys(NETWORK_ACCESS_OPTIONS);
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -50,11 +58,11 @@ const User = ({ user = null, isOpen, onClose }) => {
       stream_limit: 0,
       password: '',
       xc_password: '',
-      xc_allowed_ips: [],
       channel_profiles: [],
       hide_adult_content: false,
       epg_days: 0,
       epg_prev_days: 0,
+      allowed_ips: [],
     },
 
     validate: (values) => ({
@@ -66,20 +74,14 @@ const User = ({ user = null, isOpen, onClose }) => {
           : null,
       password:
         !user && !values.password && values.user_level != USER_LEVELS.STREAMER
-          ? 'Password is requried'
+          ? 'Password is required'
           : null,
       xc_password:
         values.xc_password && !values.xc_password.match(/^[a-z0-9]+$/i)
           ? 'XC password must be alphanumeric'
           : null,
-      xc_allowed_ips: values.xc_allowed_ips.some(
-        (entry) =>
-          !entry.match(IPV4_CIDR_REGEX) &&
-          !entry.match(IPV6_CIDR_REGEX) &&
-          !entry.match(IPV4_REGEX) &&
-          !entry.match(IPV6_REGEX)
-      )
-        ? 'Each entry must be a valid IP address or CIDR range (e.g. 192.168.1.1 or 192.168.1.0/24)'
+      allowed_ips: (values.allowed_ips || []).some((t) => !isValidNetworkEntry(t))
+        ? 'Invalid IP address or CIDR range'
         : null,
     }),
   });
@@ -102,18 +104,12 @@ const User = ({ user = null, isOpen, onClose }) => {
 
     const customProps = user?.custom_properties || {};
 
-    // Always save xc_password, even if it's empty (to allow clearing)
     customProps.xc_password = values.xc_password || '';
     delete values.xc_password;
 
-    // Serialize xc_allowed_ips array to comma-separated string for the backend
-    values.xc_allowed_ips = (values.xc_allowed_ips || []).join(',');
-
-    // Save hide_adult_content in custom_properties
     customProps.hide_adult_content = values.hide_adult_content || false;
     delete values.hide_adult_content;
 
-    // Save EPG defaults in custom_properties
     customProps.epg_days = values.epg_days || 0;
     delete values.epg_days;
     customProps.epg_prev_days = values.epg_prev_days || 0;
@@ -121,13 +117,18 @@ const User = ({ user = null, isOpen, onClose }) => {
 
     values.custom_properties = customProps;
 
-    // If 'All' is included, clear this and we assume access to all channels
+    // Serialize per-user network restrictions into custom_properties (same list for all types)
+    const joined = (values.allowed_ips || []).join(',');
+    delete values.allowed_ips;
+    const allowed_networks = {};
+    if (joined) NETWORK_KEYS.forEach((key) => { allowed_networks[key] = joined; });
+    customProps.allowed_networks = allowed_networks;
+
     if (values.channel_profiles.includes('0')) {
       values.channel_profiles = [];
     }
 
     if (!user && values.user_level == USER_LEVELS.STREAMER) {
-      // Generate random password - they can't log in, but user can't be created without a password
       values.password = Math.random().toString(36).slice(2);
     }
 
@@ -157,6 +158,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   useEffect(() => {
     if (user?.id) {
       const customProps = user.custom_properties || {};
+      const networks = customProps.allowed_networks || {};
 
       form.setValues({
         username: user.username,
@@ -170,12 +172,14 @@ const User = ({ user = null, isOpen, onClose }) => {
             ? user.channel_profiles.map((id) => `${id}`)
             : ['0'],
         xc_password: customProps.xc_password || '',
-        xc_allowed_ips: user.xc_allowed_ips
-          ? user.xc_allowed_ips.split(',').filter(Boolean)
-          : [],
         hide_adult_content: customProps.hide_adult_content || false,
         epg_days: customProps.epg_days || 0,
         epg_prev_days: customProps.epg_prev_days || 0,
+        allowed_ips: [...new Set(
+          NETWORK_KEYS.flatMap((key) =>
+            networks[key] ? networks[key].split(',').filter(Boolean) : []
+          )
+        )],
       });
 
       if (customProps.xc_password) {
@@ -241,12 +245,10 @@ const User = ({ user = null, isOpen, onClose }) => {
       }
 
       const resp = await API.revokeApiKey(payload);
-      // backend returns { success: true } - clear local state
       if (resp && resp.success) {
         setGeneratedKey(null);
         setUserAPIKey(null);
 
-        // If we're revoking the current authenticated user's key, update auth store
         if (user?.id && authUser?.id === user.id) {
           setUser({ ...authUser, api_key: null });
         }
@@ -404,12 +406,12 @@ const User = ({ user = null, isOpen, onClose }) => {
               />
               {isAdmin && (
                 <TagsInput
-                  label="XC Allowed IP Ranges"
-                  description="Restrict XC access to these IP addresses or CIDR ranges. Leave empty to allow all (0.0.0.0/0)."
+                  label="Allowed IPs"
+                  description="Restrict all access for this user by IP. Leave empty to inherit global settings."
                   placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
                   splitChars={[',', ' ']}
-                  {...form.getInputProps('xc_allowed_ips')}
-                  key={form.key('xc_allowed_ips')}
+                  {...form.getInputProps('allowed_ips')}
+                  key={form.key('allowed_ips')}
                 />
               )}
               {canGenerateKey && (

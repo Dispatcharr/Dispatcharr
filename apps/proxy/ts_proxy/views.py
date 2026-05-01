@@ -40,7 +40,7 @@ from .url_utils import (
 from .utils import get_logger
 from uuid import UUID
 import gevent
-from dispatcharr.utils import network_access_allowed, user_xc_ip_allowed
+from dispatcharr.utils import network_access_allowed
 from apps.proxy.utils import check_user_stream_limits
 
 logger = get_logger()
@@ -572,7 +572,7 @@ def stream_xc(request, username, password, channel_id):
     if custom_properties["xc_password"] != password:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    if not user_xc_ip_allowed(request, user):
+    if not network_access_allowed(request, 'STREAMS', user):
         return Response({"error": "Invalid credentials"}, status=401)
 
     if user.user_level < 10:

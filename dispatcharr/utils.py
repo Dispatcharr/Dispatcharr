@@ -38,27 +38,7 @@ def get_client_ip(request):
     return ip
 
 
-def user_xc_ip_allowed(request, user):
-    """Check request IP against per-user XC allowed ranges. Empty = allow all (0.0.0.0/0)."""
-    allowed_ips = getattr(user, 'xc_allowed_ips', '') or ''
-    if not allowed_ips.strip():
-        return True
-
-    cidrs = [c.strip() for c in allowed_ips.split(',') if c.strip()]
-    if not cidrs:
-        return True
-
-    client_ip = ipaddress.ip_address(get_client_ip(request))
-    for cidr in cidrs:
-        try:
-            if client_ip in ipaddress.ip_network(cidr, strict=False):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
-def network_access_allowed(request, settings_key):
+def network_access_allowed(request, settings_key, user=None):
     try:
         network_access = CoreSettings.objects.get(key=NETWORK_ACCESS_KEY).value
     except CoreSettings.DoesNotExist:
@@ -86,4 +66,19 @@ def network_access_allowed(request, settings_key):
             network_allowed = True
             break
 
-    return network_allowed
+    if not network_allowed:
+        return False
+
+    if user is not None:
+        user_networks = (getattr(user, 'custom_properties', None) or {}).get('allowed_networks', {})
+        raw = user_networks.get(settings_key, '')
+        if raw:
+            for cidr in (c.strip() for c in raw.split(',') if c.strip()):
+                try:
+                    if client_ip in ipaddress.ip_network(cidr, strict=False):
+                        return True
+                except ValueError:
+                    continue
+            return False
+
+    return True
