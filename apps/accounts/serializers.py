@@ -11,7 +11,7 @@ VALID_NAV_ITEM_IDS = {
     'channels', 'vods', 'sources', 'guide', 'dvr',
     'stats', 'plugins', 'integrations', 'system', 'settings'
 }
-MAX_CUSTOM_PROPS_SIZE = 10240  # 10KB limit
+MAX_CUSTOM_PROPS_SIZE = 102400  # 100KB limit
 
 
 def validate_nav_array(value, field_name):
