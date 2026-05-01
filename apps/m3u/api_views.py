@@ -17,6 +17,9 @@ from rest_framework.decorators import action
 from django.conf import settings
 from .tasks import refresh_m3u_groups
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
 from core.models import UserAgent
@@ -225,6 +228,198 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         # Continue with regular partial update
         return super().partial_update(request, *args, **kwargs)
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete an M3U account and all auto-created channels attributed
+        to it. Auto-created channels with no surviving provider have no
+        useful state (they cannot sync, their streams are about to
+        cascade away), so the delete is unconditional: the only
+        question for the user is whether to confirm. Manual channels
+        are untouched, even if they include streams from this account;
+        those streams cascade away independently and the channels
+        survive with their other streams. The legacy
+        ``?cleanup_channels`` query parameter is accepted for backward
+        compatibility but ignored.
+        """
+        instance = self.get_object()
+        from apps.channels.models import Channel
+        from apps.proxy.ts_proxy.services.channel_service import (
+            ChannelService,
+        )
+
+        # Snapshot channels so proxy sessions can be stopped outside
+        # the DB transaction. The pre_delete signal would otherwise
+        # fire ChannelService.stop_channel (Redis pub / hgetall /
+        # setex) per channel inside the atomic, holding the DB
+        # connection across thousands of blocking RPCs and gumming up
+        # the connection pool.
+        channels_to_delete = list(
+            Channel.objects.filter(
+                auto_created=True,
+                auto_created_by=instance,
+            ).values_list("id", "uuid")
+        )
+        for _, channel_uuid in channels_to_delete:
+            if not channel_uuid:
+                continue
+            try:
+                ChannelService.stop_channel(str(channel_uuid))
+            except Exception as e:
+                logger.warning(
+                    "Failed to stop proxy session for channel %s "
+                    "during account cleanup: %s",
+                    channel_uuid,
+                    e,
+                )
+
+        channel_ids = [cid for cid, _ in channels_to_delete]
+        # Channel + account writes share an atomic so an account
+        # delete failure rolls back the channel deletes too. The
+        # pre_delete signal will fire again here but its proxy stop
+        # is fast on already-stopped channels (a single Redis check
+        # returns "not found" immediately).
+        with transaction.atomic():
+            if channel_ids:
+                _, per_model = Channel.objects.filter(
+                    id__in=channel_ids
+                ).delete()
+                deleted_channels = per_model.get(
+                    "dispatcharr_channels.Channel", 0
+                )
+            else:
+                deleted_channels = 0
+            response = super().destroy(request, *args, **kwargs)
+
+        # Surface the channel count alongside the standard 204; the
+        # confirmation toast renders the number to acknowledge what
+        # the cascade actually removed.
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(
+                {"deleted_channels": deleted_channels},
+                status=status.HTTP_200_OK,
+            )
+        return response
+
+    @extend_schema(
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "sample_names": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="auto-created-channels-count")
+    def auto_created_channels_count(self, request, pk=None):
+        """
+        Preview how many auto-created channels would be removed if the account
+        were deleted with cleanup_channels=true. The frontend calls this when
+        the user clicks Delete, to render a truthful confirmation dialog
+        ("Also delete N channels auto-created by this provider?").
+        """
+        account = self.get_object()
+        from apps.channels.models import Channel
+
+        qs = Channel.objects.filter(
+            auto_created=True, auto_created_by=account
+        )
+        count = qs.count()
+        sample_names = list(qs.values_list("name", flat=True)[:5])
+        return Response({"count": count, "sample_names": sample_names})
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="channel_group_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description=(
+                    "ID of the ChannelGroup whose auto-created channels "
+                    "should be repacked."
+                ),
+            ),
+        ],
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "assigned": {"type": "integer"},
+                    "released": {"type": "integer"},
+                    "failed": {"type": "integer"},
+                },
+            },
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="repack-group")
+    def repack_group(self, request, pk=None):
+        """
+        Manually re-pack visible channels in one of this account's
+        groups into the group's [start, end] range. Override-pinned
+        numbers are treated as reservations and skipped. Hidden channels
+        without overrides have their channel_number set to NULL.
+
+        Useful when the user has just finished customizing channels
+        (setting overrides as pins, hiding unwanted streams) and wants
+        the result reflected immediately rather than on the next M3U
+        refresh. Also acts as a one-shot cleanup for groups that aren't
+        running in compact mode but have accumulated gaps.
+        """
+        account = self.get_object()
+        group_id_raw = request.query_params.get("channel_group_id")
+        if not group_id_raw:
+            return Response(
+                {"detail": "channel_group_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            group_id = int(group_id_raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "channel_group_id must be an integer"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.channels.models import ChannelGroupM3UAccount
+        from apps.channels.compact_numbering import repack_group as _repack
+        from core.utils import acquire_task_lock, release_task_lock
+
+        # Share the lock that wraps the entire refresh-plus-sync pipeline
+        # (`refresh_single_m3u_account`). The narrower
+        # `refresh_m3u_account_groups` lock is released before
+        # `sync_auto_channels` runs, so it would not protect this writer
+        # from racing against the channel_number writes inside sync.
+        if not acquire_task_lock("refresh_single_m3u_account", account.id):
+            return Response(
+                {"detail": "An M3U refresh is in progress for this account."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            # Re-fetch under the lock so a sync that just released its lock
+            # cannot leave the cached group_relation reflecting pre-sync
+            # custom_properties (auto_sync_channel_start/end, etc.).
+            try:
+                group_relation = ChannelGroupM3UAccount.objects.get(
+                    m3u_account=account, channel_group_id=group_id
+                )
+            except ChannelGroupM3UAccount.DoesNotExist:
+                return Response(
+                    {"detail": "Group is not associated with this account"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            result = _repack(group_relation)
+        finally:
+            try:
+                release_task_lock("refresh_single_m3u_account", account.id)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to release repack lock for account "
+                    f"{account.id}: {e}"
+                )
+        return Response(result)
+
     @action(detail=True, methods=["post"], url_path="refresh-vod")
     def refresh_vod(self, request, pk=None):
         """Trigger VOD content refresh for XtreamCodes accounts"""
@@ -270,6 +465,33 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         category_settings = request.data.get("category_settings", [])
 
         try:
+            for setting in group_settings:
+                start = setting.get("auto_sync_channel_start")
+                end = setting.get("auto_sync_channel_end")
+                if (start is not None and start < 1) or (
+                    end is not None and end < 1
+                ):
+                    return Response(
+                        {
+                            "error": (
+                                f"Channel group {setting.get('channel_group')}: "
+                                f"channel range must be >= 1."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if start is not None and end is not None and end < start:
+                    return Response(
+                        {
+                            "error": (
+                                f"Channel group {setting.get('channel_group')}: "
+                                f"auto_sync_channel_end must be >= "
+                                f"auto_sync_channel_start."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             with transaction.atomic():
                 group_objects = [
                     ChannelGroupM3UAccount(
@@ -278,6 +500,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                         enabled=setting.get("enabled", True),
                         auto_channel_sync=setting.get("auto_channel_sync", False),
                         auto_sync_channel_start=setting.get("auto_sync_channel_start"),
+                        auto_sync_channel_end=setting.get("auto_sync_channel_end"),
                         custom_properties=setting.get("custom_properties", {}),
                     )
                     for setting in group_settings
@@ -293,6 +516,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                             "enabled",
                             "auto_channel_sync",
                             "auto_sync_channel_start",
+                            "auto_sync_channel_end",
                             "custom_properties",
                         ],
                     )

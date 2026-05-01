@@ -175,6 +175,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password",
             "stale_stream_days",
             "priority",
+            "auto_cleanup_unused_channels",
             "status",
             "last_message",
             "enable_vod",
@@ -193,6 +194,20 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        # Pre-aggregate stream counts for this account so the nested
+        # ChannelGroupM3UAccountSerializer does not issue a COUNT per group.
+        from django.db.models import Count
+        from apps.channels.models import Stream
+
+        counts_qs = (
+            Stream.objects.filter(m3u_account_id=instance.id)
+            .values("channel_group_id")
+            .annotate(c=Count("id"))
+        )
+        self.context["stream_counts"] = {
+            (instance.id, row["channel_group_id"]): row["c"] for row in counts_qs
+        }
+
         data = super().to_representation(instance)
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings

@@ -19,6 +19,7 @@ import {
   Switch,
   Box,
   PasswordInput,
+  Tooltip,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
@@ -68,6 +69,7 @@ const M3U = ({
       stale_stream_days: 7,
       priority: 0,
       enable_vod: false,
+      auto_cleanup_unused_channels: false,
     },
 
     validate: {
@@ -100,6 +102,8 @@ const M3U = ({
             ? m3uAccount.priority
             : 0,
         enable_vod: m3uAccount.enable_vod || false,
+        auto_cleanup_unused_channels:
+          m3uAccount.auto_cleanup_unused_channels || false,
       });
       setExpDate(m3uAccount.exp_date ? new Date(m3uAccount.exp_date) : null);
 
@@ -459,15 +463,37 @@ const M3U = ({
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
               />
-
-              <Checkbox
-                label="Is Active"
-                description="Enable or disable this M3U account"
-                {...form.getInputProps('is_active', { type: 'checkbox' })}
-                key={form.key('is_active')}
-              />
             </Stack>
           </Group>
+
+          <Divider my="md" />
+
+          <Flex gap="xl" wrap="wrap">
+            <Checkbox
+              label="Is Active"
+              description="Enable or disable this M3U account"
+              {...form.getInputProps('is_active', { type: 'checkbox' })}
+              key={form.key('is_active')}
+            />
+            <Tooltip
+              label="On every refresh, removes auto-synced channels whose source streams are no longer present in this provider. Hidden channels are preserved."
+              withArrow
+              multiline
+              w={300}
+              openDelay={500}
+            >
+              <Box>
+                <Checkbox
+                  label="Auto-cleanup unused channels"
+                  description="Remove orphaned auto-synced channels on refresh"
+                  {...form.getInputProps('auto_cleanup_unused_channels', {
+                    type: 'checkbox',
+                  })}
+                  key={form.key('auto_cleanup_unused_channels')}
+                />
+              </Box>
+            </Tooltip>
+          </Flex>
 
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             {playlist && (

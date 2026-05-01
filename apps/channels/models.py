@@ -291,9 +291,23 @@ class ChannelManager(models.Manager):
     def active(self):
         return self.all()
 
+    def with_effective_values(self, select_related_fks=False):
+        """
+        Chainable shortcut for the override-aware queryset annotations,
+        delegating to the canonical helper in ``apps.channels.managers``
+        so the function form (``with_effective_values(qs)``) and the
+        manager form (``Channel.objects.with_effective_values()``) are
+        both valid entry points and stay in sync.
+        """
+        from apps.channels.managers import with_effective_values
+
+        return with_effective_values(
+            self.get_queryset(), select_related_fks=select_related_fks
+        )
+
 
 class Channel(models.Model):
-    channel_number = models.FloatField(db_index=True)
+    channel_number = models.FloatField(db_index=True, null=True, blank=True)
     name = models.CharField(max_length=512)
     logo = models.ForeignKey(
         "Logo",
@@ -360,6 +374,16 @@ class Channel(models.Model):
         help_text="The M3U account that auto-created this channel"
     )
 
+    # Hidden channels are excluded from HDHR, M3U, EPG, and XC output queries.
+    # Auto-sync still recognizes them so they are not recreated when their
+    # underlying provider stream persists; this is an output-layer concern, not
+    # a sync-time flag.
+    user_hidden = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Exclude this channel from downstream client output (HDHR, M3U, EPG, XC). Auto-sync still updates provider metadata."
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         help_text="Timestamp when this channel was created"
@@ -368,6 +392,8 @@ class Channel(models.Model):
         auto_now=True,
         help_text="Timestamp when this channel was last updated"
     )
+
+    objects = ChannelManager()
 
     def clean(self):
         # Enforce unique channel_number within a given group
@@ -384,11 +410,46 @@ class Channel(models.Model):
 
     @classmethod
     def get_next_available_channel_number(cls, starting_from=1):
-        used_numbers = set(cls.objects.all().values_list("channel_number", flat=True))
-        n = starting_from
-        while n in used_numbers:
-            n += 1
-        return n
+        # Both raw and override channel numbers are reserved. Handing out a
+        # raw number currently masked by an override would create a deferred
+        # collision once the override is cleared.
+        from apps.channels.compact_numbering import build_reserved_set
+        from apps.m3u.tasks import _next_available_number
+
+        reserved = build_reserved_set()
+        return _next_available_number(reserved, starting_from)
+
+    def _resolved_override(self):
+        """Return the related ChannelOverride or None, tolerant of no row."""
+        try:
+            return self.override
+        except ChannelOverride.DoesNotExist:
+            return None
+
+    def _resolve_effective_fk(self, field_name):
+        """Pick the override's FK object if set, otherwise the channel's own."""
+        override = self._resolved_override()
+        if override is not None:
+            override_val = getattr(override, field_name, None)
+            if override_val is not None:
+                return override_val
+        return getattr(self, field_name)
+
+    @property
+    def effective_logo_obj(self):
+        return self._resolve_effective_fk("logo")
+
+    @property
+    def effective_channel_group_obj(self):
+        return self._resolve_effective_fk("channel_group")
+
+    @property
+    def effective_epg_data_obj(self):
+        return self._resolve_effective_fk("epg_data")
+
+    @property
+    def effective_stream_profile_obj(self):
+        return self._resolve_effective_fk("stream_profile")
 
     # @TODO: honor stream's stream profile
     def get_stream_profile(self):
@@ -840,6 +901,76 @@ class Channel(models.Model):
         return True
 
 
+class ChannelOverride(models.Model):
+    """
+    Per-field user overrides for auto-synced channels.
+
+    Each nullable column represents a user-provided value that takes precedence
+    over the matching field on the related Channel. Sync writes only to
+    Channel.* fields and never to this table, so provider metadata keeps
+    flowing while user customizations persist across refreshes. Output
+    querysets resolve the effective value via
+    `apps.channels.managers.with_effective_values`.
+    """
+    channel = models.OneToOneField(
+        Channel,
+        on_delete=models.CASCADE,
+        related_name="override",
+    )
+    name = models.CharField(max_length=512, null=True, blank=True)
+    channel_number = models.FloatField(null=True, blank=True)
+    channel_group = models.ForeignKey(
+        ChannelGroup,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    logo = models.ForeignKey(
+        "Logo",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    tvg_id = models.CharField(max_length=255, null=True, blank=True)
+    tvc_guide_stationid = models.CharField(max_length=255, null=True, blank=True)
+    epg_data = models.ForeignKey(
+        EPGData,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    stream_profile = models.ForeignKey(
+        StreamProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Override for channel {self.channel_id}"
+
+    def has_any_override(self) -> bool:
+        return any(
+            getattr(self, field) is not None
+            for field in (
+                "name",
+                "channel_number",
+                "channel_group_id",
+                "logo_id",
+                "tvg_id",
+                "tvc_guide_stationid",
+                "epg_data_id",
+                "stream_profile_id",
+            )
+        )
+
+
 class ChannelProfile(models.Model):
     name = models.CharField(max_length=100, unique=True)
 
@@ -886,6 +1017,12 @@ class ChannelGroupM3UAccount(models.Model):
         null=True,
         blank=True,
         help_text='Starting channel number for auto-created channels in this group'
+    )
+    # Optional upper bound; out-of-range streams fail. NULL = unlimited.
+    auto_sync_channel_end = models.FloatField(
+        null=True,
+        blank=True,
+        help_text='Optional upper bound for auto-created channel numbers in this group. Leave blank for unlimited fill. Overflow streams are skipped and reported in the completion notification.'
     )
     last_seen = models.DateTimeField(
         default=timezone.now,

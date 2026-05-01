@@ -8,6 +8,12 @@ import {
   getChannelFormDefaultValues,
   getFormattedValues,
   handleEpgUpdate,
+  getProviderHint,
+  getFkProviderHint,
+  normalizeFieldValue,
+  buildOverridePayload,
+  listOverriddenFields,
+  clearChannelOverrides,
 } from '../ChannelUtils.js';
 
 // ── API mock ───────────────────────────────────────────────────────────────────
@@ -134,6 +140,7 @@ describe('ChannelUtils', () => {
         logo_id: '10',
         user_level: '1',
         is_adult: false,
+        user_hidden: false,
       });
     });
 
@@ -230,6 +237,7 @@ describe('ChannelUtils', () => {
         logo_id: '',
         user_level: '0',
         is_adult: false,
+        user_hidden: false,
       });
     });
   });
@@ -456,6 +464,338 @@ describe('ChannelUtils', () => {
           makeChannelStreams()
         )
       ).rejects.toThrow('Update error');
+    });
+  });
+
+  // ── normalizeFieldValue ──────────────────────────────────────────────────────
+
+  describe('normalizeFieldValue', () => {
+    it('returns null for empty string', () => {
+      expect(normalizeFieldValue('name', '')).toBeNull();
+    });
+
+    it('returns null for null', () => {
+      expect(normalizeFieldValue('name', null)).toBeNull();
+    });
+
+    it('returns null for undefined', () => {
+      expect(normalizeFieldValue('name', undefined)).toBeNull();
+    });
+
+    it('returns null for the "-1" sentinel', () => {
+      expect(normalizeFieldValue('name', '-1')).toBeNull();
+    });
+
+    it('coerces channel_number string "10" to numeric 10', () => {
+      expect(normalizeFieldValue('channel_number', '10')).toBe(10);
+    });
+
+    it('coerces channel_number "5.5" to 5.5 (preserves decimal)', () => {
+      expect(normalizeFieldValue('channel_number', '5.5')).toBe(5.5);
+    });
+
+    it('coerces logo_id string "10" to integer 10', () => {
+      expect(normalizeFieldValue('logo_id', '10')).toBe(10);
+    });
+
+    it('coerces channel_group_id string "3" to integer 3', () => {
+      expect(normalizeFieldValue('channel_group_id', '3')).toBe(3);
+    });
+
+    it('coerces epg_data_id string "7" to integer 7', () => {
+      expect(normalizeFieldValue('epg_data_id', '7')).toBe(7);
+    });
+
+    it('coerces stream_profile_id string "2" to integer 2', () => {
+      expect(normalizeFieldValue('stream_profile_id', '2')).toBe(2);
+    });
+
+    it('treats stream_profile_id "0" as null (the "use default" sentinel)', () => {
+      expect(normalizeFieldValue('stream_profile_id', '0')).toBeNull();
+    });
+
+    it('treats logo_id "0" as null (the "Default" picker option)', () => {
+      expect(normalizeFieldValue('logo_id', '0')).toBeNull();
+    });
+
+    it('returns string field unchanged', () => {
+      expect(normalizeFieldValue('name', 'ESPN HD')).toBe('ESPN HD');
+    });
+
+    it('returns null for non-numeric channel_number', () => {
+      expect(normalizeFieldValue('channel_number', 'abc')).toBeNull();
+    });
+
+    it('returns null for non-integer FK id input', () => {
+      // parseInt('abc') is NaN, which is_not_finite, returns null.
+      expect(normalizeFieldValue('logo_id', 'abc')).toBeNull();
+    });
+  });
+
+  // ── normalizeFieldValue: sentinel battery ────────────────────────────────────
+  // Every overridable form field gets walked through the sentinel matrix so
+  // future field additions inherit coverage automatically. Add the field to
+  // OVERRIDABLE_FIELDS in ChannelUtils.js, then add its row to the matrix
+  // below.
+
+  describe('normalizeFieldValue: sentinel battery', () => {
+    // Sentinels common to all fields that must always normalize to null.
+    const universalNullSentinels = ['', null, undefined, '-1'];
+
+    // (field, expectations) pairs for every overridable form field.
+    // Each row documents what the field accepts as input and what
+    // normalizeFieldValue must return for the canonical inputs.
+    const matrix = [
+      {
+        field: 'name',
+        kind: 'string',
+        passthrough: [['ESPN HD', 'ESPN HD']],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'tvg_id',
+        kind: 'string',
+        passthrough: [['hbo.us', 'hbo.us']],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'tvc_guide_stationid',
+        kind: 'string',
+        passthrough: [['hbo-station', 'hbo-station']],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'channel_number',
+        kind: 'numeric',
+        passthrough: [
+          ['10', 10],
+          ['5.5', 5.5],
+          ['0', 0],
+        ],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'channel_group_id',
+        kind: 'fk-int',
+        passthrough: [
+          ['3', 3],
+          ['0', 0],
+        ],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'epg_data_id',
+        kind: 'fk-int',
+        passthrough: [
+          ['7', 7],
+          ['0', 0],
+        ],
+        zeroSentinelIsNull: false,
+      },
+      {
+        field: 'logo_id',
+        kind: 'fk-int',
+        passthrough: [['10', 10]],
+        // '0' is a domain sentinel: the picker's "Default" option.
+        zeroSentinelIsNull: true,
+      },
+      {
+        field: 'stream_profile_id',
+        kind: 'fk-int',
+        passthrough: [['2', 2]],
+        // '0' is a domain sentinel: "(use default)" in the form.
+        zeroSentinelIsNull: true,
+      },
+    ];
+
+    matrix.forEach(({ field, passthrough, zeroSentinelIsNull }) => {
+      describe(`field: ${field}`, () => {
+        universalNullSentinels.forEach((sentinel) => {
+          it(`normalizes ${JSON.stringify(sentinel)} to null`, () => {
+            expect(normalizeFieldValue(field, sentinel)).toBeNull();
+          });
+        });
+
+        if (zeroSentinelIsNull) {
+          it(`treats "0" as the domain sentinel and returns null`, () => {
+            expect(normalizeFieldValue(field, '0')).toBeNull();
+          });
+        }
+
+        passthrough.forEach(([input, expected]) => {
+          it(`coerces ${JSON.stringify(input)} to ${JSON.stringify(expected)}`, () => {
+            expect(normalizeFieldValue(field, input)).toBe(expected);
+          });
+        });
+      });
+    });
+  });
+
+  // ── getProviderHint / getFkProviderHint ──────────────────────────────────────
+
+  describe('getProviderHint', () => {
+    it('returns null for null channel', () => {
+      expect(getProviderHint(null, 'name')).toBeNull();
+    });
+
+    it('returns null for manual (non-auto) channel', () => {
+      const ch = makeChannel({ auto_created: false });
+      expect(getProviderHint(ch, 'name')).toBeNull();
+    });
+
+    it('returns "Provider: <value>" for auto-created channel with value', () => {
+      const ch = makeChannel({ auto_created: true, name: 'ESPN' });
+      expect(getProviderHint(ch, 'name')).toBe('Provider: ESPN');
+    });
+
+    it('renders "(empty)" placeholder for null/empty provider value', () => {
+      const ch = makeChannel({ auto_created: true, tvg_id: null });
+      expect(getProviderHint(ch, 'tvg_id')).toBe('Provider: (empty)');
+    });
+
+    it('renders "(empty)" for empty string provider value', () => {
+      const ch = makeChannel({ auto_created: true, tvg_id: '' });
+      expect(getProviderHint(ch, 'tvg_id')).toBe('Provider: (empty)');
+    });
+  });
+
+  describe('getFkProviderHint', () => {
+    it('returns null for null channel', () => {
+      expect(getFkProviderHint(null, 'channel_group_id', {})).toBeNull();
+    });
+
+    it('returns null for manual channel', () => {
+      const ch = makeChannel({ auto_created: false });
+      expect(getFkProviderHint(ch, 'channel_group_id', {})).toBeNull();
+    });
+
+    it('returns "(none)" when provider FK id is null', () => {
+      const ch = makeChannel({ auto_created: true, channel_group_id: null });
+      expect(getFkProviderHint(ch, 'channel_group_id', {})).toBe(
+        'Provider: (none)'
+      );
+    });
+
+    it('returns the lookup name when FK id resolves', () => {
+      const ch = makeChannel({ auto_created: true, channel_group_id: 5 });
+      const lookup = { 5: { name: 'Sports' } };
+      expect(getFkProviderHint(ch, 'channel_group_id', lookup)).toBe(
+        'Provider: Sports'
+      );
+    });
+
+    it('falls back to tvg_id when name is missing', () => {
+      const ch = makeChannel({ auto_created: true, epg_data_id: 9 });
+      const lookup = { 9: { tvg_id: 'espn.us' } };
+      expect(getFkProviderHint(ch, 'epg_data_id', lookup)).toBe(
+        'Provider: espn.us'
+      );
+    });
+
+    it('falls back to stringified id when lookup misses', () => {
+      const ch = makeChannel({ auto_created: true, logo_id: 99 });
+      expect(getFkProviderHint(ch, 'logo_id', {})).toBe('Provider: 99');
+    });
+  });
+
+  // ── listOverriddenFields ─────────────────────────────────────────────────────
+
+  describe('listOverriddenFields', () => {
+    it('returns [] for channel without override', () => {
+      const ch = makeChannel({ override: null });
+      expect(listOverriddenFields(ch)).toEqual([]);
+    });
+
+    it('returns [] for null channel', () => {
+      expect(listOverriddenFields(null)).toEqual([]);
+    });
+
+    it('returns labels for all fields where override has a value', () => {
+      const ch = makeChannel({
+        override: { name: 'ESPN HD', channel_number: 100, logo_id: null },
+      });
+      const labels = listOverriddenFields(ch);
+      expect(labels).toContain('Name');
+      expect(labels).toContain('Channel Number');
+      expect(labels).not.toContain('Logo');
+    });
+  });
+
+  // ── buildOverridePayload ─────────────────────────────────────────────────────
+
+  describe('buildOverridePayload', () => {
+    it('returns undefined for null channel', () => {
+      expect(buildOverridePayload(null, {})).toBeUndefined();
+    });
+
+    it('returns null when every form value matches provider', () => {
+      // No override needed => signal "delete the override row" via null.
+      const ch = makeChannel();
+      const formattedValues = {
+        name: ch.name,
+        channel_number: ch.channel_number,
+        channel_group_id: ch.channel_group_id,
+        logo_id: ch.logo_id,
+        tvg_id: ch.tvg_id,
+        tvc_guide_stationid: ch.tvc_guide_stationid,
+        epg_data_id: ch.epg_data_id,
+        stream_profile_id: ch.stream_profile_id,
+      };
+      expect(buildOverridePayload(ch, formattedValues)).toBeNull();
+    });
+
+    it('emits the diverging field with form value, others as null (clear)', () => {
+      const ch = makeChannel();
+      const formattedValues = {
+        name: 'ESPN-NEW',
+        channel_number: ch.channel_number,
+        channel_group_id: ch.channel_group_id,
+        logo_id: ch.logo_id,
+        tvg_id: ch.tvg_id,
+        tvc_guide_stationid: ch.tvc_guide_stationid,
+        epg_data_id: ch.epg_data_id,
+        stream_profile_id: ch.stream_profile_id,
+      };
+      const payload = buildOverridePayload(ch, formattedValues);
+      expect(payload).not.toBeNull();
+      expect(payload.name).toBe('ESPN-NEW');
+      // Fields that match provider are emitted as null (clear that
+      // override field; ensures returning to provider value is cleanly
+      // expressed through one PATCH).
+      expect(payload.channel_number).toBeNull();
+      expect(payload.tvg_id).toBeNull();
+    });
+
+    it('coerces FK id "10" string to int 10 before comparing against provider 10', () => {
+      // Without normalization, "10" !== 10 would falsely emit logo_id as
+      // a divergence; the test pins normalizeFieldValue's role in the
+      // diff path.
+      const ch = makeChannel({ logo_id: 10 });
+      const formattedValues = {
+        name: ch.name,
+        channel_number: ch.channel_number,
+        channel_group_id: ch.channel_group_id,
+        logo_id: '10',
+        tvg_id: ch.tvg_id,
+        tvc_guide_stationid: ch.tvc_guide_stationid,
+        epg_data_id: ch.epg_data_id,
+        stream_profile_id: ch.stream_profile_id,
+      };
+      // No actual divergence; helper should return null.
+      expect(buildOverridePayload(ch, formattedValues)).toBeNull();
+    });
+  });
+
+  // ── clearChannelOverrides ────────────────────────────────────────────────────
+
+  describe('clearChannelOverrides', () => {
+    it('PATCHes the channel with override:null', () => {
+      API.updateChannel.mockResolvedValue({ id: 1, override: null });
+      clearChannelOverrides(7);
+      expect(API.updateChannel).toHaveBeenCalledWith({
+        id: 7,
+        override: null,
+      });
     });
   });
 });

@@ -54,6 +54,7 @@ import {
   setChannelNamesFromEpg,
   setChannelTvgIdsFromEpg,
   updateChannels,
+  updateChannelsWithOverrideRouting,
 } from '../../utils/forms/ChannelBatchUtils.js';
 
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
@@ -123,14 +124,40 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       stream_profile_id: '-1',
       user_level: '-1',
       is_adult: '-1',
+      user_hidden: '-1',
+      clear_overrides: '-1',
     },
   });
+
+  // Surfaces auto-vs-manual routing in the selection. Falls back to a
+  // single total when the table store only has a partial view (e.g.
+  // cross-page selects). Kept separate from getConfirmationMessage so
+  // the line does not count against the no-changes guard.
+  const getSelectionSummary = () => {
+    const channelsById = useChannelsTableStore
+      .getState()
+      .channels.reduce((acc, c) => {
+        acc[c.id] = c;
+        return acc;
+      }, {});
+    let autoCount = 0;
+    let manualCount = 0;
+    for (const id of channelIds) {
+      const c = channelsById[id];
+      if (!c) continue;
+      if (c.auto_created) autoCount++;
+      else manualCount++;
+    }
+    const resolved = autoCount + manualCount;
+    return resolved === channelIds.length
+      ? `Selection: ${autoCount} auto-synced, ${manualCount} manual`
+      : `Selection: ${channelIds.length} channels`;
+  };
 
   // Build confirmation message based on selected changes
   const getConfirmationMessage = () => {
     const values = form.getValues();
-
-    return [
+    const lines = [
       getRegexNameChange(regexFind, regexReplace),
       getChannelGroupChange(selectedChannelGroup, channelGroups),
       getLogoChange(selectedLogoId, channelLogos),
@@ -138,7 +165,18 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       getUserLevelChange(values.user_level, USER_LEVEL_LABELS),
       getMatureContentChange(values.is_adult),
       getEpgChange(selectedDummyEpgId, epgs),
-    ].filter(Boolean);
+    ];
+    if (values.user_hidden && values.user_hidden !== '-1') {
+      lines.push(
+        `• Hide from Clients: ${values.user_hidden === 'true' ? 'Yes' : 'No'}`
+      );
+    }
+    if (values.clear_overrides === 'clear') {
+      lines.push(
+        '• Clear all overrides on auto-synced channels in selection, then apply the edits above as new overrides'
+      );
+    }
+    return lines.filter(Boolean);
   };
 
   const handleSubmit = () => {
@@ -167,14 +205,37 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     setIsSubmitting(true);
 
     try {
+      const formValues = form.getValues();
+      const shouldClearOverrides = formValues.clear_overrides === 'clear';
+
       const values = buildSubmitValues(
-        form.getValues(),
+        formValues,
         selectedChannelGroup,
         selectedLogoId
       );
 
+      // Clear runs before the routing PATCH (not in parallel) so a
+      // late-landing clear cannot wipe the freshly-written override
+      // fields.
+      if (shouldClearOverrides && channelIds.length > 0) {
+        await updateChannels(channelIds, { override: null });
+      }
+
       if (Object.keys(values).length > 0) {
-        await updateChannels(channelIds, values);
+        // Route auto-created channels to override.X (survives sync)
+        // and manual channels to direct Channel.X writes; auto_created
+        // is read from the table store.
+        const channelsById = useChannelsTableStore
+          .getState()
+          .channels.reduce((acc, c) => {
+            acc[c.id] = c;
+            return acc;
+          }, {});
+        await updateChannelsWithOverrideRouting(
+          channelIds,
+          values,
+          channelsById
+        );
       }
 
       if (regexFind.trim().length > 0) {
@@ -197,7 +258,16 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       ]);
       onClose();
     } catch (error) {
-      console.error('Failed to update channels:', error);
+      // Keep the form open with the user's edits intact so they can correct
+      // a validation error without retyping the bulk selection.
+      showNotification({
+        title: 'Bulk Update Failed',
+        message:
+          error?.body?.detail ||
+          error?.message ||
+          'Failed to apply changes to the selected channels.',
+        color: 'red',
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -457,6 +527,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         styles={{ hannontent: { '--mantine-color-body': '#27272A' } }}
       >
         <form onSubmit={form.onSubmit(handleSubmit)}>
+          <Text size="xs" c="dimmed" mb="xs">
+            {getSelectionSummary()}
+          </Text>
           <Group justify="space-between" align="top">
             <Stack gap="5" style={{ flex: 1 }}>
               <Paper withBorder p="xs" radius="md">
@@ -799,6 +872,31 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                   { value: 'false', label: 'No' },
                 ]}
               />
+
+              <Select
+                size="xs"
+                label="Hide from Clients"
+                description="Hidden channels are excluded from HDHR, M3U, EPG, and XC output."
+                {...form.getInputProps('user_hidden')}
+                key={form.key('user_hidden')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'true', label: 'Hide' },
+                  { value: 'false', label: 'Unhide' },
+                ]}
+              />
+
+              <Select
+                size="xs"
+                label="Overrides (auto-synced channels only)"
+                description="Clearing removes all user overrides and lets the next sync write provider values again. Applies only to auto-synced channels in the selection."
+                {...form.getInputProps('clear_overrides')}
+                key={form.key('clear_overrides')}
+                data={[
+                  { value: '-1', label: '(no change)' },
+                  { value: 'clear', label: 'Clear all overrides' },
+                ]}
+              />
             </Stack>
           </Group>
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
@@ -905,6 +1003,9 @@ This action cannot be undone.`}
               style={{ backgroundColor: 'rgba(0, 0, 0, 0.2)' }}
             >
               <Stack gap="xs">
+                <Text size="sm" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                  {getSelectionSummary()}
+                </Text>
                 {getConfirmationMessage().map((change, index) => (
                   <Text
                     key={index}
