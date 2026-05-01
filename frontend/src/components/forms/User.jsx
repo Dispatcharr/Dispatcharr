@@ -405,7 +405,7 @@ const User = ({ user = null, isOpen, onClose }) => {
               {isAdmin && (
                 <TagsInput
                   label="XC Allowed IP Ranges"
-                  description="Restrict XC access to these CIDR ranges. Leave empty to allow all (0.0.0.0/0)."
+                  description="Restrict XC access to these IP addresses or CIDR ranges. Leave empty to allow all (0.0.0.0/0)."
                   placeholder="e.g. 192.168.1.1 or 192.168.1.0/24"
                   splitChars={[',', ' ']}
                   {...form.getInputProps('xc_allowed_ips')}
