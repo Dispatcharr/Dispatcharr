@@ -217,7 +217,7 @@ const M3U = ({
 
         <form onSubmit={form.onSubmit(onSubmit)}>
           <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1 }}>
+            <Stack gap="5" style={{ flex: 1, minWidth: 0 }}>
               <TextInput
                 style={{ width: '100%' }}
                 id="name"
@@ -317,6 +317,14 @@ const M3U = ({
                     placeholder="Upload files"
                     description="Upload a local M3U file instead of using URL"
                     onChange={setFile}
+                    styles={{
+                      input: {
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        display: 'block',
+                      },
+                    }}
                   />
 
                   <DateTimePicker
