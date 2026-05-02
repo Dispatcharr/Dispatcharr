@@ -53,6 +53,41 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Pre-aggregate stream counts for all accounts in one query so the
+        # nested ChannelGroupM3UAccountSerializer never issues a COUNT per
+        # group row. The serializer checks for this key and skips its own
+        # per-instance query when it is present.
+        from apps.channels.models import Stream
+        from django.db.models import Count
+
+        account_ids = list(queryset.values_list("id", flat=True))
+        counts_qs = (
+            Stream.objects.filter(m3u_account_id__in=account_ids)
+            .values("m3u_account_id", "channel_group_id")
+            .annotate(c=Count("id"))
+        )
+        stream_counts = {
+            (row["m3u_account_id"], row["channel_group_id"]): row["c"]
+            for row in counts_qs
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(
+                page, many=True,
+                context={**self.get_serializer_context(), "stream_counts": stream_counts},
+            )
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(
+            queryset, many=True,
+            context={**self.get_serializer_context(), "stream_counts": stream_counts},
+        )
+        return Response(serializer.data)
+
     def create(self, request, *args, **kwargs):
         # Handle file upload first, if any
         file_path = None
