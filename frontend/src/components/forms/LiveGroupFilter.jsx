@@ -1680,7 +1680,7 @@ const LiveGroupFilter = ({
 
       <Divider label="Groups & Auto Sync Settings" labelPosition="center" />
 
-      <Box style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+      <Box style={{ maxHeight: 'calc(50vh - 80px)', overflowY: 'auto' }}>
         <SimpleGrid
           cols={{ base: 1, sm: 2, md: 3 }}
           spacing="xs"
