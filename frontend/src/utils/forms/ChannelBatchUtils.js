@@ -191,10 +191,10 @@ export const buildSubmitValues = (
     values.is_adult = values.is_adult === 'true';
   }
 
-  if (values.user_hidden === '-1' || values.user_hidden === undefined) {
-    delete values.user_hidden;
+  if (values.hidden_from_output === '-1' || values.hidden_from_output === undefined) {
+    delete values.hidden_from_output;
   } else {
-    values.user_hidden = values.user_hidden === 'true';
+    values.hidden_from_output = values.hidden_from_output === 'true';
   }
 
   // clear_overrides is a UI-only flag; the caller splits it out and routes a

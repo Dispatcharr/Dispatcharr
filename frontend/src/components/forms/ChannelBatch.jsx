@@ -124,7 +124,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       stream_profile_id: '-1',
       user_level: '-1',
       is_adult: '-1',
-      user_hidden: '-1',
+      hidden_from_output: '-1',
       clear_overrides: '-1',
     },
   });
@@ -166,9 +166,9 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       getMatureContentChange(values.is_adult),
       getEpgChange(selectedDummyEpgId, epgs),
     ];
-    if (values.user_hidden && values.user_hidden !== '-1') {
+    if (values.hidden_from_output && values.hidden_from_output !== '-1') {
       lines.push(
-        `• Hide from Clients: ${values.user_hidden === 'true' ? 'Yes' : 'No'}`
+        `• Hide from Clients: ${values.hidden_from_output === 'true' ? 'Yes' : 'No'}`
       );
     }
     if (values.clear_overrides === 'clear') {
@@ -877,8 +877,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                 size="xs"
                 label="Hide from Clients"
                 description="Hidden channels are excluded from HDHR, M3U, EPG, and XC output."
-                {...form.getInputProps('user_hidden')}
-                key={form.key('user_hidden')}
+                {...form.getInputProps('hidden_from_output')}
+                key={form.key('hidden_from_output')}
                 data={[
                   { value: '-1', label: '(no change)' },
                   { value: 'true', label: 'Hide' },

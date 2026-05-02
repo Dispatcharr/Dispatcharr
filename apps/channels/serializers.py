@@ -441,7 +441,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "logo_id",
             "user_level",
             "is_adult",
-            "user_hidden",
+            "hidden_from_output",
             "auto_created",
             "auto_created_by",
             "auto_created_by_name",

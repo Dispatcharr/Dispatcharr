@@ -169,12 +169,12 @@ def generate_m3u(request, profile_name=None, user=None):
             base_qs = Channel.objects.select_related('channel_group', 'logo')
 
     # Resolve effective (override | provider) values at SQL level so ordering,
-    # naming, and logo resolution honor user overrides. `exclude(user_hidden=True)`
+    # naming, and logo resolution honor user overrides. `exclude(hidden_from_output=True)`
     # is the consumer-facing hide guarantee.
     from apps.channels.managers import with_effective_values
     channels = (
         with_effective_values(base_qs, select_related_fks=True)
-        .exclude(user_hidden=True)
+        .exclude(hidden_from_output=True)
         .order_by("effective_channel_number")
     )
 
@@ -1372,7 +1372,7 @@ def generate_epg(request, profile_name=None, user=None):
         from apps.channels.managers import with_effective_values
         channels = (
             with_effective_values(base_qs, select_related_fks=True)
-            .exclude(user_hidden=True)
+            .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
         )
 
@@ -2133,12 +2133,12 @@ def xc_get_live_categories(user):
     response = []
 
     # Rank categories by the minimum EFFECTIVE channel number across their
-    # visible (not user_hidden) channels so overridden numbers drive the
+    # visible (not hidden_from_output) channels so overridden numbers drive the
     # ordering, not the underlying provider values.
     effective_min = Min(
         Coalesce("channels__override__channel_number", "channels__channel_number")
     )
-    hidden_exclusion = {"channels__user_hidden": False}
+    hidden_exclusion = {"channels__hidden_from_output": False}
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2220,7 +2220,7 @@ def xc_get_live_streams(request, user, category_id=None):
 
     channels = (
         with_effective_values(base_qs, select_related_fks=True)
-        .exclude(user_hidden=True)
+        .exclude(hidden_from_output=True)
         .order_by("effective_channel_number")
     )
 
@@ -2305,7 +2305,7 @@ def xc_get_epg(request, user, short=False):
     # resolution path so a single channel lookup honors the same visibility
     # rules as xc_get_live_streams.
     def _annotate(qs):
-        return with_effective_values(qs, select_related_fks=True).exclude(user_hidden=True)
+        return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2354,7 +2354,7 @@ def xc_get_epg(request, user, short=False):
         with_effective_values(
             Channel.objects.filter(channel_group=effective_group) if effective_group else Channel.objects.none()
         )
-        .exclude(user_hidden=True)
+        .exclude(hidden_from_output=True)
         .order_by("effective_channel_number")
     )
 

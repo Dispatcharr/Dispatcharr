@@ -4,7 +4,7 @@ flag, configurable auto-sync number range, and nullable channel_number for
 compact-numbering slot release.
 
 Bundled operations (in forward order; reversed on rollback):
-  1. AddField    Channel.user_hidden
+  1. AddField    Channel.hidden_from_output
   2. CreateModel ChannelOverride (one-to-one Channel)
   3. AddField    ChannelGroupM3UAccount.auto_sync_channel_end
   4. RunPython   backfill_auto_created_by_null  (orphan re-attribution / demotion)
@@ -113,7 +113,7 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddField(
             model_name='channel',
-            name='user_hidden',
+            name='hidden_from_output',
             field=models.BooleanField(
                 db_index=True,
                 default=False,

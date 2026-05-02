@@ -103,7 +103,7 @@ class CompoundFixtureSyncTests(TestCase):
             channel_group=self.group,
             auto_created=True,
             auto_created_by=self.account,
-            user_hidden=True,
+            hidden_from_output=True,
         )
         ChannelStream.objects.create(
             channel=self.hidden_channel, stream=self.hidden_stream, order=0
@@ -172,7 +172,7 @@ class CompoundFixtureSyncTests(TestCase):
 
         # Hidden channel survives and remains hidden.
         self.hidden_channel.refresh_from_db()
-        self.assertTrue(self.hidden_channel.user_hidden)
+        self.assertTrue(self.hidden_channel.hidden_from_output)
 
         # Overridden channel: the override row is intact, not cleared by
         # sync. The pinned channel_number persists.

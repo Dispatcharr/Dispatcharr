@@ -859,9 +859,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # the same hidden semantic as downstream clients.
         if self.action in ("list", "get_ids", "summary"):
             if visibility_filter == "hidden":
-                q_filters &= Q(user_hidden=True)
+                q_filters &= Q(hidden_from_output=True)
             elif visibility_filter != "all":
-                q_filters &= Q(user_hidden=False)
+                q_filters &= Q(hidden_from_output=False)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
@@ -1024,14 +1024,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
         unhide_transition_ids = [
             channel.id
             for channel, validated_data in validated_updates
-            if validated_data.get("user_hidden") is False
-            and channel.user_hidden is True
+            if validated_data.get("hidden_from_output") is False
+            and channel.hidden_from_output is True
         ]
         hide_transition_candidates = [
             channel
             for channel, validated_data in validated_updates
-            if validated_data.get("user_hidden") is True
-            and channel.user_hidden is False
+            if validated_data.get("hidden_from_output") is True
+            and channel.hidden_from_output is False
             and channel.channel_number is not None
             and channel.auto_created
             and channel.auto_created_by_id

@@ -123,7 +123,7 @@ def assign_compact_numbers_for_channels(channel_ids):
             id__in=channel_ids,
             auto_created=True,
             auto_created_by__isnull=False,
-            user_hidden=False,
+            hidden_from_output=False,
             channel_number__isnull=True,
         ).select_related("override", "channel_group", "auto_created_by")
     )
@@ -279,7 +279,7 @@ def _repack_inner(group_relation):
     for ch in channels:
         if _channel_has_number_override(ch):
             pinned.append(ch)
-        elif ch.user_hidden:
+        elif ch.hidden_from_output:
             hidden.append(ch)
         else:
             visible.append(ch)

@@ -1849,7 +1849,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             Channel.objects.exclude(
                 auto_created=True,
                 auto_created_by=account,
-                user_hidden=False,
+                hidden_from_output=False,
             ).values_list("channel_number", flat=True)
         )
         # Override pins are global reservations: effective_channel_number
@@ -2158,7 +2158,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
                 channels_to_delete = [
                     ch
                     for ch in existing_channel_map.values()
-                    if not ch.user_hidden
+                    if not ch.hidden_from_output
                 ]
                 if channels_to_delete:
                     deleted_count = len(channels_to_delete)
@@ -2275,7 +2275,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             if end_number is not None:
                 overflow_delete_ids = []
                 for stream_id, ch in list(existing_channel_map.items()):
-                    if ch.user_hidden:
+                    if ch.hidden_from_output:
                         continue
                     num = ch.channel_number
                     if num is None:
@@ -2654,7 +2654,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             channels_to_delete = []
             for ch_id, pairs in channel_streams_in_group.items():
                 channel = pairs[0][1]
-                if channel.user_hidden:
+                if channel.hidden_from_output:
                     continue
                 stream_ids = {sid for sid, _ in pairs}
                 if not (stream_ids & processed_stream_ids):
@@ -2713,7 +2713,7 @@ def sync_auto_channels(account_id, scan_start_time=None):
             orphaned_channels = Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=account,
-                user_hidden=False,
+                hidden_from_output=False,
             ).exclude(
                 id__in=ChannelStream.objects.filter(
                     stream__m3u_account=account,

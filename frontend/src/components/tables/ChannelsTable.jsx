@@ -967,7 +967,7 @@ const ChannelsTable = ({ onReady }) => {
                   </Box>
                 </Tooltip>
               )}
-              {row.user_hidden && (
+              {row.hidden_from_output && (
                 <Tooltip label="Hidden from HDHR, M3U, EPG, and XC output.">
                   <Box
                     component="span"

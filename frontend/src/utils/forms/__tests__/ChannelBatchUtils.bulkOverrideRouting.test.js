@@ -73,20 +73,20 @@ describe('updateChannelsWithOverrideRouting (manual finding #4)', () => {
     ]);
   });
 
-  it('always-raw fields (user_hidden, user_level, is_adult) bypass override routing', async () => {
-    // user_hidden is a status flag, not a value override - it goes to
-    // Channel.user_hidden directly even on auto-created channels.
+  it('always-raw fields (hidden_from_output, user_level, is_adult) bypass override routing', async () => {
+    // hidden_from_output is a status flag, not a value override - it goes to
+    // Channel.hidden_from_output directly even on auto-created channels.
     const channelsById = {
       1: { id: 1, auto_created: true },
     };
     await updateChannelsWithOverrideRouting(
       [1],
-      { user_hidden: true, name: 'Renamed' },
+      { hidden_from_output: true, name: 'Renamed' },
       channelsById,
     );
     const body = API.bulkUpdateChannels.mock.calls[0][0];
     expect(body).toEqual([
-      { id: 1, user_hidden: true, override: { name: 'Renamed' } },
+      { id: 1, hidden_from_output: true, override: { name: 'Renamed' } },
     ]);
   });
 

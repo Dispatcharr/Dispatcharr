@@ -927,9 +927,9 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 <Box>
                   <Switch
                     label="Hide from Clients"
-                    checked={watch('user_hidden')}
+                    checked={watch('hidden_from_output')}
                     onChange={(event) =>
-                      setValue('user_hidden', event.currentTarget.checked)
+                      setValue('hidden_from_output', event.currentTarget.checked)
                     }
                     size="md"
                   />

@@ -109,13 +109,13 @@ def assign_compact_number_on_unhide(sender, instance, created, **kwargs):
     """
     if created:
         return
-    # Skip the signal when update_fields proves user_hidden was not
+    # Skip the signal when update_fields proves hidden_from_output was not
     # touched. Sync sets update_fields on every save, so this keeps the
     # signal off the sync hot path.
     update_fields = kwargs.get("update_fields")
-    if update_fields is not None and "user_hidden" not in update_fields:
+    if update_fields is not None and "hidden_from_output" not in update_fields:
         return
-    if instance.user_hidden:
+    if instance.hidden_from_output:
         return
     if instance.channel_number is not None:
         return
@@ -161,9 +161,9 @@ def release_compact_number_on_hide(sender, instance, created, **kwargs):
     if created:
         return
     update_fields = kwargs.get("update_fields")
-    if update_fields is not None and "user_hidden" not in update_fields:
+    if update_fields is not None and "hidden_from_output" not in update_fields:
         return
-    if not instance.user_hidden:
+    if not instance.hidden_from_output:
         return
     if instance.channel_number is None:
         return

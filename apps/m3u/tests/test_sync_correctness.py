@@ -968,7 +968,7 @@ class ChannelOverrideClearResponseTests(TestCase):
 
 class HiddenChannelPreservationTests(TestCase):
     """
-    Hidden channels (`user_hidden=True`) must be preserved across every
+    Hidden channels (`hidden_from_output=True`) must be preserved across every
     sync cleanup path so users can rely on the hide flag as "keep this
     channel even if its source stream temporarily disappears". Common
     case: event / PPV / seasonal channels whose provider stream comes
@@ -1003,13 +1003,13 @@ class HiddenChannelPreservationTests(TestCase):
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=True,
+            hidden_from_output=True,
         )
         ChannelStream.objects.create(channel=ch, stream=stream, order=0)
 
         # Sync's scan_start_time is now (stream's last_seen is older,
         # so the stream is excluded from current_streams - simulating
-        # the provider dropping it). Without the user_hidden guard, the
+        # the provider dropping it). Without the hidden_from_output guard, the
         # channel would be cleaned up here.
         result = _sync(account)
 
@@ -1047,7 +1047,7 @@ class HiddenChannelPreservationTests(TestCase):
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=False,
+            hidden_from_output=False,
         )
         ChannelStream.objects.create(channel=ch, stream=stream, order=0)
 
@@ -1105,7 +1105,7 @@ class CompactNumberingTests(TestCase):
         )
         Channel.objects.filter(
             id__in=[c.id for c in hidden_targets]
-        ).update(user_hidden=True)
+        ).update(hidden_from_output=True)
 
         # Re-run sync; compact pack runs at the end.
         _sync(account)
@@ -1114,7 +1114,7 @@ class CompactNumberingTests(TestCase):
             Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=account,
-                user_hidden=False,
+                hidden_from_output=False,
             ).values_list("channel_number", flat=True)
         )
         self.assertEqual(nums, [100, 101, 102])
@@ -1123,7 +1123,7 @@ class CompactNumberingTests(TestCase):
             Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=account,
-                user_hidden=True,
+                hidden_from_output=True,
             ).values_list("channel_number", flat=True)
         )
         self.assertTrue(
@@ -1184,10 +1184,10 @@ class CompactNumberingTests(TestCase):
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=True,
+            hidden_from_output=True,
         )
 
-        ch.user_hidden = False
+        ch.hidden_from_output = False
         ch.save()
         ch.refresh_from_db()
 
@@ -1293,7 +1293,7 @@ class CompactNumberingTests(TestCase):
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=False,
+            hidden_from_output=False,
         )
 
         # Make sure the lock starts free.
@@ -1526,7 +1526,7 @@ class AutoCleanupToggleTests(TestCase):
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=True,
+            hidden_from_output=True,
         )
 
         result = _sync(account)
@@ -1536,7 +1536,7 @@ class AutoCleanupToggleTests(TestCase):
             Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=account,
-                user_hidden=True,
+                hidden_from_output=True,
             ).count(),
             1,
             "Hidden channels must survive cleanup regardless of the toggle",
@@ -1698,7 +1698,7 @@ class HiddenChannelNumberCollisionTests(TestCase):
         rel_b.save()
 
         # A hidden auto-created channel pinned at #100 in group_a.
-        # Its source stream is gone (last_seen old), but user_hidden=True
+        # Its source stream is gone (last_seen old), but hidden_from_output=True
         # protects the channel from cleanup.
         old_seen = timezone.now() - timedelta(days=1)
         Stream.objects.create(
@@ -1715,7 +1715,7 @@ class HiddenChannelNumberCollisionTests(TestCase):
             channel_group=group_a,
             auto_created=True,
             auto_created_by=account,
-            user_hidden=True,
+            hidden_from_output=True,
         )
 
         # A NEW stream in group_b, no channel yet. Sync should create a

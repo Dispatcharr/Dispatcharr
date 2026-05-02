@@ -202,7 +202,7 @@ export const getChannelFormDefaultValues = (channel, channelGroups) => {
     logo_id: logoId ? `${logoId}` : '',
     user_level: `${channel?.user_level ?? '0'}`,
     is_adult: channel?.is_adult ?? false,
-    user_hidden: channel?.user_hidden ?? false,
+    hidden_from_output: channel?.hidden_from_output ?? false,
   };
 };
 
@@ -235,14 +235,14 @@ export const handleEpgUpdate = async (
 ) => {
   // Auto-synced channels route identity edits into the override row. Sync
   // keeps writing provider values to Channel.* unmodified, so the override
-  // is what actually persists user changes across refreshes. `user_hidden`
+  // is what actually persists user changes across refreshes. `hidden_from_output`
   // stays as a direct Channel field even for auto-created channels because
   // it is a status flag, not a value replacement.
   if (channel.auto_created) {
     const overridePayload = buildOverridePayload(channel, formattedValues);
     const payload = {
       id: channel.id,
-      user_hidden: formattedValues.user_hidden,
+      hidden_from_output: formattedValues.hidden_from_output,
     };
     if (overridePayload !== undefined) {
       payload.override = overridePayload;

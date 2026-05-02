@@ -378,7 +378,7 @@ class Channel(models.Model):
     # Auto-sync still recognizes them so they are not recreated when their
     # underlying provider stream persists; this is an output-layer concern, not
     # a sync-time flag.
-    user_hidden = models.BooleanField(
+    hidden_from_output = models.BooleanField(
         default=False,
         db_index=True,
         help_text="Exclude this channel from downstream client output (HDHR, M3U, EPG, XC). Auto-sync still updates provider metadata."

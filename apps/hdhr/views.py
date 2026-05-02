@@ -89,7 +89,7 @@ class LineupAPIView(APIView):
 
         channels = (
             with_effective_values(Channel.objects.all())
-            .exclude(user_hidden=True)
+            .exclude(hidden_from_output=True)
             .order_by("effective_channel_number")
         )
         lineup = []
