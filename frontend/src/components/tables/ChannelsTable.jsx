@@ -244,11 +244,10 @@ const ChannelRowActions = React.memo(
       </Box>
     );
   },
-  // Custom comparator: only re-render when the actual channel changes.
-  // The row object is a new TanStack Table reference on each render, but
-  // row.original.id is stable. Callbacks read fresh data at call time.
-  (prevProps, nextProps) =>
-    prevProps.row.original.id === nextProps.row.original.id
+  // Custom comparator: skip re-render when the channel's data object hasn't
+  // changed. row.original is stable when the underlying channel hasn't been
+  // updated; it becomes a new reference when the store replaces that channel.
+  (prevProps, nextProps) => prevProps.row.original === nextProps.row.original
 );
 
 const ChannelsTable = ({ onReady }) => {
@@ -575,36 +574,30 @@ const ChannelsTable = ({ onReady }) => {
     }));
   };
 
-  const editChannel = async (ch = null, opts = {}) => {
-    // If forceAdd is set, always open a blank form
+  const editChannel = useCallback(async (ch = null, opts = {}) => {
     if (opts.forceAdd) {
       setChannel(null);
       setChannelModalOpen(true);
       return;
     }
-    // Use table's selected state instead of store state to avoid stale selections
-    const currentSelection = table ? table.selectedTableIds : [];
-    console.log('editChannel called with:', {
-      ch,
-      currentSelection,
-      tableExists: !!table,
-    });
+    const currentSelection =
+      useChannelsTableStore.getState().selectedChannelIds;
+    console.log('editChannel called with:', { ch, currentSelection });
 
     if (currentSelection.length > 1) {
       setChannelBatchModalOpen(true);
     } else {
-      // If no channel object is passed but we have a selection, get the selected channel
       let channelToEdit = ch;
       if (!channelToEdit && currentSelection.length === 1) {
         const selectedId = currentSelection[0];
-
-        // Use table data since that's what's currently displayed
-        channelToEdit = data.find((d) => d.id === selectedId);
+        channelToEdit = useChannelsTableStore
+          .getState()
+          .channels.find((d) => d.id === selectedId);
       }
       setChannel(channelToEdit);
       setChannelModalOpen(true);
     }
-  };
+  }, []);
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
@@ -1057,7 +1050,7 @@ const ChannelsTable = ({ onReady }) => {
     // from the store, so we don't need to recreate columns when logos load.
     // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs, editChannel]
   );
 
   const renderHeaderCell = (header) => {

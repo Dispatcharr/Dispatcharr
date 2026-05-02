@@ -95,8 +95,8 @@ const LiveGroupFilter = ({
     ? groupStates.find((g) => g.channel_group === configuringGroupId)
     : null;
   const applyGroupChange = (nextGroupState) => {
-    setGroupStates(
-      groupStates.map((state) =>
+    setGroupStates((prev) =>
+      prev.map((state) =>
         state.channel_group === nextGroupState.channel_group
           ? nextGroupState
           : state
@@ -497,8 +497,8 @@ const LiveGroupFilter = ({
   }, [playlist, channelGroups]);
 
   const toggleGroupEnabled = (id) => {
-    setGroupStates(
-      groupStates.map((state) => ({
+    setGroupStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: state.channel_group == id ? !state.enabled : state.enabled,
       }))
@@ -506,8 +506,8 @@ const LiveGroupFilter = ({
   };
 
   const toggleAutoSync = (id) => {
-    setGroupStates(
-      groupStates.map((state) => {
+    setGroupStates((prev) =>
+      prev.map((state) => {
         if (state.channel_group != id) return state;
         const turningOn = !state.auto_channel_sync;
         const next = { ...state, auto_channel_sync: turningOn };
@@ -520,7 +520,7 @@ const LiveGroupFilter = ({
         if (currentStart && currentStart > 1) return next;
 
         let proposedStart = 1;
-        for (const other of groupStates) {
+        for (const other of prev) {
           if (other.channel_group == id) continue;
           if (!other.enabled || !other.auto_channel_sync) continue;
           const otherMode =
@@ -550,8 +550,8 @@ const LiveGroupFilter = ({
   // Handle logo selection from LogoForm
   const handleLogoSuccess = ({ logo }) => {
     if (logo && logo.id && currentEditingGroupId !== null) {
-      setGroupStates(
-        groupStates.map((state) => {
+      setGroupStates((prev) =>
+        prev.map((state) => {
           if (state.channel_group === currentEditingGroupId) {
             return {
               ...state,
@@ -564,7 +564,7 @@ const LiveGroupFilter = ({
           return state;
         })
       );
-      ensureLogosLoaded(); // Refresh logos
+      ensureLogosLoaded();
     }
     setLogoModalOpen(false);
     setCurrentEditingGroupId(null);
@@ -582,8 +582,8 @@ const LiveGroupFilter = ({
   };
 
   const selectAll = () => {
-    setGroupStates(
-      groupStates.map((state) => ({
+    setGroupStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? true : state.enabled,
       }))
@@ -591,8 +591,8 @@ const LiveGroupFilter = ({
   };
 
   const deselectAll = () => {
-    setGroupStates(
-      groupStates.map((state) => ({
+    setGroupStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? false : state.enabled,
       }))
@@ -1803,8 +1803,8 @@ const LiveGroupFilter = ({
                               'fixed'
                             }
                             onChange={(value) => {
-                              setGroupStates(
-                                groupStates.map((state) => {
+                              setGroupStates((prev) =>
+                                prev.map((state) => {
                                   if (
                                     state.channel_group === group.channel_group
                                   ) {
