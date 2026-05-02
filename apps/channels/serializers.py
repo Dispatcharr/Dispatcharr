@@ -532,14 +532,14 @@ class ChannelSerializer(serializers.ModelSerializer):
             self.fields["streams"] = serializers.SerializerMethodField()
             return super().to_representation(instance)
         else:
-            # Fix: For PATCH/PUT responses, ensure streams are ordered
+            # Read from the prefetched channelstream_set (ordered by the
+            # viewset's Prefetch); chaining .order_by() rebuilds the
+            # queryset and fires one SELECT per row in list responses.
             representation = super().to_representation(instance)
             if "streams" in representation:
-                representation["streams"] = list(
-                    instance.streams.all()
-                    .order_by("channelstream__order")
-                    .values_list("id", flat=True)
-                )
+                representation["streams"] = [
+                    cs.stream_id for cs in instance.channelstream_set.all()
+                ]
             return representation
 
     def get_logo(self, obj):

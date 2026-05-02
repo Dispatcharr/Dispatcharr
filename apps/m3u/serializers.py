@@ -370,7 +370,9 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         return instance
 
     def get_filters(self, obj):
-        filters = obj.filters.order_by("order")
+        # Sort over the prefetch cache; .order_by() would fire one SELECT
+        # per account (viewset prefetches "filters").
+        filters = sorted(obj.filters.all(), key=lambda f: f.order)
         return M3UFilterSerializer(filters, many=True).data
 
     def get_earliest_expiration(self, obj):

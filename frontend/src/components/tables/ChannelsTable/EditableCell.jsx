@@ -320,7 +320,7 @@ const EditableNumberCellInner = ({ row, column, getValue, onBlur }) => {
         setValue(previousValue.current);
       }
     },
-    [row.original.id, column.id, onBlur]
+    [row.original, column.id, onBlur]
   );
 
   useEffect(() => {
@@ -434,7 +434,7 @@ const EditableGroupCellInner = ({
         notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newGroupId) => {
@@ -609,7 +609,7 @@ const EditableEPGCellInner = ({
         notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newEpgDataId) => {
@@ -779,7 +779,7 @@ const EditableLogoCellInner = ({ row, logoId, onBlur }) => {
         notifyInlineSaveError(column.id, error);
       }
     },
-    [row.original.id]
+    [row.original]
   );
 
   const handleChange = (newLogoId) => {

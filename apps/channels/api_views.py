@@ -852,6 +852,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 "epg_data",
                 "stream_profile",
                 "override",
+                "auto_created_by",
             ).prefetch_related(
                 "streams",
                 # Default-attr prefetch shares the cache with M2M writes;
