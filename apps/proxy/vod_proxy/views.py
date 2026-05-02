@@ -1023,15 +1023,15 @@ def stream_xc_movie(request, username, password, stream_id, extension):
 
     user = get_object_or_404(User, username=username)
 
+    if not network_access_allowed(request, 'STREAMS', user):
+        return Response({"error": "Forbidden"}, status=403)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
         return Response({"error": "Invalid credentials"}, status=401)
 
     if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if not network_access_allowed(request, 'STREAMS', user):
         return Response({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to VOD from all active M3U accounts
@@ -1060,15 +1060,15 @@ def stream_xc_episode(request, username, password, stream_id, extension):
 
     user = get_object_or_404(User, username=username)
 
+    if not network_access_allowed(request, 'STREAMS', user):
+        return Response({"error": "Forbidden"}, status=403)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
         return Response({"error": "Invalid credentials"}, status=401)
 
     if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if not network_access_allowed(request, 'STREAMS', user):
         return Response({"error": "Invalid credentials"}, status=401)
 
     # All authenticated users get access to series/episodes from all active M3U accounts
