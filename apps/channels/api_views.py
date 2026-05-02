@@ -550,8 +550,51 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Return channel groups with prefetched relations for efficient counting"""
-        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
+        # Annotate both counts at the SQL level so the serializer methods
+        # can read them from the object rather than issuing a COUNT per row.
+        # `distinct=True` is required when multiple reverse-FK annotations
+        # share the same queryset to avoid row-multiplication artifacts.
+        # m3u_accounts is still prefetched for the nested serializer data.
+        return (
+            ChannelGroup.objects
+            .annotate(
+                channel_count=Count('channels', distinct=True),
+                m3u_account_count=Count('m3u_accounts', distinct=True),
+            )
+            .prefetch_related('m3u_accounts')
+            .all()
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Pre-aggregate stream counts for all (account, group) pairs in a
+        # single query so the nested ChannelGroupM3UAccountSerializer never
+        # fires a COUNT per row.
+        group_ids = list(queryset.values_list('id', flat=True))
+        counts_qs = (
+            Stream.objects.filter(channel_group_id__in=group_ids)
+            .values('m3u_account_id', 'channel_group_id')
+            .annotate(c=Count('id'))
+        )
+        stream_counts = {
+            (row['m3u_account_id'], row['channel_group_id']): row['c']
+            for row in counts_qs
+        }
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(
+                page, many=True,
+                context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+            )
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(
+            queryset, many=True,
+            context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+        )
+        return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -791,17 +834,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        qs = (
-            super()
-            .get_queryset()
-            .select_related(
+        # get_ids and summary only need the filter conditions, not the full
+        # object graph. Skipping the 5 select_related joins and 2 prefetch
+        # queries for those actions cuts their DB cost significantly.
+        action = getattr(self, "action", None)
+        qs = super().get_queryset()
+
+        if action not in ("get_ids", "summary"):
+            qs = qs.select_related(
                 "channel_group",
                 "logo",
                 "epg_data",
                 "stream_profile",
                 "override",
-            )
-            .prefetch_related(
+            ).prefetch_related(
                 "streams",
                 # Default-attr prefetch shares the cache with M2M writes;
                 # a named `to_attr` would isolate it and trigger N+1.
@@ -812,7 +858,6 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     ).order_by("order"),
                 ),
             )
-        )
 
         channel_group = self.request.query_params.get("channel_group")
         if channel_group:
@@ -883,6 +928,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
             self.request.query_params.get("include_streams", "false") == "true"
         )
         context["include_streams"] = include_streams
+        # source_stream is only needed by the channel edit form (detail/write
+        # paths). Exclude it from list responses to avoid iterating
+        # channelstream_set for every channel in the table.
+        context["include_source_stream"] = action in (
+            "retrieve", "update", "partial_update"
+        ) if (action := getattr(self, "action", None)) else False
         return context
 
     @extend_schema(
