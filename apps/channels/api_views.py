@@ -568,10 +568,15 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
+        # Evaluate the queryset once so the annotations and prefetch cache are
+        # populated together, then extract IDs from the in-memory objects.
+        # A second .values_list() call would fire a separate SQL query.
+        groups = list(queryset)
+        group_ids = [g.id for g in groups]
+
         # Pre-aggregate stream counts for all (account, group) pairs in a
         # single query so the nested ChannelGroupM3UAccountSerializer never
         # fires a COUNT per row.
-        group_ids = list(queryset.values_list('id', flat=True))
         counts_qs = (
             Stream.objects.filter(channel_group_id__in=group_ids)
             .values('m3u_account_id', 'channel_group_id')
@@ -582,7 +587,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             for row in counts_qs
         }
 
-        page = self.paginate_queryset(queryset)
+        page = self.paginate_queryset(groups)
         if page is not None:
             serializer = self.get_serializer(
                 page, many=True,
@@ -591,7 +596,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
 
         serializer = self.get_serializer(
-            queryset, many=True,
+            groups, many=True,
             context={**self.get_serializer_context(), 'stream_counts': stream_counts},
         )
         return Response(serializer.data)
@@ -928,11 +933,13 @@ class ChannelViewSet(viewsets.ModelViewSet):
             self.request.query_params.get("include_streams", "false") == "true"
         )
         context["include_streams"] = include_streams
-        # source_stream is only needed by the channel edit form (detail/write
-        # paths). Exclude it from list responses to avoid iterating
-        # channelstream_set for every channel in the table.
-        context["include_source_stream"] = action in (
-            "retrieve", "update", "partial_update"
+        # source_stream is only needed by the channel edit form. For get_ids
+        # and summary the channelstream_set prefetch is skipped entirely, so
+        # source_stream cannot be computed without hitting the DB per channel.
+        # For list and write/retrieve paths the prefetch is present, so we
+        # can populate it from memory without extra queries.
+        context["include_source_stream"] = action not in (
+            "get_ids", "summary"
         ) if (action := getattr(self, "action", None)) else False
         return context
 
