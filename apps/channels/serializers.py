@@ -257,12 +257,14 @@ class ChannelGroupSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
 
     def get_channel_count(self, obj):
-        """Get count of channels in this group"""
-        return obj.channels.count()
+        # Use the queryset annotation when available (list path); fall back
+        # to a live query for retrieve/create/update where it isn't set.
+        v = getattr(obj, 'channel_count', None)
+        return v if v is not None else obj.channels.count()
 
     def get_m3u_account_count(self, obj):
-        """Get count of M3U accounts associated with this group"""
-        return obj.m3u_accounts.count()
+        v = getattr(obj, 'm3u_account_count', None)
+        return v if v is not None else obj.m3u_accounts.count()
 
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
@@ -503,6 +505,8 @@ class ChannelSerializer(serializers.ModelSerializer):
         frontend can render "Auto-created from: <provider> / <stream name>"
         in the channel edit form. Returns None for manual channels.
         """
+        if not self.context.get("include_source_stream", False):
+            return None
         if not obj.auto_created:
             return None
         # Viewset prefetches `channelstream_set` ordered by `order`, so
