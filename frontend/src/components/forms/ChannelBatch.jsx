@@ -168,7 +168,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     ];
     if (values.hidden_from_output && values.hidden_from_output !== '-1') {
       lines.push(
-        `• Hide from Clients: ${values.hidden_from_output === 'true' ? 'Yes' : 'No'}`
+        `• Hidden: ${values.hidden_from_output === 'true' ? 'Yes' : 'No'}`
       );
     }
     if (values.clear_overrides === 'clear') {
@@ -875,14 +875,14 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
               <Select
                 size="xs"
-                label="Hide from Clients"
-                description="Hidden channels are excluded from HDHR, M3U, EPG, and XC output."
+                label="Hidden"
+                description="Hidden channels are excluded from HDHR, M3U, EPG, and XC output. Use channel profiles to hide per-user."
                 {...form.getInputProps('hidden_from_output')}
                 key={form.key('hidden_from_output')}
                 data={[
                   { value: '-1', label: '(no change)' },
-                  { value: 'true', label: 'Hide' },
-                  { value: 'false', label: 'Unhide' },
+                  { value: 'true', label: 'Yes' },
+                  { value: 'false', label: 'No' },
                 ]}
               />
 

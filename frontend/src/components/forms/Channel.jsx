@@ -921,12 +921,14 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 </Box>
               </Tooltip>
               <Tooltip
-                label="Excludes this channel from client output. Also preserved from auto-cleanup."
+                label="Hides this channel from HDHR, M3U, EPG, and XC client output and preserves it from auto-cleanup. To hide channels per-user, use channel profiles instead."
                 withArrow
+                multiline
+                w={320}
               >
                 <Box>
                   <Switch
-                    label="Hide from Clients"
+                    label="Hidden"
                     checked={watch('hidden_from_output')}
                     onChange={(event) =>
                       setValue('hidden_from_output', event.currentTarget.checked)
