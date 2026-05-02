@@ -433,7 +433,7 @@ describe('M3UProfiles', () => {
       fireEvent.click(deleteBtn);
       await waitFor(() => {
         expect(M3uProfileUtils.deleteM3UProfile).toHaveBeenCalledWith(
-          makePlaylist(),
+          profiles[1][0]['id'],
           1
         );
       });
@@ -454,7 +454,7 @@ describe('M3UProfiles', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() => {
         expect(M3uProfileUtils.deleteM3UProfile).toHaveBeenCalledWith(
-          makePlaylist(),
+          profiles[1][0]['id'],
           1
         );
       });

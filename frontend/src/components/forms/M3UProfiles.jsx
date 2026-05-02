@@ -224,7 +224,7 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
     if (!playlist || !playlist.id) return;
     setDeletingProfile(true);
     try {
-      await deleteM3UProfile(playlist, id);
+      await deleteM3UProfile(playlist.id, id);
     } catch (error) {
       console.error('Error deleting profile:', error);
     } finally {

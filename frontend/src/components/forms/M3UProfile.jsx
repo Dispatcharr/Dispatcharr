@@ -112,8 +112,8 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     if (expDate !== undefined) submitValues.exp_date = expDate;
 
     profile?.id
-      ? await updateM3UProfile(m3u, { ...submitValues, id: profile.id })
-      : await addM3UProfile(m3u, submitValues);
+      ? await updateM3UProfile(m3u.id, { ...submitValues, id: profile.id })
+      : await addM3UProfile(m3u.id, submitValues);
 
     reset();
     setSearchPattern('');
@@ -285,7 +285,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
             >
               <Text size="sm">
                 These patterns are applied to every stream in this playlist. If
-                the search pattern doesn&apos;t match a stream URL, the original
+                the search pattern doesn't match a stream URL, the original
                 URL is used as-is.
               </Text>
             </Alert>

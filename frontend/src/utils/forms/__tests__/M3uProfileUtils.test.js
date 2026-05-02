@@ -51,15 +51,16 @@ describe('M3uProfileUtils', () => {
       const m3u = makeM3U();
       const values = makeSubmitValues();
 
-      await updateM3UProfile(m3u, values);
+      await updateM3UProfile(m3u.id, values);
 
-      expect(API.updateM3UProfile).toHaveBeenCalledWith('m3u-1', values);
+      expect(API.updateM3UProfile).toHaveBeenCalledWith(m3u.id, values);
     });
 
     it('calls API.updateM3UProfile exactly once', async () => {
       vi.mocked(API.updateM3UProfile).mockResolvedValue(undefined);
+      const m3u = makeM3U();
 
-      await updateM3UProfile(makeM3U(), makeSubmitValues());
+      await updateM3UProfile(m3u.id, makeSubmitValues());
 
       expect(API.updateM3UProfile).toHaveBeenCalledTimes(1);
     });
@@ -68,19 +69,17 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.updateM3UProfile).mockResolvedValue(undefined);
       const m3u = makeM3U({ id: 'playlist-99', name: 'Irrelevant' });
 
-      await updateM3UProfile(m3u, makeSubmitValues());
+      await updateM3UProfile(m3u.id, makeSubmitValues());
 
-      expect(API.updateM3UProfile).toHaveBeenCalledWith(
-        'playlist-99',
-        expect.anything()
-      );
+      expect(API.updateM3UProfile).toHaveBeenCalledWith(m3u.id, expect.anything());
     });
 
     it('passes submitValues through unmodified', async () => {
       vi.mocked(API.updateM3UProfile).mockResolvedValue(undefined);
       const values = makeSubmitValues({ xcMode: true, extra: 'data' });
+      const m3u = makeM3U();
 
-      await updateM3UProfile(makeM3U(), values);
+      await updateM3UProfile(m3u.id, values);
 
       expect(API.updateM3UProfile).toHaveBeenCalledWith(
         expect.anything(),
@@ -92,16 +91,18 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.updateM3UProfile).mockRejectedValue(
         new Error('Update failed')
       );
+      const m3u = makeM3U();
 
       await expect(
-        updateM3UProfile(makeM3U(), makeSubmitValues())
+        updateM3UProfile(m3u.id, makeSubmitValues())
       ).rejects.toThrow('Update failed');
     });
 
     it('resolves without returning a value', async () => {
       vi.mocked(API.updateM3UProfile).mockResolvedValue({ success: true });
+      const m3u = makeM3U();
 
-      const result = await updateM3UProfile(makeM3U(), makeSubmitValues());
+      const result = await updateM3UProfile(m3u.id, makeSubmitValues());
 
       expect(result).toBeUndefined();
     });
@@ -115,15 +116,16 @@ describe('M3uProfileUtils', () => {
       const m3u = makeM3U();
       const values = makeSubmitValues();
 
-      await addM3UProfile(m3u, values);
+      await addM3UProfile(m3u.id, values);
 
-      expect(API.addM3UProfile).toHaveBeenCalledWith('m3u-1', values);
+      expect(API.addM3UProfile).toHaveBeenCalledWith(m3u.id, values);
     });
 
     it('calls API.addM3UProfile exactly once', async () => {
       vi.mocked(API.addM3UProfile).mockResolvedValue(undefined);
+      const m3u = makeM3U();
 
-      await addM3UProfile(makeM3U(), makeSubmitValues());
+      await addM3UProfile(m3u.id, makeSubmitValues());
 
       expect(API.addM3UProfile).toHaveBeenCalledTimes(1);
     });
@@ -132,35 +134,35 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.addM3UProfile).mockResolvedValue(undefined);
       const m3u = makeM3U({ id: 'playlist-42', name: 'Irrelevant' });
 
-      await addM3UProfile(m3u, makeSubmitValues());
+      await addM3UProfile(m3u.id, makeSubmitValues());
 
-      expect(API.addM3UProfile).toHaveBeenCalledWith(
-        'playlist-42',
-        expect.anything()
-      );
+      expect(API.addM3UProfile).toHaveBeenCalledWith(m3u.id, expect.anything());
     });
 
     it('passes submitValues through unmodified', async () => {
       vi.mocked(API.addM3UProfile).mockResolvedValue(undefined);
       const values = makeSubmitValues({ xcMode: true, extra: 'data' });
+      const m3u = makeM3U();
 
-      await addM3UProfile(makeM3U(), values);
+      await addM3UProfile(m3u.id, values);
 
       expect(API.addM3UProfile).toHaveBeenCalledWith(expect.anything(), values);
     });
 
     it('propagates rejection from API.addM3UProfile', async () => {
       vi.mocked(API.addM3UProfile).mockRejectedValue(new Error('Add failed'));
+      const m3u = makeM3U();
 
       await expect(
-        addM3UProfile(makeM3U(), makeSubmitValues())
+        addM3UProfile(m3u.id, makeSubmitValues())
       ).rejects.toThrow('Add failed');
     });
 
     it('resolves without returning a value', async () => {
       vi.mocked(API.addM3UProfile).mockResolvedValue({ id: 'new-profile' });
+      const m3u = makeM3U();
 
-      const result = await addM3UProfile(makeM3U(), makeSubmitValues());
+      const result = await addM3UProfile(m3u.id, makeSubmitValues());
 
       expect(result).toBeUndefined();
     });
@@ -171,16 +173,18 @@ describe('M3uProfileUtils', () => {
   describe('deleteM3UProfile', () => {
     it('calls API.deleteM3UProfile with the playlist id and profile id', async () => {
       vi.mocked(API.deleteM3UProfile).mockResolvedValue(undefined);
+      const m3u = makeM3U();
 
-      await deleteM3UProfile(makeM3U(), 'profile-1');
+      await deleteM3UProfile(m3u.id, 'profile-1');
 
-      expect(API.deleteM3UProfile).toHaveBeenCalledWith('m3u-1', 'profile-1');
+      expect(API.deleteM3UProfile).toHaveBeenCalledWith(m3u.id, 'profile-1');
     });
 
     it('calls API.deleteM3UProfile exactly once', async () => {
       vi.mocked(API.deleteM3UProfile).mockResolvedValue(undefined);
+      const m3u = makeM3U();
 
-      await deleteM3UProfile(makeM3U(), 'profile-1');
+      await deleteM3UProfile(m3u.id, 'profile-1');
 
       expect(API.deleteM3UProfile).toHaveBeenCalledTimes(1);
     });
@@ -189,18 +193,16 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.deleteM3UProfile).mockResolvedValue(undefined);
       const playlist = makeM3U({ id: 'playlist-99', name: 'Irrelevant' });
 
-      await deleteM3UProfile(playlist, 'profile-1');
+      await deleteM3UProfile(playlist.id, 'profile-1');
 
-      expect(API.deleteM3UProfile).toHaveBeenCalledWith(
-        'playlist-99',
-        expect.anything()
-      );
+      expect(API.deleteM3UProfile).toHaveBeenCalledWith(playlist.id, expect.anything());
     });
 
     it('passes the profile id through unmodified', async () => {
       vi.mocked(API.deleteM3UProfile).mockResolvedValue(undefined);
+      const m3u = makeM3U();
 
-      await deleteM3UProfile(makeM3U(), 'profile-42');
+      await deleteM3UProfile(m3u.id, 'profile-42');
 
       expect(API.deleteM3UProfile).toHaveBeenCalledWith(
         expect.anything(),
@@ -212,16 +214,18 @@ describe('M3uProfileUtils', () => {
       vi.mocked(API.deleteM3UProfile).mockRejectedValue(
         new Error('Delete failed')
       );
+      const m3u = makeM3U();
 
-      await expect(deleteM3UProfile(makeM3U(), 'profile-1')).rejects.toThrow(
+      await expect(deleteM3UProfile(m3u.id, 'profile-1')).rejects.toThrow(
         'Delete failed'
       );
     });
 
     it('resolves without returning a value', async () => {
       vi.mocked(API.deleteM3UProfile).mockResolvedValue({ success: true });
+      const m3u = makeM3U();
 
-      const result = await deleteM3UProfile(makeM3U(), 'profile-1');
+      const result = await deleteM3UProfile(m3u.id, 'profile-1');
 
       expect(result).toBeUndefined();
     });
