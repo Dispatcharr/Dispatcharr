@@ -193,19 +193,23 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
-        # Pre-aggregate stream counts for this account so the nested
-        # ChannelGroupM3UAccountSerializer does not issue a COUNT per group.
-        from django.db.models import Count
-        from apps.channels.models import Stream
+        # When the list() view pre-aggregates stream counts for all accounts
+        # in a single query, it seeds "stream_counts" into the context before
+        # serialization. Avoid issuing a redundant per-instance COUNT in that
+        # case. The per-instance fallback handles direct serialization (e.g.
+        # retrieve, create) where only one account is in scope.
+        if "stream_counts" not in self.context:
+            from django.db.models import Count
+            from apps.channels.models import Stream
 
-        counts_qs = (
-            Stream.objects.filter(m3u_account_id=instance.id)
-            .values("channel_group_id")
-            .annotate(c=Count("id"))
-        )
-        self.context["stream_counts"] = {
-            (instance.id, row["channel_group_id"]): row["c"] for row in counts_qs
-        }
+            counts_qs = (
+                Stream.objects.filter(m3u_account_id=instance.id)
+                .values("channel_group_id")
+                .annotate(c=Count("id"))
+            )
+            self.context["stream_counts"] = {
+                (instance.id, row["channel_group_id"]): row["c"] for row in counts_qs
+            }
 
         data = super().to_representation(instance)
 
