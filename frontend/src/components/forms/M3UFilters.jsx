@@ -331,8 +331,8 @@ const M3UFilters = ({ playlist, isOpen, onClose }) => {
             <div style={{ whiteSpace: 'pre-line' }}>
               {`Are you sure you want to delete the following filter?
 
-Type: ${filterToDelete.type}
-Patter: ${filterToDelete.regex_pattern}
+Type: ${filterToDelete.filter_type}
+Pattern: ${filterToDelete.regex_pattern}
 
 This action cannot be undone.`}
             </div>
