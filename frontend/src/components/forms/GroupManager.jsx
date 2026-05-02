@@ -1,44 +1,38 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Modal,
-  Stack,
+  ActionIcon,
+  Alert,
+  Badge,
+  Box,
+  Button,
+  Chip,
+  Divider,
+  Flex,
   Group,
+  Modal,
+  ScrollArea,
+  Stack,
   Text,
   TextInput,
-  Button,
-  ActionIcon,
-  Flex,
-  Badge,
-  Alert,
-  Divider,
-  ScrollArea,
   useMantineTheme,
-  Chip,
-  Box,
 } from '@mantine/core';
-import {
-  SquarePlus,
-  SquarePen,
-  SquareMinus,
-  Check,
-  X,
-  AlertCircle,
-  Database,
-  Tv,
-  Trash,
-  Filter,
-} from 'lucide-react';
-import { notifications } from '@mantine/notifications';
+import { AlertCircle, Check, Database, Filter, SquareMinus, SquarePen, SquarePlus, Trash, Tv, X, } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
-import API from '../../api';
+import { showNotification } from '../../utils/notificationUtils.js';
+import {
+  addChannelGroup,
+  cleanupUnusedChannelGroups,
+  deleteChannelGroup,
+  updateChannelGroup,
+} from '../../utils/forms/ChannelGroupUtils.js';
 
 // Move GroupItem outside to prevent recreation on every render
 const GroupItem = React.memo(
   ({
     group,
-    editingGroup,
+    editingGroupId,
     editName,
     onEditNameChange,
     onSaveEdit,
@@ -90,7 +84,7 @@ const GroupItem = React.memo(
           border: '1px solid #444',
           borderRadius: '8px',
           backgroundColor:
-            editingGroup === group.id
+            editingGroupId === group.id
               ? '#3f3f46'
               : group.enabled
                 ? '#2A2A2E'
@@ -101,7 +95,7 @@ const GroupItem = React.memo(
       >
         <Group justify="space-between" gap="xs" align="flex-start">
           <Stack gap={4} style={{ flex: 1 }}>
-            {editingGroup === group.id ? (
+            {editingGroupId === group.id ? (
               <TextInput
                 value={editName}
                 onChange={onEditNameChange}
@@ -120,7 +114,7 @@ const GroupItem = React.memo(
           </Stack>
 
           <Group gap="xs">
-            {editingGroup === group.id ? (
+            {editingGroupId === group.id ? (
               <>
                 <ActionIcon color="green" size="sm" onClick={onSaveEdit}>
                   <Check size={14} />
@@ -167,7 +161,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
 
-  const [editingGroup, setEditingGroup] = useState(null);
+  const [editingGroupId, setEditingGroupId] = useState(null);
   const [editName, setEditName] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -197,82 +191,36 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     [channelGroupsArray]
   );
 
-  // Filter groups based on search term and chip filters
-  const filteredGroups = useMemo(() => {
-    let filtered = sortedGroups;
+  const { filteredGroups, filterCounts } = useMemo(() => {
+    const counts = { channels: 0, m3u: 0, unused: 0 };
+    const filtered = [];
 
-    // Apply search filter
-    if (searchTerm.trim()) {
-      filtered = filtered.filter((group) =>
-        group.name.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-
-    // Apply chip filters
-    filtered = filtered.filter((group) => {
+    for (const group of sortedGroups) {
       const usage = groupUsage[group.id];
-      if (!usage) return false;
+      if (!usage) continue;
 
-      const hasChannels = usage.hasChannels;
-      const hasM3U = usage.hasM3UAccounts;
+      const { hasChannels, hasM3UAccounts: hasM3U } = usage;
       const isUnused = !hasChannels && !hasM3U;
 
-      // If group is unused, only show if unused groups are enabled
-      if (isUnused) {
-        return showUnusedGroups;
+      if (hasChannels) counts.channels++;
+      if (hasM3U) counts.m3u++;
+      if (isUnused) counts.unused++;
+
+      const matchesSearch =
+        !searchTerm.trim() ||
+        group.name.toLowerCase().includes(searchTerm.toLowerCase());
+
+      const matchesFilter = isUnused
+        ? showUnusedGroups
+        : (hasChannels && showChannelGroups) || (hasM3U && showM3UGroups);
+
+      if (matchesSearch && matchesFilter) {
+        filtered.push(group);
       }
+    }
 
-      // For groups with channels and/or M3U, show if either filter is enabled
-      let shouldShow = false;
-      if (hasChannels && showChannelGroups) shouldShow = true;
-      if (hasM3U && showM3UGroups) shouldShow = true;
-
-      return shouldShow;
-    });
-
-    return filtered;
-  }, [
-    sortedGroups,
-    searchTerm,
-    showChannelGroups,
-    showM3UGroups,
-    showUnusedGroups,
-    groupUsage,
-  ]);
-
-  // Calculate filter counts
-  const filterCounts = useMemo(() => {
-    const counts = {
-      channels: 0,
-      m3u: 0,
-      unused: 0,
-    };
-
-    sortedGroups.forEach((group) => {
-      const usage = groupUsage[group.id];
-      if (usage) {
-        const hasChannels = usage.hasChannels;
-        const hasM3U = usage.hasM3UAccounts;
-
-        // Count groups with channels (including those with both)
-        if (hasChannels) {
-          counts.channels++;
-        }
-
-        // Count groups with M3U (including those with both)
-        if (hasM3U) {
-          counts.m3u++;
-        }
-
-        // Count truly unused groups
-        if (!hasChannels && !hasM3U) {
-          counts.unused++;
-        }
-      }
-    });
-
-    return counts;
-  }, [sortedGroups, groupUsage]);
+    return { filteredGroups: filtered, filterCounts: counts };
+  }, [sortedGroups, groupUsage, searchTerm, showChannelGroups, showM3UGroups, showUnusedGroups]);
 
   const fetchGroupUsage = useCallback(async () => {
     setLoading(true);
@@ -305,13 +253,13 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   }, [isOpen, fetchGroupUsage]);
 
   const handleEdit = useCallback((group) => {
-    setEditingGroup(group.id);
+    setEditingGroupId(group.id);
     setEditName(group.name);
   }, []);
 
   const handleSaveEdit = useCallback(async () => {
     if (!editName.trim()) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Group name cannot be empty',
         color: 'red',
@@ -320,37 +268,37 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     }
 
     try {
-      await API.updateChannelGroup({
-        id: editingGroup,
-        name: editName.trim(),
-      });
+      await updateChannelGroup(
+        channelGroups[editingGroupId],
+        { name: editName.trim() }
+      );
 
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: 'Group updated successfully',
         color: 'green',
       });
 
-      setEditingGroup(null);
+      setEditingGroupId(null);
       setEditName('');
       await fetchGroupUsage(); // Refresh usage data
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to update group',
         color: 'red',
       });
     }
-  }, [editName, editingGroup, fetchGroupUsage]);
+  }, [editName, editingGroupId, fetchGroupUsage]);
 
   const handleCancelEdit = useCallback(() => {
-    setEditingGroup(null);
+    setEditingGroupId(null);
     setEditName('');
   }, []);
 
   const handleCreate = useCallback(async () => {
     if (!newGroupName.trim()) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Group name cannot be empty',
         color: 'red',
@@ -359,11 +307,11 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     }
 
     try {
-      await API.addChannelGroup({
+      await addChannelGroup({
         name: newGroupName.trim(),
       });
 
-      notifications.show({
+      showNotification({
         title: 'Success',
         message: 'Group created successfully',
         color: 'green',
@@ -373,7 +321,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
       setIsCreating(false);
       await fetchGroupUsage(); // Refresh usage data
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Error',
         message: 'Failed to create group',
         color: 'red',
@@ -385,9 +333,9 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     async (group) => {
       setDeletingGroup(true);
       try {
-        await API.deleteChannelGroup(group.id);
+        await deleteChannelGroup(group);
 
-        notifications.show({
+        showNotification({
           title: 'Success',
           message: 'Group deleted successfully',
           color: 'green',
@@ -395,7 +343,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
 
         await fetchGroupUsage(); // Refresh usage data
       } catch (error) {
-        notifications.show({
+        showNotification({
           title: 'Error',
           message: 'Failed to delete group',
           color: 'red',
@@ -416,7 +364,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
         usage &&
         (!usage.canDelete || usage.hasChannels || usage.hasM3UAccounts)
       ) {
-        notifications.show({
+        showNotification({
           title: 'Cannot Delete',
           message:
             'This group is associated with channels or M3U accounts and cannot be deleted',
@@ -441,9 +389,9 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
   const executeCleanup = useCallback(async () => {
     setIsCleaningUp(true);
     try {
-      const result = await API.cleanupUnusedChannelGroups();
+      const result = await cleanupUnusedChannelGroups();
 
-      notifications.show({
+      showNotification({
         title: 'Cleanup Complete',
         message: `Successfully deleted ${result.deleted_count} unused groups`,
         color: 'green',
@@ -452,7 +400,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
       await fetchGroupUsage(); // Refresh usage data
       setConfirmCleanupOpen(false);
     } catch (error) {
-      notifications.show({
+      showNotification({
         title: 'Cleanup Failed',
         message: 'Failed to cleanup unused groups',
         color: 'red',
@@ -653,7 +601,7 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
                   <GroupItem
                     key={group.id}
                     group={group}
-                    editingGroup={editingGroup}
+                    editingGroupId={editingGroupId}
                     editName={editName}
                     onEditNameChange={handleEditNameChange}
                     onSaveEdit={handleSaveEdit}

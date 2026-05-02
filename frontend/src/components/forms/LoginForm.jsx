@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
-import { notifications } from '@mantine/notifications';
 import {
   Paper,
   Title,
@@ -20,6 +19,7 @@ import {
   Checkbox,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
+import { showNotification } from '../../utils/notificationUtils.js';
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
@@ -132,7 +132,7 @@ const LoginForm = () => {
     } catch (e) {
       console.log(`Failed to login: ${e}`);
       if (e?.message === 'Unauthorized') {
-        notifications.show({
+        showNotification({
           title: 'Web UI Access Denied',
           message:
             'This account is a Streamer account and cannot log into the web UI. ' +
@@ -142,6 +142,7 @@ const LoginForm = () => {
         });
       }
       await logout();
+    } finally {
       setIsLoading(false);
     }
   };

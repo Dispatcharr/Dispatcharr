@@ -1,27 +1,29 @@
 // Modal.js
-import React, { useState, useEffect, forwardRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useState } from 'react';
 import {
-  TextInput,
-  Button,
-  Checkbox,
-  Flex,
-  Select,
-  Stack,
-  Group,
-  SimpleGrid,
-  Text,
-  NumberInput,
-  Divider,
   Alert,
   Box,
-  MultiSelect,
-  Tooltip,
-  Popover,
-  ScrollArea,
+  Button,
   Center,
+  Checkbox,
+  Divider,
+  Flex,
+  Group,
+  MultiSelect,
+  NumberInput,
+  Popover,
+  PopoverDropdown,
+  PopoverTarget,
+  ScrollArea,
   SegmentedControl,
+  Select,
+  SimpleGrid,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
 } from '@mantine/core';
-import { Info, CircleCheck, CircleX } from 'lucide-react';
+import { CircleCheck, CircleX, Info } from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
@@ -29,7 +31,14 @@ import { FixedSizeList as List } from 'react-window';
 import LazyLogo from '../LazyLogo';
 import LogoForm from './Logo';
 import logo from '../../images/logo.png';
-import API from '../../api';
+import {
+  ADVANCED_OPTIONS_CONFIG,
+  applyAdvancedOptionsChange,
+  getEPGs,
+  getEpgSourceData,
+  getEpgSourceValue,
+  getSelectedAdvancedOptions,
+} from '../../utils/forms/LiveGroupFilterUtils.js';
 
 // Custom item component for MultiSelect with tooltip
 const OptionWithTooltip = forwardRef(
@@ -41,6 +50,137 @@ const OptionWithTooltip = forwardRef(
     </Tooltip>
   )
 );
+
+const LogoPopover = ({ group,
+                       channelLogos,
+                       logosLoading,
+                       onPopoverChange,
+                       onLogoInputClick,
+                       onFilterChange,
+                       onLogoSelect,
+}) => {
+  const renderLogoList = () => {
+    const logoOptions = [{ id: '0', name: 'Default' }, ...Object.values(channelLogos)];
+    const filteredLogos = logoOptions.filter((logo) =>
+      logo.name.toLowerCase().includes((group.logoFilter || '').toLowerCase())
+    );
+
+    if (filteredLogos.length === 0) {
+      return (
+        <Center style={{ height: 200 }}>
+          <Text size="sm" c="dimmed">
+            {group.logoFilter ? 'No logos match your filter' : 'No logos available'}
+          </Text>
+        </Center>
+      );
+    }
+
+    return (
+      <List
+        height={200}
+        itemCount={filteredLogos.length}
+        itemSize={55}
+        style={{ width: '100%' }}
+      >
+        {({ index, style }) => {
+          const logoItem = filteredLogos[index];
+          return (
+            <div
+              style={{
+                ...style,
+                cursor: 'pointer',
+                padding: '5px',
+                borderRadius: '4px',
+              }}
+              onClick={() => onLogoSelect(logoItem.id === '0' ? null : logoItem.id)}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  'rgb(68, 68, 68)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  'transparent';
+              }}
+            >
+              <Center
+                style={{
+                  flexDirection: 'column',
+                  gap: '2px',
+                }}
+              >
+                <img
+                  src={logoItem.cache_url || logo}
+                  height="30"
+                  style={{
+                    maxWidth: 80,
+                    objectFit: 'contain',
+                  }}
+                  alt={logoItem.name || 'Logo'}
+                  onError={(e) => {
+                    if (e.target.src !== logo) {
+                      e.target.src = logo;
+                    }
+                  }}
+                />
+                <Text
+                  size="xs"
+                  c="dimmed"
+                  ta="center"
+                  style={{
+                    maxWidth: 80,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {logoItem.name || 'Default'}
+                </Text>
+              </Center>
+            </div>
+          );
+        }}
+      </List>
+    );
+  };
+
+  return (
+    <Popover
+      opened={group.logoPopoverOpened || false}
+      onChange={onPopoverChange}
+      withArrow
+    >
+      <PopoverTarget>
+        <TextInput
+          label="Custom Logo"
+          readOnly
+          value={
+            channelLogos[group.custom_properties?.custom_logo_id]?.name || 'Default'
+          }
+          onClick={onLogoInputClick}
+          size="xs"
+        />
+      </PopoverTarget>
+
+      <PopoverDropdown onMouseDown={(e) => e.stopPropagation()}>
+        <Group>
+          <TextInput
+            placeholder="Filter logos..."
+            size="xs"
+            value={group.logoFilter || ''}
+            onChange={(e) => onFilterChange(e.currentTarget.value)}
+          />
+          {logosLoading && (
+            <Text size="xs" c="dimmed">
+              Loading...
+            </Text>
+          )}
+        </Group>
+
+        <ScrollArea style={{ height: 200 }}>{renderLogoList()}</ScrollArea>
+      </PopoverDropdown>
+    </Popover>
+  );
+}
 
 const LiveGroupFilter = ({
   playlist,
@@ -82,7 +222,7 @@ const LiveGroupFilter = ({
   useEffect(() => {
     const fetchEPGSources = async () => {
       try {
-        const sources = await API.getEPGs();
+        const sources = await getEPGs();
         setEpgSources(sources || []);
       } catch (error) {
         console.error('Failed to fetch EPG sources:', error);
@@ -124,54 +264,58 @@ const LiveGroupFilter = ({
     );
   }, [playlist, channelGroups]);
 
-  const toggleGroupEnabled = (id) => {
-    setGroupStates(
-      groupStates.map((state) => ({
-        ...state,
-        enabled: state.channel_group == id ? !state.enabled : state.enabled,
-      }))
-    );
-  };
+  const updateGroupState = useCallback(
+    (id, updater) => {
+      setGroupStates((prev) =>
+        prev.map((state) =>
+          state.channel_group == id ? { ...state, ...updater(state) } : state
+        )
+      );
+    },
+    [setGroupStates]
+  );
 
-  const toggleAutoSync = (id) => {
-    setGroupStates(
-      groupStates.map((state) => ({
-        ...state,
-        auto_channel_sync:
-          state.channel_group == id
-            ? !state.auto_channel_sync
-            : state.auto_channel_sync,
-      }))
-    );
-  };
+  const updateCustomProps = useCallback(
+    (id, propsUpdater) => {
+      updateGroupState(id, (state) => ({
+        custom_properties: {
+          ...state.custom_properties,
+          ...propsUpdater(state.custom_properties || {}),
+        },
+      }));
+    },
+    [updateGroupState]
+  );
 
-  const updateChannelStart = (id, value) => {
-    setGroupStates(
-      groupStates.map((state) => ({
-        ...state,
-        auto_sync_channel_start:
-          state.channel_group == id ? value : state.auto_sync_channel_start,
-      }))
-    );
-  };
+  const toggleGroupEnabled = useCallback(
+    (id) => {
+      updateGroupState(id, (state) => ({ enabled: !state.enabled }));
+    },
+    [updateGroupState]
+  );
+
+  const toggleAutoSync = useCallback(
+    (id) => {
+      updateGroupState(id, (state) => ({
+        auto_channel_sync: !state.auto_channel_sync,
+      }));
+    },
+    [updateGroupState]
+  );
+
+  const updateChannelStart = useCallback(
+    (id, value) => {
+      updateGroupState(id, () => ({ auto_sync_channel_start: value }));
+    },
+    [updateGroupState]
+  );
 
   // Handle logo selection from LogoForm
   const handleLogoSuccess = ({ logo }) => {
     if (logo && logo.id && currentEditingGroupId !== null) {
-      setGroupStates(
-        groupStates.map((state) => {
-          if (state.channel_group === currentEditingGroupId) {
-            return {
-              ...state,
-              custom_properties: {
-                ...state.custom_properties,
-                custom_logo_id: logo.id,
-              },
-            };
-          }
-          return state;
-        })
-      );
+      updateCustomProps(currentEditingGroupId, () => ({
+        custom_logo_id: logo.id,
+      }));
       ensureLogosLoaded(); // Refresh logos
     }
     setLogoModalOpen(false);
@@ -190,8 +334,8 @@ const LiveGroupFilter = ({
   };
 
   const selectAll = () => {
-    setGroupStates(
-      groupStates.map((state) => ({
+    setGroupStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? true : state.enabled,
       }))
@@ -199,12 +343,35 @@ const LiveGroupFilter = ({
   };
 
   const deselectAll = () => {
-    setGroupStates(
-      groupStates.map((state) => ({
+    setGroupStates((prev) =>
+      prev.map((state) => ({
         ...state,
         enabled: isVisible(state) ? false : state.enabled,
       }))
     );
+  };
+
+  const handleChangeEpgSource = (group, value) => {
+    updateGroupState(group.channel_group, (state) => {
+      const newProps = { ...state.custom_properties };
+      if (value === '0') {
+        // "No EPG (Disabled)" selected
+        delete newProps.custom_epg_id;
+        delete newProps.force_epg_selected;
+        newProps.force_dummy_epg = true;
+      } else if (value) {
+        // Specific EPG source selected
+        newProps.custom_epg_id = parseInt(value);
+        delete newProps.force_dummy_epg;
+        delete newProps.force_epg_selected;
+      } else {
+        // Cleared - remove all EPG settings
+        delete newProps.custom_epg_id;
+        delete newProps.force_dummy_epg;
+        delete newProps.force_epg_selected;
+      }
+      return { custom_properties: newProps };
+    });
   };
 
   return (
@@ -360,22 +527,9 @@ const LiveGroupFilter = ({
                             'fixed'
                           }
                           onChange={(value) => {
-                            setGroupStates(
-                              groupStates.map((state) => {
-                                if (
-                                  state.channel_group === group.channel_group
-                                ) {
-                                  return {
-                                    ...state,
-                                    custom_properties: {
-                                      ...state.custom_properties,
-                                      channel_numbering_mode: value || 'fixed',
-                                    },
-                                  };
-                                }
-                                return state;
-                              })
-                            );
+                            updateCustomProps(group.channel_group, () => ({
+                              channel_numbering_mode: value || 'fixed',
+                            }));
                           }}
                           data={[
                             {
@@ -420,22 +574,9 @@ const LiveGroupFilter = ({
                               ?.channel_numbering_fallback || 1
                           }
                           onChange={(value) => {
-                            setGroupStates(
-                              groupStates.map((state) => {
-                                if (
-                                  state.channel_group === group.channel_group
-                                ) {
-                                  return {
-                                    ...state,
-                                    custom_properties: {
-                                      ...state.custom_properties,
-                                      channel_numbering_fallback: value || 1,
-                                    },
-                                  };
-                                }
-                                return state;
-                              })
-                            );
+                            updateCustomProps(group.channel_group, () => ({
+                              channel_numbering_fallback: value || 1,
+                            }));
                           }}
                           min={1}
                           step={1}
@@ -448,259 +589,25 @@ const LiveGroupFilter = ({
                       <MultiSelect
                         label="Advanced Options"
                         placeholder="Select options..."
-                        data={[
-                          {
-                            value: 'force_epg',
-                            label: 'Force EPG Source',
-                            description:
-                              'Force a specific EPG source for all auto-synced channels, or disable EPG assignment entirely',
-                          },
-                          {
-                            value: 'group_override',
-                            label: 'Override Channel Group',
-                            description:
-                              'Override the group assignment for all channels in this group',
-                          },
-                          {
-                            value: 'name_regex',
-                            label: 'Channel Name Find & Replace (Regex)',
-                            description:
-                              'Find and replace part of the channel name using a regex pattern',
-                          },
-                          {
-                            value: 'name_match_regex',
-                            label: 'Channel Name Filter (Regex)',
-                            description:
-                              'Only include channels whose names match this regex pattern',
-                          },
-                          {
-                            value: 'profile_assignment',
-                            label: 'Channel Profile Assignment',
-                            description:
-                              'Specify which channel profiles the auto-synced channels should be added to',
-                          },
-                          {
-                            value: 'channel_sort_order',
-                            label: 'Channel Sort Order',
-                            description:
-                              'Specify the order in which channels are created (name, tvg_id, updated_at)',
-                          },
-                          {
-                            value: 'stream_profile_assignment',
-                            label: 'Stream Profile Assignment',
-                            description:
-                              'Assign a specific stream profile to all channels in this group during auto sync',
-                          },
-                          {
-                            value: 'custom_logo',
-                            label: 'Custom Logo',
-                            description:
-                              'Assign a custom logo to all auto-synced channels in this group',
-                          },
-                        ]}
+                        data={ADVANCED_OPTIONS_CONFIG.map(
+                          ({ value, label, description }) => ({
+                            value,
+                            label,
+                            description,
+                          })
+                        )}
                         itemComponent={OptionWithTooltip}
-                        value={(() => {
-                          const selectedValues = [];
-                          if (
-                            group.custom_properties?.custom_epg_id !==
-                              undefined ||
-                            group.custom_properties?.force_dummy_epg ||
-                            group.custom_properties?.force_epg_selected
-                          ) {
-                            selectedValues.push('force_epg');
-                          }
-                          if (
-                            group.custom_properties?.group_override !==
-                            undefined
-                          ) {
-                            selectedValues.push('group_override');
-                          }
-                          if (
-                            group.custom_properties?.name_regex_pattern !==
-                              undefined ||
-                            group.custom_properties?.name_replace_pattern !==
-                              undefined
-                          ) {
-                            selectedValues.push('name_regex');
-                          }
-                          if (
-                            group.custom_properties?.name_match_regex !==
-                            undefined
-                          ) {
-                            selectedValues.push('name_match_regex');
-                          }
-                          if (
-                            group.custom_properties?.channel_profile_ids !==
-                            undefined
-                          ) {
-                            selectedValues.push('profile_assignment');
-                          }
-                          if (
-                            group.custom_properties?.channel_sort_order !==
-                            undefined
-                          ) {
-                            selectedValues.push('channel_sort_order');
-                          }
-                          if (
-                            group.custom_properties?.stream_profile_id !==
-                            undefined
-                          ) {
-                            selectedValues.push('stream_profile_assignment');
-                          }
-                          if (
-                            group.custom_properties?.custom_logo_id !==
-                            undefined
-                          ) {
-                            selectedValues.push('custom_logo');
-                          }
-                          return selectedValues;
-                        })()}
-                        onChange={(values) => {
-                          // MultiSelect always returns an array
-                          const selectedOptions = values || [];
-
-                          setGroupStates(
-                            groupStates.map((state) => {
-                              if (state.channel_group === group.channel_group) {
-                                let newCustomProps = {
-                                  ...(state.custom_properties || {}),
-                                };
-
-                                // Handle force_epg
-                                if (selectedOptions.includes('force_epg')) {
-                                  // Set default to force_dummy_epg if no EPG settings exist yet
-                                  if (
-                                    newCustomProps.custom_epg_id ===
-                                      undefined &&
-                                    !newCustomProps.force_dummy_epg
-                                  ) {
-                                    // Default to "No EPG (Disabled)"
-                                    newCustomProps.force_dummy_epg = true;
-                                  }
-                                } else {
-                                  // Remove all EPG settings when deselected
-                                  delete newCustomProps.custom_epg_id;
-                                  delete newCustomProps.force_dummy_epg;
-                                  delete newCustomProps.force_epg_selected;
-                                }
-
-                                // Handle group_override
-                                if (
-                                  selectedOptions.includes('group_override')
-                                ) {
-                                  if (
-                                    newCustomProps.group_override === undefined
-                                  ) {
-                                    newCustomProps.group_override = null;
-                                  }
-                                } else {
-                                  delete newCustomProps.group_override;
-                                }
-
-                                // Handle name_regex
-                                if (selectedOptions.includes('name_regex')) {
-                                  if (
-                                    newCustomProps.name_regex_pattern ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.name_regex_pattern = '';
-                                  }
-                                  if (
-                                    newCustomProps.name_replace_pattern ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.name_replace_pattern = '';
-                                  }
-                                } else {
-                                  delete newCustomProps.name_regex_pattern;
-                                  delete newCustomProps.name_replace_pattern;
-                                }
-
-                                // Handle name_match_regex
-                                if (
-                                  selectedOptions.includes('name_match_regex')
-                                ) {
-                                  if (
-                                    newCustomProps.name_match_regex ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.name_match_regex = '';
-                                  }
-                                } else {
-                                  delete newCustomProps.name_match_regex;
-                                }
-
-                                // Handle profile_assignment
-                                if (
-                                  selectedOptions.includes('profile_assignment')
-                                ) {
-                                  if (
-                                    newCustomProps.channel_profile_ids ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.channel_profile_ids = [];
-                                  }
-                                } else {
-                                  delete newCustomProps.channel_profile_ids;
-                                }
-                                // Handle channel_sort_order
-                                if (
-                                  selectedOptions.includes('channel_sort_order')
-                                ) {
-                                  if (
-                                    newCustomProps.channel_sort_order ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.channel_sort_order = '';
-                                  }
-                                  // Keep channel_sort_reverse if it exists
-                                  if (
-                                    newCustomProps.channel_sort_reverse ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.channel_sort_reverse = false;
-                                  }
-                                } else {
-                                  delete newCustomProps.channel_sort_order;
-                                  delete newCustomProps.channel_sort_reverse; // Remove reverse when sort is removed
-                                }
-
-                                // Handle stream_profile_assignment
-                                if (
-                                  selectedOptions.includes(
-                                    'stream_profile_assignment'
-                                  )
-                                ) {
-                                  if (
-                                    newCustomProps.stream_profile_id ===
-                                    undefined
-                                  ) {
-                                    newCustomProps.stream_profile_id = null;
-                                  }
-                                } else {
-                                  delete newCustomProps.stream_profile_id;
-                                }
-
-                                // Handle custom_logo
-                                if (selectedOptions.includes('custom_logo')) {
-                                  if (
-                                    newCustomProps.custom_logo_id === undefined
-                                  ) {
-                                    newCustomProps.custom_logo_id = null;
-                                  }
-                                } else {
-                                  delete newCustomProps.custom_logo_id;
-                                }
-
-                                return {
-                                  ...state,
-                                  custom_properties: newCustomProps,
-                                };
-                              }
-                              return state;
-                            })
-                          );
-                        }}
+                        value={getSelectedAdvancedOptions(
+                          group.custom_properties
+                        )}
+                        onChange={(newValues) =>
+                          updateGroupState(group.channel_group, (state) => ({
+                            custom_properties: applyAdvancedOptionsChange(
+                              state.custom_properties,
+                              newValues
+                            ),
+                          }))
+                        }
                         clearable
                         size="xs"
                       />
@@ -715,22 +622,9 @@ const LiveGroupFilter = ({
                               group.custom_properties?.channel_sort_order || ''
                             }
                             onChange={(value) => {
-                              setGroupStates(
-                                groupStates.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
-                                        ...state.custom_properties,
-                                        channel_sort_order: value || '',
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
+                              updateCustomProps(group.channel_group, () => ({
+                                channel_sort_order: value || '',
+                              }));
                             }}
                             data={[
                               {
@@ -750,39 +644,21 @@ const LiveGroupFilter = ({
                           />
 
                           {/* Add reverse sort checkbox when sort order is selected (including default) */}
-                          {group.custom_properties?.channel_sort_order !==
-                            undefined && (
-                            <Flex align="center" gap="xs" mt="xs">
-                              <Checkbox
-                                label="Reverse Sort Order"
-                                checked={
-                                  group.custom_properties
-                                    ?.channel_sort_reverse || false
-                                }
-                                onChange={(event) => {
-                                  setGroupStates(
-                                    groupStates.map((state) => {
-                                      if (
-                                        state.channel_group ===
-                                        group.channel_group
-                                      ) {
-                                        return {
-                                          ...state,
-                                          custom_properties: {
-                                            ...state.custom_properties,
-                                            channel_sort_reverse:
-                                              event.target.checked,
-                                          },
-                                        };
-                                      }
-                                      return state;
-                                    })
-                                  );
-                                }}
-                                size="xs"
-                              />
-                            </Flex>
-                          )}
+                          <Flex align="center" gap="xs" mt="xs">
+                            <Checkbox
+                              label="Reverse Sort Order"
+                              checked={
+                                group.custom_properties?.channel_sort_reverse ||
+                                false
+                              }
+                              onChange={(event) => {
+                                updateCustomProps(group.channel_group, () => ({
+                                  channel_sort_reverse: event.target.checked,
+                                }));
+                              }}
+                              size="xs"
+                            />
+                          </Flex>
                         </>
                       )}
 
@@ -800,22 +676,9 @@ const LiveGroupFilter = ({
                               group.custom_properties?.channel_profile_ids || []
                             }
                             onChange={(value) => {
-                              setGroupStates(
-                                groupStates.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
-                                        ...state.custom_properties,
-                                        channel_profile_ids: value || [],
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
+                              updateCustomProps(group.channel_group, () => ({
+                                channel_profile_ids: value || [],
+                              }));
                             }}
                             data={Object.values(profiles).map((profile) => ({
                               value: profile.id.toString(),
@@ -844,22 +707,9 @@ const LiveGroupFilter = ({
                             }
                             onChange={(value) => {
                               const newValue = value ? parseInt(value) : null;
-                              setGroupStates(
-                                groupStates.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
-                                        ...state.custom_properties,
-                                        group_override: newValue,
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
+                              updateCustomProps(group.channel_group, () => ({
+                                group_override: newValue,
+                              }));
                             }}
                             data={Object.values(channelGroups).map((g) => ({
                               value: g.id.toString(),
@@ -888,22 +738,9 @@ const LiveGroupFilter = ({
                             }
                             onChange={(value) => {
                               const newValue = value ? parseInt(value) : null;
-                              setGroupStates(
-                                groupStates.map((state) => {
-                                  if (
-                                    state.channel_group === group.channel_group
-                                  ) {
-                                    return {
-                                      ...state,
-                                      custom_properties: {
-                                        ...state.custom_properties,
-                                        stream_profile_id: newValue,
-                                      },
-                                    };
-                                  }
-                                  return state;
-                                })
-                              );
+                              updateCustomProps(group.channel_group, () => ({
+                                stream_profile_id: newValue,
+                              }));
                             }}
                             data={streamProfiles.map((profile) => ({
                               value: profile.id.toString(),
@@ -935,19 +772,9 @@ const LiveGroupFilter = ({
                               }
                               onChange={(e) => {
                                 const val = e.currentTarget.value;
-                                setGroupStates(
-                                  groupStates.map((state) =>
-                                    state.channel_group === group.channel_group
-                                      ? {
-                                          ...state,
-                                          custom_properties: {
-                                            ...state.custom_properties,
-                                            name_regex_pattern: val,
-                                          },
-                                        }
-                                      : state
-                                  )
-                                );
+                                updateCustomProps(group.channel_group, () => ({
+                                  name_regex_pattern: val,
+                                }));
                               }}
                               size="xs"
                             />
@@ -965,19 +792,9 @@ const LiveGroupFilter = ({
                               }
                               onChange={(e) => {
                                 const val = e.currentTarget.value;
-                                setGroupStates(
-                                  groupStates.map((state) =>
-                                    state.channel_group === group.channel_group
-                                      ? {
-                                          ...state,
-                                          custom_properties: {
-                                            ...state.custom_properties,
-                                            name_replace_pattern: val,
-                                          },
-                                        }
-                                      : state
-                                  )
-                                );
+                                updateCustomProps(group.channel_group, () => ({
+                                  name_replace_pattern: val,
+                                }));
                               }}
                               size="xs"
                             />
@@ -1000,19 +817,9 @@ const LiveGroupFilter = ({
                             }
                             onChange={(e) => {
                               const val = e.currentTarget.value;
-                              setGroupStates(
-                                groupStates.map((state) =>
-                                  state.channel_group === group.channel_group
-                                    ? {
-                                        ...state,
-                                        custom_properties: {
-                                          ...state.custom_properties,
-                                          name_match_regex: val,
-                                        },
-                                      }
-                                    : state
-                                )
-                              );
+                              updateCustomProps(group.channel_group, () => ({
+                                name_match_regex: val,
+                              }));
                             }}
                             size="xs"
                           />
@@ -1024,212 +831,29 @@ const LiveGroupFilter = ({
                         undefined && (
                         <Box>
                           <Group justify="space-between">
-                            <Popover
-                              opened={group.logoPopoverOpened || false}
-                              onChange={(opened) => {
-                                setGroupStates(
-                                  groupStates.map((state) => {
-                                    if (
-                                      state.channel_group ===
-                                      group.channel_group
-                                    ) {
-                                      return {
-                                        ...state,
-                                        logoPopoverOpened: opened,
-                                      };
-                                    }
-                                    return state;
-                                  })
-                                );
-                                if (opened) {
-                                  ensureLogosLoaded();
-                                }
+                            <LogoPopover
+                              group={group}
+                              channelLogos={channelLogos}
+                              logosLoading={logosLoading}
+                              onPopoverChange={(opened) => {
+                                updateGroupState(group.channel_group, () => ({ logoPopoverOpened: opened }));
+                                if (opened) ensureLogosLoaded();
                               }}
-                              withArrow
-                            >
-                              <Popover.Target>
-                                <TextInput
-                                  label="Custom Logo"
-                                  readOnly
-                                  value={
-                                    channelLogos[
-                                      group.custom_properties?.custom_logo_id
-                                    ]?.name || 'Default'
-                                  }
-                                  onClick={() => {
-                                    setGroupStates(
-                                      groupStates.map((state) => {
-                                        if (
-                                          state.channel_group ===
-                                          group.channel_group
-                                        ) {
-                                          return {
-                                            ...state,
-                                            logoPopoverOpened: true,
-                                          };
-                                        }
-                                        return {
-                                          ...state,
-                                          logoPopoverOpened: false,
-                                        };
-                                      })
-                                    );
-                                  }}
-                                  size="xs"
-                                />
-                              </Popover.Target>
-
-                              <Popover.Dropdown
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <Group>
-                                  <TextInput
-                                    placeholder="Filter logos..."
-                                    size="xs"
-                                    value={group.logoFilter || ''}
-                                    onChange={(e) => {
-                                      const val = e.currentTarget.value;
-                                      setGroupStates(
-                                        groupStates.map((state) =>
-                                          state.channel_group ===
-                                          group.channel_group
-                                            ? {
-                                                ...state,
-                                                logoFilter: val,
-                                              }
-                                            : state
-                                        )
-                                      );
-                                    }}
-                                  />
-                                  {logosLoading && (
-                                    <Text size="xs" c="dimmed">
-                                      Loading...
-                                    </Text>
-                                  )}
-                                </Group>
-
-                                <ScrollArea style={{ height: 200 }}>
-                                  {(() => {
-                                    const logoOptions = [
-                                      { id: '0', name: 'Default' },
-                                      ...Object.values(channelLogos),
-                                    ];
-                                    const filteredLogos = logoOptions.filter(
-                                      (logo) =>
-                                        logo.name
-                                          .toLowerCase()
-                                          .includes(
-                                            (
-                                              group.logoFilter || ''
-                                            ).toLowerCase()
-                                          )
-                                    );
-
-                                    if (filteredLogos.length === 0) {
-                                      return (
-                                        <Center style={{ height: 200 }}>
-                                          <Text size="sm" c="dimmed">
-                                            {group.logoFilter
-                                              ? 'No logos match your filter'
-                                              : 'No logos available'}
-                                          </Text>
-                                        </Center>
-                                      );
-                                    }
-
-                                    return (
-                                      <List
-                                        height={200}
-                                        itemCount={filteredLogos.length}
-                                        itemSize={55}
-                                        style={{ width: '100%' }}
-                                      >
-                                        {({ index, style }) => {
-                                          const logoItem = filteredLogos[index];
-                                          return (
-                                            <div
-                                              style={{
-                                                ...style,
-                                                cursor: 'pointer',
-                                                padding: '5px',
-                                                borderRadius: '4px',
-                                              }}
-                                              onClick={() => {
-                                                setGroupStates(
-                                                  groupStates.map((state) => {
-                                                    if (
-                                                      state.channel_group ===
-                                                      group.channel_group
-                                                    ) {
-                                                      return {
-                                                        ...state,
-                                                        custom_properties: {
-                                                          ...state.custom_properties,
-                                                          custom_logo_id:
-                                                            logoItem.id,
-                                                        },
-                                                        logoPopoverOpened: false,
-                                                      };
-                                                    }
-                                                    return state;
-                                                  })
-                                                );
-                                              }}
-                                              onMouseEnter={(e) => {
-                                                e.currentTarget.style.backgroundColor =
-                                                  'rgb(68, 68, 68)';
-                                              }}
-                                              onMouseLeave={(e) => {
-                                                e.currentTarget.style.backgroundColor =
-                                                  'transparent';
-                                              }}
-                                            >
-                                              <Center
-                                                style={{
-                                                  flexDirection: 'column',
-                                                  gap: '2px',
-                                                }}
-                                              >
-                                                <img
-                                                  src={
-                                                    logoItem.cache_url || logo
-                                                  }
-                                                  height="30"
-                                                  style={{
-                                                    maxWidth: 80,
-                                                    objectFit: 'contain',
-                                                  }}
-                                                  alt={logoItem.name || 'Logo'}
-                                                  onError={(e) => {
-                                                    if (e.target.src !== logo) {
-                                                      e.target.src = logo;
-                                                    }
-                                                  }}
-                                                />
-                                                <Text
-                                                  size="xs"
-                                                  c="dimmed"
-                                                  ta="center"
-                                                  style={{
-                                                    maxWidth: 80,
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                  }}
-                                                >
-                                                  {logoItem.name || 'Default'}
-                                                </Text>
-                                              </Center>
-                                            </div>
-                                          );
-                                        }}
-                                      </List>
-                                    );
-                                  })()}
-                                </ScrollArea>
-                              </Popover.Dropdown>
-                            </Popover>
+                              onLogoInputClick={() => {
+                                setGroupStates((prev) =>
+                                  prev.map((state) => ({
+                                    ...state,
+                                    logoPopoverOpened: state.channel_group === group.channel_group,
+                                  }))
+                                );
+                              }}
+                              onFilterChange={(val) => {
+                                updateGroupState(group.channel_group, () => ({ logoFilter: val }));
+                              }}
+                              onLogoSelect={(logoId) => {
+                                updateCustomProps(group.channel_group, () => ({ custom_logo_id: logoId }));
+                              }}
+                            />
 
                             <Stack gap="xs" align="center">
                               <LazyLogo
@@ -1266,110 +890,11 @@ const LiveGroupFilter = ({
                           <Select
                             label="EPG Source"
                             placeholder="No EPG (Disabled)"
-                            value={(() => {
-                              // Show custom EPG if set
-                              if (
-                                group.custom_properties?.custom_epg_id !==
-                                  undefined &&
-                                group.custom_properties?.custom_epg_id !== null
-                              ) {
-                                return group.custom_properties.custom_epg_id.toString();
-                              }
-                              // Show "No EPG" if force_dummy_epg is set
-                              if (group.custom_properties?.force_dummy_epg) {
-                                return '0';
-                              }
-                              // Otherwise show empty/placeholder
-                              return null;
-                            })()}
+                            value={getEpgSourceValue(group)}
                             onChange={(value) => {
-                              if (value === '0') {
-                                // "No EPG (Disabled)" selected - use force_dummy_epg
-                                setGroupStates(
-                                  groupStates.map((state) => {
-                                    if (
-                                      state.channel_group ===
-                                      group.channel_group
-                                    ) {
-                                      const newProps = {
-                                        ...state.custom_properties,
-                                      };
-                                      delete newProps.custom_epg_id;
-                                      delete newProps.force_epg_selected;
-                                      newProps.force_dummy_epg = true;
-                                      return {
-                                        ...state,
-                                        custom_properties: newProps,
-                                      };
-                                    }
-                                    return state;
-                                  })
-                                );
-                              } else if (value) {
-                                // Specific EPG source selected
-                                const epgId = parseInt(value);
-                                setGroupStates(
-                                  groupStates.map((state) => {
-                                    if (
-                                      state.channel_group ===
-                                      group.channel_group
-                                    ) {
-                                      const newProps = {
-                                        ...state.custom_properties,
-                                      };
-                                      newProps.custom_epg_id = epgId;
-                                      delete newProps.force_dummy_epg;
-                                      delete newProps.force_epg_selected;
-                                      return {
-                                        ...state,
-                                        custom_properties: newProps,
-                                      };
-                                    }
-                                    return state;
-                                  })
-                                );
-                              } else {
-                                // Cleared - remove all EPG settings
-                                setGroupStates(
-                                  groupStates.map((state) => {
-                                    if (
-                                      state.channel_group ===
-                                      group.channel_group
-                                    ) {
-                                      const newProps = {
-                                        ...state.custom_properties,
-                                      };
-                                      delete newProps.custom_epg_id;
-                                      delete newProps.force_dummy_epg;
-                                      delete newProps.force_epg_selected;
-                                      return {
-                                        ...state,
-                                        custom_properties: newProps,
-                                      };
-                                    }
-                                    return state;
-                                  })
-                                );
-                              }
+                              handleChangeEpgSource(group, value);
                             }}
-                            data={[
-                              { value: '0', label: 'No EPG (Disabled)' },
-                              ...[...epgSources]
-                                .sort((a, b) => a.name.localeCompare(b.name))
-                                .map((source) => ({
-                                  value: source.id.toString(),
-                                  label: `${source.name} (${
-                                    source.source_type === 'dummy'
-                                      ? 'Dummy'
-                                      : source.source_type === 'xmltv'
-                                        ? 'XMLTV'
-                                        : source.source_type ===
-                                            'schedules_direct'
-                                          ? 'Schedules Direct'
-                                          : source.source_type
-                                  })`,
-                                })),
-                            ]}
+                            data={getEpgSourceData(epgSources)}
                             clearable
                             searchable
                             size="xs"
