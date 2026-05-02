@@ -2707,9 +2707,15 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     f"{pack_result['failed']} failed"
                 )
 
-        # Hidden channels are always preserved regardless of the toggle so users
-        # can keep event/PPV channels that disappear and reappear.
-        if account.auto_cleanup_unused_channels:
+        # Cleanup mode read from account.custom_properties.orphan_channel_cleanup:
+        # "always" (default; key absent) removes every orphan auto channel;
+        # "preserve_customized" keeps those with a ChannelOverride row;
+        # "never" disables cleanup. Hidden channels are preserved across all
+        # modes so event/PPV channels that come and go are not silently lost.
+        cleanup_mode = (account.custom_properties or {}).get(
+            "orphan_channel_cleanup", "always"
+        )
+        if cleanup_mode != "never":
             orphaned_channels = Channel.objects.filter(
                 auto_created=True,
                 auto_created_by=account,
@@ -2720,13 +2726,15 @@ def sync_auto_channels(account_id, scan_start_time=None):
                     stream__isnull=False,
                 ).values_list("channel_id", flat=True)
             )
+            if cleanup_mode == "preserve_customized":
+                orphaned_channels = orphaned_channels.filter(override__isnull=True)
 
             _, per_model = orphaned_channels.delete()
             deleted_channels = per_model.get("dispatcharr_channels.Channel", 0)
             if deleted_channels:
                 channels_deleted += deleted_channels
                 logger.info(
-                    f"Deleted {deleted_channels} orphaned auto channels with no valid streams"
+                    f"Deleted {deleted_channels} orphaned auto channels with no valid streams (mode={cleanup_mode})"
                 )
 
         logger.info(

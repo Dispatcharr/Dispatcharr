@@ -1454,48 +1454,33 @@ class SyncPerformanceRegressionTests(TestCase):
         )
 
 
-class AutoCleanupToggleTests(TestCase):
+class OrphanCleanupModeTests(TestCase):
     """
-    Orphan-channel cleanup (a channel auto-created from a stream that has
-    since disappeared) used to run unconditionally at the end of every sync.
-    Users who run event-style sources (sports/PPV) want the channel to
-    persist across the stream disappearing and reappearing. The new
-    `auto_cleanup_unused_channels` toggle on M3UAccount gates the cleanup.
-    Hidden channels are always preserved regardless of the toggle.
+    Account-level `custom_properties.orphan_channel_cleanup` is a 3-state
+    selector that governs how sync handles auto-created channels whose
+    source streams have disappeared.
+
+    - "always" (default; absent key behaves the same): delete every orphan
+      auto-created channel.
+    - "preserve_customized": delete orphans without a ChannelOverride row;
+      preserve those with one.
+    - "never": preserve every orphan auto-created channel.
+
+    Hidden channels (`hidden_from_output=True`) are universally preserved
+    regardless of mode, because the user has explicitly signaled "keep this
+    around but do not show clients".
     """
 
-    def test_cleanup_toggle_off_leaves_orphaned_channels(self):
-        account = _make_account()
-        account.auto_cleanup_unused_channels = False
+    def _set_mode(self, account, mode):
+        account.custom_properties = {"orphan_channel_cleanup": mode}
         account.save()
+
+    def test_default_mode_when_key_absent_is_always(self):
+        # Account with no custom_properties.orphan_channel_cleanup value
+        # behaves like "always": orphans get cleaned up.
+        account = _make_account()
         group = _make_group(name="Sports")
         _attach_group_to_account(account, group)
-
-        # Orphan: auto-created by this account, but no associated stream.
-        Channel.objects.create(
-            name="OldESPN",
-            channel_number=500,
-            channel_group=group,
-            auto_created=True,
-            auto_created_by=account,
-        )
-
-        result = _sync(account)
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(
-            Channel.objects.filter(auto_created=True, auto_created_by=account).count(),
-            1,
-            "Toggle off: orphan should survive the sync",
-        )
-
-    def test_cleanup_toggle_on_removes_orphaned_channels(self):
-        account = _make_account()
-        account.auto_cleanup_unused_channels = True
-        account.save()
-        group = _make_group(name="Sports")
-        _attach_group_to_account(account, group)
-
         Channel.objects.create(
             name="OldESPN",
             channel_number=500,
@@ -1509,38 +1494,131 @@ class AutoCleanupToggleTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["channels_deleted"], 1)
         self.assertEqual(
-            Channel.objects.filter(auto_created=True, auto_created_by=account).count(),
+            Channel.objects.filter(
+                auto_created=True, auto_created_by=account
+            ).count(),
             0,
+            "Default (absent key): orphans must be cleaned up",
         )
 
-    def test_cleanup_preserves_hidden_channels_even_when_toggle_on(self):
+    def test_always_mode_removes_orphan_with_override(self):
+        from apps.channels.models import ChannelOverride
+
         account = _make_account()
-        account.auto_cleanup_unused_channels = True
-        account.save()
+        self._set_mode(account, "always")
         group = _make_group(name="Sports")
         _attach_group_to_account(account, group)
+        ch = Channel.objects.create(
+            name="OldESPN",
+            channel_number=500,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        ChannelOverride.objects.create(channel=ch, name="My Custom ESPN")
 
-        Channel.objects.create(
-            name="HiddenESPN",
+        result = _sync(account)
+
+        self.assertEqual(result["channels_deleted"], 1)
+        self.assertFalse(
+            Channel.objects.filter(id=ch.id).exists(),
+            "Always mode: even customized orphans get deleted",
+        )
+
+    def test_preserve_customized_mode_spares_overrides(self):
+        from apps.channels.models import ChannelOverride
+
+        account = _make_account()
+        self._set_mode(account, "preserve_customized")
+        group = _make_group(name="Sports")
+        _attach_group_to_account(account, group)
+        plain = Channel.objects.create(
+            name="OldPlain",
+            channel_number=500,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        customized = Channel.objects.create(
+            name="OldCustomized",
             channel_number=501,
             channel_group=group,
             auto_created=True,
             auto_created_by=account,
-            hidden_from_output=True,
+        )
+        ChannelOverride.objects.create(channel=customized, name="My Renamed")
+
+        _sync(account)
+
+        self.assertFalse(
+            Channel.objects.filter(id=plain.id).exists(),
+            "Preserve-customized mode: orphan without override is removed",
+        )
+        self.assertTrue(
+            Channel.objects.filter(id=customized.id).exists(),
+            "Preserve-customized mode: orphan WITH override is preserved",
+        )
+
+    def test_never_mode_preserves_all_orphans(self):
+        account = _make_account()
+        self._set_mode(account, "never")
+        group = _make_group(name="Sports")
+        _attach_group_to_account(account, group)
+        Channel.objects.create(
+            name="OldA",
+            channel_number=500,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
+        )
+        Channel.objects.create(
+            name="OldB",
+            channel_number=501,
+            channel_group=group,
+            auto_created=True,
+            auto_created_by=account,
         )
 
         result = _sync(account)
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_deleted"], 0)
         self.assertEqual(
             Channel.objects.filter(
-                auto_created=True,
-                auto_created_by=account,
-                hidden_from_output=True,
+                auto_created=True, auto_created_by=account
             ).count(),
-            1,
-            "Hidden channels must survive cleanup regardless of the toggle",
+            2,
+            "Never mode: every orphan survives",
         )
+
+    def test_hidden_channels_universally_preserved(self):
+        # Hidden orphans must survive in every mode, including the
+        # default "always" mode.
+        for mode in ("always", "preserve_customized", "never"):
+            with self.subTest(mode=mode):
+                account = _make_account(name=f"Provider-{mode}")
+                self._set_mode(account, mode)
+                group = _make_group(name=f"Sports-{mode}")
+                _attach_group_to_account(account, group)
+                Channel.objects.create(
+                    name=f"Hidden-{mode}",
+                    channel_number=600,
+                    channel_group=group,
+                    auto_created=True,
+                    auto_created_by=account,
+                    hidden_from_output=True,
+                )
+
+                _sync(account)
+
+                self.assertEqual(
+                    Channel.objects.filter(
+                        auto_created=True,
+                        auto_created_by=account,
+                        hidden_from_output=True,
+                    ).count(),
+                    1,
+                    f"Hidden channel must survive cleanup in mode={mode}",
+                )
 
 
 class MultiStreamChannelTests(TestCase):

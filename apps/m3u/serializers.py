@@ -175,7 +175,6 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "password",
             "stale_stream_days",
             "priority",
-            "auto_cleanup_unused_channels",
             "status",
             "last_message",
             "enable_vod",
@@ -262,10 +261,17 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         auto_enable_new_groups_vod = validated_data.pop("auto_enable_new_groups_vod", None)
         auto_enable_new_groups_series = validated_data.pop("auto_enable_new_groups_series", None)
 
-        # Get existing custom_properties
-        custom_props = instance.custom_properties or {}
+        # Merge client-supplied custom_properties over the existing blob
+        # so unrelated keys persist. The dedicated preference fields below
+        # overwrite their corresponding keys; clients should set those via
+        # the typed top-level fields rather than the custom_properties
+        # payload.
+        incoming_custom = validated_data.get("custom_properties") or {}
+        custom_props = {
+            **(instance.custom_properties or {}),
+            **incoming_custom,
+        }
 
-        # Update preferences
         if enable_vod is not None:
             custom_props["enable_vod"] = enable_vod
         if auto_enable_new_groups_live is not None:

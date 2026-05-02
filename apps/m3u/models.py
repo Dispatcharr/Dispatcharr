@@ -100,16 +100,6 @@ class M3UAccount(models.Model):
         default=0,
         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
     )
-    # When True, sync_auto_channels deletes auto-created channels whose
-    # provider stream no longer exists for this account. Mirrors the manual
-    # "Clean up" action but runs automatically after each refresh. Hidden
-    # channels are still preserved regardless of this toggle - they represent
-    # an explicit user decision to keep a channel around.
-    auto_cleanup_unused_channels = models.BooleanField(
-        default=False,
-        help_text="Automatically delete auto-created channels whose provider stream has disappeared after a refresh. Hidden channels are always preserved.",
-    )
-
     def __str__(self):
         return self.name
 
