@@ -17,6 +17,7 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
   fetchFirstStreamUrl: vi.fn(),
   getDetectedMode: vi.fn(),
   prepareExpDate: vi.fn(),
+  splitByPattern: vi.fn(),
   updateM3UProfile: vi.fn(),
   validateXcSimple: vi.fn(),
 }));
@@ -24,10 +25,7 @@ vi.mock('../../../utils/forms/M3uProfileUtils.js', () => ({
 // ── react-hook-form mock ───────────────────────────────────────────────────────
 vi.mock('react-hook-form', async () => {
   const actual = await vi.importActual('react-hook-form');
-  return {
-    ...actual,
-    useForm: vi.fn(),
-  };
+  return { ...actual, useForm: vi.fn() };
 });
 
 // ── @hookform/resolvers/yup mock ───────────────────────────────────────────────
@@ -53,6 +51,12 @@ vi.mock('@mantine/dates', () => ({
 
 // ── @mantine/core mock ─────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
+  Alert: ({ children, title }) => (
+    <div data-testid="alert">
+      <span data-testid="alert-title">{title}</span>
+      {children}
+    </div>
+  ),
   Badge: ({ children, color }) => (
     <span data-testid="badge" data-color={color}>
       {children}
@@ -172,6 +176,8 @@ const makeM3U = (overrides = {}) => ({
   id: 1,
   name: 'Test M3U',
   url: 'http://example.com/playlist.m3u',
+  username: 'user1',
+  password: 'pass1',
   custom_properties: {
     max_streams: 1,
     profile: null,
@@ -185,6 +191,7 @@ const makeProfile = (overrides = {}) => ({
   name: 'Test Profile',
   type: 'regex',
   search_pattern: '.*HBO.*',
+  replace_pattern: '',
   max_streams: 2,
   exp_date: null,
   custom_properties: {},
@@ -209,6 +216,7 @@ const makeFormMethods = (overrides = {}) => ({
       search_pattern: '',
       name: '',
       max_streams: 1,
+      exp_date: null,
     };
     return field ? defaults[field] : defaults;
   }),
@@ -232,6 +240,7 @@ const defaultProps = (overrides = {}) => ({
 const setupWebSocket = ({ lastMessage = null } = {}) => {
   const sendMessage = vi.fn();
   vi.mocked(useWebSocket).mockReturnValue([true, sendMessage, lastMessage]);
+  return sendMessage;
 };
 
 const setupForm = (overrides = {}) => {
@@ -249,14 +258,15 @@ describe('M3UProfile', () => {
     vi.mocked(M3uProfileUtils.updateM3UProfile).mockResolvedValue(undefined);
     vi.mocked(M3uProfileUtils.buildProfileSchema).mockReturnValue({});
     vi.mocked(M3uProfileUtils.buildSubmitValues).mockReturnValue({});
-    vi.mocked(M3uProfileUtils.getDetectedMode).mockReturnValue('regex');
+    vi.mocked(M3uProfileUtils.getDetectedMode).mockReturnValue('simple');
     vi.mocked(M3uProfileUtils.prepareExpDate).mockReturnValue(null);
     vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue(
       'http://example.com/stream1'
     );
     vi.mocked(M3uProfileUtils.applyRegex).mockReturnValue('');
     vi.mocked(M3uProfileUtils.applyXcSimplePatterns).mockResolvedValue([]);
-    vi.mocked(M3uProfileUtils.validateXcSimple).mockReturnValue(true);
+    vi.mocked(M3uProfileUtils.validateXcSimple).mockReturnValue({});
+    vi.mocked(M3uProfileUtils.splitByPattern).mockReturnValue(null);
     setupWebSocket();
     setupForm();
   });
@@ -300,7 +310,7 @@ describe('M3UProfile', () => {
       ).toBeInTheDocument();
     });
 
-    it('renders the segmented control for profile type', () => {
+    it('renders the segmented control for XC profile type', () => {
       const profile = makeProfile();
       render(
         <M3UProfile
@@ -310,19 +320,125 @@ describe('M3UProfile', () => {
       expect(screen.getByTestId('segmented-control')).toBeInTheDocument();
     });
 
+    it('does not render the segmented control for non-XC m3u', () => {
+      render(<M3UProfile {...defaultProps()} />);
+      expect(screen.queryByTestId('segmented-control')).not.toBeInTheDocument();
+    });
+
+    it('does not render the segmented control for default XC profile', () => {
+      const profile = makeProfile({ is_default: true });
+      render(
+        <M3UProfile
+          {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
+      expect(screen.queryByTestId('segmented-control')).not.toBeInTheDocument();
+    });
+
     it('renders the Name field', () => {
       render(<M3UProfile {...defaultProps()} />);
       expect(screen.getByTestId('text-input-name')).toBeInTheDocument();
     });
 
-    it('renders the Max Streams field', () => {
+    it('renders the Max Streams field for non-default profile', () => {
       render(<M3UProfile {...defaultProps()} />);
       expect(screen.getByTestId(/number-input/i)).toBeInTheDocument();
     });
 
-    it('renders the DateTimePicker for expiration date', () => {
+    it('does not render Max Streams field for default profile', () => {
+      const profile = makeProfile({ is_default: true });
+      render(<M3UProfile {...defaultProps({ profile })} />);
+      expect(screen.queryByTestId(/number-input/i)).not.toBeInTheDocument();
+    });
+
+    it('renders the DateTimePicker for non-XC expiration date', () => {
       render(<M3UProfile {...defaultProps()} />);
       expect(screen.getByTestId('date-time-picker')).toBeInTheDocument();
+    });
+
+    it('does not render DateTimePicker for XC m3u', () => {
+      render(
+        <M3UProfile
+          {...defaultProps({ m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
+      expect(screen.queryByTestId('date-time-picker')).not.toBeInTheDocument();
+    });
+
+    it('renders default profile alert for default profiles', () => {
+      const profile = makeProfile({ is_default: true });
+      render(<M3UProfile {...defaultProps({ profile })} />);
+      expect(screen.getByTestId('alert-title')).toHaveTextContent(
+        /default profile/i
+      );
+    });
+
+    it('renders the Notes textarea', () => {
+      render(<M3UProfile {...defaultProps()} />);
+      expect(screen.getByTestId('textarea-notes')).toBeInTheDocument();
+    });
+  });
+
+  // ── Live regex demonstration ───────────────────────────────────────────────
+
+  describe('live regex demonstration', () => {
+    it('renders the demo section for default profiles', () => {
+      const profile = makeProfile({ is_default: true });
+      render(<M3UProfile {...defaultProps({ profile })} />);
+      expect(
+        screen.getByPlaceholderText(/enter a sample url/i)
+      ).toBeInTheDocument();
+    });
+
+    it('renders the demo section for non-XC m3u', () => {
+      render(<M3UProfile {...defaultProps()} />);
+      expect(
+        screen.getByPlaceholderText(/enter a sample url/i)
+      ).toBeInTheDocument();
+    });
+
+    it('does not render the demo section for XC m3u in simple mode', () => {
+      // getDetectedMode returns 'simple' by default in beforeEach
+      render(
+        <M3UProfile
+          {...defaultProps({ m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
+      expect(
+        screen.queryByPlaceholderText(/enter a sample url/i)
+      ).not.toBeInTheDocument();
+    });
+
+    it('calls splitByPattern when rendering highlighted text', async () => {
+      vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue(
+        'http://example.com/stream'
+      );
+      render(<M3UProfile {...defaultProps()} />);
+      await waitFor(() => {
+        expect(M3uProfileUtils.splitByPattern).toHaveBeenCalled();
+      });
+    });
+
+    it('calls applyRegex when rendering the replace result', async () => {
+      vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue(
+        'http://example.com/stream'
+      );
+      render(<M3UProfile {...defaultProps()} />);
+      await waitFor(() => {
+        expect(M3uProfileUtils.applyRegex).toHaveBeenCalled();
+      });
+    });
+
+    it('populates sample input after fetching stream URL', async () => {
+      vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue(
+        'http://example.com/stream1'
+      );
+      render(<M3UProfile {...defaultProps()} />);
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText(/enter a sample url/i)).toHaveValue(
+          'http://example.com/stream1'
+        );
+      });
     });
   });
 
@@ -339,6 +455,16 @@ describe('M3UProfile', () => {
     it('calls buildProfileSchema on mount', () => {
       render(<M3UProfile {...defaultProps()} />);
       expect(M3uProfileUtils.buildProfileSchema).toHaveBeenCalled();
+    });
+
+    it('calls getDetectedMode when m3u is XC type', () => {
+      const profile = makeProfile();
+      render(
+        <M3UProfile
+          {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
+      expect(M3uProfileUtils.getDetectedMode).toHaveBeenCalled();
     });
   });
 
@@ -359,16 +485,6 @@ describe('M3UProfile', () => {
       const profile = makeProfile();
       rerender(<M3UProfile {...defaultProps({ profile })} />);
       expect(formMethods.reset).toHaveBeenCalledTimes(2);
-    });
-
-    it('calls getDetectedMode when m3u is XC type', () => {
-      const profile = makeProfile();
-      render(
-        <M3UProfile
-          {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })}
-        />
-      );
-      expect(M3uProfileUtils.getDetectedMode).toHaveBeenCalled();
     });
   });
 
@@ -498,9 +614,52 @@ describe('M3UProfile', () => {
     });
   });
 
-  // ── Profile type switching ─────────────────────────────────────────────────
+  // ── Profile type switching (XC mode) ──────────────────────────────────────
 
-  describe('profile type switching', () => {
+  describe('profile type switching (XC mode)', () => {
+    const xcProps = () =>
+      defaultProps({
+        m3u: makeM3U({ account_type: 'XC' }),
+        profile: makeProfile(),
+      });
+
+    it('renders Simple and Advanced segments for XC m3u', () => {
+      render(<M3UProfile {...xcProps()} />);
+      expect(screen.getByTestId('segment-simple')).toBeInTheDocument();
+      expect(screen.getByTestId('segment-advanced')).toBeInTheDocument();
+    });
+
+    it('renders New Username / New Password fields in simple mode', () => {
+      render(<M3UProfile {...xcProps()} />);
+      expect(screen.getByTestId('text-input-new-username')).toBeInTheDocument();
+      expect(screen.getByTestId('text-input-new-password')).toBeInTheDocument();
+    });
+
+    it('switches to advanced mode and renders Search Pattern field', () => {
+      render(<M3UProfile {...xcProps()} />);
+      fireEvent.click(screen.getByTestId('segment-advanced'));
+      expect(
+        screen.getByTestId('text-input-search-pattern-(regex)')
+      ).toBeInTheDocument();
+    });
+
+    it('calls setValue when switching to advanced mode', () => {
+      const formMethods = setupForm();
+      render(<M3UProfile {...xcProps()} />);
+      fireEvent.click(screen.getByTestId('segment-advanced'));
+      expect(formMethods.setValue).toHaveBeenCalledWith(
+        'search_pattern',
+        expect.any(String)
+      );
+    });
+
+    it('switches back to simple mode from advanced', () => {
+      render(<M3UProfile {...xcProps()} />);
+      fireEvent.click(screen.getByTestId('segment-advanced'));
+      fireEvent.click(screen.getByTestId('segment-simple'));
+      expect(screen.getByTestId('text-input-new-username')).toBeInTheDocument();
+    });
+
     it('calls setValue when a segment is selected', () => {
       const formMethods = setupForm();
       render(<M3UProfile {...defaultProps()} />);
@@ -511,15 +670,59 @@ describe('M3UProfile', () => {
       }
     });
 
-    it('renders regex-specific fields when type is regex', () => {
+    it('shows validation errors when XC simple fields are empty on submit', async () => {
+      vi.mocked(M3uProfileUtils.validateXcSimple).mockReturnValue({
+        newUsername: 'Required',
+        newPassword: 'Required',
+      });
       setupForm({
-        watch: vi.fn((field) => {
-          if (field === 'type') return 'regex';
-          return undefined;
+        handleSubmit: vi.fn((fn) => (e) => {
+          e?.preventDefault?.();
+          return fn({});
         }),
       });
+      render(<M3UProfile {...xcProps()} />);
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }));
+      await waitFor(() => {
+        expect(M3uProfileUtils.addM3UProfile).not.toHaveBeenCalled();
+        expect(M3uProfileUtils.updateM3UProfile).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ── Default profile — Reset to Defaults button ─────────────────────────────
+
+  describe('default profile — Reset to Defaults', () => {
+    it('renders the Reset to Defaults button for default profiles', () => {
+      const profile = makeProfile({ is_default: true });
+      render(<M3UProfile {...defaultProps({ profile })} />);
+      expect(
+        screen.getByRole('button', { name: /reset to defaults/i })
+      ).toBeInTheDocument();
+    });
+
+    it('does not render Reset to Defaults for non-default profiles', () => {
       render(<M3UProfile {...defaultProps()} />);
-      expect(screen.getByTestId('modal')).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /reset to defaults/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it('calls setValue with default patterns when Reset to Defaults is clicked', () => {
+      const formMethods = setupForm();
+      const profile = makeProfile({ is_default: true });
+      render(<M3UProfile {...defaultProps({ profile })} />);
+      fireEvent.click(
+        screen.getByRole('button', { name: /reset to defaults/i })
+      );
+      expect(formMethods.setValue).toHaveBeenCalledWith(
+        'search_pattern',
+        '^(.*)$'
+      );
+      expect(formMethods.setValue).toHaveBeenCalledWith(
+        'replace_pattern',
+        '$1'
+      );
     });
   });
 
@@ -536,7 +739,6 @@ describe('M3UProfile', () => {
         getValues: vi.fn(() => ({ search_pattern: '.*HBO.*', type: 'regex' })),
       });
       render(<M3UProfile {...defaultProps()} />);
-
       const applyBtn = screen.queryByRole('button', { name: /apply/i });
       if (applyBtn) {
         fireEvent.click(applyBtn);
@@ -555,7 +757,6 @@ describe('M3UProfile', () => {
         getValues: vi.fn(() => ({ type: 'xc_simple' })),
       });
       render(<M3UProfile {...defaultProps()} />);
-
       const applyBtn = screen.queryByRole('button', { name: /apply/i });
       if (applyBtn) {
         fireEvent.click(applyBtn);
@@ -578,7 +779,7 @@ describe('M3UProfile', () => {
       setupWebSocket({
         lastMessage: { data: JSON.stringify({ type: 'update', payload: {} }) },
       });
-      setupForm(); // ensure form mock is re-established after setupWebSocket override
+      setupForm();
       const { rerender } = render(<M3UProfile {...defaultProps()} />);
       rerender(<M3UProfile {...defaultProps()} />);
       expect(screen.getByTestId('modal')).toBeInTheDocument();
@@ -589,11 +790,17 @@ describe('M3UProfile', () => {
 
   describe('loading state', () => {
     it('disables Save button while submitting', () => {
-      setupForm({
-        formState: { errors: {}, isSubmitting: true },
-      });
+      setupForm({ formState: { errors: {}, isSubmitting: true } });
       render(<M3UProfile {...defaultProps({ profile: null })} />);
       expect(screen.getByRole('button', { name: /submit/i })).toBeDisabled();
+    });
+
+    it('enables Save button when not submitting', () => {
+      setupForm({ formState: { errors: {}, isSubmitting: false } });
+      render(<M3UProfile {...defaultProps({ profile: null })} />);
+      expect(
+        screen.getByRole('button', { name: /submit/i })
+      ).not.toBeDisabled();
     });
   });
 

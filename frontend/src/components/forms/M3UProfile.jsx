@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import {
+  Alert,
   Badge,
   Button,
   Flex,
@@ -28,6 +29,7 @@ import {
   fetchFirstStreamUrl,
   getDetectedMode,
   prepareExpDate,
+  splitByPattern,
   updateM3UProfile,
   validateXcSimple,
 } from '../../utils/forms/M3uProfileUtils.js';
@@ -225,12 +227,19 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setXcMode(mode);
   };
 
-  const getHighlightedSearchText = () =>
-    applyRegex(
-      sampleInput,
-      searchPattern,
-      (match) => `<mark style="background-color: #ffee58;">${match}</mark>`
+  const getHighlightedSearchText = () => {
+    const segments = splitByPattern(sampleInput, searchPattern);
+    if (!segments) return sampleInput;
+    return segments.map((seg, i) =>
+      seg.matched ? (
+        <mark key={i} style={{ backgroundColor: '#ffee58' }}>
+          {seg.text}
+        </mark>
+      ) : (
+        seg.text
+      )
     );
+  };
 
   const getLocalReplaceResult = () =>
     applyRegex(sampleInput, searchPattern, replacePattern);

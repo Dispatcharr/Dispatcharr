@@ -41,6 +41,37 @@ export const applyRegex = (input, pattern, replacer) => {
   }
 };
 
+/**
+ * Splits `input` into an array of { text, matched } segments using `pattern`.
+ * Returns null if the pattern is empty or the input is empty.
+ */
+export const splitByPattern = (input, pattern) => {
+  if (!pattern || !input) return null;
+  try {
+    const regex = new RegExp(pattern, 'g');
+    const segments = [];
+    let lastIndex = 0;
+    let m;
+    while ((m = regex.exec(input)) !== null) {
+      if (m.index > lastIndex) {
+        segments.push({
+          text: input.slice(lastIndex, m.index),
+          matched: false,
+        });
+      }
+      segments.push({ text: m[0], matched: true });
+      lastIndex = m.index + m[0].length;
+      if (m[0].length === 0) regex.lastIndex++;
+    }
+    if (lastIndex < input.length) {
+      segments.push({ text: input.slice(lastIndex), matched: false });
+    }
+    return segments;
+  } catch {
+    return null;
+  }
+};
+
 export const buildProfileSchema = (isDefaultProfile, isXC) => {
   return Yup.object({
     name: Yup.string().required('Name is required'),
@@ -103,6 +134,8 @@ export const buildSubmitValues = (
   if (isDefaultProfile) {
     return {
       name: values.name,
+      search_pattern: values.search_pattern || '',
+      replace_pattern: values.replace_pattern || '',
       custom_properties: {
         ...(profile?.custom_properties || {}),
         notes: values.notes || '',

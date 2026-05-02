@@ -12,6 +12,7 @@ import {
   prepareExpDate,
   applyXcSimplePatterns,
   buildSubmitValues,
+  splitByPattern,
 } from '../M3uProfileUtils.js';
 
 vi.mock('../../../api.js', () => ({
@@ -454,15 +455,16 @@ describe('M3uProfileUtils', () => {
       notes: 'some notes',
     };
 
-    it('returns only name and custom_properties for default profile', () => {
+    it('returns name, search_pattern, replace_pattern and custom_properties for default profile', () => {
       const profile = { custom_properties: { existing: 'prop' } };
       const result = buildSubmitValues(baseValues, profile, true, false, null);
       expect(result).toEqual({
         name: 'Profile Name',
+        search_pattern: 'foo',
+        replace_pattern: 'bar',
         custom_properties: { existing: 'prop', notes: 'some notes' },
       });
       expect(result.max_streams).toBeUndefined();
-      expect(result.search_pattern).toBeUndefined();
     });
 
     it('returns full values for non-default, non-XC profile', () => {
@@ -510,6 +512,94 @@ describe('M3uProfileUtils', () => {
       const values = { ...baseValues, notes: undefined };
       const result = buildSubmitValues(values, null, true, false, null);
       expect(result.custom_properties.notes).toBe('');
+    });
+  });
+
+  // ── splitByPattern ─────────────────────────────────────────────────────────
+
+  describe('splitByPattern', () => {
+    it('returns null when pattern is empty', () => {
+      expect(splitByPattern('hello world', '')).toBeNull();
+    });
+
+    it('returns null when input is empty', () => {
+      expect(splitByPattern('', 'hello')).toBeNull();
+    });
+
+    it('returns null when input is null', () => {
+      expect(splitByPattern(null, 'hello')).toBeNull();
+    });
+
+    it('returns null when pattern is null', () => {
+      expect(splitByPattern('hello', null)).toBeNull();
+    });
+
+    it('returns null for an invalid regex pattern', () => {
+      expect(splitByPattern('hello', '[invalid')).toBeNull();
+    });
+
+    it('returns a single unmatched segment when pattern does not match', () => {
+      expect(splitByPattern('hello world', 'xyz')).toEqual([
+        { text: 'hello world', matched: false },
+      ]);
+    });
+
+    it('returns a single matched segment when entire input matches', () => {
+      expect(splitByPattern('hello', 'hello')).toEqual([
+        { text: 'hello', matched: true },
+      ]);
+    });
+
+    it('splits into unmatched/matched/unmatched segments', () => {
+      expect(splitByPattern('say hello there', 'hello')).toEqual([
+        { text: 'say ', matched: false },
+        { text: 'hello', matched: true },
+        { text: ' there', matched: false },
+      ]);
+    });
+
+    it('handles multiple matches in the input', () => {
+      expect(splitByPattern('aXbXc', 'X')).toEqual([
+        { text: 'a', matched: false },
+        { text: 'X', matched: true },
+        { text: 'b', matched: false },
+        { text: 'X', matched: true },
+        { text: 'c', matched: false },
+      ]);
+    });
+
+    it('handles a match at the start of the input', () => {
+      expect(splitByPattern('helloworld', 'hello')).toEqual([
+        { text: 'hello', matched: true },
+        { text: 'world', matched: false },
+      ]);
+    });
+
+    it('handles a match at the end of the input', () => {
+      expect(splitByPattern('worldhello', 'hello')).toEqual([
+        { text: 'world', matched: false },
+        { text: 'hello', matched: true },
+      ]);
+    });
+
+    it('handles capture-group patterns', () => {
+      const result = splitByPattern('foo/bar', '(foo)');
+      expect(result).toEqual([
+        { text: 'foo', matched: true },
+        { text: '/bar', matched: false },
+      ]);
+    });
+
+    it('handles case-insensitive flag in pattern', () => {
+      const result = splitByPattern('Hello World', '(?i)hello');
+      // invalid flag combo — regex throws — should return null
+      expect(result).toBeNull();
+    });
+
+    it('does not loop infinitely on zero-length matches', () => {
+      // zero-length match: pattern matches between every character
+      const result = splitByPattern('abc', 'x*');
+      expect(Array.isArray(result)).toBe(true);
     });
   });
 });
