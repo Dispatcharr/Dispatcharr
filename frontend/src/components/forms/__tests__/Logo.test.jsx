@@ -26,8 +26,12 @@ vi.mock('@mantine/dropzone', () => ({
       {children}
     </div>
   )),
-  DropzoneAccept: ({ children }) => <div data-testid="dz-accept">{children}</div>,
-  DropzoneReject: ({ children }) => <div data-testid="dz-reject">{children}</div>,
+  DropzoneAccept: ({ children }) => (
+    <div data-testid="dz-accept">{children}</div>
+  ),
+  DropzoneReject: ({ children }) => (
+    <div data-testid="dz-reject">{children}</div>
+  ),
   DropzoneIdle: ({ children }) => <div data-testid="dz-idle">{children}</div>,
 }));
 
@@ -35,7 +39,13 @@ vi.mock('@mantine/dropzone', () => ({
 vi.mock('@mantine/core', () => ({
   Box: ({ children }) => <div>{children}</div>,
   Button: ({ children, onClick, type, loading, variant }) => (
-    <button type={type || 'button'} onClick={onClick} disabled={loading} data-variant={variant} data-loading={loading}>
+    <button
+      type={type || 'button'}
+      onClick={onClick}
+      disabled={loading}
+      data-variant={variant}
+      data-loading={loading}
+    >
       {children}
     </button>
   ),
@@ -49,17 +59,30 @@ vi.mock('@mantine/core', () => ({
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
   Stack: ({ children }) => <div>{children}</div>,
   Text: ({ children, size, color }) => (
-    <span data-size={size} data-color={color}>{children}</span>
+    <span data-size={size} data-color={color}>
+      {children}
+    </span>
   ),
-  TextInput: ({ label, placeholder, onChange, onBlur, error, disabled, ...rest }) => (
+  TextInput: ({
+    label,
+    placeholder,
+    onChange,
+    onBlur,
+    error,
+    disabled,
+    ...rest
+  }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           aria-label={label}
           placeholder={placeholder}
@@ -113,9 +136,21 @@ describe('LogoForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(LogoUtils.validateFileSize).mockReturnValue(true);
-    vi.mocked(LogoUtils.createLogo).mockResolvedValue({ id: 2, name: 'New Logo', url: 'https://example.com/new.png' });
-    vi.mocked(LogoUtils.updateLogo).mockResolvedValue({ id: 1, name: 'Updated Logo', url: 'https://example.com/updated.png' });
-    vi.mocked(LogoUtils.uploadLogo).mockResolvedValue({ id: 3, name: 'uploaded-logo', url: 'https://cdn.example.com/uploaded.png' });
+    vi.mocked(LogoUtils.createLogo).mockResolvedValue({
+      id: 2,
+      name: 'New Logo',
+      url: 'https://example.com/new.png',
+    });
+    vi.mocked(LogoUtils.updateLogo).mockResolvedValue({
+      id: 1,
+      name: 'Updated Logo',
+      url: 'https://example.com/updated.png',
+    });
+    vi.mocked(LogoUtils.uploadLogo).mockResolvedValue({
+      id: 3,
+      name: 'uploaded-logo',
+      url: 'https://cdn.example.com/uploaded.png',
+    });
     vi.mocked(LogoUtils.getResolver).mockReturnValue(undefined);
 
     URL.createObjectURL = vi.fn();
@@ -165,7 +200,9 @@ describe('LogoForm', () => {
 
     it('pre-fills URL input when editing existing logo', () => {
       render(<LogoForm {...defaultProps({ logo: makeLogo() })} />);
-      expect(screen.getByDisplayValue('https://example.com/logo.png')).toBeInTheDocument();
+      expect(
+        screen.getByDisplayValue('https://example.com/logo.png')
+      ).toBeInTheDocument();
     });
 
     it('shows logo preview when logo has cache_url', () => {
@@ -205,9 +242,12 @@ describe('LogoForm', () => {
     it('calls createLogo with entered values on submit', async () => {
       render(<LogoForm {...defaultProps()} />);
 
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/new.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/new.png' },
+        }
+      );
       fireEvent.change(screen.getByPlaceholderText('Enter logo name'), {
         target: { value: 'New Logo' },
       });
@@ -221,9 +261,12 @@ describe('LogoForm', () => {
     it('shows success notification after creating logo', async () => {
       render(<LogoForm {...defaultProps()} />);
 
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/new.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/new.png' },
+        }
+      );
       fireEvent.click(screen.getByText('Create'));
 
       await waitFor(() => {
@@ -237,9 +280,12 @@ describe('LogoForm', () => {
       const onSuccess = vi.fn();
       render(<LogoForm {...defaultProps({ onSuccess })} />);
 
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/new.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/new.png' },
+        }
+      );
       fireEvent.click(screen.getByText('Create'));
 
       await waitFor(() => {
@@ -253,9 +299,12 @@ describe('LogoForm', () => {
       const onClose = vi.fn();
       render(<LogoForm {...defaultProps({ onClose })} />);
 
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/new.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/new.png' },
+        }
+      );
       fireEvent.click(screen.getByText('Create'));
 
       await waitFor(() => {
@@ -267,9 +316,12 @@ describe('LogoForm', () => {
       vi.mocked(LogoUtils.createLogo).mockRejectedValue(new Error('API error'));
       render(<LogoForm {...defaultProps()} />);
 
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/new.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/new.png' },
+        }
+      );
       fireEvent.click(screen.getByText('Create'));
 
       await waitFor(() => {
@@ -319,7 +371,9 @@ describe('LogoForm', () => {
     });
 
     it('shows error notification when updateLogo throws', async () => {
-      vi.mocked(LogoUtils.updateLogo).mockRejectedValue(new Error('Server error'));
+      vi.mocked(LogoUtils.updateLogo).mockRejectedValue(
+        new Error('Server error')
+      );
       render(<LogoForm {...defaultProps({ logo: makeLogo() })} />);
       fireEvent.click(screen.getByText('Update'));
 
@@ -358,7 +412,6 @@ describe('LogoForm', () => {
       });
     });
 
-
     it('shows error notification when file is too large', async () => {
       vi.mocked(LogoUtils.validateFileSize).mockReturnValue(false);
 
@@ -382,7 +435,9 @@ describe('LogoForm', () => {
     });
 
     it('shows upload error notification when uploadLogo throws', async () => {
-      vi.mocked(LogoUtils.uploadLogo).mockRejectedValue(new Error('Upload failed'));
+      vi.mocked(LogoUtils.uploadLogo).mockRejectedValue(
+        new Error('Upload failed')
+      );
       const file = makeFile('logo.png');
       const { Dropzone } = await import('@mantine/dropzone');
       vi.mocked(Dropzone).mockImplementationOnce(({ children, onDrop }) => (
@@ -408,37 +463,55 @@ describe('LogoForm', () => {
   describe('URL input behaviour', () => {
     it('updates preview when a valid http URL is entered', () => {
       render(<LogoForm {...defaultProps()} />);
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/img.png' },
-      });
-      expect(screen.getByAltText('Logo preview')).toHaveAttribute('src', 'https://example.com/img.png');
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/img.png' },
+        }
+      );
+      expect(screen.getByAltText('Logo preview')).toHaveAttribute(
+        'src',
+        'https://example.com/img.png'
+      );
     });
 
     it('removes preview when URL is cleared', () => {
       render(<LogoForm {...defaultProps({ logo: makeLogo() })} />);
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: '' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: '' },
+        }
+      );
       expect(screen.queryByAltText('Logo preview')).not.toBeInTheDocument();
     });
 
     it('auto-fills name from URL on blur', () => {
       render(<LogoForm {...defaultProps()} />);
-      fireEvent.change(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/my-channel-logo.png' },
-      });
-      fireEvent.blur(screen.getByPlaceholderText('https://example.com/logo.png'), {
-        target: { value: 'https://example.com/my-channel-logo.png' },
-      });
+      fireEvent.change(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/my-channel-logo.png' },
+        }
+      );
+      fireEvent.blur(
+        screen.getByPlaceholderText('https://example.com/logo.png'),
+        {
+          target: { value: 'https://example.com/my-channel-logo.png' },
+        }
+      );
       expect(LogoUtils.getFilenameWithoutExtension).toHaveBeenCalled();
     });
 
     it('does not throw on blur with invalid URL', () => {
       render(<LogoForm {...defaultProps()} />);
       expect(() => {
-        fireEvent.blur(screen.getByPlaceholderText('https://example.com/logo.png'), {
-          target: { value: 'not-a-url' },
-        });
+        fireEvent.blur(
+          screen.getByPlaceholderText('https://example.com/logo.png'),
+          {
+            target: { value: 'not-a-url' },
+          }
+        );
       }).not.toThrow();
     });
   });

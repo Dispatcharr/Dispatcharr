@@ -26,8 +26,16 @@ vi.mock('../../../api.js', () => ({
 import API from '../../../api.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-const makeM3U = (overrides = {}) => ({ id: 'm3u-1', name: 'My Playlist', ...overrides });
-const makeSubmitValues = (overrides = {}) => ({ name: 'Profile A', xcMode: false, ...overrides });
+const makeM3U = (overrides = {}) => ({
+  id: 'm3u-1',
+  name: 'My Playlist',
+  ...overrides,
+});
+const makeSubmitValues = (overrides = {}) => ({
+  name: 'Profile A',
+  xcMode: false,
+  ...overrides,
+});
 
 describe('M3uProfileUtils', () => {
   beforeEach(() => {
@@ -61,7 +69,10 @@ describe('M3uProfileUtils', () => {
 
       await updateM3UProfile(m3u, makeSubmitValues());
 
-      expect(API.updateM3UProfile).toHaveBeenCalledWith('playlist-99', expect.anything());
+      expect(API.updateM3UProfile).toHaveBeenCalledWith(
+        'playlist-99',
+        expect.anything()
+      );
     });
 
     it('passes submitValues through unmodified', async () => {
@@ -70,13 +81,20 @@ describe('M3uProfileUtils', () => {
 
       await updateM3UProfile(makeM3U(), values);
 
-      expect(API.updateM3UProfile).toHaveBeenCalledWith(expect.anything(), values);
+      expect(API.updateM3UProfile).toHaveBeenCalledWith(
+        expect.anything(),
+        values
+      );
     });
 
     it('propagates rejection from API.updateM3UProfile', async () => {
-      vi.mocked(API.updateM3UProfile).mockRejectedValue(new Error('Update failed'));
+      vi.mocked(API.updateM3UProfile).mockRejectedValue(
+        new Error('Update failed')
+      );
 
-      await expect(updateM3UProfile(makeM3U(), makeSubmitValues())).rejects.toThrow('Update failed');
+      await expect(
+        updateM3UProfile(makeM3U(), makeSubmitValues())
+      ).rejects.toThrow('Update failed');
     });
 
     it('resolves without returning a value', async () => {
@@ -88,7 +106,7 @@ describe('M3uProfileUtils', () => {
     });
   });
 
-// ── addM3UProfile ──────────────────────────────────────────────────────────
+  // ── addM3UProfile ──────────────────────────────────────────────────────────
 
   describe('addM3UProfile', () => {
     it('calls API.addM3UProfile with the m3u id and submitValues', async () => {
@@ -115,7 +133,10 @@ describe('M3uProfileUtils', () => {
 
       await addM3UProfile(m3u, makeSubmitValues());
 
-      expect(API.addM3UProfile).toHaveBeenCalledWith('playlist-42', expect.anything());
+      expect(API.addM3UProfile).toHaveBeenCalledWith(
+        'playlist-42',
+        expect.anything()
+      );
     });
 
     it('passes submitValues through unmodified', async () => {
@@ -130,7 +151,9 @@ describe('M3uProfileUtils', () => {
     it('propagates rejection from API.addM3UProfile', async () => {
       vi.mocked(API.addM3UProfile).mockRejectedValue(new Error('Add failed'));
 
-      await expect(addM3UProfile(makeM3U(), makeSubmitValues())).rejects.toThrow('Add failed');
+      await expect(
+        addM3UProfile(makeM3U(), makeSubmitValues())
+      ).rejects.toThrow('Add failed');
     });
 
     it('resolves without returning a value', async () => {
@@ -142,7 +165,7 @@ describe('M3uProfileUtils', () => {
     });
   });
 
-// ── deleteM3UProfile ───────────────────────────────────────────────────────
+  // ── deleteM3UProfile ───────────────────────────────────────────────────────
 
   describe('deleteM3UProfile', () => {
     it('calls API.deleteM3UProfile with the playlist id and profile id', async () => {
@@ -167,7 +190,10 @@ describe('M3uProfileUtils', () => {
 
       await deleteM3UProfile(playlist, 'profile-1');
 
-      expect(API.deleteM3UProfile).toHaveBeenCalledWith('playlist-99', expect.anything());
+      expect(API.deleteM3UProfile).toHaveBeenCalledWith(
+        'playlist-99',
+        expect.anything()
+      );
     });
 
     it('passes the profile id through unmodified', async () => {
@@ -175,13 +201,20 @@ describe('M3uProfileUtils', () => {
 
       await deleteM3UProfile(makeM3U(), 'profile-42');
 
-      expect(API.deleteM3UProfile).toHaveBeenCalledWith(expect.anything(), 'profile-42');
+      expect(API.deleteM3UProfile).toHaveBeenCalledWith(
+        expect.anything(),
+        'profile-42'
+      );
     });
 
     it('propagates rejection from API.deleteM3UProfile', async () => {
-      vi.mocked(API.deleteM3UProfile).mockRejectedValue(new Error('Delete failed'));
+      vi.mocked(API.deleteM3UProfile).mockRejectedValue(
+        new Error('Delete failed')
+      );
 
-      await expect(deleteM3UProfile(makeM3U(), 'profile-1')).rejects.toThrow('Delete failed');
+      await expect(deleteM3UProfile(makeM3U(), 'profile-1')).rejects.toThrow(
+        'Delete failed'
+      );
     });
 
     it('resolves without returning a value', async () => {
@@ -218,7 +251,9 @@ describe('M3uProfileUtils', () => {
 
     it('returns "simple" when profile has no search_pattern', () => {
       const profile = {};
-      expect(getDetectedMode(null, profile, { username: 'u', password: 'p' })).toBe('simple');
+      expect(
+        getDetectedMode(null, profile, { username: 'u', password: 'p' })
+      ).toBe('simple');
     });
   });
 
@@ -252,8 +287,12 @@ describe('M3uProfileUtils', () => {
   describe('buildProfileSchema', () => {
     it('requires search_pattern and replace_pattern when not default and not XC', async () => {
       const schema = buildProfileSchema(false, false);
-      await expect(schema.validate({ name: 'Test' }, { abortEarly: false })).rejects.toThrow();
-      const error = await schema.validate({ name: 'Test' }, { abortEarly: false }).catch((e) => e);
+      await expect(
+        schema.validate({ name: 'Test' }, { abortEarly: false })
+      ).rejects.toThrow();
+      const error = await schema
+        .validate({ name: 'Test' }, { abortEarly: false })
+        .catch((e) => e);
       expect(error.errors).toContain('Search pattern is required');
       expect(error.errors).toContain('Replace pattern is required');
     });
@@ -270,14 +309,20 @@ describe('M3uProfileUtils', () => {
 
     it('requires name in all cases', async () => {
       const schema = buildProfileSchema(true, true);
-      const error = await schema.validate({}, { abortEarly: false }).catch((e) => e);
+      const error = await schema
+        .validate({}, { abortEarly: false })
+        .catch((e) => e);
       expect(error.errors).toContain('Name is required');
     });
 
     it('validates successfully with all required fields', async () => {
       const schema = buildProfileSchema(false, false);
       await expect(
-        schema.validate({ name: 'Test', search_pattern: 'foo', replace_pattern: 'bar' })
+        schema.validate({
+          name: 'Test',
+          search_pattern: 'foo',
+          replace_pattern: 'bar',
+        })
       ).resolves.toBeTruthy();
     });
   });
@@ -288,7 +333,9 @@ describe('M3uProfileUtils', () => {
     beforeEach(() => vi.clearAllMocks());
 
     it('returns url from first result', async () => {
-      API.queryStreams.mockResolvedValue({ results: [{ url: 'http://stream.url' }] });
+      API.queryStreams.mockResolvedValue({
+        results: [{ url: 'http://stream.url' }],
+      });
       const url = await fetchFirstStreamUrl(5);
       expect(url).toBe('http://stream.url');
       const params = API.queryStreams.mock.calls[0][0];
@@ -386,7 +433,12 @@ describe('M3uProfileUtils', () => {
 
     it('trims whitespace from newUsername and newPassword', () => {
       const m3u = { username: 'u', password: 'p' };
-      const result = applyXcSimplePatterns({}, m3u, '  newUser  ', '  newPass  ');
+      const result = applyXcSimplePatterns(
+        {},
+        m3u,
+        '  newUser  ',
+        '  newPass  '
+      );
       expect(result.replace_pattern).toBe('newUser/newPass');
     });
   });
@@ -427,13 +479,25 @@ describe('M3uProfileUtils', () => {
 
     it('includes xcMode in custom_properties when isXC is true', () => {
       const profile = { custom_properties: {} };
-      const result = buildSubmitValues(baseValues, profile, false, true, 'simple');
+      const result = buildSubmitValues(
+        baseValues,
+        profile,
+        false,
+        true,
+        'simple'
+      );
       expect(result.custom_properties.xcMode).toBe('simple');
     });
 
     it('does not include xcMode when isXC is false', () => {
       const profile = { custom_properties: {} };
-      const result = buildSubmitValues(baseValues, profile, false, false, 'simple');
+      const result = buildSubmitValues(
+        baseValues,
+        profile,
+        false,
+        false,
+        'simple'
+      );
       expect(result.custom_properties.xcMode).toBeUndefined();
     });
 

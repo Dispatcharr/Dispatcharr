@@ -21,7 +21,7 @@ import API from '../../../api.js';
 describe('M3uUtils', () => {
   beforeEach(() => vi.clearAllMocks());
 
-// ── updatePlaylist ─────────────────────────────────────────────────────────────
+  // ── updatePlaylist ─────────────────────────────────────────────────────────────
 
   describe('updatePlaylist', () => {
     it('calls API.updatePlaylist with merged id, values, and file', () => {
@@ -29,7 +29,11 @@ describe('M3uUtils', () => {
       const values = { name: 'Test' };
       const file = new File([''], 'test.m3u');
       updatePlaylist(playlist, values, file);
-      expect(API.updatePlaylist).toHaveBeenCalledWith({ id: 1, name: 'Test', file });
+      expect(API.updatePlaylist).toHaveBeenCalledWith({
+        id: 1,
+        name: 'Test',
+        file,
+      });
     });
 
     it('returns the result of API.updatePlaylist', async () => {
@@ -40,11 +44,15 @@ describe('M3uUtils', () => {
 
     it('passes null file when no file provided', () => {
       updatePlaylist({ id: 2 }, { name: 'No File' }, null);
-      expect(API.updatePlaylist).toHaveBeenCalledWith({ id: 2, name: 'No File', file: null });
+      expect(API.updatePlaylist).toHaveBeenCalledWith({
+        id: 2,
+        name: 'No File',
+        file: null,
+      });
     });
   });
 
-// ── addPlaylist ────────────────────────────────────────────────────────────────
+  // ── addPlaylist ────────────────────────────────────────────────────────────────
 
   describe('addPlaylist', () => {
     it('calls API.addPlaylist with merged values and file', async () => {
@@ -61,11 +69,14 @@ describe('M3uUtils', () => {
 
     it('passes null file when no file provided', async () => {
       await addPlaylist({ name: 'No File' }, null);
-      expect(API.addPlaylist).toHaveBeenCalledWith({ name: 'No File', file: null });
+      expect(API.addPlaylist).toHaveBeenCalledWith({
+        name: 'No File',
+        file: null,
+      });
     });
   });
 
-// ── getPlaylist ────────────────────────────────────────────────────────────────
+  // ── getPlaylist ────────────────────────────────────────────────────────────────
 
   describe('getPlaylist', () => {
     it('calls API.getPlaylist with the playlist id', async () => {
@@ -81,7 +92,7 @@ describe('M3uUtils', () => {
     });
   });
 
-// ── refreshPlaylist ────────────────────────────────────────────────────────────
+  // ── refreshPlaylist ────────────────────────────────────────────────────────────
 
   describe('refreshPlaylist', () => {
     it('calls API.refreshPlaylist with the playlist id', async () => {
@@ -97,7 +108,7 @@ describe('M3uUtils', () => {
     });
   });
 
-// ── prepareSubmitValues ────────────────────────────────────────────────────────
+  // ── prepareSubmitValues ────────────────────────────────────────────────────────
 
   describe('prepareSubmitValues', () => {
     describe('exp_date handling', () => {

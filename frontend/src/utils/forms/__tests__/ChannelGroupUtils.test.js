@@ -146,7 +146,9 @@ describe('ChannelGroupUtils', () => {
       vi.mocked(API.cleanupUnusedChannelGroups).mockRejectedValue(
         new Error('Server error')
       );
-      await expect(cleanupUnusedChannelGroups()).rejects.toThrow('Server error');
+      await expect(cleanupUnusedChannelGroups()).rejects.toThrow(
+        'Server error'
+      );
     });
   });
 });

@@ -1,9 +1,25 @@
-import React, {useEffect, useMemo, useState} from 'react';
-import {useForm} from 'react-hook-form';
-import {Box, Button, Center, Divider, Group, Image, Modal, Stack, Text, TextInput,} from '@mantine/core';
-import {Dropzone, DropzoneAccept, DropzoneIdle, DropzoneReject,} from '@mantine/dropzone';
-import {FileImage, Upload, X} from 'lucide-react';
-import {showNotification} from '../../utils/notificationUtils.js';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import {
+  Box,
+  Button,
+  Center,
+  Divider,
+  Group,
+  Image,
+  Modal,
+  Stack,
+  Text,
+  TextInput,
+} from '@mantine/core';
+import {
+  Dropzone,
+  DropzoneAccept,
+  DropzoneIdle,
+  DropzoneReject,
+} from '@mantine/dropzone';
+import { FileImage, Upload, X } from 'lucide-react';
+import { showNotification } from '../../utils/notificationUtils.js';
 import {
   createLogo,
   getFilenameWithoutExtension,

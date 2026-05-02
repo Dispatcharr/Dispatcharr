@@ -263,7 +263,9 @@ describe('ChannelGroup', () => {
       fireEvent.submit(screen.getByTestId('modal').querySelector('form'));
 
       await waitFor(() => {
-        expect(API.updateChannelGroup).toHaveBeenCalledWith(group, { name: 'Sports Updated' });
+        expect(API.updateChannelGroup).toHaveBeenCalledWith(group, {
+          name: 'Sports Updated',
+        });
       });
     });
 

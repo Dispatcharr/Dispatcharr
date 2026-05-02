@@ -29,7 +29,9 @@ vi.mock('@mantine/form', () => {
 
   return {
     isNotEmpty: vi.fn(() => (val) => (val ? null : 'Required')),
-    __resetFormState: () => { _values = null; },
+    __resetFormState: () => {
+      _values = null;
+    },
     useForm: vi.fn(({ initialValues = {} } = {}) => {
       if (_values === null) {
         _values = { ...initialValues };
@@ -38,9 +40,15 @@ vi.mock('@mantine/form', () => {
       return {
         key: vi.fn((field) => field),
         getValues: () => ({ ..._values }),
-        setValues: (v) => { Object.assign(_values, v); },
-        setFieldValue: (field, val) => { _values[field] = val; },
-        reset: () => { _values = { ...initialValues }; },
+        setValues: (v) => {
+          Object.assign(_values, v);
+        },
+        setFieldValue: (field, val) => {
+          _values[field] = val;
+        },
+        reset: () => {
+          _values = { ...initialValues };
+        },
         submitting: false,
         onSubmit: vi.fn((handler) => (e) => {
           e?.preventDefault?.();
@@ -50,10 +58,12 @@ vi.mock('@mantine/form', () => {
           const isCheckbox = options?.type === 'checkbox';
           return {
             ...(isCheckbox
-              ? { checked: !!(_values?.[field]) }
+              ? { checked: !!_values?.[field] }
               : { value: _values?.[field] ?? '' }),
             onChange: vi.fn((e) => {
-              const val = isCheckbox ? (e?.target?.checked ?? e) : (e?.target?.value ?? e);
+              const val = isCheckbox
+                ? (e?.target?.checked ?? e)
+                : (e?.target?.value ?? e);
               if (_values) _values[field] = val;
             }),
             error: null,
@@ -85,7 +95,9 @@ vi.mock('@mantine/core', () => ({
     opened ? (
       <div data-testid="modal">
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
@@ -124,7 +136,15 @@ vi.mock('@mantine/core', () => ({
       {label}
     </label>
   ),
-  TextInput: ({ label, placeholder, value, onChange, onBlur, error, disabled }) => (
+  TextInput: ({
+    label,
+    placeholder,
+    value,
+    onChange,
+    onBlur,
+    error,
+    disabled,
+  }) => (
     <div>
       <label>
         {label}
@@ -175,7 +195,9 @@ const defaultProps = (overrides = {}) => ({
   ...overrides,
 });
 
-const setupStores = ({ fetchPlaylist = vi.fn().mockResolvedValue(undefined) } = {}) => {
+const setupStores = ({
+  fetchPlaylist = vi.fn().mockResolvedValue(undefined),
+} = {}) => {
   vi.mocked(usePlaylistsStore).mockImplementation((sel) =>
     sel({ fetchPlaylist })
   );
@@ -222,8 +244,12 @@ describe('M3UFilter', () => {
     it('renders filter type options from M3U_FILTER_TYPES', () => {
       setupStores();
       render(<M3UFilter {...defaultProps()} />);
-      expect(screen.getByRole('option', { name: 'Include' })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'Exclude' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Include' })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('option', { name: 'Exclude' })
+      ).toBeInTheDocument();
     });
 
     it('renders a text input for the pattern', () => {
@@ -336,7 +362,9 @@ describe('M3UFilter', () => {
     it('calls updateM3UFilter on submit for an existing filter', async () => {
       setupStores();
       render(<M3UFilter {...defaultProps({ filter: makeFilter() })} />);
-      fireEvent.click(screen.getByRole('button', { name: /add|save|update|submit/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add|save|update|submit/i })
+      );
       await waitFor(() => {
         expect(M3uFilterUtils.updateM3UFilter).toHaveBeenCalled();
       });
@@ -345,7 +373,9 @@ describe('M3UFilter', () => {
     it('does not call addM3UFilter when updating', async () => {
       setupStores();
       render(<M3UFilter {...defaultProps({ filter: makeFilter() })} />);
-      fireEvent.click(screen.getByRole('button', { name: /add|save|update|submit/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add|save|update|submit/i })
+      );
       await waitFor(() => {
         expect(M3uFilterUtils.updateM3UFilter).toHaveBeenCalled();
       });
@@ -355,7 +385,9 @@ describe('M3UFilter', () => {
     it('calls fetchPlaylist after successful update', async () => {
       const { fetchPlaylist } = setupStores();
       render(<M3UFilter {...defaultProps({ filter: makeFilter() })} />);
-      fireEvent.click(screen.getByRole('button', { name: /add|save|update|submit/i }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /add|save|update|submit/i })
+      );
       await waitFor(() => {
         expect(fetchPlaylist).toHaveBeenCalledWith(makeM3U().id);
       });
@@ -364,8 +396,12 @@ describe('M3UFilter', () => {
     it('calls onClose after successful update', async () => {
       const onClose = vi.fn();
       setupStores();
-      render(<M3UFilter {...defaultProps({ filter: makeFilter(), onClose })} />);
-      fireEvent.click(screen.getByRole('button', { name: /add|save|update|submit/i }));
+      render(
+        <M3UFilter {...defaultProps({ filter: makeFilter(), onClose })} />
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: /add|save|update|submit/i })
+      );
       await waitFor(() => {
         expect(onClose).toHaveBeenCalled();
       });

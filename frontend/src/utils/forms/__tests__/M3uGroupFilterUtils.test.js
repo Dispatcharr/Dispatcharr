@@ -21,7 +21,11 @@ import API from '../../../api.js';
 import { refreshPlaylist, updatePlaylist } from '../M3uUtils.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-const makePlaylist = (overrides = {}) => ({ id: 'playlist-1', name: 'My Playlist', ...overrides });
+const makePlaylist = (overrides = {}) => ({
+  id: 'playlist-1',
+  name: 'My Playlist',
+  ...overrides,
+});
 
 const makeChannelGroups = () => ({
   'group-1': { name: 'Sports' },
@@ -124,7 +128,10 @@ describe('M3uGroupFilterUtils', () => {
     });
 
     it('spreads all original group properties into the result', () => {
-      const group = makePlaylistChannelGroup({ enabled: true, extra_prop: 'value' });
+      const group = makePlaylistChannelGroup({
+        enabled: true,
+        extra_prop: 'value',
+      });
       const result = buildGroupStates(makeChannelGroups(), [group]);
       expect(result[0].enabled).toBe(true);
       expect(result[0].extra_prop).toBe('value');
@@ -199,7 +206,13 @@ describe('M3uGroupFilterUtils', () => {
     it('calls API.updateM3UGroupSettings with playlist id, groupSettings, and categorySettings', async () => {
       const playlist = makePlaylist();
 
-      await saveAndRefreshPlaylist(playlist, [], [], [], makeAutoEnableSettings());
+      await saveAndRefreshPlaylist(
+        playlist,
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      );
 
       expect(API.updateM3UGroupSettings).toHaveBeenCalledWith(
         'playlist-1',
@@ -211,13 +224,25 @@ describe('M3uGroupFilterUtils', () => {
     it('calls refreshPlaylist with playlist', async () => {
       const playlist = makePlaylist();
 
-      await saveAndRefreshPlaylist(playlist, [], [], [], makeAutoEnableSettings());
+      await saveAndRefreshPlaylist(
+        playlist,
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      );
 
       expect(refreshPlaylist).toHaveBeenCalledWith(playlist);
     });
 
     it('calls updatePlaylist, updateM3UGroupSettings, and refreshPlaylist exactly once each', async () => {
-      await saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings());
+      await saveAndRefreshPlaylist(
+        makePlaylist(),
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      );
 
       expect(updatePlaylist).toHaveBeenCalledTimes(1);
       expect(API.updateM3UGroupSettings).toHaveBeenCalledTimes(1);
@@ -226,11 +251,23 @@ describe('M3uGroupFilterUtils', () => {
 
     it('calls updatePlaylist before updateM3UGroupSettings', async () => {
       const callOrder = [];
-      vi.mocked(updatePlaylist).mockImplementation(async () => { callOrder.push('updatePlaylist'); });
-      vi.mocked(API.updateM3UGroupSettings).mockImplementation(async () => { callOrder.push('updateM3UGroupSettings'); });
-      vi.mocked(refreshPlaylist).mockImplementation(async () => { callOrder.push('refreshPlaylist'); });
+      vi.mocked(updatePlaylist).mockImplementation(async () => {
+        callOrder.push('updatePlaylist');
+      });
+      vi.mocked(API.updateM3UGroupSettings).mockImplementation(async () => {
+        callOrder.push('updateM3UGroupSettings');
+      });
+      vi.mocked(refreshPlaylist).mockImplementation(async () => {
+        callOrder.push('refreshPlaylist');
+      });
 
-      await saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings());
+      await saveAndRefreshPlaylist(
+        makePlaylist(),
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      );
 
       expect(callOrder.indexOf('updatePlaylist')).toBeLessThan(
         callOrder.indexOf('updateM3UGroupSettings')
@@ -239,11 +276,23 @@ describe('M3uGroupFilterUtils', () => {
 
     it('calls updateM3UGroupSettings before refreshPlaylist', async () => {
       const callOrder = [];
-      vi.mocked(updatePlaylist).mockImplementation(async () => { callOrder.push('updatePlaylist'); });
-      vi.mocked(API.updateM3UGroupSettings).mockImplementation(async () => { callOrder.push('updateM3UGroupSettings'); });
-      vi.mocked(refreshPlaylist).mockImplementation(async () => { callOrder.push('refreshPlaylist'); });
+      vi.mocked(updatePlaylist).mockImplementation(async () => {
+        callOrder.push('updatePlaylist');
+      });
+      vi.mocked(API.updateM3UGroupSettings).mockImplementation(async () => {
+        callOrder.push('updateM3UGroupSettings');
+      });
+      vi.mocked(refreshPlaylist).mockImplementation(async () => {
+        callOrder.push('refreshPlaylist');
+      });
 
-      await saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings());
+      await saveAndRefreshPlaylist(
+        makePlaylist(),
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      );
 
       expect(callOrder.indexOf('updateM3UGroupSettings')).toBeLessThan(
         callOrder.indexOf('refreshPlaylist')
@@ -254,15 +303,29 @@ describe('M3uGroupFilterUtils', () => {
       vi.mocked(updatePlaylist).mockRejectedValue(new Error('Update failed'));
 
       await expect(
-        saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings())
+        saveAndRefreshPlaylist(
+          makePlaylist(),
+          [],
+          [],
+          [],
+          makeAutoEnableSettings()
+        )
       ).rejects.toThrow('Update failed');
     });
 
     it('propagates rejection from API.updateM3UGroupSettings', async () => {
-      vi.mocked(API.updateM3UGroupSettings).mockRejectedValue(new Error('Settings failed'));
+      vi.mocked(API.updateM3UGroupSettings).mockRejectedValue(
+        new Error('Settings failed')
+      );
 
       await expect(
-        saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings())
+        saveAndRefreshPlaylist(
+          makePlaylist(),
+          [],
+          [],
+          [],
+          makeAutoEnableSettings()
+        )
       ).rejects.toThrow('Settings failed');
     });
 
@@ -270,14 +333,28 @@ describe('M3uGroupFilterUtils', () => {
       vi.mocked(refreshPlaylist).mockRejectedValue(new Error('Refresh failed'));
 
       await expect(
-        saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings())
+        saveAndRefreshPlaylist(
+          makePlaylist(),
+          [],
+          [],
+          [],
+          makeAutoEnableSettings()
+        )
       ).rejects.toThrow('Refresh failed');
     });
 
     it('does not call refreshPlaylist when updateM3UGroupSettings rejects', async () => {
-      vi.mocked(API.updateM3UGroupSettings).mockRejectedValue(new Error('fail'));
+      vi.mocked(API.updateM3UGroupSettings).mockRejectedValue(
+        new Error('fail')
+      );
 
-      await saveAndRefreshPlaylist(makePlaylist(), [], [], [], makeAutoEnableSettings()).catch(() => {});
+      await saveAndRefreshPlaylist(
+        makePlaylist(),
+        [],
+        [],
+        [],
+        makeAutoEnableSettings()
+      ).catch(() => {});
 
       expect(refreshPlaylist).not.toHaveBeenCalled();
     });
@@ -286,50 +363,95 @@ describe('M3uGroupFilterUtils', () => {
 
     describe('prepareCategorySettings (via API.updateM3UGroupSettings call)', () => {
       it('includes category states where enabled differs from original_enabled', async () => {
-        const changedMovie = makeCategoryState({ enabled: true, original_enabled: false });
-        const unchangedMovie = makeCategoryState({ id: 'cat-2', enabled: false, original_enabled: false });
+        const changedMovie = makeCategoryState({
+          enabled: true,
+          original_enabled: false,
+        });
+        const unchangedMovie = makeCategoryState({
+          id: 'cat-2',
+          enabled: false,
+          original_enabled: false,
+        });
 
         await saveAndRefreshPlaylist(
-          makePlaylist(), [], [changedMovie], [unchangedMovie], makeAutoEnableSettings()
+          makePlaylist(),
+          [],
+          [changedMovie],
+          [unchangedMovie],
+          makeAutoEnableSettings()
         );
 
-        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings).mock.calls[0];
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
         expect(categorySettings).toHaveLength(1);
         expect(categorySettings[0].id).toBe('cat-1');
       });
 
       it('excludes category states where enabled equals original_enabled', async () => {
-        const unchanged = makeCategoryState({ enabled: true, original_enabled: true });
+        const unchanged = makeCategoryState({
+          enabled: true,
+          original_enabled: true,
+        });
 
         await saveAndRefreshPlaylist(
-          makePlaylist(), [], [unchanged], [], makeAutoEnableSettings()
+          makePlaylist(),
+          [],
+          [unchanged],
+          [],
+          makeAutoEnableSettings()
         );
 
-        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings).mock.calls[0];
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
         expect(categorySettings).toHaveLength(0);
       });
 
       it('merges movie and series category states together', async () => {
-        const movieCat = makeCategoryState({ id: 'movie-1', enabled: true, original_enabled: false });
-        const seriesCat = makeCategoryState({ id: 'series-1', enabled: false, original_enabled: true });
+        const movieCat = makeCategoryState({
+          id: 'movie-1',
+          enabled: true,
+          original_enabled: false,
+        });
+        const seriesCat = makeCategoryState({
+          id: 'series-1',
+          enabled: false,
+          original_enabled: true,
+        });
 
         await saveAndRefreshPlaylist(
-          makePlaylist(), [], [movieCat], [seriesCat], makeAutoEnableSettings()
+          makePlaylist(),
+          [],
+          [movieCat],
+          [seriesCat],
+          makeAutoEnableSettings()
         );
 
-        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings).mock.calls[0];
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
         expect(categorySettings).toHaveLength(2);
-        expect(categorySettings.map((c) => c.id)).toEqual(['movie-1', 'series-1']);
+        expect(categorySettings.map((c) => c.id)).toEqual([
+          'movie-1',
+          'series-1',
+        ]);
       });
 
       it('sets custom_properties to undefined when null', async () => {
-        const cat = makeCategoryState({ custom_properties: null, enabled: true, original_enabled: false });
+        const cat = makeCategoryState({
+          custom_properties: null,
+          enabled: true,
+          original_enabled: false,
+        });
 
         await saveAndRefreshPlaylist(
-          makePlaylist(), [], [cat], [], makeAutoEnableSettings()
+          makePlaylist(),
+          [],
+          [cat],
+          [],
+          makeAutoEnableSettings()
         );
 
-        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings).mock.calls[0];
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
         expect(categorySettings[0].custom_properties).toBeUndefined();
       });
 
@@ -341,10 +463,15 @@ describe('M3uGroupFilterUtils', () => {
         });
 
         await saveAndRefreshPlaylist(
-          makePlaylist(), [], [cat], [], makeAutoEnableSettings()
+          makePlaylist(),
+          [],
+          [cat],
+          [],
+          makeAutoEnableSettings()
         );
 
-        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings).mock.calls[0];
+        const [, , categorySettings] = vi.mocked(API.updateM3UGroupSettings)
+          .mock.calls[0];
         expect(categorySettings[0].custom_properties).toEqual({ key: 'value' });
       });
     });

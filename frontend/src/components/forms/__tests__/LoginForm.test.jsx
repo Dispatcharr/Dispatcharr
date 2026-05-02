@@ -44,7 +44,15 @@ vi.mock('../../../assets/logo.png', () => ({ default: 'logo.png' }));
 vi.mock('@mantine/core', async () => ({
   Paper: ({ children }) => <div data-testid="paper">{children}</div>,
   Title: ({ children }) => <h1>{children}</h1>,
-  TextInput: ({ label, name, value, onChange, placeholder, type, disabled }) => (
+  TextInput: ({
+    label,
+    name,
+    value,
+    onChange,
+    placeholder,
+    type,
+    disabled,
+  }) => (
     <input
       aria-label={label}
       name={name}
@@ -112,10 +120,10 @@ import useSettingsStore from '../../../store/settings';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const setupMocks = ({
-                      isAuthenticated = false,
-                      loginResult = Promise.resolve(true),
-                      version = '1.0.0',
-                    } = {}) => {
+  isAuthenticated = false,
+  loginResult = Promise.resolve(true),
+  version = '1.0.0',
+} = {}) => {
   const mockLogin = vi.fn().mockReturnValue(loginResult);
   const mockLogout = vi.fn();
   const mockInitData = vi.fn().mockResolvedValue(undefined);
@@ -200,7 +208,7 @@ describe('LoginForm', () => {
     it('renders version info when version is available', () => {
       setupMocks({ version: '2.3.4' });
       renderLoginForm();
-        expect(screen.getByText(/2.3.4/i)).toBeInTheDocument();
+      expect(screen.getByText(/2.3.4/i)).toBeInTheDocument();
     });
 
     it('renders forgot password anchor', () => {
@@ -256,12 +264,17 @@ describe('LoginForm', () => {
       fireEvent.click(getLoginButton());
 
       await waitFor(() => {
-        expect(mockLogin).toHaveBeenCalledWith({ username: 'admin', password: 'pass123' });
+        expect(mockLogin).toHaveBeenCalledWith({
+          username: 'admin',
+          password: 'pass123',
+        });
       });
     });
 
     it('calls initData after successful login', async () => {
-      const { mockInitData } = setupMocks({ loginResult: Promise.resolve(true) });
+      const { mockInitData } = setupMocks({
+        loginResult: Promise.resolve(true),
+      });
       renderLoginForm();
 
       fireEvent.change(getUsername(), { target: { value: 'admin' } });
@@ -320,7 +333,9 @@ describe('LoginForm', () => {
   describe('loading state', () => {
     it('disables the login button while loading', async () => {
       let resolveLogin;
-      const loginResult = new Promise((res) => { resolveLogin = res; });
+      const loginResult = new Promise((res) => {
+        resolveLogin = res;
+      });
       setupMocks({ loginResult });
       renderLoginForm();
 
@@ -357,7 +372,9 @@ describe('LoginForm', () => {
       fireEvent.click(getLoginButton());
 
       await waitFor(() => {
-        expect(localStorage.getItem('dispatcharr_remembered_username')).toBe('savedUser');
+        expect(localStorage.getItem('dispatcharr_remembered_username')).toBe(
+          'savedUser'
+        );
       });
     });
 
@@ -370,7 +387,9 @@ describe('LoginForm', () => {
       fireEvent.click(getLoginButton());
 
       await waitFor(() => {
-        expect(localStorage.getItem('dispatcharr_remembered_username')).toBeNull();
+        expect(
+          localStorage.getItem('dispatcharr_remembered_username')
+        ).toBeNull();
       });
     });
 
@@ -397,7 +416,9 @@ describe('LoginForm', () => {
       });
 
       await waitFor(() => {
-        expect(localStorage.getItem('dispatcharr_saved_password')).not.toBeNull();
+        expect(
+          localStorage.getItem('dispatcharr_saved_password')
+        ).not.toBeNull();
       });
     });
 

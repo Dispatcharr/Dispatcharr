@@ -1,9 +1,4 @@
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-} from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import M3UGroupFilter from '../M3UGroupFilter';
 
@@ -23,7 +18,12 @@ vi.mock('../../../utils/forms/M3uGroupFilterUtils.js', () => ({
 
 // ── Sub-component mocks ────────────────────────────────────────────────────────
 vi.mock('../LiveGroupFilter', () => ({
-  default: ({ groupStates, setGroupStates, autoEnableNewGroupsLive, setAutoEnableNewGroupsLive }) => (
+  default: ({
+    groupStates,
+    setGroupStates,
+    autoEnableNewGroupsLive,
+    setAutoEnableNewGroupsLive,
+  }) => (
     <div data-testid="live-group-filter">
       <span data-testid="live-group-count">{groupStates?.length ?? 0}</span>
       <button
@@ -44,14 +44,16 @@ vi.mock('../LiveGroupFilter', () => ({
 
 vi.mock('../VODCategoryFilter', () => ({
   default: ({
-              categoryStates,
-              setCategoryStates,
-              autoEnableNewGroups,
-              setAutoEnableNewGroups,
-              type,
-            }) => (
+    categoryStates,
+    setCategoryStates,
+    autoEnableNewGroups,
+    setAutoEnableNewGroups,
+    type,
+  }) => (
     <div data-testid={`vod-category-filter-${type}`}>
-      <span data-testid={`${type}-category-count`}>{categoryStates?.length ?? 0}</span>
+      <span data-testid={`${type}-category-count`}>
+        {categoryStates?.length ?? 0}
+      </span>
       <button
         data-testid={`vod-toggle-auto-${type}`}
         onClick={() => setAutoEnableNewGroups?.(!autoEnableNewGroups)}
@@ -143,15 +145,13 @@ const defaultProps = (overrides = {}) => ({
 });
 
 const setupStores = ({
-                       channelGroups = [makeGroup(), makeGroup({ id: 2, name: 'Group B' })],
-                       fetchCategories = vi.fn().mockResolvedValue(undefined),
-                     } = {}) => {
+  channelGroups = [makeGroup(), makeGroup({ id: 2, name: 'Group B' })],
+  fetchCategories = vi.fn().mockResolvedValue(undefined),
+} = {}) => {
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({ channelGroups })
   );
-  vi.mocked(useVODStore).mockImplementation((sel) =>
-    sel({ fetchCategories })
-  );
+  vi.mocked(useVODStore).mockImplementation((sel) => sel({ fetchCategories }));
   return { channelGroups, fetchCategories };
 };
 
@@ -160,7 +160,9 @@ const setupStores = ({
 describe('M3UGroupFilter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockResolvedValue(undefined);
+    vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockResolvedValue(
+      undefined
+    );
     vi.mocked(M3uGroupFilterUtils.buildGroupStates).mockReturnValue([]);
   });
 
@@ -207,8 +209,12 @@ describe('M3UGroupFilter', () => {
     it('renders VODCategoryFilter panels', () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      expect(screen.getByTestId('vod-category-filter-movie')).toBeInTheDocument();
-      expect(screen.getByTestId('vod-category-filter-series')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('vod-category-filter-movie')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId('vod-category-filter-series')
+      ).toBeInTheDocument();
     });
 
     it('renders a Save button', () => {
@@ -220,7 +226,9 @@ describe('M3UGroupFilter', () => {
     it('renders a Cancel button', () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /cancel/i })
+      ).toBeInTheDocument();
     });
   });
 
@@ -249,8 +257,14 @@ describe('M3UGroupFilter', () => {
     it('re-initializes when playlist prop changes', async () => {
       setupStores();
       const { rerender } = render(<M3UGroupFilter {...defaultProps()} />);
-      const updatedPlaylist = makePlaylist({ id: 2, name: 'Updated Playlist', channel_groups: [{ id: 3, name: 'Group C', playlist_id: 2 }] });
-      rerender(<M3UGroupFilter {...defaultProps({ playlist: updatedPlaylist })} />);
+      const updatedPlaylist = makePlaylist({
+        id: 2,
+        name: 'Updated Playlist',
+        channel_groups: [{ id: 3, name: 'Group C', playlist_id: 2 }],
+      });
+      rerender(
+        <M3UGroupFilter {...defaultProps({ playlist: updatedPlaylist })} />
+      );
       await waitFor(() => {
         expect(M3uGroupFilterUtils.buildGroupStates).toHaveBeenCalledWith(
           expect.anything(),
@@ -316,7 +330,9 @@ describe('M3UGroupFilter', () => {
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
       fireEvent.click(screen.getByTestId('vod-change-series'));
-      expect(screen.getByTestId('series-category-count')).toHaveTextContent('1');
+      expect(screen.getByTestId('series-category-count')).toHaveTextContent(
+        '1'
+      );
     });
 
     it('toggles autoEnableNewGroupsVod when movie VODCategoryFilter fires setAutoEnableNewGroups', () => {
@@ -375,7 +391,9 @@ describe('M3UGroupFilter', () => {
       fireEvent.click(screen.getByRole('button', { name: /save/i }));
       await waitFor(() => {
         expect(showNotification).toHaveBeenCalledWith(
-          expect.objectContaining({ color: expect.stringMatching(/green|teal/) })
+          expect.objectContaining({
+            color: expect.stringMatching(/green|teal/),
+          })
         );
       });
     });
@@ -399,7 +417,10 @@ describe('M3UGroupFilter', () => {
     it('disables Save button while submitting', async () => {
       let resolveSave;
       vi.mocked(M3uGroupFilterUtils.saveAndRefreshPlaylist).mockImplementation(
-        () => new Promise((res) => { resolveSave = res; })
+        () =>
+          new Promise((res) => {
+            resolveSave = res;
+          })
       );
       setupStores();
       render(<M3UGroupFilter {...defaultProps()} />);
@@ -409,9 +430,9 @@ describe('M3UGroupFilter', () => {
       fireEvent.click(saveBtn);
 
       await waitFor(() => {
-        expect(
-          saveBtn.disabled || saveBtn.dataset.loading === 'true'
-        ).toBe(true);
+        expect(saveBtn.disabled || saveBtn.dataset.loading === 'true').toBe(
+          true
+        );
       });
 
       resolveSave();

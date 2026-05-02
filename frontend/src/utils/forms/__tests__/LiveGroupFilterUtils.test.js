@@ -34,7 +34,7 @@ describe('LiveGroupFilterUtils', () => {
     });
   });
 
-// ── getSelectedAdvancedOptions ───────────────────────────────────────────────
+  // ── getSelectedAdvancedOptions ───────────────────────────────────────────────
 
   describe('getSelectedAdvancedOptions', () => {
     it('returns empty array when custom_properties is empty', () => {
@@ -47,47 +47,69 @@ describe('LiveGroupFilterUtils', () => {
     });
 
     it('detects force_epg via custom_epg_id', () => {
-      expect(getSelectedAdvancedOptions({ custom_epg_id: 5 })).toContain('force_epg');
+      expect(getSelectedAdvancedOptions({ custom_epg_id: 5 })).toContain(
+        'force_epg'
+      );
     });
 
     it('detects force_epg via force_dummy_epg', () => {
-      expect(getSelectedAdvancedOptions({ force_dummy_epg: true })).toContain('force_epg');
+      expect(getSelectedAdvancedOptions({ force_dummy_epg: true })).toContain(
+        'force_epg'
+      );
     });
 
     it('detects force_epg via force_epg_selected', () => {
-      expect(getSelectedAdvancedOptions({ force_epg_selected: true })).toContain('force_epg');
+      expect(
+        getSelectedAdvancedOptions({ force_epg_selected: true })
+      ).toContain('force_epg');
     });
 
     it('detects group_override', () => {
-      expect(getSelectedAdvancedOptions({ group_override: null })).toContain('group_override');
+      expect(getSelectedAdvancedOptions({ group_override: null })).toContain(
+        'group_override'
+      );
     });
 
     it('detects name_regex via name_regex_pattern', () => {
-      expect(getSelectedAdvancedOptions({ name_regex_pattern: '' })).toContain('name_regex');
+      expect(getSelectedAdvancedOptions({ name_regex_pattern: '' })).toContain(
+        'name_regex'
+      );
     });
 
     it('detects name_regex via name_replace_pattern', () => {
-      expect(getSelectedAdvancedOptions({ name_replace_pattern: '' })).toContain('name_regex');
+      expect(
+        getSelectedAdvancedOptions({ name_replace_pattern: '' })
+      ).toContain('name_regex');
     });
 
     it('detects name_match_regex', () => {
-      expect(getSelectedAdvancedOptions({ name_match_regex: '' })).toContain('name_match_regex');
+      expect(getSelectedAdvancedOptions({ name_match_regex: '' })).toContain(
+        'name_match_regex'
+      );
     });
 
     it('detects profile_assignment via channel_profile_ids', () => {
-      expect(getSelectedAdvancedOptions({ channel_profile_ids: [] })).toContain('profile_assignment');
+      expect(getSelectedAdvancedOptions({ channel_profile_ids: [] })).toContain(
+        'profile_assignment'
+      );
     });
 
     it('detects channel_sort_order', () => {
-      expect(getSelectedAdvancedOptions({ channel_sort_order: 'name' })).toContain('channel_sort_order');
+      expect(
+        getSelectedAdvancedOptions({ channel_sort_order: 'name' })
+      ).toContain('channel_sort_order');
     });
 
     it('detects stream_profile_assignment', () => {
-      expect(getSelectedAdvancedOptions({ stream_profile_id: null })).toContain('stream_profile_assignment');
+      expect(getSelectedAdvancedOptions({ stream_profile_id: null })).toContain(
+        'stream_profile_assignment'
+      );
     });
 
     it('detects custom_logo', () => {
-      expect(getSelectedAdvancedOptions({ custom_logo_id: null })).toContain('custom_logo');
+      expect(getSelectedAdvancedOptions({ custom_logo_id: null })).toContain(
+        'custom_logo'
+      );
     });
 
     it('returns multiple active options', () => {
@@ -101,7 +123,7 @@ describe('LiveGroupFilterUtils', () => {
     });
   });
 
-// ── applyAdvancedOptionsChange ───────────────────────────────────────────────
+  // ── applyAdvancedOptionsChange ───────────────────────────────────────────────
 
   describe('applyAdvancedOptionsChange', () => {
     describe('adding options', () => {
@@ -112,12 +134,18 @@ describe('LiveGroupFilterUtils', () => {
 
       it('adds name_regex defaults when newly selected', () => {
         const result = applyAdvancedOptionsChange({}, ['name_regex']);
-        expect(result).toMatchObject({ name_regex_pattern: '', name_replace_pattern: '' });
+        expect(result).toMatchObject({
+          name_regex_pattern: '',
+          name_replace_pattern: '',
+        });
       });
 
       it('adds channel_sort_order defaults including channel_sort_reverse', () => {
         const result = applyAdvancedOptionsChange({}, ['channel_sort_order']);
-        expect(result).toMatchObject({ channel_sort_order: '', channel_sort_reverse: false });
+        expect(result).toMatchObject({
+          channel_sort_order: '',
+          channel_sort_reverse: false,
+        });
       });
 
       it('adds profile_assignment defaults', () => {
@@ -137,14 +165,24 @@ describe('LiveGroupFilterUtils', () => {
       });
 
       it('adds defaults for multiple options at once', () => {
-        const result = applyAdvancedOptionsChange({}, ['name_match_regex', 'custom_logo']);
-        expect(result).toMatchObject({ name_match_regex: '', custom_logo_id: null });
+        const result = applyAdvancedOptionsChange({}, [
+          'name_match_regex',
+          'custom_logo',
+        ]);
+        expect(result).toMatchObject({
+          name_match_regex: '',
+          custom_logo_id: null,
+        });
       });
     });
 
     describe('removing options', () => {
       it('removes force_epg keys when deselected', () => {
-        const prev = { force_dummy_epg: true, custom_epg_id: 3, force_epg_selected: true };
+        const prev = {
+          force_dummy_epg: true,
+          custom_epg_id: 3,
+          force_epg_selected: true,
+        };
         const result = applyAdvancedOptionsChange(prev, []);
         expect(result).not.toHaveProperty('force_dummy_epg');
         expect(result).not.toHaveProperty('custom_epg_id');
@@ -186,7 +224,7 @@ describe('LiveGroupFilterUtils', () => {
     });
   });
 
-// ── getEpgSourceValue ────────────────────────────────────────────────────────
+  // ── getEpgSourceValue ────────────────────────────────────────────────────────
 
   describe('getEpgSourceValue', () => {
     it('returns custom_epg_id as string when set', () => {
@@ -205,7 +243,9 @@ describe('LiveGroupFilterUtils', () => {
     });
 
     it('prefers custom_epg_id over force_dummy_epg', () => {
-      const group = { custom_properties: { custom_epg_id: 3, force_dummy_epg: true } };
+      const group = {
+        custom_properties: { custom_epg_id: 3, force_dummy_epg: true },
+      };
       expect(getEpgSourceValue(group)).toBe('3');
     });
 
@@ -215,7 +255,7 @@ describe('LiveGroupFilterUtils', () => {
     });
   });
 
-// ── getEpgSourceData ─────────────────────────────────────────────────────────
+  // ── getEpgSourceData ─────────────────────────────────────────────────────────
 
   describe('getEpgSourceData', () => {
     it('always includes "No EPG (Disabled)" as the first entry', () => {
@@ -224,12 +264,16 @@ describe('LiveGroupFilterUtils', () => {
     });
 
     it('maps an xmltv source correctly', () => {
-      const result = getEpgSourceData([makeEpgSource({ id: 1, name: 'My XMLTV', source_type: 'xmltv' })]);
+      const result = getEpgSourceData([
+        makeEpgSource({ id: 1, name: 'My XMLTV', source_type: 'xmltv' }),
+      ]);
       expect(result).toContainEqual({ value: '1', label: 'My XMLTV (XMLTV)' });
     });
 
     it('maps a dummy source correctly', () => {
-      const result = getEpgSourceData([makeEpgSource({ id: 2, name: 'Dummy', source_type: 'dummy' })]);
+      const result = getEpgSourceData([
+        makeEpgSource({ id: 2, name: 'Dummy', source_type: 'dummy' }),
+      ]);
       expect(result).toContainEqual({ value: '2', label: 'Dummy (Dummy)' });
     });
 
@@ -237,11 +281,16 @@ describe('LiveGroupFilterUtils', () => {
       const result = getEpgSourceData([
         makeEpgSource({ id: 3, name: 'SD', source_type: 'schedules_direct' }),
       ]);
-      expect(result).toContainEqual({ value: '3', label: 'SD (Schedules Direct)' });
+      expect(result).toContainEqual({
+        value: '3',
+        label: 'SD (Schedules Direct)',
+      });
     });
 
     it('falls back to raw source_type for unknown types', () => {
-      const result = getEpgSourceData([makeEpgSource({ id: 4, name: 'Other', source_type: 'iptv' })]);
+      const result = getEpgSourceData([
+        makeEpgSource({ id: 4, name: 'Other', source_type: 'iptv' }),
+      ]);
       expect(result).toContainEqual({ value: '4', label: 'Other (iptv)' });
     });
 

@@ -184,11 +184,11 @@ const defaultProps = (overrides = {}) => ({
 });
 
 const setupStores = ({
-                       fetchPlaylist = vi.fn().mockResolvedValue(undefined),
-                       suppressWarning = vi.fn(),
-                       isWarningSuppressed = vi.fn().mockReturnValue(false),
-                       profiles = { 1: [makeProfile()] },
-                     } = {}) => {
+  fetchPlaylist = vi.fn().mockResolvedValue(undefined),
+  suppressWarning = vi.fn(),
+  isWarningSuppressed = vi.fn().mockReturnValue(false),
+  profiles = { 1: [makeProfile()] },
+} = {}) => {
   vi.mocked(usePlaylistsStore).mockImplementation((sel) =>
     sel({ fetchPlaylist, profiles })
   );
@@ -243,9 +243,7 @@ describe('M3UProfiles', () => {
     it('renders an "Add Profile" button', () => {
       setupStores();
       render(<M3UProfiles {...defaultProps()} />);
-      expect(
-        screen.getByRole('button', { name: /new/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /new/i })).toBeInTheDocument();
     });
 
     it('renders a profile card for each profile', () => {
@@ -300,7 +298,12 @@ describe('M3UProfiles', () => {
       vi.mocked(M3uProfilesUtils.profileSortComparator).mockImplementation(
         (a, b) => b.id - a.id
       );
-      const profiles = { 1: [makeProfile({ id: 1, name: 'Alpha' }), makeProfile({ id: 2, name: 'Beta' })] };
+      const profiles = {
+        1: [
+          makeProfile({ id: 1, name: 'Alpha' }),
+          makeProfile({ id: 2, name: 'Beta' }),
+        ],
+      };
       setupStores({ profiles });
       render(<M3UProfiles {...defaultProps()} />);
       const cards = screen.getAllByTestId('profile-card');

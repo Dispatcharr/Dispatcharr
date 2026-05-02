@@ -87,7 +87,15 @@ vi.mock('@mantine/core', () => ({
         {children}
       </div>
     ) : null,
-  NumberInput: ({ label, value, onChange, disabled, min, max, placeholder }) => (
+  NumberInput: ({
+    label,
+    value,
+    onChange,
+    disabled,
+    min,
+    max,
+    placeholder,
+  }) => (
     <div>
       <label>{label}</label>
       <input
@@ -185,10 +193,23 @@ const makeProfile = (overrides = {}) => ({
 });
 
 const makeFormMethods = (overrides = {}) => ({
-  register: vi.fn(() => ({ onChange: vi.fn(), onBlur: vi.fn(), ref: vi.fn(), name: '' })),
-  handleSubmit: vi.fn((fn) => (e) => { e?.preventDefault?.(); return fn({}); }),
+  register: vi.fn(() => ({
+    onChange: vi.fn(),
+    onBlur: vi.fn(),
+    ref: vi.fn(),
+    name: '',
+  })),
+  handleSubmit: vi.fn((fn) => (e) => {
+    e?.preventDefault?.();
+    return fn({});
+  }),
   watch: vi.fn((field) => {
-    const defaults = { type: 'regex', search_pattern: '', name: '', max_streams: 1 };
+    const defaults = {
+      type: 'regex',
+      search_pattern: '',
+      name: '',
+      max_streams: 1,
+    };
     return field ? defaults[field] : defaults;
   }),
   setValue: vi.fn(),
@@ -230,7 +251,9 @@ describe('M3UProfile', () => {
     vi.mocked(M3uProfileUtils.buildSubmitValues).mockReturnValue({});
     vi.mocked(M3uProfileUtils.getDetectedMode).mockReturnValue('regex');
     vi.mocked(M3uProfileUtils.prepareExpDate).mockReturnValue(null);
-    vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue('http://example.com/stream1');
+    vi.mocked(M3uProfileUtils.fetchFirstStreamUrl).mockResolvedValue(
+      'http://example.com/stream1'
+    );
     vi.mocked(M3uProfileUtils.applyRegex).mockReturnValue('');
     vi.mocked(M3uProfileUtils.applyXcSimplePatterns).mockResolvedValue([]);
     vi.mocked(M3uProfileUtils.validateXcSimple).mockReturnValue(true);
@@ -258,22 +281,32 @@ describe('M3UProfile', () => {
     it('renders "Edit Default Profile" title when editing default profile', () => {
       const profile = makeProfile({ is_default: true });
       render(<M3UProfile {...defaultProps({ profile })} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent(/edit default profile/i);
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        /edit default profile/i
+      );
     });
 
     it('renders "M3U Profile" title when not default', () => {
       render(<M3UProfile {...defaultProps()} />);
-      expect(screen.getByTestId('modal-title')).toHaveTextContent(/M3U profile/i);
+      expect(screen.getByTestId('modal-title')).toHaveTextContent(
+        /M3U profile/i
+      );
     });
 
     it('renders a Save button', () => {
       render(<M3UProfile {...defaultProps()} />);
-      expect(screen.getByRole('button', { name: /submit/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /submit/i })
+      ).toBeInTheDocument();
     });
 
     it('renders the segmented control for profile type', () => {
       const profile = makeProfile();
-      render(<M3UProfile {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })} />);
+      render(
+        <M3UProfile
+          {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
       expect(screen.getByTestId('segmented-control')).toBeInTheDocument();
     });
 
@@ -284,9 +317,7 @@ describe('M3UProfile', () => {
 
     it('renders the Max Streams field', () => {
       render(<M3UProfile {...defaultProps()} />);
-      expect(
-        screen.getByTestId(/number-input/i)
-      ).toBeInTheDocument();
+      expect(screen.getByTestId(/number-input/i)).toBeInTheDocument();
     });
 
     it('renders the DateTimePicker for expiration date', () => {
@@ -322,7 +353,9 @@ describe('M3UProfile', () => {
 
     it('re-initializes when profile prop changes from null to a value', () => {
       const formMethods = setupForm();
-      const { rerender } = render(<M3UProfile {...defaultProps({ profile: null })} />);
+      const { rerender } = render(
+        <M3UProfile {...defaultProps({ profile: null })} />
+      );
       const profile = makeProfile();
       rerender(<M3UProfile {...defaultProps({ profile })} />);
       expect(formMethods.reset).toHaveBeenCalledTimes(2);
@@ -330,7 +363,11 @@ describe('M3UProfile', () => {
 
     it('calls getDetectedMode when m3u is XC type', () => {
       const profile = makeProfile();
-      render(<M3UProfile {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })} />);
+      render(
+        <M3UProfile
+          {...defaultProps({ profile, m3u: makeM3U({ account_type: 'XC' }) })}
+        />
+      );
       expect(M3uProfileUtils.getDetectedMode).toHaveBeenCalled();
     });
   });
@@ -429,12 +466,18 @@ describe('M3UProfile', () => {
     it('calls prepareExpDate when form is submitted with a profile', async () => {
       const profile = makeProfile({ exp_date: '2025-12-31T00:00:00Z' });
       setupForm({
-        handleSubmit: vi.fn((fn) => (e) => { e?.preventDefault?.(); return fn({ exp_date: profile.exp_date }); }),
+        handleSubmit: vi.fn((fn) => (e) => {
+          e?.preventDefault?.();
+          return fn({ exp_date: profile.exp_date });
+        }),
       });
       render(<M3UProfile {...defaultProps({ profile })} />);
       fireEvent.click(screen.getByRole('button', { name: /submit/i }));
       await waitFor(() => {
-        expect(M3uProfileUtils.prepareExpDate).toHaveBeenCalledWith(profile.exp_date, false);
+        expect(M3uProfileUtils.prepareExpDate).toHaveBeenCalledWith(
+          profile.exp_date,
+          false
+        );
       });
     });
 

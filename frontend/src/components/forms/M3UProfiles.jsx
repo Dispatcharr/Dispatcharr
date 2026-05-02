@@ -19,7 +19,10 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { Info, SquareMinus, SquarePen } from 'lucide-react';
-import { deleteM3UProfile, updateM3UProfile, } from '../../utils/forms/M3uProfileUtils.js';
+import {
+  deleteM3UProfile,
+  updateM3UProfile,
+} from '../../utils/forms/M3uProfileUtils.js';
 import {
   getExpirationInfo,
   isAccountExpired,
@@ -291,22 +294,20 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
         withinPortal={true}
         yOffset="2vh"
       >
-        {profilesArray
-          .sort(profileSortComparator)
-          .map((item) => {
-            return (
-              <M3uProfileCard
-                key={item.id}
-                item={item}
-                accountType={playlist?.account_type}
-                onClickInfo={() => showAccountInfo(item)}
-                onChangeMaxStreams={(value) => modifyMaxStreams(value, item)}
-                onChangeActive={() => toggleActive(item)}
-                onClickEdit={() => editProfile(item)}
-                onClickDelete={() => deleteProfile(item.id)}
-              />
-            );
-          })}
+        {profilesArray.sort(profileSortComparator).map((item) => {
+          return (
+            <M3uProfileCard
+              key={item.id}
+              item={item}
+              accountType={playlist?.account_type}
+              onClickInfo={() => showAccountInfo(item)}
+              onChangeMaxStreams={(value) => modifyMaxStreams(value, item)}
+              onChangeActive={() => toggleActive(item)}
+              onClickEdit={() => editProfile(item)}
+              onClickDelete={() => deleteProfile(item.id)}
+            />
+          );
+        })}
 
         <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
           <Button

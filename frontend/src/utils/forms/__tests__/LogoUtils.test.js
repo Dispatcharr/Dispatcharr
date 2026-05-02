@@ -36,7 +36,8 @@ describe('LogoUtils', () => {
   // ── uploadLogo ─────────────────────────────────────────────────────────────
 
   describe('uploadLogo', () => {
-    const makeFile = () => new File(['content'], 'logo.png', { type: 'image/png' });
+    const makeFile = () =>
+      new File(['content'], 'logo.png', { type: 'image/png' });
     const makeValues = (overrides = {}) => ({ name: 'My Logo', ...overrides });
 
     it('calls API.uploadLogo with the selected file and values.name', async () => {
@@ -69,14 +70,19 @@ describe('LogoUtils', () => {
     it('propagates rejection from API.uploadLogo', async () => {
       vi.mocked(API.uploadLogo).mockRejectedValue(new Error('Upload failed'));
 
-      await expect(uploadLogo(makeFile(), makeValues())).rejects.toThrow('Upload failed');
+      await expect(uploadLogo(makeFile(), makeValues())).rejects.toThrow(
+        'Upload failed'
+      );
     });
   });
 
   // ── createLogo ─────────────────────────────────────────────────────────────
 
   describe('createLogo', () => {
-    const makeValues = () => ({ name: 'New Logo', url: 'https://example.com/logo.png' });
+    const makeValues = () => ({
+      name: 'New Logo',
+      url: 'https://example.com/logo.png',
+    });
 
     it('calls API.createLogo with the provided values', async () => {
       const values = makeValues();
@@ -114,8 +120,15 @@ describe('LogoUtils', () => {
   // ── updateLogo ─────────────────────────────────────────────────────────────
 
   describe('updateLogo', () => {
-    const makeLogo = (overrides = {}) => ({ id: 'logo-1', name: 'Old Logo', ...overrides });
-    const makeValues = () => ({ name: 'Updated Logo', url: 'https://example.com/new.png' });
+    const makeLogo = (overrides = {}) => ({
+      id: 'logo-1',
+      name: 'Old Logo',
+      ...overrides,
+    });
+    const makeValues = () => ({
+      name: 'Updated Logo',
+      url: 'https://example.com/new.png',
+    });
 
     it('calls API.updateLogo with the logo id and values', async () => {
       const logo = makeLogo();
@@ -156,7 +169,9 @@ describe('LogoUtils', () => {
     it('propagates rejection from API.updateLogo', async () => {
       vi.mocked(API.updateLogo).mockRejectedValue(new Error('Update failed'));
 
-      await expect(updateLogo(makeLogo(), makeValues())).rejects.toThrow('Update failed');
+      await expect(updateLogo(makeLogo(), makeValues())).rejects.toThrow(
+        'Update failed'
+      );
     });
   });
 
@@ -183,7 +198,10 @@ describe('LogoUtils', () => {
       const [schema] = vi.mocked(yupResolver).mock.calls[0];
 
       await expect(
-        schema.validate({ name: 'My Logo', url: 'https://example.com/logo.png' })
+        schema.validate({
+          name: 'My Logo',
+          url: 'https://example.com/logo.png',
+        })
       ).resolves.not.toThrow();
     });
 
@@ -233,7 +251,9 @@ describe('LogoUtils', () => {
     });
 
     it('returns timeout message when message includes "timeout"', () => {
-      const result = getUploadErrorMessage({ message: 'request timeout occurred' });
+      const result = getUploadErrorMessage({
+        message: 'request timeout occurred',
+      });
       expect(result).toBe('Upload timed out. Please try again.');
     });
 
@@ -243,7 +263,9 @@ describe('LogoUtils', () => {
     });
 
     it('returns body error message when body.error is present', () => {
-      const result = getUploadErrorMessage({ body: { error: 'Unsupported format' } });
+      const result = getUploadErrorMessage({
+        body: { error: 'Unsupported format' },
+      });
       expect(result).toBe('Unsupported format');
     });
 
@@ -253,12 +275,18 @@ describe('LogoUtils', () => {
     });
 
     it('prioritizes NETWORK_ERROR over status 413', () => {
-      const result = getUploadErrorMessage({ code: 'NETWORK_ERROR', status: 413 });
+      const result = getUploadErrorMessage({
+        code: 'NETWORK_ERROR',
+        status: 413,
+      });
       expect(result).toBe('Upload timed out. Please try again.');
     });
 
     it('prioritizes status 413 over body.error', () => {
-      const result = getUploadErrorMessage({ status: 413, body: { error: 'Custom error' } });
+      const result = getUploadErrorMessage({
+        status: 413,
+        body: { error: 'Custom error' },
+      });
       expect(result).toBe('File too large. Please choose a smaller file.');
     });
   });
@@ -269,12 +297,16 @@ describe('LogoUtils', () => {
     const makeLogo = () => ({ id: 'logo-1', name: 'My Logo' });
 
     it('returns timeout message for NETWORK_ERROR code', () => {
-      const result = getUpdateLogoErrorMessage(makeLogo(), { code: 'NETWORK_ERROR' });
+      const result = getUpdateLogoErrorMessage(makeLogo(), {
+        code: 'NETWORK_ERROR',
+      });
       expect(result).toBe('Request timed out. Please try again.');
     });
 
     it('returns timeout message when message includes "timeout"', () => {
-      const result = getUpdateLogoErrorMessage(makeLogo(), { message: 'connection timeout' });
+      const result = getUpdateLogoErrorMessage(makeLogo(), {
+        message: 'connection timeout',
+      });
       expect(result).toBe('Request timed out. Please try again.');
     });
 
@@ -312,8 +344,7 @@ describe('LogoUtils', () => {
   // ── validateFileSize ───────────────────────────────────────────────────────
 
   describe('validateFileSize', () => {
-    const makeFile = (sizeBytes) =>
-      ({ size: sizeBytes });
+    const makeFile = (sizeBytes) => ({ size: sizeBytes });
 
     it('returns true for a file exactly at the 5MB limit', () => {
       const file = makeFile(5 * 1024 * 1024);
@@ -349,7 +380,9 @@ describe('LogoUtils', () => {
 
     it('calls URL.revokeObjectURL for a blob URL', () => {
       releaseUrl('blob:https://example.com/1234');
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:https://example.com/1234');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith(
+        'blob:https://example.com/1234'
+      );
     });
 
     it('does not call URL.revokeObjectURL for a non-blob URL', () => {
@@ -386,7 +419,9 @@ describe('LogoUtils', () => {
     });
 
     it('handles filenames with a .jpg extension', () => {
-      expect(getFilenameWithoutExtension('channel-logo.jpg')).toBe('channel-logo');
+      expect(getFilenameWithoutExtension('channel-logo.jpg')).toBe(
+        'channel-logo'
+      );
     });
 
     it('handles filenames with a .svg extension', () => {

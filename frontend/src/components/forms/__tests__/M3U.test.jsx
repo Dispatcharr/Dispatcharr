@@ -65,12 +65,15 @@ vi.mock('../ScheduleInput', () => ({
 vi.mock('@mantine/dates', () => ({
   DateTimePicker: ({ label, value, onChange, placeholder }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           data-testid="date-time-picker"
           placeholder={placeholder}
           value={value ? value.toISOString() : ''}
-          onChange={(e) => onChange?.(e.target.value ? new Date(e.target.value) : null)}
+          onChange={(e) =>
+            onChange?.(e.target.value ? new Date(e.target.value) : null)
+          }
         />
       </label>
     </div>
@@ -83,7 +86,9 @@ vi.mock('@mantine/form', () => {
 
   return {
     isNotEmpty: vi.fn(() => (val) => (val ? null : 'Required')),
-    __resetFormState: () => { _values = null; },
+    __resetFormState: () => {
+      _values = null;
+    },
     useForm: vi.fn(({ initialValues = {} } = {}) => {
       if (_values === null) {
         _values = { ...initialValues };
@@ -92,9 +97,15 @@ vi.mock('@mantine/form', () => {
       return {
         key: vi.fn((field) => field),
         getValues: () => ({ ..._values }),
-        setValues: (v) => { Object.assign(_values, v); },
-        setFieldValue: (field, val) => { _values[field] = val; },
-        reset: () => { _values = { ...initialValues }; },
+        setValues: (v) => {
+          Object.assign(_values, v);
+        },
+        setFieldValue: (field, val) => {
+          _values[field] = val;
+        },
+        reset: () => {
+          _values = { ...initialValues };
+        },
         submitting: false,
         onSubmit: vi.fn((handler) => (e) => {
           e?.preventDefault?.();
@@ -112,7 +123,6 @@ vi.mock('@mantine/form', () => {
     }),
   };
 });
-
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', () => ({
@@ -144,7 +154,8 @@ vi.mock('@mantine/core', () => ({
   Divider: ({ label }) => <hr aria-label={label} />,
   FileInput: ({ label, placeholder, onChange, accept, disabled }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           type="file"
           aria-label={label || placeholder}
@@ -163,13 +174,25 @@ vi.mock('@mantine/core', () => ({
     opened ? (
       <div data-testid="modal" data-size={size}>
         <div data-testid="modal-title">{title}</div>
-        <button data-testid="modal-close" onClick={onClose}>×</button>
+        <button data-testid="modal-close" onClick={onClose}>
+          ×
+        </button>
         {children}
       </div>
     ) : null,
-  NumberInput: ({ label, placeholder, value, onChange, min, max, disabled, error }) => (
+  NumberInput: ({
+    label,
+    placeholder,
+    value,
+    onChange,
+    min,
+    max,
+    disabled,
+    error,
+  }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           type="number"
           aria-label={label || placeholder}
@@ -184,9 +207,18 @@ vi.mock('@mantine/core', () => ({
       {error && <span data-testid={`error-${label}`}>{error}</span>}
     </div>
   ),
-  PasswordInput: ({ label, placeholder, value, onChange, onBlur, error, disabled }) => (
+  PasswordInput: ({
+    label,
+    placeholder,
+    value,
+    onChange,
+    onBlur,
+    error,
+    disabled,
+  }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           type="password"
           aria-label={label || placeholder}
@@ -202,7 +234,8 @@ vi.mock('@mantine/core', () => ({
   ),
   Select: ({ label, placeholder, value, onChange, data, disabled, error }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <select
           aria-label={label || placeholder}
           value={value || ''}
@@ -213,7 +246,11 @@ vi.mock('@mantine/core', () => ({
           {data?.map((d) => {
             const val = typeof d === 'string' ? d : d.value;
             const lbl = typeof d === 'string' ? d : d.label;
-            return <option key={val} value={val}>{lbl}</option>;
+            return (
+              <option key={val} value={val}>
+                {lbl}
+              </option>
+            );
           })}
         </select>
       </label>
@@ -234,9 +271,20 @@ vi.mock('@mantine/core', () => ({
       {label}
     </label>
   ),
-  TextInput: ({ id, label, placeholder, value, onChange, onBlur, error, disabled, ...rest }) => (
+  TextInput: ({
+    id,
+    label,
+    placeholder,
+    value,
+    onChange,
+    onBlur,
+    error,
+    disabled,
+    ...rest
+  }) => (
     <div>
-      <label>{label}
+      <label>
+        {label}
         <input
           data-testid={id ? `text-input-${id}` : undefined}
           aria-label={label || placeholder}
@@ -337,18 +385,22 @@ const setupStores = (overrides = {}) => {
   };
 };
 
-
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('M3U', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mantineForm.__resetFormState();
-    vi.mocked(M3uUtils.addPlaylist).mockResolvedValue(makeM3uAccount({ id: 2 }));
+    vi.mocked(M3uUtils.addPlaylist).mockResolvedValue(
+      makeM3uAccount({ id: 2 })
+    );
     vi.mocked(M3uUtils.updatePlaylist).mockResolvedValue(makeM3uAccount());
     vi.mocked(M3uUtils.getPlaylist).mockResolvedValue(makeM3uAccount());
     vi.mocked(M3uUtils.prepareSubmitValues).mockImplementation((v) => v);
-    vi.mocked(DummyEpgUtils.addEPG).mockResolvedValue({ id: 10, name: 'Dummy EPG' });
+    vi.mocked(DummyEpgUtils.addEPG).mockResolvedValue({
+      id: 10,
+      name: 'Dummy EPG',
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -536,7 +588,9 @@ describe('M3U', () => {
     it('calls onClose after successful update', async () => {
       const onClose = vi.fn();
       setupStores();
-      render(<M3U {...defaultProps({ m3uAccount: makeM3uAccount(), onClose })} />);
+      render(
+        <M3U {...defaultProps({ m3uAccount: makeM3uAccount(), onClose })} />
+      );
       fireEvent.click(screen.getByRole('button', { name: /update|save/i }));
       await waitFor(() => {
         expect(onClose).toHaveBeenCalled();
@@ -583,7 +637,9 @@ describe('M3U', () => {
     it('pre-fills max_streams when editing', () => {
       setupStores();
       render(
-        <M3U {...defaultProps({ m3uAccount: makeM3uAccount({ max_streams: 5 }) })} />
+        <M3U
+          {...defaultProps({ m3uAccount: makeM3uAccount({ max_streams: 5 }) })}
+        />
       );
       expect(screen.getByDisplayValue('5')).toBeInTheDocument();
     });
@@ -637,7 +693,9 @@ describe('M3U', () => {
 
       const urlInput = screen.getByTestId('text-input-server_url');
       if (urlInput) {
-        fireEvent.change(urlInput, { target: { value: 'http://example.com/p.m3u' } });
+        fireEvent.change(urlInput, {
+          target: { value: 'http://example.com/p.m3u' },
+        });
       }
 
       fireEvent.click(screen.getByRole('button', { name: /add|create|save/i }));

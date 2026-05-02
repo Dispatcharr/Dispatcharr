@@ -34,7 +34,8 @@ export const prepareSubmitValues = (values, expDate) => {
     prepared.exp_date = null;
   }
 
-  const hasCron = prepared.cron_expression && prepared.cron_expression.trim() !== '';
+  const hasCron =
+    prepared.cron_expression && prepared.cron_expression.trim() !== '';
   if (hasCron) {
     prepared.refresh_interval = 0;
   } else {

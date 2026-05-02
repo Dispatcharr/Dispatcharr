@@ -160,8 +160,8 @@ vi.mock('@mantine/core', () => ({
   useMantineTheme: () => ({
     tailwind: {
       red: { 6: '#f56565' },
-      green: { 5: '#48bb78'},
-      yellow: { 3: '#ecc94b'},
+      green: { 5: '#48bb78' },
+      yellow: { 3: '#ecc94b' },
     },
   }),
 }));
@@ -189,7 +189,12 @@ const makePlaylist = (overrides = {}) => ({
   name: 'Test Playlist',
   filters: [
     makeFilter({ id: 1, regex_pattern: 'HBO.*', order: 0 }),
-    makeFilter({ id: 2, filter_type: 'exclude', regex_pattern: 'ESPN.*', order: 1 }),
+    makeFilter({
+      id: 2,
+      filter_type: 'exclude',
+      regex_pattern: 'ESPN.*',
+      order: 1,
+    }),
   ],
   ...overrides,
 });
@@ -202,10 +207,10 @@ const defaultProps = (overrides = {}) => ({
 });
 
 const setupStores = ({
-                       fetchPlaylist = vi.fn().mockResolvedValue(undefined),
-                       isWarningSuppressed = vi.fn().mockReturnValue(false),
-                       suppressWarning = vi.fn(),
-                     } = {}) => {
+  fetchPlaylist = vi.fn().mockResolvedValue(undefined),
+  isWarningSuppressed = vi.fn().mockReturnValue(false),
+  suppressWarning = vi.fn(),
+} = {}) => {
   vi.mocked(usePlaylistsStore).mockImplementation((sel) =>
     sel({ fetchPlaylist })
   );
@@ -268,9 +273,7 @@ describe('M3UFilters', () => {
     it('renders an "Add Filter" button', () => {
       setupStores();
       render(<M3UFilters {...defaultProps()} />);
-      expect(
-        screen.getByRole('button', { name: /new/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /new/i })).toBeInTheDocument();
     });
 
     it('renders filter patterns from playlist', () => {
@@ -507,11 +510,7 @@ describe('M3UFilters', () => {
       const updatedPlaylist = makePlaylist({
         filters: [makeFilter({ id: 3, regex_pattern: 'CNN.*', order: 0 })],
       });
-      rerender(
-        <M3UFilters
-          {...defaultProps({ playlist: updatedPlaylist })}
-        />
-      );
+      rerender(<M3UFilters {...defaultProps({ playlist: updatedPlaylist })} />);
       expect(screen.getByText('CNN.*')).toBeInTheDocument();
       expect(screen.queryByText('HBO.*')).not.toBeInTheDocument();
     });

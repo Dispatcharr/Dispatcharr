@@ -16,7 +16,18 @@ import {
   TextInput,
   useMantineTheme,
 } from '@mantine/core';
-import { AlertCircle, Check, Database, Filter, SquareMinus, SquarePen, SquarePlus, Trash, Tv, X, } from 'lucide-react';
+import {
+  AlertCircle,
+  Check,
+  Database,
+  Filter,
+  SquareMinus,
+  SquarePen,
+  SquarePlus,
+  Trash,
+  Tv,
+  X,
+} from 'lucide-react';
 import useChannelsStore from '../../store/channels';
 import useWarningsStore from '../../store/warnings';
 import ConfirmationDialog from '../ConfirmationDialog';
@@ -220,7 +231,14 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     }
 
     return { filteredGroups: filtered, filterCounts: counts };
-  }, [sortedGroups, groupUsage, searchTerm, showChannelGroups, showM3UGroups, showUnusedGroups]);
+  }, [
+    sortedGroups,
+    groupUsage,
+    searchTerm,
+    showChannelGroups,
+    showM3UGroups,
+    showUnusedGroups,
+  ]);
 
   const fetchGroupUsage = useCallback(async () => {
     setLoading(true);
@@ -268,10 +286,9 @@ const GroupManager = React.memo(({ isOpen, onClose }) => {
     }
 
     try {
-      await updateChannelGroup(
-        channelGroups[editingGroupId],
-        { name: editName.trim() }
-      );
+      await updateChannelGroup(channelGroups[editingGroupId], {
+        name: editName.trim(),
+      });
 
       showNotification({
         title: 'Success',

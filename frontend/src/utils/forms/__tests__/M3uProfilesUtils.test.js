@@ -65,7 +65,9 @@ describe('M3uProfilesUtils', () => {
     });
 
     it('returns null when exp_date is missing', () => {
-      expect(parseExpirationDate({ custom_properties: { user_info: {} } })).toBeNull();
+      expect(
+        parseExpirationDate({ custom_properties: { user_info: {} } })
+      ).toBeNull();
     });
 
     it('returns null when exp_date is null', () => {
@@ -211,7 +213,10 @@ describe('M3uProfilesUtils', () => {
   // ── profileSortComparator ──────────────────────────────────────────────────
 
   describe('profileSortComparator', () => {
-    const makeProfile = (name, isDefault = false) => ({ name, is_default: isDefault });
+    const makeProfile = (name, isDefault = false) => ({
+      name,
+      is_default: isDefault,
+    });
 
     it('sorts default profile before non-default', () => {
       const defaultProfile = makeProfile('Zebra', true);

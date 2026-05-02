@@ -17,9 +17,21 @@ vi.mock('../../../api.js', () => ({
 import API from '../../../api.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-const makeM3U = (overrides = {}) => ({ id: 'm3u-1', name: 'My Playlist', ...overrides });
-const makeFilter = (overrides = {}) => ({ id: 'filter-1', name: 'Filter A', ...overrides });
-const makeValues = (overrides = {}) => ({ keyword: 'sports', type: 'include', ...overrides });
+const makeM3U = (overrides = {}) => ({
+  id: 'm3u-1',
+  name: 'My Playlist',
+  ...overrides,
+});
+const makeFilter = (overrides = {}) => ({
+  id: 'filter-1',
+  name: 'Filter A',
+  ...overrides,
+});
+const makeValues = (overrides = {}) => ({
+  keyword: 'sports',
+  type: 'include',
+  ...overrides,
+});
 
 describe('M3uFilterUtils', () => {
   beforeEach(() => {
@@ -51,7 +63,10 @@ describe('M3uFilterUtils', () => {
 
       await addM3UFilter(m3u, makeValues());
 
-      expect(API.addM3UFilter).toHaveBeenCalledWith('m3u-99', expect.anything());
+      expect(API.addM3UFilter).toHaveBeenCalledWith(
+        'm3u-99',
+        expect.anything()
+      );
     });
 
     it('passes values through unmodified', async () => {
@@ -66,7 +81,9 @@ describe('M3uFilterUtils', () => {
     it('propagates rejection from API.addM3UFilter', async () => {
       vi.mocked(API.addM3UFilter).mockRejectedValue(new Error('Add failed'));
 
-      await expect(addM3UFilter(makeM3U(), makeValues())).rejects.toThrow('Add failed');
+      await expect(addM3UFilter(makeM3U(), makeValues())).rejects.toThrow(
+        'Add failed'
+      );
     });
 
     it('resolves without returning a value', async () => {
@@ -86,7 +103,11 @@ describe('M3uFilterUtils', () => {
 
       updateM3UFilter(makeM3U(), makeFilter(), makeValues());
 
-      expect(API.updateM3UFilter).toHaveBeenCalledWith('m3u-1', 'filter-1', makeValues());
+      expect(API.updateM3UFilter).toHaveBeenCalledWith(
+        'm3u-1',
+        'filter-1',
+        makeValues()
+      );
     });
 
     it('returns the result of API.updateM3UFilter', () => {
@@ -112,7 +133,11 @@ describe('M3uFilterUtils', () => {
 
       updateM3UFilter(m3u, makeFilter(), makeValues());
 
-      expect(API.updateM3UFilter).toHaveBeenCalledWith('m3u-42', expect.anything(), expect.anything());
+      expect(API.updateM3UFilter).toHaveBeenCalledWith(
+        'm3u-42',
+        expect.anything(),
+        expect.anything()
+      );
     });
 
     it('uses only the id from the filter object', () => {
@@ -121,7 +146,11 @@ describe('M3uFilterUtils', () => {
 
       updateM3UFilter(makeM3U(), filter, makeValues());
 
-      expect(API.updateM3UFilter).toHaveBeenCalledWith(expect.anything(), 'filter-99', expect.anything());
+      expect(API.updateM3UFilter).toHaveBeenCalledWith(
+        expect.anything(),
+        'filter-99',
+        expect.anything()
+      );
     });
 
     it('passes values through unmodified', () => {
@@ -130,7 +159,11 @@ describe('M3uFilterUtils', () => {
 
       updateM3UFilter(makeM3U(), makeFilter(), values);
 
-      expect(API.updateM3UFilter).toHaveBeenCalledWith(expect.anything(), expect.anything(), values);
+      expect(API.updateM3UFilter).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        values
+      );
     });
   });
 
@@ -159,7 +192,10 @@ describe('M3uFilterUtils', () => {
 
       await deleteM3UFilter(playlist, 'filter-1');
 
-      expect(API.deleteM3UFilter).toHaveBeenCalledWith('playlist-99', expect.anything());
+      expect(API.deleteM3UFilter).toHaveBeenCalledWith(
+        'playlist-99',
+        expect.anything()
+      );
     });
 
     it('passes the filter id through unmodified', async () => {
@@ -167,13 +203,20 @@ describe('M3uFilterUtils', () => {
 
       await deleteM3UFilter(makeM3U(), 'filter-42');
 
-      expect(API.deleteM3UFilter).toHaveBeenCalledWith(expect.anything(), 'filter-42');
+      expect(API.deleteM3UFilter).toHaveBeenCalledWith(
+        expect.anything(),
+        'filter-42'
+      );
     });
 
     it('propagates rejection from API.deleteM3UFilter', async () => {
-      vi.mocked(API.deleteM3UFilter).mockRejectedValue(new Error('Delete failed'));
+      vi.mocked(API.deleteM3UFilter).mockRejectedValue(
+        new Error('Delete failed')
+      );
 
-      await expect(deleteM3UFilter(makeM3U(), 'filter-1')).rejects.toThrow('Delete failed');
+      await expect(deleteM3UFilter(makeM3U(), 'filter-1')).rejects.toThrow(
+        'Delete failed'
+      );
     });
 
     it('resolves without returning a value', async () => {

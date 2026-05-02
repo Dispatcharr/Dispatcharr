@@ -51,16 +51,20 @@ const OptionWithTooltip = forwardRef(
   )
 );
 
-const LogoPopover = ({ group,
-                       channelLogos,
-                       logosLoading,
-                       onPopoverChange,
-                       onLogoInputClick,
-                       onFilterChange,
-                       onLogoSelect,
+const LogoPopover = ({
+  group,
+  channelLogos,
+  logosLoading,
+  onPopoverChange,
+  onLogoInputClick,
+  onFilterChange,
+  onLogoSelect,
 }) => {
   const renderLogoList = () => {
-    const logoOptions = [{ id: '0', name: 'Default' }, ...Object.values(channelLogos)];
+    const logoOptions = [
+      { id: '0', name: 'Default' },
+      ...Object.values(channelLogos),
+    ];
     const filteredLogos = logoOptions.filter((logo) =>
       logo.name.toLowerCase().includes((group.logoFilter || '').toLowerCase())
     );
@@ -69,7 +73,9 @@ const LogoPopover = ({ group,
       return (
         <Center style={{ height: 200 }}>
           <Text size="sm" c="dimmed">
-            {group.logoFilter ? 'No logos match your filter' : 'No logos available'}
+            {group.logoFilter
+              ? 'No logos match your filter'
+              : 'No logos available'}
           </Text>
         </Center>
       );
@@ -92,14 +98,14 @@ const LogoPopover = ({ group,
                 padding: '5px',
                 borderRadius: '4px',
               }}
-              onClick={() => onLogoSelect(logoItem.id === '0' ? null : logoItem.id)}
+              onClick={() =>
+                onLogoSelect(logoItem.id === '0' ? null : logoItem.id)
+              }
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor =
-                  'rgb(68, 68, 68)';
+                e.currentTarget.style.backgroundColor = 'rgb(68, 68, 68)';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor =
-                  'transparent';
+                e.currentTarget.style.backgroundColor = 'transparent';
               }}
             >
               <Center
@@ -154,7 +160,8 @@ const LogoPopover = ({ group,
           label="Custom Logo"
           readOnly
           value={
-            channelLogos[group.custom_properties?.custom_logo_id]?.name || 'Default'
+            channelLogos[group.custom_properties?.custom_logo_id]?.name ||
+            'Default'
           }
           onClick={onLogoInputClick}
           size="xs"
@@ -180,7 +187,7 @@ const LogoPopover = ({ group,
       </PopoverDropdown>
     </Popover>
   );
-}
+};
 
 const LiveGroupFilter = ({
   playlist,
@@ -836,22 +843,30 @@ const LiveGroupFilter = ({
                               channelLogos={channelLogos}
                               logosLoading={logosLoading}
                               onPopoverChange={(opened) => {
-                                updateGroupState(group.channel_group, () => ({ logoPopoverOpened: opened }));
+                                updateGroupState(group.channel_group, () => ({
+                                  logoPopoverOpened: opened,
+                                }));
                                 if (opened) ensureLogosLoaded();
                               }}
                               onLogoInputClick={() => {
                                 setGroupStates((prev) =>
                                   prev.map((state) => ({
                                     ...state,
-                                    logoPopoverOpened: state.channel_group === group.channel_group,
+                                    logoPopoverOpened:
+                                      state.channel_group ===
+                                      group.channel_group,
                                   }))
                                 );
                               }}
                               onFilterChange={(val) => {
-                                updateGroupState(group.channel_group, () => ({ logoFilter: val }));
+                                updateGroupState(group.channel_group, () => ({
+                                  logoFilter: val,
+                                }));
                               }}
                               onLogoSelect={(logoId) => {
-                                updateCustomProps(group.channel_group, () => ({ custom_logo_id: logoId }));
+                                updateCustomProps(group.channel_group, () => ({
+                                  custom_logo_id: logoId,
+                                }));
                               }}
                             />
 

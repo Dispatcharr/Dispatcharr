@@ -20,11 +20,23 @@ vi.mock('../../../utils/forms/ChannelGroupUtils.js', () => ({
 
 // ── ConfirmationDialog mock ────────────────────────────────────────────────────
 vi.mock('../../ConfirmationDialog', () => ({
-  default: ({ opened, onClose, onConfirm, title, confirmLabel, cancelLabel, loading }) =>
+  default: ({
+    opened,
+    onClose,
+    onConfirm,
+    title,
+    confirmLabel,
+    cancelLabel,
+    loading,
+  }) =>
     opened ? (
       <div data-testid="confirmation-dialog">
         <div data-testid="confirm-title">{title}</div>
-        <button data-testid="confirm-btn" onClick={onConfirm} disabled={loading}>
+        <button
+          data-testid="confirm-btn"
+          onClick={onConfirm}
+          disabled={loading}
+        >
           {confirmLabel}
         </button>
         <button data-testid="cancel-btn" onClick={onClose}>
@@ -68,14 +80,24 @@ vi.mock('@mantine/core', async () => ({
   ),
   Box: ({ children, style }) => <div style={style}>{children}</div>,
   Button: ({ children, onClick, disabled, loading, leftSection }) => (
-    <button onClick={onClick} disabled={disabled || loading} data-loading={loading}>
-      {leftSection && <span data-testid="button-left-section">{leftSection}</span>}
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      data-loading={loading}
+    >
+      {leftSection && (
+        <span data-testid="button-left-section">{leftSection}</span>
+      )}
       {children}
     </button>
   ),
   Chip: ({ children, checked, onChange }) => (
     <label>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
       {children}
     </label>
   ),
@@ -104,7 +126,9 @@ vi.mock('@mantine/core', async () => ({
       onKeyDown={onKeyDown}
     />
   ),
-  useMantineTheme: () => ({ tailwind: { yellow: ['#fefcbf'], red: ['#f56565'] } }),
+  useMantineTheme: () => ({
+    tailwind: { yellow: ['#fefcbf'], red: ['#f56565'] },
+  }),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -193,7 +217,9 @@ describe('GroupManager', () => {
         },
       });
       renderGroupManager();
-      const names = screen.getAllByText(/Alpha|Zebra/).map((el) => el.textContent);
+      const names = screen
+        .getAllByText(/Alpha|Zebra/)
+        .map((el) => el.textContent);
       expect(names.indexOf('Alpha')).toBeLessThan(names.indexOf('Zebra'));
     });
 
@@ -278,7 +304,9 @@ describe('GroupManager', () => {
     });
 
     it('calls updateChannelGroup with trimmed name on save', async () => {
-      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockResolvedValue(undefined);
+      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockResolvedValue(
+        undefined
+      );
       setupMocks({ groups: { 1: makeGroup() } });
       renderGroupManager();
 
@@ -296,7 +324,9 @@ describe('GroupManager', () => {
     });
 
     it('shows success notification after save', async () => {
-      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockResolvedValue(undefined);
+      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockResolvedValue(
+        undefined
+      );
       setupMocks({ groups: { 1: makeGroup() } });
       renderGroupManager();
 
@@ -328,7 +358,9 @@ describe('GroupManager', () => {
     });
 
     it('shows error notification when updateChannelGroup throws', async () => {
-      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockRejectedValue(new Error('fail'));
+      vi.mocked(ChannelGroupUtils.updateChannelGroup).mockRejectedValue(
+        new Error('fail')
+      );
       setupMocks({ groups: { 1: makeGroup() } });
       renderGroupManager();
 
@@ -371,7 +403,9 @@ describe('GroupManager', () => {
       fireEvent.click(screen.getByTestId('icon-check').closest('button'));
 
       await waitFor(() => {
-        expect(ChannelGroupUtils.addChannelGroup).toHaveBeenCalledWith({ name: 'New Group' });
+        expect(ChannelGroupUtils.addChannelGroup).toHaveBeenCalledWith({
+          name: 'New Group',
+        });
       });
     });
 
@@ -408,7 +442,9 @@ describe('GroupManager', () => {
     });
 
     it('shows error notification when addChannelGroup throws', async () => {
-      vi.mocked(ChannelGroupUtils.addChannelGroup).mockRejectedValue(new Error('fail'));
+      vi.mocked(ChannelGroupUtils.addChannelGroup).mockRejectedValue(
+        new Error('fail')
+      );
       setupMocks();
       renderGroupManager();
 
@@ -435,7 +471,9 @@ describe('GroupManager', () => {
       fireEvent.click(screen.getByTestId('icon-check').closest('button'));
 
       await waitFor(() => {
-        expect(screen.queryByPlaceholderText(/Enter group name/i)).not.toBeInTheDocument();
+        expect(
+          screen.queryByPlaceholderText(/Enter group name/i)
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -444,10 +482,14 @@ describe('GroupManager', () => {
       renderGroupManager();
 
       fireEvent.click(screen.getByTestId('icon-square-plus').closest('button'));
-      expect(screen.getByPlaceholderText(/Enter group name/i)).toBeInTheDocument();
+      expect(
+        screen.getByPlaceholderText(/Enter group name/i)
+      ).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('icon-x').closest('button'));
-      expect(screen.queryByPlaceholderText(/Enter group name/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByPlaceholderText(/Enter group name/i)
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -455,36 +497,62 @@ describe('GroupManager', () => {
 
   describe('delete group', () => {
     it('opens confirmation dialog when delete is clicked', async () => {
-      setupMocks({ groups: { 1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false } } });
+      setupMocks({
+        groups: {
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+        },
+      });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       await waitFor(() => {
-      expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
-      expect(screen.getByTestId('confirm-title')).toHaveTextContent('Confirm Group Deletion');
+        expect(screen.getByTestId('confirmation-dialog')).toBeInTheDocument();
+        expect(screen.getByTestId('confirm-title')).toHaveTextContent(
+          'Confirm Group Deletion'
+        );
       });
     });
 
     it('calls deleteChannelGroup when confirmed', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(undefined);
-      const groupToDelete = { ...makeGroup(), hasChannels: false, hasM3UAccounts: false };
+      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+        undefined
+      );
+      const groupToDelete = {
+        ...makeGroup(),
+        hasChannels: false,
+        hasM3UAccounts: false,
+      };
       setupMocks({ groups: { 1: groupToDelete } });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
       await waitFor(() => {
-        expect(ChannelGroupUtils.deleteChannelGroup).toHaveBeenCalledWith(groupToDelete);
+        expect(ChannelGroupUtils.deleteChannelGroup).toHaveBeenCalledWith(
+          groupToDelete
+        );
       });
     });
 
     it('shows success notification after delete', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(undefined);
-      setupMocks({ groups: { 1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false } } });
+      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+        undefined
+      );
+      setupMocks({
+        groups: {
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+        },
+      });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
       await waitFor(() => {
@@ -495,11 +563,19 @@ describe('GroupManager', () => {
     });
 
     it('shows error notification when deleteChannelGroup throws', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockRejectedValue(new Error('fail'));
-      setupMocks({ groups: { 1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false } } });
+      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockRejectedValue(
+        new Error('fail')
+      );
+      setupMocks({
+        groups: {
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+        },
+      });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
       await waitFor(() => {
@@ -510,25 +586,43 @@ describe('GroupManager', () => {
     });
 
     it('closes confirmation dialog on cancel', () => {
-      setupMocks({ groups: { 1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false } } });
+      setupMocks({
+        groups: {
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+        },
+      });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       fireEvent.click(screen.getByTestId('cancel-btn'));
 
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('closes confirmation dialog after successful delete', async () => {
-      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(undefined);
-      setupMocks({ groups: { 1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false } } });
+      vi.mocked(ChannelGroupUtils.deleteChannelGroup).mockResolvedValue(
+        undefined
+      );
+      setupMocks({
+        groups: {
+          1: { ...makeGroup(), hasChannels: false, hasM3UAccounts: false },
+        },
+      });
       renderGroupManager();
 
-      fireEvent.click(screen.getByTestId('icon-square-minus').closest('button'));
+      fireEvent.click(
+        screen.getByTestId('icon-square-minus').closest('button')
+      );
       fireEvent.click(screen.getByTestId('confirm-btn'));
 
       await waitFor(() => {
-        expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('confirmation-dialog')
+        ).not.toBeInTheDocument();
       });
     });
   });
@@ -548,7 +642,9 @@ describe('GroupManager', () => {
     });
 
     it('calls cleanupUnusedChannelGroups directly when warning is suppressed', async () => {
-      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(successResponse);
+      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(
+        successResponse
+      );
       setupMocks({ isWarningSuppressed: true });
       renderGroupManager();
 
@@ -557,11 +653,15 @@ describe('GroupManager', () => {
       await waitFor(() => {
         expect(ChannelGroupUtils.cleanupUnusedChannelGroups).toHaveBeenCalled();
       });
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
 
     it('calls cleanupUnusedChannelGroups when cleanup confirmed', async () => {
-      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(successResponse);
+      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(
+        successResponse
+      );
       setupMocks({ isWarningSuppressed: false });
       renderGroupManager();
 
@@ -574,7 +674,9 @@ describe('GroupManager', () => {
     });
 
     it('shows success notification after cleanup', async () => {
-      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(successResponse);
+      vi.mocked(ChannelGroupUtils.cleanupUnusedChannelGroups).mockResolvedValue(
+        successResponse
+      );
       setupMocks({ isWarningSuppressed: true });
       renderGroupManager();
 
@@ -610,7 +712,9 @@ describe('GroupManager', () => {
       fireEvent.click(screen.getByText(/cleanup/i));
       fireEvent.click(screen.getByTestId('cancel-btn'));
 
-      expect(screen.queryByTestId('confirmation-dialog')).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('confirmation-dialog')
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -618,8 +722,18 @@ describe('GroupManager', () => {
 
   describe('filter chips', () => {
     const twoGroups = {
-      1: makeGroup({ id: 1, name: 'Channel Group', hasChannels: true, hasM3UAccounts: false }),
-      2: makeGroup({ id: 2, name: 'M3U Group', hasChannels: false, hasM3UAccounts: true }),
+      1: makeGroup({
+        id: 1,
+        name: 'Channel Group',
+        hasChannels: true,
+        hasM3UAccounts: false,
+      }),
+      2: makeGroup({
+        id: 2,
+        name: 'M3U Group',
+        hasChannels: false,
+        hasM3UAccounts: true,
+      }),
     };
 
     it('hides channel groups when Channels chip is unchecked', () => {
@@ -647,8 +761,18 @@ describe('GroupManager', () => {
     it('hides unused groups when Unused chip is unchecked', () => {
       setupMocks({
         groups: {
-          1: makeGroup({ id: 1, name: 'Unused Group', hasChannels: false, hasM3UAccounts: false }),
-          2: makeGroup({ id: 2, name: 'Used Group', hasChannels: true, hasM3UAccounts: false }),
+          1: makeGroup({
+            id: 1,
+            name: 'Unused Group',
+            hasChannels: false,
+            hasM3UAccounts: false,
+          }),
+          2: makeGroup({
+            id: 2,
+            name: 'Used Group',
+            hasChannels: true,
+            hasM3UAccounts: false,
+          }),
         },
       });
       renderGroupManager();

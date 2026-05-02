@@ -17,7 +17,8 @@ vi.mock('../../../utils/forms/LiveGroupFilterUtils', () => ({
     {
       value: 'stream_profile',
       label: 'Stream Profile',
-      description: 'Assign a specific stream profile to all channels in this group during auto sync',
+      description:
+        'Assign a specific stream profile to all channels in this group during auto sync',
       isActive: (p) => p.stream_profile_id !== undefined,
       defaults: { stream_profile_id: null },
       removeKeys: ['stream_profile_id'],
@@ -49,7 +50,9 @@ vi.mock('../Logo', () => ({
 }));
 
 vi.mock('../../LazyLogo', () => ({
-  default: ({ logoId, alt }) => <img data-testid="lazy-logo" alt={alt} data-logo-id={logoId} />,
+  default: ({ logoId, alt }) => (
+    <img data-testid="lazy-logo" alt={alt} data-logo-id={logoId} />
+  ),
 }));
 
 vi.mock('react-window', () => ({
@@ -66,7 +69,15 @@ vi.mock('../../../images/logo.png', () => ({ default: 'logo.png' }));
 
 // ── Mantine core ───────────────────────────────────────────────────────────────
 vi.mock('@mantine/core', async () => ({
-  TextInput: ({ label, placeholder, value, onChange, onClick, readOnly, size }) => (
+  TextInput: ({
+    label,
+    placeholder,
+    value,
+    onChange,
+    onClick,
+    readOnly,
+    size,
+  }) => (
     <input
       aria-label={label || placeholder}
       placeholder={placeholder}
@@ -78,7 +89,12 @@ vi.mock('@mantine/core', async () => ({
     />
   ),
   Button: ({ children, onClick, disabled, variant, size, leftSection }) => (
-    <button onClick={onClick} disabled={disabled} data-variant={variant} data-size={size}>
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      data-variant={variant}
+      data-size={size}
+    >
       {leftSection}
       {children}
     </button>
@@ -94,7 +110,9 @@ vi.mock('@mantine/core', async () => ({
         data-size={size}
       />
       {label}
-      {description && <span data-testid="checkbox-description">{description}</span>}
+      {description && (
+        <span data-testid="checkbox-description">{description}</span>
+      )}
     </label>
   ),
   Flex: ({ children, gap }) => <div data-gap={gap}>{children}</div>,
@@ -114,9 +132,15 @@ vi.mock('@mantine/core', async () => ({
     </select>
   ),
   Stack: ({ children, gap }) => <div data-gap={gap}>{children}</div>,
-  Group: ({ children, justify }) => <div data-justify={justify}>{children}</div>,
+  Group: ({ children, justify }) => (
+    <div data-justify={justify}>{children}</div>
+  ),
   SimpleGrid: ({ children }) => <div data-testid="simple-grid">{children}</div>,
-  Text: ({ children, size, c }) => <span data-size={size} data-color={c}>{children}</span>,
+  Text: ({ children, size, c }) => (
+    <span data-size={size} data-color={c}>
+      {children}
+    </span>
+  ),
   NumberInput: ({ label, value, onChange, min, step, size }) => (
     <input
       type="number"
@@ -142,7 +166,9 @@ vi.mock('@mantine/core', async () => ({
       multiple
       value={value || []}
       onChange={(e) => {
-        const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+        const selected = Array.from(e.target.selectedOptions).map(
+          (o) => o.value
+        );
         onChange(selected);
       }}
       data-size={size}
@@ -155,10 +181,14 @@ vi.mock('@mantine/core', async () => ({
     </select>
   ),
   Tooltip: ({ children, label, disabled }) => (
-    <div data-tooltip={label} data-tooltip-disabled={disabled}>{children}</div>
+    <div data-tooltip={label} data-tooltip-disabled={disabled}>
+      {children}
+    </div>
   ),
   Popover: ({ children, opened }) => (
-    <div data-testid="popover" data-opened={opened}>{children}</div>
+    <div data-testid="popover" data-opened={opened}>
+      {children}
+    </div>
   ),
   ScrollArea: ({ children, style }) => <div style={style}>{children}</div>,
   Center: ({ children }) => <div data-testid="center">{children}</div>,
@@ -177,7 +207,9 @@ vi.mock('@mantine/core', async () => ({
   ),
   PopoverTarget: ({ children }) => <div>{children}</div>,
   PopoverDropdown: ({ children, onMouseDown }) => (
-    <div data-testid="popover-dropdown" onMouseDown={onMouseDown}>{children}</div>
+    <div data-testid="popover-dropdown" onMouseDown={onMouseDown}>
+      {children}
+    </div>
   ),
 }));
 
@@ -195,12 +227,8 @@ import useChannelsStore from '../../../store/channels';
 import useStreamProfilesStore from '../../../store/streamProfiles';
 import { useChannelLogoSelection } from '../../../hooks/useSmartLogos';
 import {
-  ADVANCED_OPTIONS_CONFIG,
-  applyAdvancedOptionsChange,
   getEPGs,
   getEpgSourceData,
-  getEpgSourceValue,
-  getSelectedAdvancedOptions,
 } from '../../../utils/forms/LiveGroupFilterUtils.js';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -238,11 +266,11 @@ const defaultStreamProfiles = [
 ];
 
 const setupStoreMocks = ({
-                           channelGroups = defaultChannelGroups,
-                           profiles = defaultProfiles,
-                           streamProfiles = defaultStreamProfiles,
-                           fetchStreamProfiles = vi.fn(),
-                         } = {}) => {
+  channelGroups = defaultChannelGroups,
+  profiles = defaultProfiles,
+  streamProfiles = defaultStreamProfiles,
+  fetchStreamProfiles = vi.fn(),
+} = {}) => {
   vi.mocked(useChannelsStore).mockImplementation((sel) =>
     sel({ channelGroups, profiles })
   );
@@ -252,10 +280,10 @@ const setupStoreMocks = ({
 };
 
 const setupLogoMock = ({
-                         logos = { 5: { id: 5, name: 'My Logo', url: '/logos/5.png' } },
-                         ensureLogosLoaded = vi.fn(),
-                         isLoading = false,
-                       } = {}) => {
+  logos = { 5: { id: 5, name: 'My Logo', url: '/logos/5.png' } },
+  ensureLogosLoaded = vi.fn(),
+  isLoading = false,
+} = {}) => {
   vi.mocked(useChannelLogoSelection).mockReturnValue({
     logos,
     ensureLogosLoaded,
@@ -265,12 +293,12 @@ const setupLogoMock = ({
 };
 
 const defaultProps = ({
-                        groupStates = [],
-                        setGroupStates = vi.fn(),
-                        autoEnableNewGroupsLive = true,
-                        setAutoEnableNewGroupsLive = vi.fn(),
-                        playlist = makePlaylist([]),
-                      } = {}) => ({
+  groupStates = [],
+  setGroupStates = vi.fn(),
+  autoEnableNewGroupsLive = true,
+  setAutoEnableNewGroupsLive = vi.fn(),
+  playlist = makePlaylist([]),
+} = {}) => ({
   playlist,
   groupStates,
   setGroupStates,
@@ -300,7 +328,9 @@ describe('LiveGroupFilter', () => {
     });
 
     it('renders auto-enable checkbox with correct checked state', async () => {
-      render(<LiveGroupFilter {...defaultProps({ autoEnableNewGroupsLive: true })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ autoEnableNewGroupsLive: true })} />
+      );
       const checkbox = screen.getByRole('checkbox', {
         name: /Automatically enable new groups/i,
       });
@@ -310,7 +340,11 @@ describe('LiveGroupFilter', () => {
     });
 
     it('renders auto-enable checkbox unchecked when false', () => {
-      render(<LiveGroupFilter {...defaultProps({ autoEnableNewGroupsLive: false })} />);
+      render(
+        <LiveGroupFilter
+          {...defaultProps({ autoEnableNewGroupsLive: false })}
+        />
+      );
       const checkbox = screen.getByRole('checkbox', {
         name: /Automatically enable new groups/i,
       });
@@ -320,7 +354,9 @@ describe('LiveGroupFilter', () => {
     it('renders filter input', async () => {
       render(<LiveGroupFilter {...defaultProps()} />);
       await waitFor(() => {
-        expect(screen.getByPlaceholderText('Filter groups...')).toBeInTheDocument();
+        expect(
+          screen.getByPlaceholderText('Filter groups...')
+        ).toBeInTheDocument();
       });
     });
 
@@ -401,7 +437,9 @@ describe('LiveGroupFilter', () => {
 
     it('handles getEPGs failure gracefully', async () => {
       vi.mocked(getEPGs).mockRejectedValue(new Error('Network error'));
-      expect(() => render(<LiveGroupFilter {...defaultProps()} />)).not.toThrow();
+      expect(() =>
+        render(<LiveGroupFilter {...defaultProps()} />)
+      ).not.toThrow();
     });
   });
 
@@ -411,22 +449,25 @@ describe('LiveGroupFilter', () => {
     it('calls setGroupStates when channelGroups and playlist are set', () => {
       const setGroupStates = vi.fn();
       const playlist = makePlaylist([
-        { channel_group: 1, enabled: true, auto_channel_sync: false, auto_sync_channel_start: 1 },
+        {
+          channel_group: 1,
+          enabled: true,
+          auto_channel_sync: false,
+          auto_sync_channel_start: 1,
+        },
       ]);
       render(
-        <LiveGroupFilter
-          {...defaultProps({ playlist, setGroupStates })}
-        />
+        <LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />
       );
       expect(setGroupStates).toHaveBeenCalled();
     });
 
     it('skips groups that are not in channelGroups', () => {
       const setGroupStates = vi.fn();
-      const playlist = makePlaylist([
-        { channel_group: 999, enabled: true },
-      ]);
-      render(<LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />);
+      const playlist = makePlaylist([{ channel_group: 999, enabled: true }]);
+      render(
+        <LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />
+      );
       expect(setGroupStates).toHaveBeenCalledWith([]);
     });
 
@@ -441,8 +482,11 @@ describe('LiveGroupFilter', () => {
           custom_properties: JSON.stringify({ foo: 'bar' }),
         },
       ]);
-      render(<LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />);
-      const [mappedGroups] = setGroupStates.mock.calls[setGroupStates.mock.calls.length - 1];
+      render(
+        <LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />
+      );
+      const [mappedGroups] =
+        setGroupStates.mock.calls[setGroupStates.mock.calls.length - 1];
       expect(mappedGroups[0].custom_properties).toEqual({ foo: 'bar' });
     });
 
@@ -452,7 +496,9 @@ describe('LiveGroupFilter', () => {
         { channel_group: 1, enabled: true, custom_properties: '{invalid}' },
       ]);
       expect(() =>
-        render(<LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />)
+        render(
+          <LiveGroupFilter {...defaultProps({ playlist, setGroupStates })} />
+        )
       ).not.toThrow();
     });
 
@@ -471,11 +517,16 @@ describe('LiveGroupFilter', () => {
       const setAutoEnableNewGroupsLive = vi.fn();
       render(
         <LiveGroupFilter
-          {...defaultProps({ autoEnableNewGroupsLive: true, setAutoEnableNewGroupsLive })}
+          {...defaultProps({
+            autoEnableNewGroupsLive: true,
+            setAutoEnableNewGroupsLive,
+          })}
         />
       );
       fireEvent.click(
-        screen.getByRole('checkbox', { name: /Automatically enable new groups/i })
+        screen.getByRole('checkbox', {
+          name: /Automatically enable new groups/i,
+        })
       );
       expect(setAutoEnableNewGroupsLive).toHaveBeenCalled();
     });
@@ -490,15 +541,19 @@ describe('LiveGroupFilter', () => {
       const setGroupStates = vi.fn((arg) => {
         if (typeof arg === 'function') lastUpdater = arg;
       });
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
 
       fireEvent.click(screen.getByText('Sports'));
       await waitFor(() => {
         expect(setGroupStates).toHaveBeenCalled();
         const result = lastUpdater(groupStates);
-        expect(result).toEqual(expect.arrayContaining([
-          expect.objectContaining({ channel_group: 1, enabled: false }),
-        ]));
+        expect(result).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ channel_group: 1, enabled: false }),
+          ])
+        );
       });
     });
 
@@ -511,7 +566,9 @@ describe('LiveGroupFilter', () => {
       const setGroupStates = vi.fn((arg) => {
         if (typeof arg === 'function') lastUpdater = arg;
       });
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
       const buttons = screen.getAllByRole('button', { name: /Sports/ });
       fireEvent.click(buttons[0]); // click Sports
       await waitFor(() => {
@@ -603,7 +660,9 @@ describe('LiveGroupFilter', () => {
         makeGroupState({ channel_group: 1, name: 'Sports', enabled: false }),
         makeGroupState({ channel_group: 2, name: 'News', enabled: false }),
       ];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
       fireEvent.click(screen.getByText('Select Visible'));
       await waitFor(() => {
         expect(setGroupStates).toHaveBeenCalled();
@@ -622,7 +681,9 @@ describe('LiveGroupFilter', () => {
         makeGroupState({ channel_group: 1, name: 'Sports', enabled: true }),
         makeGroupState({ channel_group: 2, name: 'News', enabled: true }),
       ];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
       fireEvent.click(screen.getByText('Deselect Visible'));
       await waitFor(() => {
         expect(setGroupStates).toHaveBeenCalled();
@@ -641,7 +702,9 @@ describe('LiveGroupFilter', () => {
         makeGroupState({ channel_group: 1, name: 'Sports', enabled: false }),
         makeGroupState({ channel_group: 2, name: 'News', enabled: false }),
       ];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
       fireEvent.change(screen.getByPlaceholderText('Filter groups...'), {
         target: { value: 'Sports' },
       });
@@ -661,13 +724,17 @@ describe('LiveGroupFilter', () => {
     it('renders Auto Channel Sync checkbox when group is enabled', () => {
       const groupStates = [makeGroupState({ enabled: true })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('checkbox', { name: /Auto Channel Sync/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('checkbox', { name: /Auto Channel Sync/i })
+      ).toBeInTheDocument();
     });
 
     it('Auto Channel Sync checkbox is disabled when group is disabled', () => {
       const groupStates = [makeGroupState({ enabled: false })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('checkbox', { name: /Auto Channel Sync/i })).toBeDisabled();
+      expect(
+        screen.getByRole('checkbox', { name: /Auto Channel Sync/i })
+      ).toBeDisabled();
     });
 
     it('toggleAutoSync calls setGroupStates toggling auto_channel_sync', async () => {
@@ -675,9 +742,15 @@ describe('LiveGroupFilter', () => {
       const setGroupStates = vi.fn((arg) => {
         if (typeof arg === 'function') lastUpdater = arg;
       });
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: false })];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
-      fireEvent.click(screen.getByRole('checkbox', { name: /Auto Channel Sync/i }));
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: false }),
+      ];
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Auto Channel Sync/i })
+      );
       await waitFor(() => {
         expect(setGroupStates).toHaveBeenCalled();
         const result = lastUpdater(groupStates);
@@ -686,15 +759,23 @@ describe('LiveGroupFilter', () => {
     });
 
     it('shows Start Channel # input when auto_channel_sync is enabled', () => {
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: true })];
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: true }),
+      ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('spinbutton', { name: /Start Channel #/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('spinbutton', { name: /Start Channel #/i })
+      ).toBeInTheDocument();
     });
 
     it('hides Start Channel # when auto_channel_sync is false', () => {
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: false })];
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: false }),
+      ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.queryByRole('spinbutton', { name: /Start Channel #/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('spinbutton', { name: /Start Channel #/i })
+      ).not.toBeInTheDocument();
     });
 
     it('updateChannelStart calls setGroupStates with new value', async () => {
@@ -702,11 +783,18 @@ describe('LiveGroupFilter', () => {
       const setGroupStates = vi.fn((arg) => {
         if (typeof arg === 'function') lastUpdater = arg;
       });
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: true })];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
-      fireEvent.change(screen.getByRole('spinbutton', { name: /Start Channel #/i }), {
-        target: { value: '100' },
-      });
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: true }),
+      ];
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
+      fireEvent.change(
+        screen.getByRole('spinbutton', { name: /Start Channel #/i }),
+        {
+          target: { value: '100' },
+        }
+      );
       await waitFor(() => {
         expect(setGroupStates).toHaveBeenCalled();
         const result = lastUpdater(groupStates);
@@ -719,9 +807,13 @@ describe('LiveGroupFilter', () => {
 
   describe('Channel Numbering Mode', () => {
     it('shows Channel Numbering Mode select when auto_channel_sync enabled', () => {
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: true })];
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: true }),
+      ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('combobox', { name: /Channel Numbering Mode/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('combobox', { name: /Channel Numbering Mode/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Fallback Channel # when numbering mode is provider', () => {
@@ -747,16 +839,25 @@ describe('LiveGroupFilter', () => {
         }),
       ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.queryByRole('spinbutton', { name: /Start Channel #/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('spinbutton', { name: /Start Channel #/i })
+      ).not.toBeInTheDocument();
     });
 
     it('updating Channel Numbering Mode calls setGroupStates', () => {
       const setGroupStates = vi.fn();
-      const groupStates = [makeGroupState({ enabled: true, auto_channel_sync: true })];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
-      fireEvent.change(screen.getByRole('combobox', { name: /Channel Numbering Mode/i }), {
-        target: { value: 'provider' },
-      });
+      const groupStates = [
+        makeGroupState({ enabled: true, auto_channel_sync: true }),
+      ];
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
+      fireEvent.change(
+        screen.getByRole('combobox', { name: /Channel Numbering Mode/i }),
+        {
+          target: { value: 'provider' },
+        }
+      );
       expect(setGroupStates).toHaveBeenCalled();
     });
   });
@@ -777,23 +878,35 @@ describe('LiveGroupFilter', () => {
           {...defaultProps({ groupStates: [makeAutoSyncGroup()] })}
         />
       );
-      expect(screen.getByRole('listbox', { name: /Advanced Options/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('listbox', { name: /Advanced Options/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Channel Name Find input when name_regex_pattern is set', () => {
       const groupStates = [
-        makeAutoSyncGroup({ name_regex_pattern: '.*', name_replace_pattern: '$1' }),
+        makeAutoSyncGroup({
+          name_regex_pattern: '.*',
+          name_replace_pattern: '$1',
+        }),
       ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('textbox', { name: /Channel Name Find/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('textbox', { name: /Channel Name Find/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Channel Name Replace input when name_replace_pattern is set', () => {
       const groupStates = [
-        makeAutoSyncGroup({ name_regex_pattern: '.*', name_replace_pattern: '$1' }),
+        makeAutoSyncGroup({
+          name_regex_pattern: '.*',
+          name_replace_pattern: '$1',
+        }),
       ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('textbox', { name: /Channel Name Replace/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('textbox', { name: /Channel Name Replace/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Channel Name Filter input when name_match_regex is set', () => {
@@ -807,7 +920,9 @@ describe('LiveGroupFilter', () => {
     it('shows Channel Profiles multiselect when channel_profile_ids is set', () => {
       const groupStates = [makeAutoSyncGroup({ channel_profile_ids: [] })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('listbox', { name: /Channel Profiles/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('listbox', { name: /Channel Profiles/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Override Channel Group select when group_override is set', () => {
@@ -821,7 +936,9 @@ describe('LiveGroupFilter', () => {
     it('shows Stream Profile select when stream_profile_id is set', () => {
       const groupStates = [makeAutoSyncGroup({ stream_profile_id: null })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('combobox', { name: /Stream Profile/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('combobox', { name: /Stream Profile/i })
+      ).toBeInTheDocument();
     });
 
     it('shows Channel Sort Order select when channel_sort_order is set', () => {
@@ -834,22 +951,31 @@ describe('LiveGroupFilter', () => {
 
     it('shows Reverse Sort Order checkbox when channel_sort_order is set', () => {
       const groupStates = [
-        makeAutoSyncGroup({ channel_sort_order: '', channel_sort_reverse: false }),
+        makeAutoSyncGroup({
+          channel_sort_order: '',
+          channel_sort_reverse: false,
+        }),
       ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('checkbox', { name: /Reverse Sort Order/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('checkbox', { name: /Reverse Sort Order/i })
+      ).toBeInTheDocument();
     });
 
     it('shows EPG Source select when force_dummy_epg is set', () => {
       const groupStates = [makeAutoSyncGroup({ force_dummy_epg: true })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('combobox', { name: /EPG Source/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('combobox', { name: /EPG Source/i })
+      ).toBeInTheDocument();
     });
 
     it('shows EPG Source select when custom_epg_id is set', () => {
       const groupStates = [makeAutoSyncGroup({ custom_epg_id: 42 })];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
-      expect(screen.getByRole('combobox', { name: /EPG Source/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('combobox', { name: /EPG Source/i })
+      ).toBeInTheDocument();
     });
   });
 
@@ -890,7 +1016,9 @@ describe('LiveGroupFilter', () => {
         if (typeof arg === 'function') lastUpdater = arg;
       });
       const groupStates = [makeLogoGroup()];
-      render(<LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />);
+      render(
+        <LiveGroupFilter {...defaultProps({ groupStates, setGroupStates })} />
+      );
       fireEvent.click(screen.getByText('Upload or Create Logo'));
       fireEvent.click(screen.getByTestId('logo-form-success'));
       expect(setGroupStates).toHaveBeenCalled();
@@ -927,8 +1055,12 @@ describe('LiveGroupFilter', () => {
       ];
       render(<LiveGroupFilter {...defaultProps({ groupStates })} />);
       await waitFor(() => {
-        expect(screen.getByRole('option', { name: /EPG One/i })).toBeInTheDocument();
-        expect(screen.getByRole('option', { name: /EPG Two/i })).toBeInTheDocument();
+        expect(
+          screen.getByRole('option', { name: /EPG One/i })
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole('option', { name: /EPG Two/i })
+        ).toBeInTheDocument();
       });
     });
   });

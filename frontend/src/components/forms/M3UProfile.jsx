@@ -81,21 +81,36 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
 
     if (isXC && xcMode === 'simple' && !isDefaultProfile) {
       const errs = validateXcSimple(newUsername, newPassword);
-      if (Object.keys(errs).length > 0) { setSimpleErrors(errs); return; }
+      if (Object.keys(errs).length > 0) {
+        setSimpleErrors(errs);
+        return;
+      }
       setSimpleErrors({});
       values = applyXcSimplePatterns(values, m3u, newUsername, newPassword);
     }
 
     if (isXC && xcMode === 'advanced' && !isDefaultProfile) {
-      if (!searchPattern.trim()) { setError('search_pattern', { message: 'Search pattern is required' }); return; }
-      if (!replacePattern.trim()) { setError('replace_pattern', { message: 'Replace pattern is required' }); return; }
+      if (!searchPattern.trim()) {
+        setError('search_pattern', { message: 'Search pattern is required' });
+        return;
+      }
+      if (!replacePattern.trim()) {
+        setError('replace_pattern', { message: 'Replace pattern is required' });
+        return;
+      }
     }
 
-    const submitValues = buildSubmitValues(values, profile, isDefaultProfile, isXC, xcMode);
+    const submitValues = buildSubmitValues(
+      values,
+      profile,
+      isDefaultProfile,
+      isXC,
+      xcMode
+    );
     if (expDate !== undefined) submitValues.exp_date = expDate;
 
     profile?.id
-      ? await updateM3UProfile(m3u, {...submitValues, id: profile.id})
+      ? await updateM3UProfile(m3u, { ...submitValues, id: profile.id })
       : await addM3UProfile(m3u, submitValues);
 
     reset();
