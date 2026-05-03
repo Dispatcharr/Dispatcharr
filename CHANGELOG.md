@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-user IP/CIDR network allowlists**. Admins can now assign IP address and CIDR range restrictions to individual user accounts via the API & XC tab on the user edit form. When a user has one or more allowed ranges configured, requests from IPs outside that list are rejected with `403 Forbidden` regardless of the global network access policy; if no ranges are configured, the user inherits global settings unchanged. The existing `network_access_allowed()` utility is extended with an optional `user` argument so the per-user check is enforced at all access-controlled entry points (M3U/EPG, Streams, XC API, UI) without duplicating IP-matching logic. Per-user restrictions are stored in `custom_properties['allowed_networks']`; no model changes or migrations are required. — Thanks [@sethwv](https://github.com/sethwv)
+- **`reset_user_network` management command**: `manage.py reset_user_network <username>` clears the per-user `allowed_networks` restriction for the specified account, restoring it to global-policy inheritance. Useful for recovering a user locked out by a misconfigured allowlist. — Thanks [@sethwv](https://github.com/sethwv)
+
+### Changed
+
+- **Global Network Access settings use tag-style inputs**: the IP/CIDR range fields in the Network Access settings panel now use tag-style chip inputs instead of a plain text field, making it easier to add, review, and remove individual addresses or ranges. — Thanks [@sethwv](https://github.com/sethwv)
+
 ## [0.24.0] - 2026-05-03
 
 ### Security
