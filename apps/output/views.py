@@ -1927,13 +1927,13 @@ def xc_get_user(request):
     if custom_properties["xc_password"] != password:
         return None
 
+    if not network_access_allowed(request, 'XC_API', user):
+        return None
+
     return user
 
 
 def xc_get_info(request, full=False):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
     user = xc_get_user(request)
 
     if user is None:
@@ -1990,9 +1990,6 @@ def xc_get_info(request, full=False):
 
 
 def xc_player_api(request, full=False):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
     action = request.GET.get("action")
     user = xc_get_user(request)
 
@@ -2027,9 +2024,6 @@ def xc_player_api(request, full=False):
 
 
 def xc_panel_api(request):
-    if not network_access_allowed(request, 'XC_API'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
-
     user = xc_get_user(request)
 
     if user is None:
