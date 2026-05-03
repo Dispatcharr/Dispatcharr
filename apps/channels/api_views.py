@@ -311,6 +311,19 @@ class StreamViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Group names are not unique across M3U accounts (two providers
+        # can both publish a "Sports" group). Scope to the calling
+        # account so the sample reflects only the user's edits.
+        m3u_account_id = request.query_params.get("m3u_account_id")
+        if m3u_account_id is not None:
+            try:
+                m3u_account_id = int(m3u_account_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "m3u_account_id must be an integer"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         find_pat = request.query_params.get("find") or None
         replace_pat = request.query_params.get("replace") or ""
         match_pat = request.query_params.get("match") or None
@@ -358,6 +371,8 @@ class StreamViewSet(viewsets.ModelViewSet):
         # separate COUNT lets the client surface scan_limit_hit when
         # the preview covers only a sample.
         base_qs = Stream.objects.filter(channel_group__name=group_name)
+        if m3u_account_id is not None:
+            base_qs = base_qs.filter(m3u_account_id=m3u_account_id)
         names_iter = base_qs.values_list("name", flat=True)[:SCAN_CAP]
         total_in_group = base_qs.count()
 

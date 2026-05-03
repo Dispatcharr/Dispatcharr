@@ -316,12 +316,15 @@ export default class API {
   // any combination can be supplied per call.
   static async getStreamsRegexPreview(
     channelGroupName,
-    { find, replace, match, exclude, limit = 10, signal } = {}
+    { find, replace, match, exclude, limit = 10, signal, m3uAccountId } = {}
   ) {
     try {
       const params = new URLSearchParams({
         channel_group: channelGroupName,
       });
+      if (m3uAccountId !== undefined && m3uAccountId !== null) {
+        params.set('m3u_account_id', String(m3uAccountId));
+      }
       if (find) params.set('find', find);
       if (replace !== undefined && replace !== null) {
         params.set('replace', replace);

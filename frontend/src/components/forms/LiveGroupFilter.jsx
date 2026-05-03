@@ -325,7 +325,10 @@ const LiveGroupFilter = ({
       setRegexPreviewState((prev) => ({ ...prev, [groupId]: emptyState }));
       return;
     }
-    const cacheKey = `${groupId}|${find}|${replace}|${match}|${exclude}`;
+    // Account ID in the cache key so previews stay correct when the
+    // user switches between accounts that share a group name.
+    const accountId = playlist?.id ?? '';
+    const cacheKey = `${accountId}|${groupId}|${find}|${replace}|${match}|${exclude}`;
     const cached = regexPreviewCacheRef.current[cacheKey];
     if (cached) {
       cancelPending();
@@ -364,6 +367,7 @@ const LiveGroupFilter = ({
           exclude: exclude || undefined,
           limit: 10,
           signal: controller.signal,
+          m3uAccountId: playlist?.id,
         });
       } catch (e) {
         if (e?.name === 'AbortError') return;
@@ -838,7 +842,7 @@ const LiveGroupFilter = ({
         {result && !result.error && result.matches.length === 0 && (
           <Text size="xs" c="dimmed">
             {result.total_in_group === 0
-              ? 'No streams in this group yet.'
+              ? 'No streams in this group yet. Run an M3U refresh first to populate streams.'
               : 'No streams matched this pattern.'}
           </Text>
         )}
@@ -913,7 +917,7 @@ const LiveGroupFilter = ({
         {result && !result.error && result.matches.length === 0 && (
           <Text size="xs" c="dimmed">
             {result.total_in_group === 0
-              ? 'No streams in this group yet.'
+              ? 'No streams in this group yet. Run an M3U refresh first to populate streams.'
               : emptyText}
           </Text>
         )}
