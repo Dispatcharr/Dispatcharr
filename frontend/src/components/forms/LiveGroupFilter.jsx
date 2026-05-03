@@ -65,6 +65,9 @@ const LiveGroupFilter = ({
   const [logoModalOpen, setLogoModalOpen] = useState(false);
   const [currentEditingGroupId, setCurrentEditingGroupId] = useState(null);
   const [configuringGroupId, setConfiguringGroupId] = useState(null);
+  // Snapshot of the configuring group's state taken when the Configure
+  // modal opens. Cancel restores from this; Done discards it.
+  const configureSnapshotRef = useRef(null);
   // Merged per-group conflict state: { id: { hasChannelConflict: bool } }
   // sourced from the debounced /numbers-in-range/ scan plus an in-memory
   // overlap check against other groups' ranges in modal state.
@@ -1758,9 +1761,19 @@ const LiveGroupFilter = ({
                         <ActionIcon
                           variant="subtle"
                           size="sm"
-                          onClick={() =>
-                            setConfiguringGroupId(group.channel_group)
-                          }
+                          onClick={() => {
+                            // Snapshot at open time so Cancel can restore
+                            // pre-edit state. custom_properties needs a
+                            // one-level clone since the rest of group
+                            // state is flat.
+                            configureSnapshotRef.current = {
+                              ...group,
+                              custom_properties: {
+                                ...(group.custom_properties || {}),
+                              },
+                            };
+                            setConfiguringGroupId(group.channel_group);
+                          }}
                           aria-label="Configure group"
                         >
                           <Cog size={14} />
@@ -1861,9 +1874,21 @@ const LiveGroupFilter = ({
           of how many advanced options are active. */}
       <GroupConfigureModal
         opened={!!configuringGroup}
-        onClose={() => setConfiguringGroupId(null)}
+        onDone={() => {
+          configureSnapshotRef.current = null;
+          setConfiguringGroupId(null);
+        }}
+        onCancel={() => {
+          // Revert this group's in-memory edits to the open-time
+          // snapshot. Other groups' unsaved edits in groupStates are
+          // untouched.
+          if (configureSnapshotRef.current) {
+            applyGroupChange(configureSnapshotRef.current);
+          }
+          configureSnapshotRef.current = null;
+          setConfiguringGroupId(null);
+        }}
         group={configuringGroup}
-        onChange={applyGroupChange}
       >
         {configuringGroup && renderAdvancedOptions(configuringGroup)}
       </GroupConfigureModal>

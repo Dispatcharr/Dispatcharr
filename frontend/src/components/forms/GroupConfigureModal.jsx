@@ -6,9 +6,9 @@
 // list and field logic.
 
 import React from 'react';
-import { Modal, Stack, Group, Text } from '@mantine/core';
+import { Button, Modal, Stack, Group, Text } from '@mantine/core';
 
-const GroupConfigureModal = ({ opened, onClose, group, children }) => {
+const GroupConfigureModal = ({ opened, onDone, onCancel, group, children }) => {
   if (!group) return null;
   const streamCount =
     typeof group.stream_count === 'number' ? group.stream_count : null;
@@ -16,7 +16,8 @@ const GroupConfigureModal = ({ opened, onClose, group, children }) => {
   return (
     <Modal
       opened={opened}
-      onClose={onClose}
+      onClose={onCancel}
+      withCloseButton={false}
       size="lg"
       title={
         <Group gap="xs">
@@ -31,6 +32,17 @@ const GroupConfigureModal = ({ opened, onClose, group, children }) => {
       styles={{ content: { '--mantine-color-body': '#27272A' } }}
     >
       <Stack gap="md">{children}</Stack>
+      {/* Done keeps in-memory edits routed into the parent's groupStates
+          (parent's Save and Refresh persists them). Cancel reverts to
+          the open-time snapshot. */}
+      <Group justify="flex-end" gap="xs" mt="md">
+        <Button variant="default" onClick={onCancel} size="xs">
+          Cancel
+        </Button>
+        <Button variant="filled" color="blue" onClick={onDone} size="xs">
+          Done
+        </Button>
+      </Group>
     </Modal>
   );
 };
