@@ -38,7 +38,10 @@ import {
   ArrowUpDown,
   ArrowDownWideNarrow,
   Search,
+  EyeOff,
+  Pencil,
 } from 'lucide-react';
+import { listOverriddenFields } from '../../utils/forms/ChannelUtils.js';
 import {
   Box,
   TextInput,
@@ -241,11 +244,10 @@ const ChannelRowActions = React.memo(
       </Box>
     );
   },
-  // Custom comparator: only re-render when the actual channel changes.
-  // The row object is a new TanStack Table reference on each render, but
-  // row.original.id is stable. Callbacks read fresh data at call time.
-  (prevProps, nextProps) =>
-    prevProps.row.original.id === nextProps.row.original.id
+  // Custom comparator: skip re-render when the channel's data object hasn't
+  // changed. row.original is stable when the underlying channel hasn't been
+  // updated; it becomes a new reference when the store replaces that channel.
+  (prevProps, nextProps) => prevProps.row.original === nextProps.row.original
 );
 
 const ChannelsTable = ({ onReady }) => {
@@ -326,6 +328,9 @@ const ChannelsTable = ({ onReady }) => {
   const [showOnlyStreamlessChannels, setShowOnlyStreamlessChannels] =
     useState(false);
   const [showOnlyStaleChannels, setShowOnlyStaleChannels] = useState(false);
+  const [showOnlyOverriddenChannels, setShowOnlyOverriddenChannels] =
+    useState(false);
+  const [visibilityFilter, setVisibilityFilter] = useState('active');
 
   const [paginationString, setPaginationString] = useState('');
   const [filters, setFilters] = useState({
@@ -429,6 +434,14 @@ const ChannelsTable = ({ onReady }) => {
     if (showOnlyStaleChannels === true) {
       params.append('only_stale', true);
     }
+    if (showOnlyOverriddenChannels === true) {
+      params.append('only_has_overrides', true);
+    }
+    // The backend defaults to "active"; send other choices explicitly so
+    // hidden rows surface when the user opts into "Hidden Only" or "Show All".
+    if (visibilityFilter && visibilityFilter !== 'active') {
+      params.append('visibility_filter', visibilityFilter);
+    }
 
     // Apply sorting
     if (sorting.length > 0) {
@@ -525,6 +538,8 @@ const ChannelsTable = ({ onReady }) => {
     selectedProfileId,
     showOnlyStreamlessChannels,
     showOnlyStaleChannels,
+    showOnlyOverriddenChannels,
+    visibilityFilter,
   ]);
 
   const stopPropagation = useCallback((e) => {
@@ -559,36 +574,30 @@ const ChannelsTable = ({ onReady }) => {
     }));
   };
 
-  const editChannel = async (ch = null, opts = {}) => {
-    // If forceAdd is set, always open a blank form
+  const editChannel = useCallback(async (ch = null, opts = {}) => {
     if (opts.forceAdd) {
       setChannel(null);
       setChannelModalOpen(true);
       return;
     }
-    // Use table's selected state instead of store state to avoid stale selections
-    const currentSelection = table ? table.selectedTableIds : [];
-    console.log('editChannel called with:', {
-      ch,
-      currentSelection,
-      tableExists: !!table,
-    });
+    const currentSelection =
+      useChannelsTableStore.getState().selectedChannelIds;
+    console.log('editChannel called with:', { ch, currentSelection });
 
     if (currentSelection.length > 1) {
       setChannelBatchModalOpen(true);
     } else {
-      // If no channel object is passed but we have a selection, get the selected channel
       let channelToEdit = ch;
       if (!channelToEdit && currentSelection.length === 1) {
         const selectedId = currentSelection[0];
-
-        // Use table data since that's what's currently displayed
-        channelToEdit = data.find((d) => d.id === selectedId);
+        channelToEdit = useChannelsTableStore
+          .getState()
+          .channels.find((d) => d.id === selectedId);
       }
       setChannel(channelToEdit);
       setChannelModalOpen(true);
     }
-  };
+  }, []);
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
@@ -689,7 +698,7 @@ const ChannelsTable = ({ onReady }) => {
   const handleWatchStream = useCallback(
     (channel) => {
       const url = getChannelURL(channel);
-      showVideo(url, 'live', { name: channel.name });
+      showVideo(url, 'live', { name: channel.name, channelId: channel.id });
     },
     [getChannelURL, showVideo]
   );
@@ -914,7 +923,10 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'channel_number',
-        accessorKey: 'channel_number',
+        // Prefer the backend-resolved effective_channel_number so overrides
+        // show through to the table. Inline save still writes to the
+        // override row via buildInlinePatch in EditableCell.
+        accessorFn: (row) => row.effective_channel_number ?? row.channel_number,
         size: columnSizing.channel_number || 40,
         minSize: 30,
         maxSize: 100,
@@ -922,16 +934,53 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'name',
-        accessorKey: 'name',
+        accessorFn: (row) => row.effective_name ?? row.name,
         size: columnSizing.name || 200,
         minSize: 100,
         grow: true,
-        cell: (props) => <EditableTextCell {...props} />,
+        cell: (props) => {
+          const row = props.row?.original || {};
+          const overriddenLabels = listOverriddenFields(row);
+          return (
+            <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+              <Box style={{ minWidth: 0, flex: 1 }}>
+                <EditableTextCell {...props} />
+              </Box>
+              {overriddenLabels.length > 0 && (
+                <Tooltip
+                  label={`Overrides active: ${overriddenLabels.join(', ')}`}
+                >
+                  <Box
+                    component="span"
+                    role="img"
+                    aria-label={`Overrides active: ${overriddenLabels.join(', ')}`}
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <Pencil size={14} color="#eab308" aria-hidden="true" />
+                  </Box>
+                </Tooltip>
+              )}
+              {row.hidden_from_output && (
+                <Tooltip label="Hidden from HDHR, M3U, EPG, and XC output.">
+                  <Box
+                    component="span"
+                    role="img"
+                    aria-label="Hidden from HDHR, M3U, EPG, and XC output"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <EyeOff size={14} color="#9ca3af" aria-hidden="true" />
+                  </Box>
+                </Tooltip>
+              )}
+            </Flex>
+          );
+        },
       },
       {
         id: 'epg',
         header: 'EPG',
-        accessorKey: 'epg_data_id',
+        // Effective EPG id so overridden EPG assignments show in the table.
+        accessorFn: (row) => row.effective_epg_data_id ?? row.epg_data_id,
         cell: (props) => (
           <EditableEPGCell
             {...props}
@@ -945,10 +994,13 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'channel_group',
-        accessorFn: (row) =>
-          channelGroups[row.channel_group_id]
-            ? channelGroups[row.channel_group_id].name
-            : '',
+        accessorFn: (row) => {
+          const effectiveGroupId =
+            row.effective_channel_group_id ?? row.channel_group_id;
+          return channelGroups[effectiveGroupId]
+            ? channelGroups[effectiveGroupId].name
+            : '';
+        },
         cell: (props) => (
           <EditableGroupCell {...props} channelGroups={channelGroups} />
         ),
@@ -957,10 +1009,7 @@ const ChannelsTable = ({ onReady }) => {
       },
       {
         id: 'logo',
-        accessorFn: (row) => {
-          // Just pass the logo_id directly, not the full logo object
-          return row.logo_id;
-        },
+        accessorFn: (row) => row.effective_logo_id ?? row.logo_id,
         size: 75,
         minSize: 50,
         maxSize: 120,
@@ -1001,7 +1050,7 @@ const ChannelsTable = ({ onReady }) => {
     // from the store, so we don't need to recreate columns when logos load.
     // Note: tvgsLoaded is intentionally excluded - EditableEPGCell handles loading state internally
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProfileId, channelGroups, theme, tvgsById, epgs]
+    [selectedProfileId, channelGroups, theme, tvgsById, epgs, editChannel]
   );
 
   const renderHeaderCell = (header) => {
@@ -1515,6 +1564,10 @@ const ChannelsTable = ({ onReady }) => {
             setShowOnlyStreamlessChannels={setShowOnlyStreamlessChannels}
             showOnlyStaleChannels={showOnlyStaleChannels}
             setShowOnlyStaleChannels={setShowOnlyStaleChannels}
+            showOnlyOverriddenChannels={showOnlyOverriddenChannels}
+            setShowOnlyOverriddenChannels={setShowOnlyOverriddenChannels}
+            visibilityFilter={visibilityFilter}
+            setVisibilityFilter={setVisibilityFilter}
           />
 
           {/* Table or ghost empty state inside Paper */}

@@ -294,15 +294,35 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setXcMode(mode);
   };
 
-  // Local regex for the live demo preview
+  // Local regex for the live demo preview. Returns an array of strings and
+  // <mark> React nodes so user-supplied text is never interpolated into raw
+  // HTML (avoids self-XSS via dangerouslySetInnerHTML).
   const getHighlightedSearchText = () => {
     if (!searchPattern || !sampleInput) return sampleInput;
     try {
       const regex = new RegExp(searchPattern, 'g');
-      return sampleInput.replace(
-        regex,
-        (match) => `<mark style="background-color: #ffee58;">${match}</mark>`
-      );
+      const parts = [];
+      let lastIndex = 0;
+      let m;
+      while ((m = regex.exec(sampleInput)) !== null) {
+        if (m.index > lastIndex) {
+          parts.push(sampleInput.slice(lastIndex, m.index));
+        }
+        parts.push(
+          <mark
+            key={`${m.index}-${parts.length}`}
+            style={{ backgroundColor: '#ffee58' }}
+          >
+            {m[0]}
+          </mark>
+        );
+        lastIndex = m.index + m[0].length;
+        if (m[0].length === 0) regex.lastIndex++;
+      }
+      if (lastIndex < sampleInput.length) {
+        parts.push(sampleInput.slice(lastIndex));
+      }
+      return parts;
     } catch {
       return sampleInput;
     }
@@ -529,11 +549,10 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
                 </Text>
                 <Text
                   size="sm"
-                  dangerouslySetInnerHTML={{
-                    __html: getHighlightedSearchText(),
-                  }}
                   sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                />
+                >
+                  {getHighlightedSearchText()}
+                </Text>
               </Paper>
             </Grid.Col>
 

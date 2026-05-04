@@ -83,6 +83,10 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
         return False
 
 def get_user_active_connections(user_id):
+    """Return active stream connections for a single user.
+
+    Pass `user_id=None` to return all active connections across the system.
+    """
     redis_client = RedisClient.get_client()
     connections = []
 
@@ -101,7 +105,7 @@ def get_user_active_connections(user_id):
                 logger.debug(f"[stream limits] channel_id = {channel_id}")
                 logger.debug(f"[stream limits] client_id = {client_id}")
 
-                if client_user_id and int(client_user_id) == user_id:
+                if user_id is None or (client_user_id and int(client_user_id) == user_id):
                     try:
                         logger.debug(f"[stream limits] Found LIVE connection for user {user_id} on channel {channel_id} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0
@@ -127,7 +131,7 @@ def get_user_active_connections(user_id):
                 logger.debug(f"[stream limits] user_id = {user_id}")
                 logger.debug(f"[stream limits] client_id = {client_id}")
 
-                if client_user_id and int(client_user_id) == user_id:
+                if user_id is None or (client_user_id and int(client_user_id) == user_id):
                     try:
                         logger.debug(f"[stream limits] Found VOD connection for user {user_id} on content {content_uuid} with client ID {client_id}")
                         connected_at = float(connected_at) if connected_at else 0

@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
     "Django==6.0.4",
-    "psycopg2-binary==2.9.11",
+    "psycopg2-binary==2.9.12",
     "celery[redis]==5.6.3",
     "djangorestframework==3.17.1",
     "requests==2.33.1",
@@ -28,12 +28,12 @@ dependencies = [
     "tzlocal",
     "pytz",
     "torch==2.11.0+cpu",
-    "sentence-transformers==5.4.0",
+    "sentence-transformers==5.4.1",
     "channels",
     "channels-redis==4.3.0",
     "django-filter",
     "django-celery-beat>=2.9.0",
-    "lxml==6.0.3",
+    "lxml==6.1.0",
     "packaging",
     "python-gnupg",
 ]

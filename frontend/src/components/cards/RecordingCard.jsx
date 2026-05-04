@@ -285,7 +285,9 @@ const RecordingCard = ({
       <Tooltip
         label={
           customProps.file_url || customProps.output_file_url
-            ? 'Watch recording'
+            ? isInProgress
+              ? 'Watch in progress recording'
+              : 'Watch recording'
             : 'Recording playback not available yet'
         }
       >
@@ -296,10 +298,7 @@ const RecordingCard = ({
             e.stopPropagation();
             handleWatchRecording();
           }}
-          disabled={
-            customProps.status === 'recording' ||
-            !(customProps.file_url || customProps.output_file_url)
-          }
+          disabled={!(customProps.file_url || customProps.output_file_url)}
         >
           Watch
         </Button>

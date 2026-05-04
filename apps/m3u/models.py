@@ -100,7 +100,6 @@ class M3UAccount(models.Model):
         default=0,
         help_text="Priority for VOD provider selection (higher numbers = higher priority). Used when multiple providers offer the same content.",
     )
-
     def __str__(self):
         return self.name
 
@@ -110,18 +109,6 @@ class M3UAccount(models.Model):
 
     def display_action(self):
         return "Exclude" if self.exclude else "Include"
-
-    def deactivate_streams(self):
-        """Deactivate all streams linked to this account."""
-        for stream in self.streams.all():
-            stream.is_active = False
-            stream.save()
-
-    def reactivate_streams(self):
-        """Reactivate all streams linked to this account."""
-        for stream in self.streams.all():
-            stream.is_active = True
-            stream.save()
 
     @classmethod
     def get_custom_account(cls):
@@ -204,25 +191,6 @@ class M3UFilter(models.Model):
         )
         exclude_status = "Exclude" if self.exclude else "Include"
         return f"[{self.m3u_account.name}] {filter_type_display}: {self.regex_pattern} ({exclude_status})"
-
-    @staticmethod
-    def filter_streams(streams, filters):
-        included_streams = set()
-        excluded_streams = set()
-
-        for f in filters:
-            for stream in streams:
-                if f.applies_to(stream.name, stream.group_name):
-                    if f.exclude:
-                        excluded_streams.add(stream)
-                    else:
-                        included_streams.add(stream)
-
-        # If no include filters exist, assume all non-excluded streams are valid
-        if not any(not f.exclude for f in filters):
-            return streams.exclude(id__in=[s.id for s in excluded_streams])
-
-        return streams.filter(id__in=[s.id for s in included_streams])
 
 
 class ServerGroup(models.Model):

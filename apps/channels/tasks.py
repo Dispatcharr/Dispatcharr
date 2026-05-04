@@ -6,13 +6,17 @@ import re
 import requests
 import time
 import json
+import shutil
 import subprocess
 import signal
+import threading
+from collections import deque
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 import gc
 
 from celery import shared_task
+from celery.signals import worker_shutting_down
 from django.utils.text import slugify
 from rapidfuzz import fuzz
 
@@ -28,6 +32,21 @@ import tempfile
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+# Flag set by the Celery `worker_shutting_down` signal so in-flight
+# `run_recording` tasks can distinguish a graceful worker shutdown (e.g.
+# `docker stop`, container update) from the natural end of a recording.
+# When set, the post-FFmpeg path leaves the HLS working directory intact
+# and marks the recording "interrupted" so `recover_recordings_on_startup`
+# can resume it on the next boot via the existing path-reuse logic.
+_DVR_SHUTTING_DOWN = False
+
+
+@worker_shutting_down.connect
+def _dvr_mark_shutting_down(**_kwargs):
+    global _DVR_SHUTTING_DOWN
+    _DVR_SHUTTING_DOWN = True
 
 
 _url_validation_cache = {}
@@ -1584,9 +1603,14 @@ def _parse_epg_tv_movie_info(program):
     return is_movie, season, episode, year, sub_title
 
 
-def _build_output_paths(channel, program, start_time, end_time):
+def _build_output_paths(channel, program, start_time, end_time, recording_id):
     """
-    Build (final_path, temp_ts_path, final_filename) using DVR templates.
+    Build (final_path, hls_dir, final_filename) using DVR templates.
+
+    The HLS working directory is hidden and tagged with the recording id
+    (e.g. ``.dvr_71_hls``) so it cannot collide with another recording's
+    files and so orphan-cleanup utilities can identify internal scratch
+    directories unambiguously.
     """
     from core.models import CoreSettings
     # Root for DVR recordings: fixed to /data/recordings inside the container
@@ -1653,23 +1677,17 @@ def _build_output_paths(channel, program, start_time, end_time):
     final_path = rel_path if rel_path.startswith('/') else os.path.join(library_root, rel_path)
     final_path = os.path.normpath(final_path)
 
-    # Avoid overwriting an existing file from a different recording.
-    # Check BOTH .mkv and .ts — a pre-restart TS segment may exist at
-    # the same base name even when the MKV is a 0-byte placeholder.
+    # Avoid overwriting an existing MKV from a different recording.  The HLS
+    # working directory is keyed by recording id, so it cannot collide and is
+    # not part of this check.
     base, ext = os.path.splitext(final_path)
     counter = 1
     while True:
-        candidate_base = final_path[:-len(ext)]  # strip extension
-        ts_candidate = candidate_base + '.ts'
         try:
             mkv_occupied = os.stat(final_path).st_size > 0
         except OSError:
             mkv_occupied = False
-        try:
-            ts_occupied = os.stat(ts_candidate).st_size > 0
-        except OSError:
-            ts_occupied = False
-        if not mkv_occupied and not ts_occupied:
+        if not mkv_occupied:
             break
         counter += 1
         final_path = f"{base}_{counter}{ext}"
@@ -1677,37 +1695,35 @@ def _build_output_paths(channel, program, start_time, end_time):
     # Ensure directory exists
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
-    # Derive temp TS path in same directory
-    base_no_ext = os.path.splitext(os.path.basename(final_path))[0]
-    temp_ts_path = os.path.join(os.path.dirname(final_path), f"{base_no_ext}.ts")
-    return final_path, temp_ts_path, os.path.basename(final_path)
+    # HLS working directory: hidden and id-tagged alongside the final MKV.
+    hls_dir = os.path.join(os.path.dirname(final_path), f".dvr_{recording_id}_hls")
+    return final_path, hls_dir, os.path.basename(final_path)
 
 
-def build_dvr_candidates():
-    """Build ordered list of candidate base URLs for DVR TS streaming.
+def get_dvr_stream_base_url():
+    """Return the single correct base URL for DVR to reach the TS stream proxy.
 
-    Reads environment variables to determine which URLs to try:
-    - DISPATCHARR_INTERNAL_TS_BASE_URL: explicit override (first priority)
-    - DISPATCHARR_PORT: the external port (default 9191)
-    - DISPATCHARR_ENV/DISPATCHARR_DEBUG/REDIS_HOST: dev-mode detection
-    - DISPATCHARR_INTERNAL_API_BASE: override for the docker service URL
+    Priority:
+    1. DISPATCHARR_INTERNAL_TS_BASE_URL — explicit override, always wins.
+    2. Modular mode (DISPATCHARR_ENV=modular) — celery runs in a separate container
+       and must reach the web container by its Docker service name on DISPATCHARR_PORT.
+       Override the host with DISPATCHARR_WEB_HOST for non-standard compose setups.
+    3. AIO / dev / debug — celery shares the container with uwsgi which binds on
+       port 5656; use 127.0.0.1 to avoid any nginx layer.
     """
     explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
-    dispatcharr_port = os.environ.get('DISPATCHARR_PORT', '9191')
-    is_dev = (os.environ.get('DISPATCHARR_ENV', '').lower() == 'dev') or \
-             (os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true') or \
-             (os.environ.get('REDIS_HOST', 'redis') in ('localhost', '127.0.0.1'))
-    candidates = []
     if explicit:
-        candidates.append(explicit)
-    if is_dev:
-        # Debug container typically exposes API on 5656 (uwsgi internal port)
-        candidates.extend(['http://127.0.0.1:5656', f'http://127.0.0.1:{dispatcharr_port}'])
-    # Docker service name fallback — use DISPATCHARR_PORT so modular mode works with custom ports
-    candidates.append(os.environ.get('DISPATCHARR_INTERNAL_API_BASE', f'http://web:{dispatcharr_port}'))
-    # Last-resort localhost ports
-    candidates.extend(['http://localhost:5656', f'http://localhost:{dispatcharr_port}'])
-    return candidates
+        return explicit.rstrip('/')
+
+    dispatcharr_env = os.environ.get('DISPATCHARR_ENV', 'aio').lower()
+
+    if dispatcharr_env == 'modular':
+        host = os.environ.get('DISPATCHARR_WEB_HOST', 'web')
+        port = os.environ.get('DISPATCHARR_PORT', '9191')
+        return f'http://{host}:{port}'
+
+    # AIO, dev, debug: celery and uwsgi share the container, reach uwsgi directly
+    return 'http://127.0.0.1:5656'
 
 
 @shared_task
@@ -1747,6 +1763,36 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         )
         return
 
+    # --- Per-recording active lock (prevents concurrent ffmpeg processes
+    # writing to the same HLS dir when duplicate recovery dispatches occur). ---
+    # The lock is refreshed inside the main loop below; if a worker crashes
+    # the TTL expires within ~45s and recovery can re-acquire it.
+    _active_lock_key = f"dvr:recording-active:{recording_id}"
+    _active_lock_ttl = 45
+    _active_lock_redis = None
+    try:
+        from core.utils import RedisClient
+        _active_lock_redis = RedisClient.get_client()
+    except Exception:
+        _active_lock_redis = None
+
+    if _active_lock_redis is not None:
+        try:
+            if not _active_lock_redis.set(
+                _active_lock_key, "1", ex=_active_lock_ttl, nx=True
+            ):
+                logger.warning(
+                    f"run_recording {recording_id}: another worker holds the "
+                    f"active-recording lock, aborting duplicate dispatch."
+                )
+                return
+        except Exception as _le:
+            logger.warning(
+                f"run_recording {recording_id}: active-lock acquisition error "
+                f"({type(_le).__name__}: {_le}), proceeding without lock."
+            )
+            _active_lock_redis = None
+
     # --- Clean up the one-off PeriodicTask that dispatched this task ---
     try:
         from apps.channels.signals import revoke_task, _dvr_task_name
@@ -1759,11 +1805,10 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     start_time = datetime.fromisoformat(start_time_str)
     end_time = datetime.fromisoformat(end_time_str)
 
-    duration_seconds = int((end_time - start_time).total_seconds())
     # Build output paths from templates (refined after loading Recording cp below)
     filename = None
     final_path = None
-    temp_ts_path = None
+    hls_dir = None
 
     channel_layer = get_channel_layer()
 
@@ -1810,7 +1855,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             "started_at": str(datetime.now()),
         })
         # Provide a predictable playback URL for the frontend
-        cp["file_url"] = f"/api/channels/recordings/{recording_id}/file/"
+        cp["file_url"] = f"/api/channels/recordings/{recording_id}/hls/index.m3u8"
         cp["output_file_url"] = cp["file_url"]
 
         # Determine program info (may include id for deeper details)
@@ -1825,10 +1870,40 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 program.update(epg_match)
                 cp["program"] = program
 
-        final_path, temp_ts_path, filename = _build_output_paths(channel, program, start_time, end_time)
+        # Resume into the existing working set if this task is a recovery run.
+        # `recover_recordings_on_startup` re-dispatches `run_recording` for an
+        # interrupted recording with `_hls_dir` and `file_path` already set in
+        # custom_properties.  Re-running `_build_output_paths` would allocate a
+        # fresh `Foo_2.mkv` / `.dvr_{id}_hls` pair and orphan the original
+        # segments, producing two MKVs at the end.  Reuse the original paths
+        # whenever the HLS directory is still on disk.
+        existing_hls = cp.get("_hls_dir")
+        existing_file = cp.get("file_path")
+        if (
+            existing_hls
+            and existing_file
+            and os.path.isdir(existing_hls)
+        ):
+            final_path = existing_file
+            hls_dir = existing_hls
+            filename = os.path.basename(final_path)
+            try:
+                _seg_count = sum(
+                    1 for f in os.listdir(hls_dir) if f.endswith(".ts")
+                )
+            except OSError:
+                _seg_count = 0
+            logger.info(
+                f"run_recording {recording_id}: resuming into existing HLS dir "
+                f"{hls_dir} ({_seg_count} segment(s)), final={final_path}"
+            )
+        else:
+            final_path, hls_dir, filename = _build_output_paths(
+                channel, program, start_time, end_time, recording_id
+            )
         cp["file_name"] = filename
         cp["file_path"] = final_path
-        cp["_temp_file_path"] = temp_ts_path
+        cp["_hls_dir"] = hls_dir
 
         # Resolve poster art via the shared pipeline (EPG → VOD → TMDB/OMDb →
         # TVMaze/iTunes → direct program fields → Logo table → channel logo).
@@ -1840,11 +1915,16 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         if poster_url and "poster_url" not in cp:
             cp["poster_url"] = poster_url
 
-        # Ensure destination exists so it's visible immediately
+        # Ensure destination directory exists.  No placeholder MKV is created
+        # here on purpose: with the HLS pipeline, the final MKV is materialized
+        # by the post-recording concat step, and `/file/` redirects to `/hls/`
+        # while no MKV exists, so a 0-byte placeholder serves no functional
+        # purpose.  Writing one previously caused an orphan-file bug on server
+        # restart in cases where the resume path could not adopt the original
+        # final_path, since the second run would generate a fresh placeholder
+        # at a new path and leave the original behind.
         try:
             os.makedirs(os.path.dirname(final_path), exist_ok=True)
-            if not os.path.exists(final_path):
-                open(final_path, 'ab').close()
         except Exception:
             pass
 
@@ -1863,7 +1943,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
         # Merge only the keys explicitly set into the fresh copy
         for key in ("status", "started_at", "file_url", "output_file_url",
-                     "file_name", "file_path", "_temp_file_path",
+                     "file_name", "file_path", "_hls_dir",
                      "program", "poster_logo_id", "poster_url"):
             if key in cp:
                 fresh_cp[key] = cp[key]
@@ -1886,258 +1966,388 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     interrupted_reason = None
     bytes_written = 0
 
-    from requests.exceptions import ReadTimeout, ConnectionError as ReqConnectionError, ChunkedEncodingError
+    base_url = get_dvr_stream_base_url()
+    logger.info(f"DVR recording {recording_id}: using stream base URL {base_url}")
 
-    candidates = build_dvr_candidates()
-
-    chosen_base = None
-    last_error = None
-    bytes_written = 0
-    interrupted = False
-    interrupted_reason = None
-
-    def _check_recording_cancelled(rid):
-        """Check if a recording was stopped by user or deleted.
-
-        Returns (should_exit, is_interrupted, reason) where should_exit
-        indicates the stream loop must terminate.
-        """
-        try:
-            rec = Recording.objects.filter(id=rid).only("custom_properties").first()
-            if rec is None:
-                return True, True, "recording_deleted"
-            if (rec.custom_properties or {}).get("status") == "stopped":
-                return True, False, "stopped_by_user"
-        except Exception:
-            pass
-        return False, False, None
-
-    # --- Retry / reconnection constants ---
-    # Stream reconnection: retry the same TS proxy base on transient
-    # connectivity loss.  Counter resets when data resumes.
-    _dvr_max_reconnects = 5
-    _dvr_reconnect_delay = 2.0  # seconds
-    # DB save retry: exponential backoff (1s, 2s, 4s) for transient errors.
+    # --- DB retry constants ---
     _dvr_db_max_retries = 3
     _dvr_db_retry_interval = 1  # seconds (base for exponential backoff)
-    # FFmpeg remux retry: covers transient I/O errors.
-    _dvr_remux_max_retries = 2
-    _dvr_remux_retry_interval = 2  # seconds (base for exponential backoff)
 
-    for base in candidates:
-        test_url = f"{base.rstrip('/')}/proxy/ts/stream/{channel.uuid}"
-        logger.info(f"DVR recording {recording_id}: trying TS base {base}")
+    # Redis key used to signal that an HLS client is actively fetching segments.
+    # The hls endpoint refreshes this on every .ts request; we check it before
+    # deleting the HLS directory so in-flight downloads are not cut short.
+    _hls_viewer_key = f"dvr:hls_viewer:{recording_id}"
 
-        _reconnects = 0
-        _file_mode = 'wb'
-        _stream_started_at = None
-        _done = False
+    # --- HLS recording pipeline ---
+    # Launch FFmpeg with the deterministic base URL resolved above.  Wait up to
+    # _first_segment_timeout seconds for the first segment to appear before
+    # treating the stream as unavailable.
+    from django.utils import timezone as _tz
 
-        while True:  # Reconnection loop for this base
+    last_error = None
+    ffmpeg_proc = None
+    hls_m3u8 = None
+    hls_seg_pattern = None
+    _stream_confirmed = False
+
+    if hls_dir:
+        os.makedirs(hls_dir, exist_ok=True)
+        hls_m3u8 = os.path.join(hls_dir, "index.m3u8")
+        hls_seg_pattern = os.path.join(hls_dir, "seg_%05d.ts")
+
+    base = base_url
+
+    if not interrupted:
+        # Check for stop/delete before starting
+        try:
+            _pre = Recording.objects.filter(id=recording_id).only("custom_properties").first()
+            if _pre is None:
+                interrupted = True
+                interrupted_reason = "recording_deleted"
+            elif (_pre.custom_properties or {}).get("status") == "stopped":
+                interrupted = False
+                interrupted_reason = "stopped_by_user"
+        except Exception:
+            pass
+
+    if not interrupted:
+        stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"
+        logger.info(f"DVR recording {recording_id}: stream URL: {stream_url}")
+
+    if not interrupted:
+
+        # Continue segment numbering from any previous session (server-restart resume)
+        existing_segs = sorted(
+            f for f in os.listdir(hls_dir) if f.startswith("seg_") and f.endswith(".ts")
+        ) if hls_dir else []
+        hls_start_number = len(existing_segs)
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-user_agent", f"Dispatcharr-DVR/recording-{recording_id}",
+            # Regenerate monotonic PTS to handle erratic/discontinuous timestamps
+            # from IPTV sources.
+            "-fflags", "+genpts",
+            "-i", stream_url,
+            "-c", "copy",
+            # Shift output timestamps so they start from 0, fixing negative PTS
+            # values that can prevent segment boundary detection in the HLS muxer.
+            "-avoid_negative_ts", "make_zero",
+            "-f", "hls",
+            "-hls_time", "4",
+            "-hls_list_size", "0",
+            "-hls_flags", "append_list+omit_endlist+independent_segments",
+            "-start_number", str(hls_start_number),
+            "-hls_segment_filename", hls_seg_pattern,
+            hls_m3u8,
+        ]
+
+        logger.info(f"DVR recording {recording_id}: starting FFmpeg — stream URL: {stream_url}")
+        logger.info(f"DVR recording {recording_id}: HLS output dir: {hls_dir}")
+        logger.debug(f"DVR recording {recording_id}: FFmpeg command: {' '.join(str(a) for a in ffmpeg_cmd)}")
+        # Rolling tail of FFmpeg stderr lines for post-mortem diagnostics
+        _ffmpeg_stderr_tail = deque(maxlen=200)
+        try:
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as _fe:
+            last_error = str(_fe)
+            logger.warning(f"DVR recording {recording_id}: failed to launch FFmpeg: {_fe}")
+            ffmpeg_proc = None
+
+        # Drain FFmpeg stderr in a background thread to prevent the OS pipe
+        # buffer (~64 KB on Linux) from filling up, which would block FFmpeg's
+        # writes and cause it to silently stop demuxing/segmenting after a few
+        # minutes of normal progress output. Lines are logged to the Dispatcharr
+        # log and tail-buffered for diagnostics.
+        def _drain_ffmpeg_stderr(proc, rec_id, tail):
+            # FFmpeg emits progress lines terminated with \r (carriage return)
+            # so it can rewrite them in place; only non-progress messages end
+            # with \n. Split on either to capture both kinds.
             try:
-                with requests.get(
-                    test_url,
-                    headers={
-                        'User-Agent': f'Dispatcharr-DVR/recording-{recording_id}',
-                    },
-                    stream=True,
-                    timeout=(10, 15),
-                ) as response:
-                    response.raise_for_status()
-
-                    _test_window = 3.0
-                    _window_start = time.time()
-                    _stop_poll_interval = 2.0
-                    _last_stop_poll = time.time()
-
-                    with open(temp_ts_path, _file_mode) as file:
-                        if _stream_started_at is None:
-                            _stream_started_at = time.time()
-
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if not chunk:
-                                if not chosen_base and (time.time() - _window_start) > _test_window:
-                                    break
-                                continue
-
-                            if not chosen_base:
-                                chosen_base = base
-
-                            # Data received after reconnect — connection restored
-                            if _reconnects > 0:
-                                logger.info(
-                                    f"DVR recording {recording_id}: "
-                                    f"stream resumed after reconnect"
-                                )
-                                _reconnects = 0
-
-                            file.write(chunk)
-                            bytes_written += len(chunk)
-
-                            elapsed = time.time() - _stream_started_at
-                            if elapsed > duration_seconds:
-                                break
-
-                            # Periodic DB poll: stop, delete, end_time extension
-                            _now = time.time()
-                            if _now - _last_stop_poll >= _stop_poll_interval:
-                                _last_stop_poll = _now
-                                try:
-                                    _sc = Recording.objects.filter(
-                                        id=recording_id
-                                    ).only("custom_properties", "end_time").first()
-                                    if _sc is None:
-                                        logger.info(
-                                            f"DVR recording {recording_id}: "
-                                            f"deleted — exiting stream loop"
-                                        )
-                                        interrupted = False
-                                        break
-                                    if (_sc.custom_properties or {}).get("status") == "stopped":
-                                        logger.info(
-                                            f"DVR recording {recording_id}: "
-                                            f"stop requested — exiting stream loop"
-                                        )
-                                        break
-                                    try:
-                                        new_end = _sc.end_time
-                                        if new_end is not None:
-                                            from django.utils import timezone as _tz
-                                            if _tz.is_naive(new_end):
-                                                new_end = _tz.make_aware(new_end)
-                                            _ref = start_time
-                                            if _tz.is_naive(_ref):
-                                                _ref = _tz.make_aware(_ref)
-                                            new_duration = int(
-                                                (new_end - _ref).total_seconds()
-                                            )
-                                            if new_duration > duration_seconds:
-                                                logger.info(
-                                                    f"DVR recording {recording_id}: "
-                                                    f"end_time extended to {new_end}, "
-                                                    f"new duration {new_duration}s"
-                                                )
-                                                duration_seconds = new_duration
-                                    except Exception:
-                                        pass
-                                except Exception:
-                                    pass
-
-                    # iter_content exhausted or loop exited normally
-                    if bytes_written > 0:
-                        logger.info(
-                            f"DVR recording {recording_id}: "
-                            f"stream complete, {bytes_written} bytes written"
-                        )
-                        _done = True
-                    else:
-                        last_error = f"no_data_from_{base}"
-                        logger.warning(
-                            f"DVR recording {recording_id}: no data from "
-                            f"{base} within {_test_window}s, trying next base"
-                        )
-                        try:
-                            if os.path.exists(temp_ts_path) and os.path.getsize(temp_ts_path) == 0:
-                                os.remove(temp_ts_path)
-                        except FileNotFoundError:
-                            pass
-                    break  # Exit reconnection loop
-
-            except (ReadTimeout, ReqConnectionError, ChunkedEncodingError) as e:
-                if bytes_written > 0:
-                    # Active stream lost — check cancellation before reconnecting
-                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
-                    if should_exit:
-                        interrupted = is_int
-                        interrupted_reason = reason
-                        if reason == "stopped_by_user":
-                            logger.info(
-                                f"DVR recording {recording_id}: "
-                                f"stopped by user — ending stream"
-                            )
-                        _done = True
+                buf = bytearray()
+                stream = proc.stderr
+                while True:
+                    byte = stream.read(1)
+                    if not byte:
                         break
-
-                    _reconnects += 1
-                    if _reconnects <= _dvr_max_reconnects:
-                        logger.warning(
-                            f"DVR recording {recording_id}: connection lost "
-                            f"({type(e).__name__}), reconnecting "
-                            f"({_reconnects}/{_dvr_max_reconnects}) "
-                            f"in {_dvr_reconnect_delay}s..."
-                        )
-                        time.sleep(_dvr_reconnect_delay)
-                        _file_mode = 'ab'
+                    if byte in (b'\r', b'\n'):
+                        if buf:
+                            line = buf.decode('utf-8', errors='replace').strip()
+                            buf.clear()
+                            if line:
+                                tail.append(line)
+                                low = line.lower()
+                                if 'error' in low or 'failed' in low or 'invalid' in low:
+                                    logger.warning(f"DVR recording {rec_id} ffmpeg: {line}")
+                                else:
+                                    logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
                         continue
+                    buf.append(byte[0])
+                    # Safety net: flush absurdly long lines so a malformed
+                    # stream can't grow the buffer without bound.
+                    if len(buf) > 4096:
+                        line = buf.decode('utf-8', errors='replace').strip()
+                        buf.clear()
+                        if line:
+                            tail.append(line)
+                            logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
+                # Flush any trailing content
+                if buf:
+                    line = buf.decode('utf-8', errors='replace').strip()
+                    if line:
+                        tail.append(line)
+                        logger.debug(f"DVR recording {rec_id} ffmpeg: {line}")
+            except Exception as _de:
+                logger.debug(f"DVR recording {rec_id}: stderr drain ended: {_de}")
 
-                    logger.error(
-                        f"DVR recording {recording_id}: max reconnects "
-                        f"({_dvr_max_reconnects}) exceeded — ending recording"
-                    )
-                    interrupted = True
-                    interrupted_reason = (
-                        f"stream_interrupted: max reconnects exceeded ({e})"
-                    )
-                    _done = True
-                    break
+        if ffmpeg_proc is not None and ffmpeg_proc.stderr is not None:
+            _stderr_thread = threading.Thread(
+                target=_drain_ffmpeg_stderr,
+                args=(ffmpeg_proc, recording_id, _ffmpeg_stderr_tail),
+                daemon=True,
+                name=f"dvr-ffmpeg-stderr-{recording_id}",
+            )
+            _stderr_thread.start()
 
-                # No data received yet — retry same base before moving on
-                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
-                if should_exit:
-                    interrupted = is_int
-                    interrupted_reason = reason
-                    _done = True
-                    break
-                _reconnects += 1
-                if _reconnects <= _dvr_max_reconnects:
+        end_timestamp = end_time.timestamp()
+        _stop_poll_interval = 2.0
+        _last_stop_poll = time.time()
+        _ffmpeg_start = time.time()
+        _first_segment_timeout = 15.0
+        _stall_timeout = 60.0  # seconds without new segments → source stream gone
+        _stream_confirmed = False
+        _last_seg_count = hls_start_number
+        _last_new_seg_time = time.time()
+        _last_active_lock_refresh = 0.0
+        _active_lock_refresh_interval = 15.0
+
+        while ffmpeg_proc.poll() is None:
+            time.sleep(0.5)
+            now = time.time()
+
+            # Refresh the per-recording active lock so a concurrent worker
+            # cannot acquire it and start a duplicate ffmpeg.
+            if (
+                _active_lock_redis is not None
+                and now - _last_active_lock_refresh >= _active_lock_refresh_interval
+            ):
+                try:
+                    _active_lock_redis.expire(_active_lock_key, _active_lock_ttl)
+                except Exception:
+                    pass
+                _last_active_lock_refresh = now
+
+            segs_now = [
+                f for f in os.listdir(hls_dir)
+                if f.startswith("seg_") and f.endswith(".ts")
+            ] if hls_dir else []
+
+            # Wait for the first segment to confirm data is flowing
+            if not _stream_confirmed:
+                if segs_now:
+                    _stream_confirmed = True
+                    _last_seg_count = len(segs_now)
+                    _last_new_seg_time = now
+                    logger.info(
+                        f"DVR recording {recording_id}: first HLS segment written, stream confirmed"
+                    )
+                elif now - _ffmpeg_start > _first_segment_timeout:
                     logger.warning(
-                        f"DVR recording {recording_id}: initial connection "
-                        f"to {base} failed ({type(e).__name__}), retrying "
-                        f"({_reconnects}/{_dvr_max_reconnects}) "
-                        f"in {_dvr_reconnect_delay}s..."
+                        f"DVR recording {recording_id}: no HLS segments produced after "
+                        f"{_first_segment_timeout}s from {base} — stream unavailable"
                     )
-                    time.sleep(_dvr_reconnect_delay)
-                    continue
-                last_error = str(e)
-                logger.warning(
-                    f"DVR recording {recording_id}: base {base} exhausted "
-                    f"retries ({_dvr_max_reconnects}): {e}"
-                )
-                break
-
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"DVR recording {recording_id}: base {base} failed: {e}")
-                if bytes_written > 0:
-                    should_exit, is_int, reason = _check_recording_cancelled(recording_id)
-                    if should_exit and reason == "stopped_by_user":
-                        interrupted = False
-                        logger.info(
-                            f"DVR recording {recording_id}: "
-                            f"stopped by user — ending stream"
-                        )
-                    else:
-                        interrupted = True
-                        interrupted_reason = f"stream_interrupted: {e}"
-                    _done = True
+                    ffmpeg_proc.kill()
+                    try:
+                        ffmpeg_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    last_error = f"no_segments_in_{_first_segment_timeout}s_from_{base}"
+                    ffmpeg_proc = None
                     break
-                should_exit, is_int, reason = _check_recording_cancelled(recording_id)
-                if should_exit:
-                    interrupted = is_int
-                    interrupted_reason = reason
-                    _done = True
+            else:
+                # Stream was confirmed, detect source stalls (e.g. proxy ghost-kills the client)
+                if len(segs_now) > _last_seg_count:
+                    _last_seg_count = len(segs_now)
+                    _last_new_seg_time = now
+                else:
+                    # Also treat a recently-modified segment file as activity.
+                    # With erratic source timestamps, FFmpeg may buffer data inside
+                    # a partially-written segment for longer than hls_time, so the
+                    # segment count won't increase even though data is flowing.
+                    # Only stat the most recent segment (highest filename) to keep
+                    # this O(1) per tick instead of O(N) over a long recording.
+                    try:
+                        if segs_now and hls_dir:
+                            _newest = max(segs_now)
+                            _newest_mtime = os.path.getmtime(
+                                os.path.join(hls_dir, _newest)
+                            )
+                            if _newest_mtime > _last_new_seg_time:
+                                _last_new_seg_time = _newest_mtime
+                    except Exception:
+                        pass
+                if now - _last_new_seg_time > _stall_timeout:
+                    logger.warning(
+                        f"DVR recording {recording_id}: no new HLS segments for "
+                        f"{_stall_timeout:.0f}s — source stream stalled, stopping FFmpeg"
+                    )
+                    ffmpeg_proc.send_signal(signal.SIGINT)
+                    try:
+                        ffmpeg_proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        ffmpeg_proc.kill()
+                    break
+
+            # Duration check — SIGINT lets FFmpeg write #EXT-X-ENDLIST cleanly
+            if now >= end_timestamp:
+                logger.info(
+                    f"DVR recording {recording_id}: scheduled end time reached, stopping FFmpeg"
+                )
+                ffmpeg_proc.send_signal(signal.SIGINT)
+                try:
+                    ffmpeg_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    ffmpeg_proc.kill()
                 break
 
-        if _done:
-            break
+            # Periodic DB poll: stop, delete, end_time extension
+            if now - _last_stop_poll >= _stop_poll_interval:
+                _last_stop_poll = now
+                try:
+                    _sc = Recording.objects.filter(
+                        id=recording_id
+                    ).only("custom_properties", "end_time").first()
+                    if _sc is None:
+                        logger.info(
+                            f"DVR recording {recording_id}: deleted — stopping FFmpeg"
+                        )
+                        ffmpeg_proc.send_signal(signal.SIGINT)
+                        try:
+                            ffmpeg_proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            ffmpeg_proc.kill()
+                        interrupted = False
+                        break
+                    if (_sc.custom_properties or {}).get("status") == "stopped":
+                        logger.info(
+                            f"DVR recording {recording_id}: stop requested — stopping FFmpeg"
+                        )
+                        ffmpeg_proc.send_signal(signal.SIGINT)
+                        try:
+                            ffmpeg_proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            ffmpeg_proc.kill()
+                        break
+                    # Handle end_time extension — just update the deadline, no restart needed
+                    try:
+                        new_end = _sc.end_time
+                        if new_end is not None:
+                            if _tz.is_naive(new_end):
+                                new_end = _tz.make_aware(new_end)
+                            new_ts = new_end.timestamp()
+                            if new_ts > end_timestamp:
+                                logger.info(
+                                    f"DVR recording {recording_id}: end_time extended to {new_end}"
+                                )
+                                end_timestamp = new_ts
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
-    if chosen_base is None and bytes_written == 0:
+        # If FFmpeg exited after confirming the stream, log the exit code so we know why it stopped.
+        if _stream_confirmed and ffmpeg_proc is not None:
+            _exit_code = ffmpeg_proc.poll()
+            if _exit_code is not None and _exit_code != 0:
+                logger.warning(
+                    f"DVR recording {recording_id}: FFmpeg exited unexpectedly (rc={_exit_code}) "
+                    f"after stream was confirmed — source stream likely disconnected"
+                )
+
+        # If FFmpeg exited without the stream being confirmed, log the tail of
+        # captured stderr for diagnosis. Lines were already logged live by the
+        # drain thread; this surfaces the recent context in a single message.
+        elif not _stream_confirmed and ffmpeg_proc is not None:
+            try:
+                _exit_code = ffmpeg_proc.poll()
+                last_error = f"rc={_exit_code} from {base}"
+                _tail_text = "\n".join(_ffmpeg_stderr_tail)
+                if _tail_text:
+                    logger.warning(
+                        f"DVR recording {recording_id}: FFmpeg exited (rc={_exit_code}) "
+                        f"for {base} without producing segments.\nFFmpeg stderr tail:\n{_tail_text[-1000:]}"
+                    )
+                else:
+                    logger.warning(
+                        f"DVR recording {recording_id}: FFmpeg exited (rc={_exit_code}) "
+                        f"for {base} without producing segments (no stderr output)"
+                    )
+            except Exception:
+                pass
+
+    # Ensure FFmpeg has fully exited (covers cases where the loop broke early)
+    if ffmpeg_proc is not None and ffmpeg_proc.poll() is None:
+        try:
+            ffmpeg_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            ffmpeg_proc.kill()
+
+    # If the loop broke because the Celery worker is shutting down (e.g.
+    # docker stop, container update) and the recording window is still open,
+    # leave the HLS working directory intact and mark the recording as
+    # interrupted.  `recover_recordings_on_startup` will re-dispatch this task
+    # on the next boot, and the resume-path logic in the prep block will
+    # adopt the existing `_hls_dir` and `file_path` so FFmpeg appends to the
+    # same playlist and the eventual concat produces a single MKV.
+    #
+    # Note: `_DVR_SHUTTING_DOWN` is per-process. The DVR queue currently uses
+    # a threads pool worker (one process, all threads see the flag). If the
+    # DVR queue is ever switched back to prefork, the parent's flag will not
+    # propagate to in-flight child workers.
+    if _DVR_SHUTTING_DOWN and time.time() < end_timestamp:
+        try:
+            _shutdown_rec = Recording.objects.filter(id=recording_id).first()
+            if _shutdown_rec:
+                _shutdown_cp = _shutdown_rec.custom_properties or {}
+                # Preserve _hls_dir / file_path / file_url exactly as they are
+                # so the HLS endpoint keeps serving until the worker dies and
+                # so recovery can find the working directory on next boot.
+                _shutdown_cp["status"] = "interrupted"
+                _shutdown_cp["interrupted_reason"] = "server_shutdown"
+                _shutdown_cp["ended_at"] = str(datetime.now())
+                _shutdown_rec.custom_properties = _shutdown_cp
+                _shutdown_rec.save(update_fields=["custom_properties"])
+        except Exception as _se:
+            logger.warning(
+                f"DVR recording {recording_id}: failed to flag interrupted on shutdown: {_se}"
+            )
+        logger.info(
+            f"DVR recording {recording_id}: worker shutting down with "
+            f"{int(end_timestamp - time.time())}s of recording window remaining; "
+            f"leaving HLS dir intact for resume on next boot, skipping concat."
+        )
+        return
+
+    if not _stream_confirmed and not interrupted:
         interrupted = True
-        interrupted_reason = f"no_stream_data: {last_error or 'all_bases_failed'}"
+        interrupted_reason = f"no_stream_data: {last_error or 'ffmpeg_failed'}"
 
-    # If no bytes were written at all, check whether this was a deliberate stop or a
-    # genuine failure.  The exception handler above already sets interrupted=False when
-    # it detects "stopped" status, but do not override that decision here.
+    # Measure bytes from HLS segment files
+    try:
+        bytes_written = sum(
+            os.path.getsize(os.path.join(hls_dir, f))
+            for f in os.listdir(hls_dir)
+            if f.startswith("seg_") and f.endswith(".ts")
+        ) if hls_dir and os.path.isdir(hls_dir) else 0
+    except Exception:
+        bytes_written = 0
     if bytes_written == 0 and not interrupted:
         _deliberately_stopped = False
         try:
@@ -2178,19 +2388,19 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             # After the loop, the file and response are closed automatically.
             logger.info(f"Finished recording for channel {channel.name}")
 
-        # Log system event for recording end
-        try:
-            from core.utils import log_system_event
-            log_system_event(
-                'recording_end',
-                channel_id=channel.uuid,
-                channel_name=channel.name,
-                recording_id=recording_id,
-                interrupted=interrupted,
-                bytes_written=bytes_written
-            )
-        except Exception as e:
-            logger.error(f"Could not log recording end event: {e}")
+    # Log system event for recording end
+    try:
+        from core.utils import log_system_event
+        log_system_event(
+            'recording_end',
+            channel_id=channel.uuid,
+            channel_name=channel.name,
+            recording_id=recording_id,
+            interrupted=interrupted,
+            bytes_written=bytes_written
+        )
+    except Exception as e:
+        logger.error(f"Could not log recording end event: {e}")
 
     # If the Recording was deleted (cancelled by user), skip post-processing
     recording_cancelled = not Recording.objects.filter(id=recording_id).exists()
@@ -2199,261 +2409,248 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Clean up all artifacts for the cancelled recording,
         # including any pre-restart .ts segments from server recovery.
         # Use the in-memory recording_obj since the DB row is already deleted.
-        _cancel_cleanup = [temp_ts_path, final_path]
-        _cancel_cp = (recording_obj.custom_properties or {}) if recording_obj else {}
-        _cancel_cleanup.extend(_cancel_cp.get("_pre_restart_ts_paths", []))
-        for _cleanup_path in _cancel_cleanup:
-            if not _cleanup_path:
-                continue
+        if hls_dir and os.path.isdir(hls_dir):
             try:
-                os.remove(_cleanup_path)
-                logger.info(f"Cleaned up cancelled recording artifact: {_cleanup_path}")
-            except FileNotFoundError:
-                pass
+                shutil.rmtree(hls_dir)
+                logger.info(f"Cleaned up cancelled recording HLS directory: {hls_dir}")
+            except Exception as _e:
+                logger.warning(f"Failed to remove HLS directory {hls_dir}: {_e}")
+        if final_path:
+            try:
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+                    logger.info(f"Cleaned up cancelled recording MKV placeholder: {final_path}")
             except Exception:
                 pass
         return
 
-    # Concatenate pre-restart .ts segments with the current segment.
-    # Instead of creating an intermediate combined.ts and then remuxing to
-    # MKV (which loses timestamp boundary info and causes playback freezes
-    # at the splice point), go directly from the concat list → MKV.
-    # This lets ffmpeg's MKV muxer see each segment boundary and write
-    # correct cue points / clusters for seamless seeking.
-    _concat_did_remux = False
-    try:
-        _rec_obj_for_concat = Recording.objects.filter(id=recording_id).only("custom_properties").first()
-        _concat_cp = (_rec_obj_for_concat.custom_properties or {}) if _rec_obj_for_concat else {}
-        pre_restart_segments = _concat_cp.get("_pre_restart_ts_paths", [])
-        # Filter to segments that still exist on disk and have data
-        def _has_data(p):
-            try:
-                return os.stat(p).st_size > 0
-            except OSError:
-                return False
-        pre_restart_segments = [p for p in pre_restart_segments if p and _has_data(p)]
-        if pre_restart_segments and temp_ts_path and os.path.exists(temp_ts_path):
-            all_segments = pre_restart_segments + [temp_ts_path]
-            concat_list_path = temp_ts_path + ".concat.txt"
-            try:
-                with open(concat_list_path, "w") as cl:
-                    for seg in all_segments:
-                        cl.write(f"file '{seg}'\n")
+    # --- Post-processing: concat HLS segments → final MKV ---
+    remux_success = False
+    hls_m3u8 = os.path.join(hls_dir, "index.m3u8") if hls_dir else None
 
-                # Direct concat → MKV in a single pass.
-                # -reset_timestamps 1 tells the concat demuxer to reset
-                # timestamps at each segment boundary, eliminating the
-                # discontinuity that causes playback to freeze at the
-                # splice point.
-                concat_result = subprocess.run(
+    def _get_hls_segments(m3u8_path, seg_dir):
+        """Return ordered segment paths from an HLS m3u8 playlist."""
+        segs = []
+        try:
+            with open(m3u8_path) as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line and not _line.startswith('#'):
+                        sp = os.path.join(seg_dir, _line) if not os.path.isabs(_line) else _line
+                        if os.path.exists(sp):
+                            segs.append(sp)
+        except Exception as _e:
+            logger.warning(f"DVR recording {recording_id}: failed to parse m3u8: {_e}")
+        return segs
+
+    segments = (
+        _get_hls_segments(hls_m3u8, hls_dir)
+        if (hls_m3u8 and os.path.exists(hls_m3u8))
+        else []
+    )
+    if not segments and hls_dir and os.path.isdir(hls_dir):
+        # Fallback: sort all segment files by name if m3u8 is missing or empty
+        try:
+            segments = sorted(
+                os.path.join(hls_dir, f)
+                for f in os.listdir(hls_dir)
+                if f.startswith("seg_") and f.endswith(".ts")
+            )
+        except Exception:
+            segments = []
+
+    if segments:
+        concat_list_path = os.path.join(hls_dir, "concat.txt")
+        try:
+            with open(concat_list_path, "w") as _cl:
+                for seg in segments:
+                    _escaped = seg.replace("'", "'\\''")
+                    _cl.write(f"file '{_escaped}'\n")
+
+            concat_result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0",
+                    "-i", concat_list_path,
+                    "-c", "copy",
+                    final_path,
+                ],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            _ok = (
+                concat_result.returncode == 0
+                and os.path.exists(final_path)
+                and os.path.getsize(final_path) > 0
+            )
+            _fallback_used = False
+            # MP4-intermediate fallback: some MPEG-TS streams (parameter set
+            # changes mid-stream, weird PMT updates, audio discontinuities)
+            # fail to mux directly into Matroska but go through an MP4
+            # container cleanly, which can then be remuxed losslessly to
+            # MKV.  Try this before declaring the recording lost.
+            if not _ok:
+                logger.warning(
+                    f"DVR recording {recording_id}: direct HLS\u2192MKV concat failed "
+                    f"(rc={concat_result.returncode}); attempting MP4-intermediate "
+                    f"fallback. stderr: {(concat_result.stderr or '')[:300]}"
+                )
+                try:
+                    if os.path.exists(final_path) and os.path.getsize(final_path) == 0:
+                        os.remove(final_path)
+                except OSError:
+                    pass
+                _intermediate_mp4 = os.path.join(
+                    hls_dir, f".dvr_{recording_id}_intermediate.mp4"
+                )
+                try:
+                    if os.path.exists(_intermediate_mp4):
+                        os.remove(_intermediate_mp4)
+                except OSError:
+                    pass
+                _mp4_concat = subprocess.run(
                     [
                         "ffmpeg", "-y",
-                        "-fflags", "+genpts+igndts+discardcorrupt",
-                        "-err_detect", "ignore_err",
                         "-f", "concat", "-safe", "0",
-                        "-segment_time_metadata", "1",
                         "-i", concat_list_path,
-                        "-reset_timestamps", "1",
-                        "-map", "0",
                         "-c", "copy",
-                        final_path,
+                        "-bsf:a", "aac_adtstoasc",
+                        _intermediate_mp4,
                     ],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 )
-                if concat_result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                    _concat_did_remux = True
-                    # Clean up individual TS segments (including current)
-                    for seg in all_segments:
-                        try:
-                            os.remove(seg)
-                        except OSError:
-                            pass
+                if (
+                    _mp4_concat.returncode == 0
+                    and os.path.exists(_intermediate_mp4)
+                    and os.path.getsize(_intermediate_mp4) > 0
+                ):
+                    _mp4_to_mkv = subprocess.run(
+                        [
+                            "ffmpeg", "-y",
+                            "-i", _intermediate_mp4,
+                            "-c", "copy",
+                            final_path,
+                        ],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    if (
+                        _mp4_to_mkv.returncode == 0
+                        and os.path.exists(final_path)
+                        and os.path.getsize(final_path) > 0
+                    ):
+                        _ok = True
+                        _fallback_used = True
+                    else:
+                        logger.error(
+                            f"DVR recording {recording_id}: MP4\u2192MKV remux step "
+                            f"failed (rc={_mp4_to_mkv.returncode}). stderr: "
+                            f"{(_mp4_to_mkv.stderr or '')[:300]}"
+                        )
+                else:
+                    logger.error(
+                        f"DVR recording {recording_id}: HLS\u2192MP4 concat fallback "
+                        f"failed (rc={_mp4_concat.returncode}). stderr: "
+                        f"{(_mp4_concat.stderr or '')[:300]}"
+                    )
+                try:
+                    if os.path.exists(_intermediate_mp4):
+                        os.remove(_intermediate_mp4)
+                except OSError:
+                    pass
+
+            if _ok:
+                remux_success = True
+                if _fallback_used:
                     logger.info(
-                        f"DVR recording {recording_id}: concat→MKV succeeded — "
-                        f"{len(all_segments)} segments → {os.path.basename(final_path)} "
+                        f"DVR recording {recording_id}: HLS\u2192MP4\u2192MKV fallback "
+                        f"concat succeeded \u2014 {len(segments)} segments \u2192 "
+                        f"{os.path.basename(final_path)} "
                         f"({os.path.getsize(final_path):,} bytes)"
                     )
                 else:
-                    logger.warning(
-                        f"DVR recording {recording_id}: direct concat→MKV failed "
-                        f"(rc={concat_result.returncode}), falling back to "
-                        f"normal remux with current segment only. "
-                        f"stderr: {(concat_result.stderr or '')[:500]}"
+                    logger.info(
+                        f"DVR recording {recording_id}: HLS\u2192MKV concat succeeded \u2014 "
+                        f"{len(segments)} segments \u2192 {os.path.basename(final_path)} "
+                        f"({os.path.getsize(final_path):,} bytes)"
                     )
-            finally:
+                # Update DB so *new* client requests go to /file/ (the final MKV)
+                # rather than the soon-to-be-removed /hls/ endpoint.  Important:
+                # we do NOT clear _hls_dir here, active viewers still in the
+                # 20s heartbeat window need it to keep fetching .ts segments
+                # during the viewer-wait grace period below.  _hls_dir is
+                # cleared only after the directory is actually removed.
                 try:
-                    os.remove(concat_list_path)
-                except OSError:
-                    pass
-            # Clear the pre-restart paths from custom_properties
-            if _rec_obj_for_concat:
-                _ccp = _rec_obj_for_concat.custom_properties or {}
-                _ccp.pop("_pre_restart_ts_paths", None)
-                _ccp.pop("interrupted_reason", None)
-                _rec_obj_for_concat.custom_properties = _ccp
-                _rec_obj_for_concat.save(update_fields=["custom_properties"])
-    except Exception as e:
-        logger.warning(
-            f"DVR recording {recording_id}: segment concatenation error "
-            f"({type(e).__name__}: {e}), proceeding with current segment only."
-        )
-
-    # Remux TS to MKV container with retry for transient I/O errors
-    # (Skip if concat already produced the final MKV directly.)
-    remux_success = _concat_did_remux
-    existing_mkv_size = 0
-    try:
-        if final_path and os.path.exists(final_path):
-            existing_mkv_size = os.path.getsize(final_path)
-    except OSError:
-        pass
-    for _remux_attempt in range(_dvr_remux_max_retries):
-        if remux_success:
-            break
-        try:
-            if temp_ts_path and os.path.exists(temp_ts_path):
-                # First attempt: Direct TS to MKV remux
-                result = subprocess.run([
-                    "ffmpeg", "-y",
-                    "-fflags", "+genpts+igndts+discardcorrupt",  # Regenerate timestamps, ignore DTS
-                    "-err_detect", "ignore_err",   # Ignore minor stream errors
-                    "-i", temp_ts_path,
-                    "-map", "0",  # Map all streams
-                    "-c", "copy",
-                    final_path
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                # Check if FFmpeg succeeded (return code 0) and output file is valid
-                if result.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                    remux_success = True
-                    logger.info(f"Direct TS→MKV remux succeeded for {os.path.basename(final_path)}")
-                else:
-                    # Direct remux failed - try fallback: TS → MP4 → MKV to fix timestamps
-                    logger.warning(f"Direct TS→MKV remux failed (return code: {result.returncode}), trying fallback TS→MP4→MKV")
-
-                    # Clean up partial/failed MKV
-                    try:
-                        if os.path.exists(final_path):
-                            os.remove(final_path)
-                    except Exception:
-                        pass
-
-                    # Step 1: TS → MP4 (MP4 container handles broken timestamps better)
-                    temp_mp4_path = os.path.splitext(temp_ts_path)[0] + ".mp4"
-                    result_mp4 = subprocess.run([
-                        "ffmpeg", "-y",
-                        "-fflags", "+genpts+igndts+discardcorrupt",
-                        "-err_detect", "ignore_err",
-                        "-i", temp_ts_path,
-                        "-map", "0",
-                        "-c", "copy",
-                        temp_mp4_path
-                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                    if result_mp4.returncode == 0 and os.path.exists(temp_mp4_path) and os.path.getsize(temp_mp4_path) > 0:
-                        logger.info(f"TS→MP4 conversion succeeded, now converting MP4→MKV")
-
-                        # Step 2: MP4 → MKV (clean timestamps from MP4)
-                        result_mkv = subprocess.run([
-                            "ffmpeg", "-y",
-                            "-i", temp_mp4_path,
-                            "-map", "0",
-                            "-c", "copy",
-                            final_path
-                        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                        if result_mkv.returncode == 0 and os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                            remux_success = True
-                            logger.info(f"Fallback TS→MP4→MKV remux succeeded for {os.path.basename(final_path)}")
-                        else:
-                            logger.error(f"MP4→MKV conversion failed (return code: {result_mkv.returncode})")
-
-                        # Clean up temp MP4
-                        try:
-                            if os.path.exists(temp_mp4_path):
-                                os.remove(temp_mp4_path)
-                        except Exception:
-                            pass
-                    else:
-                        logger.error(f"TS→MP4 conversion failed (return code: {result_mp4.returncode})")
-
-                # Sanity-check the remuxed file.  Two checks:
-                # 1. If a pre-existing MKV was overwritten, reject a
-                #    file that is drastically smaller (duplicate-task
-                #    overwrite protection).
-                # 2. If the MKV is smaller than the .ts source, the
-                #    remux likely produced a corrupt or truncated file.
-                if remux_success:
-                    try:
-                        new_size = os.path.getsize(final_path)
-                        ts_size = os.path.getsize(temp_ts_path) if temp_ts_path and os.path.exists(temp_ts_path) else 0
-                        reject = False
-                        if existing_mkv_size > 0 and new_size < existing_mkv_size * 0.5:
-                            logger.error(
-                                f"DVR recording {recording_id}: new MKV "
-                                f"({new_size:,} bytes) is less than 50%% of "
-                                f"the previous MKV ({existing_mkv_size:,} bytes) "
-                                f"— refusing to overwrite. Keeping .ts for "
-                                f"manual recovery."
-                            )
-                            reject = True
-                        elif ts_size > 0 and new_size < ts_size * 0.1:
-                            logger.error(
-                                f"DVR recording {recording_id}: remuxed MKV "
-                                f"({new_size:,} bytes) is less than 10%% of "
-                                f"the source TS ({ts_size:,} bytes) — likely "
-                                f"corrupt. Keeping .ts for manual recovery."
-                            )
-                            reject = True
-                        if reject:
-                            remux_success = False
-                            try:
-                                os.remove(final_path)
-                            except OSError:
-                                pass
-                    except OSError:
-                        pass
-
-                # Clean up temp TS file only on successful remux
-                if remux_success:
-                    try:
-                        os.remove(temp_ts_path)
-                        logger.debug(f"Cleaned up temp TS file: {temp_ts_path}")
-                    except Exception as e:
-                        logger.warning(f"Failed to remove temp TS file: {e}")
-                else:
-                    # Keep TS file for debugging/manual recovery if remux failed
-                    logger.warning(f"Remux failed - keeping temp TS file for recovery: {temp_ts_path}")
-                    # Clean up any partial MKV
-                    try:
-                        if os.path.exists(final_path):
-                            os.remove(final_path)
-                            logger.debug(f"Cleaned up partial MKV file: {final_path}")
-                    except Exception:
-                        pass
-            break  # Completed (success or deterministic failure)
-
-        except (OSError, subprocess.SubprocessError) as e:
-            # Clean up partial output before potential retry
-            try:
-                if os.path.exists(final_path):
-                    os.remove(final_path)
-            except Exception:
-                pass
-            if _remux_attempt + 1 < _dvr_remux_max_retries:
-                _wait = _dvr_remux_retry_interval * (2 ** _remux_attempt)
-                logger.warning(
-                    f"DVR recording {recording_id}: remux failed "
-                    f"({type(e).__name__}), retrying in {_wait}s "
-                    f"({_remux_attempt + 1}/{_dvr_remux_max_retries})..."
-                )
-                time.sleep(_wait)
+                    _pre_rmtree_rec = Recording.objects.filter(id=recording_id).first()
+                    if _pre_rmtree_rec:
+                        _pre_rmtree_cp = _pre_rmtree_rec.custom_properties or {}
+                        _pre_rmtree_cp["file_url"] = f"/api/channels/recordings/{recording_id}/file/"
+                        _pre_rmtree_cp["output_file_url"] = _pre_rmtree_cp["file_url"]
+                        _pre_rmtree_rec.custom_properties = _pre_rmtree_cp
+                        _pre_rmtree_rec.save(update_fields=["custom_properties"])
+                except Exception as _pre_e:
+                    logger.warning(f"DVR recording {recording_id}: pre-rmtree DB update failed: {_pre_e}")
+                # Wait for active HLS viewers to finish downloading segments
+                # before deleting the directory.  The hls endpoint refreshes
+                # _hls_viewer_key on every .ts request with a 20s TTL, so the
+                # key expiring naturally means no segment was fetched in the
+                # last 20 seconds (client has stopped).  We loop until the key
+                # is gone with a 4-hour hard safety cap in case Redis gets stuck.
+                _viewer_wait_start = time.time()
+                _safety_timeout = 14400  # 4 hours absolute maximum
+                try:
+                    from core.utils import RedisClient as _RC
+                    _rv = _RC.get_client(max_retries=1, retry_interval=0)
+                    if _rv and _rv.exists(_hls_viewer_key):
+                        logger.info(
+                            f"DVR recording {recording_id}: active HLS viewer detected, "
+                            f"deferring HLS directory cleanup until client disconnects"
+                        )
+                        while _rv.exists(_hls_viewer_key):
+                            if time.time() - _viewer_wait_start > _safety_timeout:
+                                logger.warning(
+                                    f"DVR recording {recording_id}: viewer wait safety timeout "
+                                    f"({_safety_timeout}s) reached, proceeding with HLS directory cleanup"
+                                )
+                                break
+                            time.sleep(2)
+                        logger.info(
+                            f"DVR recording {recording_id}: viewer wait complete after "
+                            f"{time.time() - _viewer_wait_start:.1f}s"
+                        )
+                except Exception as _ve:
+                    logger.debug(f"DVR recording {recording_id}: viewer wait check failed: {_ve}")
+                try:
+                    shutil.rmtree(hls_dir)
+                    logger.debug(f"Cleaned up HLS directory: {hls_dir}")
+                except Exception as _e:
+                    logger.warning(f"Failed to remove HLS directory {hls_dir}: {_e}")
+                # Now that the HLS dir is gone, clear _hls_dir from custom_properties
+                # so the hls endpoint will redirect (.m3u8) or 404 (.ts) cleanly.
+                try:
+                    _post_rmtree_rec = Recording.objects.filter(id=recording_id).first()
+                    if _post_rmtree_rec:
+                        _post_rmtree_cp = _post_rmtree_rec.custom_properties or {}
+                        if "_hls_dir" in _post_rmtree_cp:
+                            _post_rmtree_cp.pop("_hls_dir", None)
+                            _post_rmtree_rec.custom_properties = _post_rmtree_cp
+                            _post_rmtree_rec.save(update_fields=["custom_properties"])
+                except Exception as _post_e:
+                    logger.warning(f"DVR recording {recording_id}: post-rmtree DB update failed: {_post_e}")
             else:
-                logger.warning(
-                    f"DVR recording {recording_id}: remux failed "
-                    f"after {_dvr_remux_max_retries} attempts: {e}. "
-                    f"Keeping .ts for manual recovery: {temp_ts_path}"
+                logger.error(
+                    f"DVR recording {recording_id}: all HLS\u2192MKV concat attempts "
+                    f"failed (direct rc={concat_result.returncode}, MP4 fallback also "
+                    f"failed). Keeping HLS segments for recovery. stderr: "
+                    f"{(concat_result.stderr or '')[:500]}"
                 )
+        except Exception as _ce:
+            logger.error(f"DVR recording {recording_id}: concat exception: {_ce}")
+        finally:
+            try:
+                os.remove(concat_list_path)
+            except OSError:
+                pass
+    else:
+        logger.warning(f"DVR recording {recording_id}: no HLS segments found. Nothing to concat")
 
     # Persist final metadata to Recording (status, ended_at, and stream stats if available)
     try:
@@ -2464,6 +2661,11 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         recording_obj.refresh_from_db()
         cp = recording_obj.custom_properties or {}
         cp["ended_at"] = str(datetime.now())
+
+        # Restore file_url to the permanent MKV endpoint now that recording has ended.
+        # During recording it pointed to /hls/index.m3u8; clients should use /file/ hereafter.
+        cp["file_url"] = f"/api/channels/recordings/{recording_id}/file/"
+        cp["output_file_url"] = cp["file_url"]
 
         # Final status priority: stopped > completed > interrupted.
         # "stopped" is set by the stop endpoint before stream teardown, so
@@ -2578,6 +2780,14 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     except Exception:
         pass
 
+    # Release the per-recording active lock so a follow-up dispatch (e.g.
+    # manual re-record) does not have to wait for TTL expiry.
+    if _active_lock_redis is not None:
+        try:
+            _active_lock_redis.delete(_active_lock_key)
+        except Exception:
+            pass
+
 
 @shared_task
 def recover_recordings_on_startup():
@@ -2591,15 +2801,24 @@ def recover_recordings_on_startup():
         from django.utils import timezone
         from .models import Recording
         from core.utils import RedisClient
-        from .signals import schedule_recording_task
+        from .signals import schedule_recording_task, revoke_task
 
         redis = RedisClient.get_client()
-        if redis:
-            lock_key = "dvr:recover_lock"
-            # Set lock with 10-minute TTL; must be long enough for Phase 2
-            # ffmpeg remux operations on large files.
-            if not redis.set(lock_key, "1", ex=600, nx=True):
-                return "Recovery already in progress"
+        if redis is None:
+            # Fail closed: without Redis we cannot guarantee single-execution
+            # across workers, and running unguarded has been shown to start
+            # duplicate ffmpeg processes against the same HLS output dir.
+            logger.warning(
+                "recover_recordings_on_startup: Redis unavailable, "
+                "skipping recovery to avoid duplicate recording dispatch."
+            )
+            return "Redis unavailable"
+
+        lock_key = "dvr:recover_lock"
+        # Set lock with 10-minute TTL; must be long enough for Phase 2
+        # ffmpeg remux operations on large files.
+        if not redis.set(lock_key, "1", ex=600, nx=True):
+            return "Recovery already in progress"
 
         now = timezone.now()
 
@@ -2631,20 +2850,34 @@ def recover_recordings_on_startup():
                     )
                     continue
 
+                # If a live worker still holds the per-recording active lock,
+                # skip recovery, that worker is currently writing to the HLS
+                # output dir and re-dispatching `run_recording` would spawn a
+                # second ffmpeg racing on the same files. The lock auto-expires
+                # within ~45s if the worker died, so this only blocks recovery
+                # while the recording is genuinely live.
+                try:
+                    if redis.exists(f"dvr:recording-active:{rec.id}"):
+                        logger.info(
+                            f"recover_recordings_on_startup: skipping recording {rec.id} "
+                            f"(active-recording lock held by live worker)."
+                        )
+                        continue
+                except Exception:
+                    pass
+
                 # Mark interrupted due to restart; will flip to 'recording' when task starts
                 cp["status"] = "interrupted"
                 cp["interrupted_reason"] = "server_restarted"
 
                 # Preserve the pre-restart .ts segment path so run_recording
                 # can concatenate it with the resumed segment later.
-                old_ts = cp.get("_temp_file_path")
-                if old_ts and os.path.exists(old_ts) and os.path.getsize(old_ts) > 0:
-                    prior_segments = cp.get("_pre_restart_ts_paths", [])
-                    prior_segments.append(old_ts)
-                    cp["_pre_restart_ts_paths"] = prior_segments
+                hls_dir_path = cp.get("_hls_dir")
+                if hls_dir_path and os.path.isdir(hls_dir_path):
+                    existing_segs = [f for f in os.listdir(hls_dir_path) if f.endswith(".ts")]
                     logger.info(
                         f"recover_recordings_on_startup: recording {rec.id} — "
-                        f"preserving pre-restart TS segment: {old_ts}"
+                        f"HLS dir has {len(existing_segs)} existing segment(s), will resume"
                     )
 
                 rec.custom_properties = cp
@@ -2687,38 +2920,86 @@ def recover_recordings_on_startup():
         for rec in expired:
             try:
                 cp = rec.custom_properties or {}
-                ts_path = cp.get("_temp_file_path")
+                hls_dir_path = cp.get("_hls_dir")
                 mkv_path = cp.get("file_path")
 
-                if ts_path and os.path.exists(ts_path) and os.path.getsize(ts_path) > 0 and mkv_path:
-                    logger.info(
-                        f"recover_recordings_on_startup: recording {rec.id} expired "
-                        f"during downtime — remuxing partial TS ({os.path.getsize(ts_path):,} bytes)"
-                    )
-                    os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
-                    result = subprocess.run(
-                        [
-                            "ffmpeg", "-y",
-                            "-fflags", "+genpts+igndts+discardcorrupt",
-                            "-err_detect", "ignore_err",
-                            "-i", ts_path, "-map", "0", "-c", "copy", mkv_path,
-                        ],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    )
-                    if result.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
-                        cp["status"] = "interrupted"
-                        cp["interrupted_reason"] = "server_restarted_after_end"
-                        cp["remux_success"] = True
+                if hls_dir_path and os.path.isdir(hls_dir_path) and mkv_path:
+                    # Parse m3u8 for ordered segment list; fall back to sorted filenames
+                    _m3u8 = os.path.join(hls_dir_path, "index.m3u8")
+                    _segs = []
+                    if os.path.exists(_m3u8):
                         try:
-                            os.remove(ts_path)
-                        except OSError:
+                            with open(_m3u8) as _f:
+                                for _l in _f:
+                                    _l = _l.strip()
+                                    if _l and not _l.startswith('#'):
+                                        _sp = os.path.join(hls_dir_path, _l) if not os.path.isabs(_l) else _l
+                                        if os.path.exists(_sp):
+                                            _segs.append(_sp)
+                        except Exception:
                             pass
-                        logger.info(f"recover_recordings_on_startup: recording {rec.id} remuxed successfully")
+                    if not _segs:
+                        _segs = sorted(
+                            os.path.join(hls_dir_path, f)
+                            for f in os.listdir(hls_dir_path)
+                            if f.startswith("seg_") and f.endswith(".ts")
+                        )
+
+                    if _segs:
+                        logger.info(
+                            f"recover_recordings_on_startup: recording {rec.id} expired "
+                            f"during downtime, concat {len(_segs)} HLS segment(s) \u2192 MKV"
+                        )
+                        os.makedirs(os.path.dirname(mkv_path), exist_ok=True)
+                        _concat_txt = os.path.join(hls_dir_path, "concat.txt")
+                        try:
+                            with open(_concat_txt, "w") as _cl:
+                                for _s in _segs:
+                                    _escaped = _s.replace("'", "'\\''")
+                                    _cl.write(f"file '{_escaped}'\n")
+                            _res = subprocess.run(
+                                [
+                                    "ffmpeg", "-y",
+                                    "-f", "concat", "-safe", "0",
+                                    "-i", _concat_txt,
+                                    "-c", "copy", mkv_path,
+                                ],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            )
+                            if _res.returncode == 0 and os.path.exists(mkv_path) and os.path.getsize(mkv_path) > 0:
+                                cp["status"] = "interrupted"
+                                cp["interrupted_reason"] = "server_restarted_after_end"
+                                cp["remux_success"] = True
+                                try:
+                                    shutil.rmtree(hls_dir_path)
+                                except OSError:
+                                    pass
+                                logger.info(
+                                    f"recover_recordings_on_startup: recording {rec.id} HLS\u2192MKV concat succeeded"
+                                )
+                            else:
+                                cp["status"] = "interrupted"
+                                cp["interrupted_reason"] = "server_restarted_after_end"
+                                cp["remux_success"] = False
+                                logger.warning(
+                                    f"recover_recordings_on_startup: recording {rec.id} concat failed, keeping HLS dir"
+                                )
+                        except Exception as _ce:
+                            cp["status"] = "interrupted"
+                            cp["interrupted_reason"] = "server_restarted_after_end"
+                            cp["remux_success"] = False
+                            logger.warning(
+                                f"recover_recordings_on_startup: recording {rec.id} concat error: {_ce}"
+                            )
+                        finally:
+                            try:
+                                os.remove(_concat_txt)
+                            except OSError:
+                                pass
                     else:
                         cp["status"] = "interrupted"
                         cp["interrupted_reason"] = "server_restarted_after_end"
                         cp["remux_success"] = False
-                        logger.warning(f"recover_recordings_on_startup: recording {rec.id} remux failed, keeping .ts")
                 else:
                     cp["status"] = "interrupted"
                     cp["interrupted_reason"] = "server_restarted_after_end"

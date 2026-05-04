@@ -25,6 +25,14 @@ class CoreConfig(AppConfig):
         import core.signals
         from dispatcharr.app_initialization import should_skip_initialization
 
+        # Force UTC0 on every new DB connection.
+        from django.db.backends.signals import connection_created
+
+        def _force_utc0(sender, connection, **kwargs):
+            connection.cursor().execute("SET TIME ZONE 'UTC0'")
+
+        connection_created.connect(_force_utc0, dispatch_uid='force_db_utc0')
+
         # Sync developer notifications and check for version updates on startup
         # Only run in the main process (not in management commands, migrations, or workers)
         if should_skip_initialization():

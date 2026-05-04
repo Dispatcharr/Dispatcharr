@@ -14,6 +14,7 @@ import useVODStore from '../../store/useVODStore';
 import { notifications } from '@mantine/notifications';
 import LiveGroupFilter from './LiveGroupFilter';
 import VODCategoryFilter from './VODCategoryFilter';
+import { detectGroupReservationOverlaps } from '../../utils/forms/GroupSyncUtils';
 
 const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   const channelGroups = useChannelsStore((s) => s.channelGroups);
@@ -55,7 +56,7 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
                 typeof group.custom_properties === 'string'
                   ? JSON.parse(group.custom_properties)
                   : group.custom_properties;
-            } catch (e) {
+            } catch {
               customProps = {};
             }
           }
@@ -64,6 +65,7 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
             name: channelGroups[group.channel_group].name,
             auto_channel_sync: group.auto_channel_sync || false,
             auto_sync_channel_start: group.auto_sync_channel_start || 1.0,
+            auto_sync_channel_end: group.auto_sync_channel_end ?? null,
             custom_properties: customProps,
           };
         })
@@ -83,6 +85,21 @@ const M3UGroupFilter = ({ playlist = null, isOpen, onClose }) => {
   }, [isOpen, playlist, fetchCategories]);
 
   const submit = async () => {
+    // Advisory only: overlapping ranges are sometimes intentional (for
+    // example, two providers carrying the same category that should
+    // merge into one shared number range). The form already shows a
+    // warning triangle on each affected group with the specific overlap
+    // names on hover, so the toast just confirms the save proceeded.
+    const overlaps = detectGroupReservationOverlaps(groupStates);
+    if (overlaps.length > 0) {
+      notifications.show({
+        title: 'Overlapping channel number ranges',
+        message: `Saved with ${overlaps.length} overlapping range pair${overlaps.length === 1 ? '' : 's'}. Hover the warning icon on each group for details. Sync will assign whichever numbers are free at run time.`,
+        color: 'yellow',
+        autoClose: 6000,
+      });
+    }
+
     setIsLoading(true);
     try {
       // Prepare groupStates for API

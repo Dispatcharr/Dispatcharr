@@ -4,6 +4,8 @@ from celery import Celery
 import logging
 from celery.signals import task_postrun, worker_ready
 
+logger = logging.getLogger(__name__)
+
 # Initialize with defaults before Django settings are loaded
 DEFAULT_LOG_LEVEL = 'DEBUG'
 
@@ -48,6 +50,11 @@ app.conf.update(
     worker_hijack_root_logger=False,
     worker_task_log_format='%(asctime)s %(levelname)s %(task_name)s: %(message)s',
 )
+
+# Route long-running DVR recordings to a dedicated `dvr` queue consumed by a thread-pool worker.
+app.conf.task_routes = {
+    'apps.channels.tasks.run_recording': {'queue': 'dvr'},
+}
 
 # Add memory cleanup after task completion
 @task_postrun.connect  # Use the imported signal
@@ -153,9 +160,44 @@ def setup_celery_logging(**kwargs):
 
 @worker_ready.connect
 def on_worker_ready(**kwargs):
-    """Tasks to run once the worker is fully connected and ready."""
-    from apps.channels.tasks import recover_recordings_on_startup
-    recover_recordings_on_startup.delay()
+    """Tasks to run once the worker is fully connected and ready.
 
-    from core.tasks import check_for_version_update
-    check_for_version_update.delay()
+    NOTE: when multiple Celery worker processes share a container (e.g. the
+    `dvr` and `default` workers in the AIO image), this signal fires once per
+    worker.  We must guard the one-shot startup tasks with a short-lived
+    Redis NX lock so they are dispatched exactly once per cluster startup,
+    otherwise `recover_recordings_on_startup` runs twice and re-dispatches
+    `run_recording` for any in-flight recording, producing duplicate ffmpeg
+    processes that race on the same HLS output directory.
+    """
+    try:
+        from core.utils import RedisClient
+        redis_client = RedisClient.get_client()
+    except Exception:
+        redis_client = None
+
+    def _claim(lock_key, ttl_seconds=300):
+        """Return True if this worker should run the one-shot dispatch."""
+        if redis_client is None:
+            # Redis unavailable: best-effort, allow dispatch (the in-task
+            # lock inside the recovery task itself is the second line of
+            # defense if Redis comes back online before the task runs).
+            return True
+        try:
+            claimed = bool(redis_client.set(lock_key, "1", ex=ttl_seconds, nx=True))
+            if not claimed:
+                logger.debug(
+                    f"on_worker_ready: dispatch lock {lock_key!r} held by "
+                    f"another worker, skipping one-shot dispatch."
+                )
+            return claimed
+        except Exception:
+            return True
+
+    if _claim("dvr:recover_dispatch_lock"):
+        from apps.channels.tasks import recover_recordings_on_startup
+        recover_recordings_on_startup.delay()
+
+    if _claim("core:version_check_dispatch_lock"):
+        from core.tasks import check_for_version_update
+        check_for_version_update.delay()

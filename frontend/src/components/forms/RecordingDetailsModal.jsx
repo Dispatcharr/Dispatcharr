@@ -122,7 +122,8 @@ const RecordingDetailsModal = ({
   const canWatchRecording =
     (customProps.status === 'completed' ||
       customProps.status === 'stopped' ||
-      customProps.status === 'interrupted') &&
+      customProps.status === 'interrupted' ||
+      customProps.status === 'recording') &&
     Boolean(fileUrl);
 
   const isSeriesGroup = Boolean(

@@ -13,7 +13,11 @@ class PluginsConfig(AppConfig):
 
         - Skip during common management commands that don't need discovery.
         - Register post_migrate handler to sync plugin registry to DB after migrations.
-        - Do an in-memory discovery (no DB) so registry is available early.
+        - Do an in-memory discovery (no DB) so registry is available early
+          but only in the main uwsgi/daphne process.  Celery workers and
+          management commands skip the eager pass: the post_migrate handler
+          covers the DB sync, and `connect/utils.py` lazy-discovers on first
+          event using the loader's cache.
         """
         try:
             # Allow explicit opt-out via env var
@@ -43,8 +47,11 @@ class PluginsConfig(AppConfig):
                 _post_migrate_discover,
                 dispatch_uid="apps.plugins.post_migrate_discover",
             )
+            #
+            from dispatcharr.app_initialization import should_skip_initialization
+            if should_skip_initialization():
+                return
 
-            # Perform non-DB discovery now to populate in-memory registry.
             from .loader import PluginManager
             PluginManager.get().discover_plugins(sync_db=False)
         except Exception:

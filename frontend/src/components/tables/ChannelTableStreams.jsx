@@ -340,7 +340,8 @@ const StreamInfoCell = React.memo(
                   onClick={() =>
                     handleWatchStream(
                       stream.stream_hash || stream.id,
-                      stream.name
+                      stream.name,
+                      stream.id
                     )
                   }
                   style={{ marginLeft: 2 }}
@@ -496,18 +497,25 @@ const ChannelStreams = ({ channel }) => {
     (state) => state.getChannelStreams(channel.id),
     shallow
   );
+  const patchChannelStreamStats = useChannelsTableStore(
+    (s) => s.patchChannelStreamStats
+  );
   const playlists = usePlaylistsStore((s) => s.playlists);
   const authUser = useAuthStore((s) => s.user);
   const showVideo = useVideoStore((s) => s.showVideo);
+  const isVideoVisible = useVideoStore((s) => s.isVisible);
   const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
   const handleWatchStream = useCallback(
-    (streamHash, streamName) => {
+    (streamHash, streamName, streamId) => {
       let vidUrl = `/proxy/ts/stream/${streamHash}`;
       if (env_mode === 'dev') {
         vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
       }
-      showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
+      const meta = {};
+      if (streamName) meta.name = streamName;
+      if (streamId != null) meta.streamId = streamId;
+      showVideo(vidUrl, 'live', Object.keys(meta).length ? meta : null);
     },
     [env_mode, showVideo]
   );
@@ -525,6 +533,64 @@ const ChannelStreams = ({ channel }) => {
   dataRef.current = data;
 
   const dataIds = useMemo(() => data?.map(({ id }) => id), [data]);
+
+  // Fire-and-forget refresh of stream stats. Cursor is the newest
+  // stream_stats_updated_at already in the store; server returns only
+  // entries strictly newer than that (empty array when nothing changed).
+  const refreshStats = useCallback(
+    (opts) => {
+      const channelId = channelRef.current?.id;
+      if (!channelId) return;
+      const streams = dataRef.current || [];
+      let since = null;
+      for (const s of streams) {
+        const t = s.stream_stats_updated_at;
+        if (t && (since === null || t > since)) since = t;
+      }
+      const ids = opts && opts.ids;
+      API.getChannelStreamStats(channelId, since, ids).then((updates) => {
+        if (!updates || updates.length === 0) return;
+        patchChannelStreamStats(channelId, updates);
+      });
+    },
+    [patchChannelStreamStats]
+  );
+
+  // Refresh once when the row is expanded.
+  useEffect(() => {
+    refreshStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Refresh just the previewed stream when the floating player closes.
+  // Metadata is captured while visible because hideVideo clears it.
+  const prevVisibleRef = useRef(isVideoVisible);
+  const lastPreviewMetaRef = useRef(null);
+  useEffect(() => {
+    if (isVideoVisible) {
+      lastPreviewMetaRef.current = useVideoStore.getState().metadata;
+    }
+    const wasVisible = prevVisibleRef.current;
+    prevVisibleRef.current = isVideoVisible;
+    if (wasVisible && !isVideoVisible) {
+      const meta = lastPreviewMetaRef.current;
+      lastPreviewMetaRef.current = null;
+      const channelId = channelRef.current?.id;
+      const previewedStreamId = meta && meta.streamId;
+      const previewedChannelId = meta && meta.channelId;
+      if (
+        previewedStreamId != null &&
+        (dataRef.current || []).some((s) => s.id === previewedStreamId)
+      ) {
+        refreshStats({ ids: [previewedStreamId] });
+      } else if (
+        previewedChannelId != null &&
+        previewedChannelId === channelId
+      ) {
+        refreshStats();
+      }
+    }
+  }, [isVideoVisible, refreshStats]);
 
   const removeStream = useCallback(async (stream) => {
     const newStreamList = dataRef.current.filter((s) => s.id !== stream.id);

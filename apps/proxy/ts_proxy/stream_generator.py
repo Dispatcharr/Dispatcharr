@@ -66,6 +66,11 @@ class StreamGenerator:
         self.last_ttl_refresh = time.time()
         self.ttl_refresh_interval = 3  # Refresh TTL every 3 seconds of active streaming
 
+        # Throttle per-client stats writes to Redis.
+        # channels with many viewers.
+        self.last_stats_write = 0.0
+        self.stats_write_interval = 1.0
+
         # Cached proxy server reference
         self.proxy_server = None
 
@@ -448,9 +453,12 @@ class StreamGenerator:
                     logger.debug(f"[{self.client_id}] Stats: {self.chunks_sent} chunks, {self.bytes_sent/1024:.1f} KB, "
                                 f"avg: {avg_rate:.1f} KB/s, current: {self.current_rate:.1f} KB/s")
 
-                # Store stats in Redis client metadata
-                if proxy_server.redis_client:
+                # Store stats in Redis client metadata, throttled to avoid an
+                # hset on every chunk. Frontend stats panels poll on the order
+                # of seconds, so 1s resolution is sufficient.
+                if proxy_server.redis_client and (current_time - self.last_stats_write) >= self.stats_write_interval:
                     try:
+                        self.last_stats_write = current_time
                         client_key = RedisKeys.client_metadata(self.channel_id, self.client_id)
                         stats = {
                             ChannelMetadataField.CHUNKS_SENT: str(self.chunks_sent),

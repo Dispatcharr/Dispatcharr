@@ -118,8 +118,12 @@ services:
       - DISPATCHARR_ENV=modular
 
       # Internal Service Communication
-      # Must match the web service port for DVR recording and internal API calls
+      # Celery uses these to reach the web container for DVR recording.
+      # DISPATCHARR_PORT must match the port exposed by the web service.
+      # DISPATCHARR_WEB_HOST defaults to "web" (the service name above).
+      # Only set DISPATCHARR_WEB_HOST if you rename the web service in this file.
       - DISPATCHARR_PORT=9191
+      #- DISPATCHARR_WEB_HOST=web
 
       # PostgreSQL — must match web service settings
       - POSTGRES_HOST=db

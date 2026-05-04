@@ -19,6 +19,7 @@ import {
   Switch,
   Box,
   PasswordInput,
+  Tooltip,
 } from '@mantine/core';
 import M3UGroupFilter from './M3UGroupFilter';
 import useChannelsStore from '../../store/channels';
@@ -459,15 +460,19 @@ const M3U = ({
                 {...form.getInputProps('priority')}
                 key={form.key('priority')}
               />
-
-              <Checkbox
-                label="Is Active"
-                description="Enable or disable this M3U account"
-                {...form.getInputProps('is_active', { type: 'checkbox' })}
-                key={form.key('is_active')}
-              />
             </Stack>
           </Group>
+
+          <Divider my="md" />
+
+          <Flex gap="xl" wrap="wrap">
+            <Checkbox
+              label="Is Active"
+              description="Enable or disable this M3U account"
+              {...form.getInputProps('is_active', { type: 'checkbox' })}
+              key={form.key('is_active')}
+            />
+          </Flex>
 
           <Flex mih={50} gap="xs" justify="flex-end" align="flex-end">
             {playlist && (

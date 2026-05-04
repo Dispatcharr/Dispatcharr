@@ -103,19 +103,23 @@ class StreamBuffer:
                     chunk_data = self._write_buffer[:self.target_chunk_size]
                     self._write_buffer = self._write_buffer[self.target_chunk_size:]
 
-                    # Write optimized chunk to Redis
+                    # Write optimized chunk to Redis. We need the new index from
+                    # incr() to build the chunk key, so issue that first; the
+                    # remaining writes are pipelined into one round trip.
                     if self.redis_client:
                         chunk_index = self.redis_client.incr(self.buffer_index_key)
                         chunk_key = RedisKeys.buffer_chunk(self.channel_id, chunk_index)
-                        self.redis_client.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
 
-                        # Record receive timestamp for time-based client positioning
+                        pipe = self.redis_client.pipeline(transaction=False)
+                        pipe.setex(chunk_key, self.chunk_ttl, bytes(chunk_data))
+
                         if self.chunk_timestamps_key:
                             now = time.time()
-                            self.redis_client.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
-                            # Prune entries whose chunks have expired from Redis
-                            self.redis_client.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
-                            self.redis_client.expire(self.chunk_timestamps_key, self.chunk_ttl)
+                            pipe.zadd(self.chunk_timestamps_key, {str(chunk_index): now})
+                            pipe.zremrangebyscore(self.chunk_timestamps_key, '-inf', now - self.chunk_ttl)
+                            pipe.expire(self.chunk_timestamps_key, self.chunk_ttl)
+
+                        pipe.execute()
 
                         # Update local tracking
                         self.index = chunk_index

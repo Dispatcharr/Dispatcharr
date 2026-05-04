@@ -49,6 +49,45 @@ export const updateChannels = (channelIds, values) => {
   return API.updateChannels(channelIds, values);
 };
 
+// Auto-created channels route override-able fields to override.* so they
+// survive the next sync; manual channels write to the raw Channel columns.
+// Non-overridable fields (status/permission flags) always write raw.
+export const updateChannelsWithOverrideRouting = async (
+  channelIds,
+  values,
+  channelsById
+) => {
+  const { OVERRIDABLE_FIELDS } = await import('./ChannelUtils.js');
+  const overrideKeys = new Set(OVERRIDABLE_FIELDS);
+
+  const rawValues = {};
+  const overrideValues = {};
+  for (const [key, val] of Object.entries(values)) {
+    if (overrideKeys.has(key)) {
+      overrideValues[key] = val;
+    } else {
+      rawValues[key] = val;
+    }
+  }
+
+  const body = [];
+  for (const id of channelIds) {
+    const channel = channelsById?.[id];
+    const isAuto = !!channel?.auto_created;
+    const item = { id, ...rawValues };
+    if (Object.keys(overrideValues).length > 0) {
+      if (isAuto) {
+        item.override = { ...overrideValues };
+      } else {
+        Object.assign(item, overrideValues);
+      }
+    }
+    body.push(item);
+  }
+
+  return API.bulkUpdateChannels(body);
+};
+
 export const bulkRegexRenameChannels = (
   channelIds,
   regexFind,
@@ -151,6 +190,17 @@ export const buildSubmitValues = (
   } else {
     values.is_adult = values.is_adult === 'true';
   }
+
+  if (values.hidden_from_output === '-1' || values.hidden_from_output === undefined) {
+    delete values.hidden_from_output;
+  } else {
+    values.hidden_from_output = values.hidden_from_output === 'true';
+  }
+
+  // clear_overrides is a UI-only flag; the caller splits it out and routes a
+  // follow-up PATCH to just the auto-created subset. Strip it from the main
+  // PATCH body.
+  delete values.clear_overrides;
 
   return values;
 };

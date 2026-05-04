@@ -6,7 +6,8 @@ from dispatcharr.utils import network_access_allowed
 class Authenticated(IsAuthenticated):
     def has_permission(self, request, view):
         is_authenticated = super().has_permission(request, view)
-        network_allowed = network_access_allowed(request, "UI")
+        user = request.user if hasattr(request, 'user') and request.user.is_authenticated else None
+        network_allowed = network_access_allowed(request, "UI", user)
 
         return is_authenticated and network_allowed
 

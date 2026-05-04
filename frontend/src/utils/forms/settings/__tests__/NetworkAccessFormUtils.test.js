@@ -27,9 +27,9 @@ describe('NetworkAccessFormUtils', () => {
       const result = NetworkAccessFormUtils.getNetworkAccessFormInitialValues();
 
       expect(result).toEqual({
-        'network-access-admin': '0.0.0.0/0,::/0',
-        'network-access-api': '0.0.0.0/0,::/0',
-        'network-access-streaming': '0.0.0.0/0,::/0',
+        'network-access-admin': ['0.0.0.0/0', '::/0'],
+        'network-access-api': ['0.0.0.0/0', '::/0'],
+        'network-access-streaming': ['0.0.0.0/0', '::/0'],
       });
     });
 
@@ -80,9 +80,9 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('192.168.1.0/24')).toBeNull();
-      expect(validator('10.0.0.0/8')).toBeNull();
-      expect(validator('0.0.0.0/0')).toBeNull();
+      expect(validator(['192.168.1.0/24'])).toBeNull();
+      expect(validator(['10.0.0.0/8'])).toBeNull();
+      expect(validator(['0.0.0.0/0'])).toBeNull();
     });
 
     it('should validate valid IPv6 CIDR ranges', () => {
@@ -90,18 +90,18 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('2001:db8::/32')).toBeNull();
-      expect(validator('::/0')).toBeNull();
+      expect(validator(['2001:db8::/32'])).toBeNull();
+      expect(validator(['::/0'])).toBeNull();
     });
 
-    it('should validate multiple CIDR ranges separated by commas', () => {
+    it('should validate multiple CIDR entries', () => {
       const validation =
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('192.168.1.0/24,10.0.0.0/8')).toBeNull();
-      expect(validator('0.0.0.0/0,::/0')).toBeNull();
-      expect(validator('192.168.1.0/24,2001:db8::/32')).toBeNull();
+      expect(validator(['192.168.1.0/24', '10.0.0.0/8'])).toBeNull();
+      expect(validator(['0.0.0.0/0', '::/0'])).toBeNull();
+      expect(validator(['192.168.1.0/24', '2001:db8::/32'])).toBeNull();
     });
 
     it('should return error for invalid IPv4 CIDR ranges', () => {
@@ -109,30 +109,31 @@ describe('NetworkAccessFormUtils', () => {
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('192.168.1.256.1/24')).toBe('Invalid CIDR range');
-      expect(validator('invalid')).toBe('Invalid CIDR range');
-      expect(validator('192.168.1.0/256')).toBe('Invalid CIDR range');
+      expect(validator(['192.168.1.256.1/24'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['invalid'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['192.168.1.0/256'])).toBe('Invalid IP address or CIDR range');
     });
 
-    it('should return error when any CIDR in comma-separated list is invalid', () => {
+    it('should return error when any entry in the list is invalid', () => {
       const validation =
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
-      expect(validator('192.168.1.0/24,invalid')).toBe('Invalid CIDR range');
-      expect(validator('invalid,192.168.1.0/24')).toBe('Invalid CIDR range');
-      expect(validator('192.168.1.0/24,10.0.0.0/8,invalid')).toBe(
-        'Invalid CIDR range'
+      expect(validator(['192.168.1.0/24', 'invalid'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['invalid', '192.168.1.0/24'])).toBe('Invalid IP address or CIDR range');
+      expect(validator(['192.168.1.0/24', '10.0.0.0/8', 'invalid'])).toBe(
+        'Invalid IP address or CIDR range'
       );
     });
 
-    it('should handle empty strings', () => {
+    it('should handle empty arrays', () => {
       const validation =
         NetworkAccessFormUtils.getNetworkAccessFormValidation();
       const validator = validation['network-access-admin'];
 
       // Empty values are allowed — defaults are substituted on submit
-      expect(validator('')).toBe(null);
+      expect(validator([])).toBe(null);
+      expect(validator(null)).toBe(null);
     });
 
     it('should return empty object when NETWORK_ACCESS_OPTIONS is empty', () => {
