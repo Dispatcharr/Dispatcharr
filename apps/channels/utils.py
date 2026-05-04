@@ -4,6 +4,18 @@ lock = threading.Lock()
 # Dictionary to track usage: {account_id: current_usage}
 active_streams_map = {}
 
+
+def format_channel_number(value, empty=""):
+    """Display formatting for an effective channel_number. Returns int for
+    whole-valued floats (so ``123.0`` renders as ``123``), the float as-is
+    for fractional values, or ``empty`` when the value is ``None``.
+    """
+    if value is None:
+        return empty
+    if value == int(value):
+        return int(value)
+    return value
+
 def increment_stream_count(account):
     with lock:
         current_usage = active_streams_map.get(account.id, 0)

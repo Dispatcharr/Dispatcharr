@@ -52,6 +52,19 @@ vi.mock('@mantine/core', async () => {
     Button: ({ children, onClick }) => (
       <button onClick={onClick}>{children}</button>
     ),
+    // Stub for the auto-sync failure-details modal.
+    Modal: ({ children, opened, onClose, title }) =>
+      opened ? (
+        <div data-testid="modal" role="dialog" aria-label={title}>
+          <button data-testid="modal-close" onClick={onClose}>
+            close
+          </button>
+          {children}
+        </div>
+      ) : null,
+    ScrollArea: ({ children }) => <div>{children}</div>,
+    Text: ({ children }) => <span>{children}</span>,
+    Code: ({ children }) => <pre>{children}</pre>,
   };
 });
 
@@ -712,6 +725,130 @@ describe('M3URefreshNotification', () => {
           <M3URefreshNotification />
         </BrowserRouter>
       );
+    });
+  });
+
+  // The parsing-complete event payload carries auto-sync counts
+  // (channels_created/updated/deleted/failed) and a failed_stream_details
+  // array. The component surfaces the counts inline in the notification
+  // body and exposes a "Click for details" affordance when failures exist.
+  describe('Auto-sync count rendering on parsing complete', () => {
+    it('inlines auto-sync summary when counts are present', async () => {
+      mockPlaylistsStore.refreshProgress = {
+        1: {
+          account: 1,
+          action: 'parsing',
+          progress: 100,
+          status: 'success',
+          channels_created: 12,
+          channels_updated: 3,
+          channels_deleted: 1,
+          channels_failed: 0,
+          failed_stream_details: [],
+        },
+      };
+
+      renderWithProviders(<M3URefreshNotification />);
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalled();
+      });
+      // The message arg is JSX; render it and confirm both the
+      // base message and the auto-sync summary text appear.
+      const call = showNotification.mock.calls.find(
+        (c) => typeof c[0]?.message === 'object'
+      );
+      expect(call).toBeDefined();
+      const { container } = render(<>{call[0].message}</>);
+      expect(container.textContent).toContain('Stream parsing complete!');
+      expect(container.textContent).toContain('12 created');
+      expect(container.textContent).toContain('3 updated');
+      expect(container.textContent).toContain('1 deleted');
+    });
+
+    it('shows "Click for details" button when failures exist', async () => {
+      mockPlaylistsStore.refreshProgress = {
+        1: {
+          account: 1,
+          action: 'parsing',
+          progress: 100,
+          status: 'success',
+          channels_created: 5,
+          channels_updated: 0,
+          channels_deleted: 0,
+          channels_failed: 2,
+          failed_stream_details: [
+            {
+              stream_name: 'BadStream1',
+              group: 'Sports',
+              error: 'Range exhausted',
+            },
+            {
+              stream_name: 'BadStream2',
+              group: 'News',
+              error: 'Channel number conflict',
+            },
+          ],
+        },
+      };
+
+      renderWithProviders(<M3URefreshNotification />);
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalled();
+      });
+      const call = showNotification.mock.calls.find(
+        (c) => typeof c[0]?.message === 'object'
+      );
+      expect(call).toBeDefined();
+      const { container } = render(<>{call[0].message}</>);
+      expect(container.textContent).toContain('2 failed');
+      expect(container.textContent).toContain('Click for details');
+    });
+
+    it('falls back to plain string body when no auto-sync counts arrive', async () => {
+      // Older payload shape (or non-parsing actions) get the original
+      // simple "X complete!" string body, no JSX wrapping.
+      mockPlaylistsStore.refreshProgress = {
+        1: {
+          account: 1,
+          action: 'downloading',
+          progress: 100,
+          status: 'success',
+        },
+      };
+
+      renderWithProviders(<M3URefreshNotification />);
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalled();
+      });
+      const call = showNotification.mock.calls[0];
+      expect(typeof call[0].message).toBe('string');
+    });
+
+    it('uses extended autoClose when failures are present', async () => {
+      mockPlaylistsStore.refreshProgress = {
+        1: {
+          account: 1,
+          action: 'parsing',
+          progress: 100,
+          status: 'success',
+          channels_created: 1,
+          channels_failed: 1,
+          failed_stream_details: [{ stream_name: 'X', group: 'Y', error: 'Z' }],
+        },
+      };
+
+      renderWithProviders(<M3URefreshNotification />);
+
+      await waitFor(() => {
+        expect(showNotification).toHaveBeenCalled();
+      });
+      const call = showNotification.mock.calls[0];
+      // 12000ms when failures > 0; 4000ms when summary present but no
+      // failures; 2000ms when no auto-sync counts.
+      expect(call[0].autoClose).toBe(12000);
     });
   });
 });

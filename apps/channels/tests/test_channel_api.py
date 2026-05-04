@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from apps.channels.models import Channel, ChannelGroup
+from apps.channels.models import Channel, ChannelGroup, ChannelOverride
 
 User = get_user_model()
 
@@ -209,3 +209,133 @@ class ChannelBulkEditAPITests(TestCase):
         self.assertEqual(self.channel1.name, "Only Name Changed")
         self.assertEqual(self.channel1.channel_number, original_channel_number)
         self.assertEqual(self.channel1.tvg_id, original_tvg_id)
+
+    def test_bulk_swap_clear_and_assign_same_number(self):
+        # User clears channel A's override (which currently pins #10) and
+        # in the same bulk request sets channel B's override.channel_number
+        # to #10. Both halves of the swap must succeed; the resulting
+        # state has A unpinned and B pinned at #10.
+        auto_a = Channel.objects.create(
+            channel_number=1.0,
+            name="Auto A",
+            tvg_id="auto_a",
+            channel_group=self.group1,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(channel=auto_a, channel_number=10.0)
+        auto_b = Channel.objects.create(
+            channel_number=2.0,
+            name="Auto B",
+            tvg_id="auto_b",
+            channel_group=self.group1,
+            auto_created=True,
+        )
+
+        data = [
+            {"id": auto_a.id, "override": None},
+            {"id": auto_b.id, "override": {"channel_number": 10.0}},
+        ]
+        response = self.client.patch(self.bulk_edit_url, data, format="json")
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+            f"Expected 200; got {response.status_code} body={response.data}",
+        )
+        self.assertFalse(
+            ChannelOverride.objects.filter(channel=auto_a).exists()
+        )
+        b_override = ChannelOverride.objects.get(channel=auto_b)
+        self.assertEqual(b_override.channel_number, 10.0)
+
+
+class ChannelSummaryEffectiveValuesTests(TestCase):
+    """
+    The /api/channels/channels/summary/ endpoint feeds the TV Guide.
+    Like every downstream output surface, it must reflect the user's
+    overrides (name, channel_number, logo_id, epg_data_id,
+    channel_group_id) instead of the raw provider values, otherwise
+    the in-app guide would silently disagree with HDHR / M3U / EPG /
+    XC clients on the same channel set.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from apps.channels.models import ChannelOverride
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username="summary_admin", password="x"
+        )
+        self.user.user_level = 10
+        self.user.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.group = ChannelGroup.objects.create(name="Summary Group")
+        self.other_group = ChannelGroup.objects.create(name="Other")
+        self.channel = Channel.objects.create(
+            channel_number=10.0,
+            name="Provider Name",
+            channel_group=self.group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=self.channel,
+            name="Override Name",
+            channel_number=99.0,
+            channel_group=self.other_group,
+        )
+
+    def test_summary_returns_effective_values(self):
+        response = self.client.get("/api/channels/channels/summary/")
+        self.assertEqual(response.status_code, 200)
+        row = next(r for r in response.data if r["id"] == self.channel.id)
+        self.assertEqual(row["name"], "Override Name")
+        self.assertEqual(row["channel_number"], 99.0)
+        self.assertEqual(row["channel_group_id"], self.other_group.id)
+
+
+class ChannelManagerEffectiveValuesTests(TestCase):
+    """
+    The chainable ``Channel.objects.with_effective_values()`` shortcut
+    must return rows with the same ``effective_*`` annotations the
+    module-level helper produces, since both forms are documented
+    entry points and a divergence would silently change output for
+    one set of callers.
+    """
+
+    def test_manager_shortcut_matches_module_helper(self):
+        from apps.channels.managers import with_effective_values
+
+        group = ChannelGroup.objects.create(name="Manager Test")
+        channel = Channel.objects.create(
+            channel_number=42.0,
+            name="Original Name",
+            channel_group=group,
+            auto_created=True,
+        )
+        ChannelOverride.objects.create(
+            channel=channel,
+            name="Renamed",
+            channel_number=99.0,
+        )
+
+        helper_row = with_effective_values(
+            Channel.objects.filter(id=channel.id)
+        ).get()
+        shortcut_row = (
+            Channel.objects.with_effective_values()
+            .filter(id=channel.id)
+            .get()
+        )
+
+        self.assertEqual(helper_row.effective_name, "Renamed")
+        self.assertEqual(shortcut_row.effective_name, "Renamed")
+        self.assertEqual(helper_row.effective_channel_number, 99.0)
+        self.assertEqual(shortcut_row.effective_channel_number, 99.0)
+        self.assertEqual(
+            helper_row.effective_channel_group_id,
+            shortcut_row.effective_channel_group_id,
+        )

@@ -8,8 +8,8 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serial
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from django.shortcuts import get_object_or_404, get_list_or_404
-from django.db import transaction
-from django.db.models import Count, F
+from django.db import connection, transaction
+from django.db.models import Count, F, Prefetch
 from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
 from datetime import timedelta
@@ -200,6 +200,249 @@ class StreamViewSet(viewsets.ModelViewSet):
         # Return the response with the list of IDs
         return Response(list(stream_ids))
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="channel_group",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Channel group name to scope the preview to.",
+            ),
+            OpenApiParameter(
+                name="find",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Find regex for the rename preview. When supplied, "
+                    "the response includes find_matches and find_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="replace",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Replacement string used with the find pattern. "
+                    "Defaults to empty string when omitted."
+                ),
+            ),
+            OpenApiParameter(
+                name="match",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Filter regex for the include preview. When supplied, "
+                    "the response includes filter_matches and filter_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="exclude",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Filter regex for the exclude preview. When supplied, "
+                    "the response includes exclude_matches and "
+                    "exclude_match_count."
+                ),
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Max preview entries per match list (default 10, capped at 50).",
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name="StreamRegexPreviewResponse",
+                fields={
+                    "total_in_group": serializers.IntegerField(),
+                    "total_scanned": serializers.IntegerField(),
+                    "scan_limit_hit": serializers.BooleanField(),
+                    "find_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "find_match_count": serializers.IntegerField(required=False),
+                    "filter_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "filter_match_count": serializers.IntegerField(required=False),
+                    "exclude_matches": serializers.ListField(
+                        child=serializers.DictField(), required=False
+                    ),
+                    "exclude_match_count": serializers.IntegerField(required=False),
+                    "find_error": serializers.CharField(required=False),
+                    "match_error": serializers.CharField(required=False),
+                    "exclude_error": serializers.CharField(required=False),
+                },
+            )
+        },
+        description=(
+            "Returns regex preview info for a group's streams. Used by the "
+            "auto-sync gear modal so users can see how their find/replace "
+            "or filter pattern affects real stream names before saving. "
+            "Caps in-memory iteration at SCAN_CAP streams per call so the "
+            "endpoint stays bounded even on groups with tens of thousands "
+            "of streams; the caller surfaces total_in_group and "
+            "scan_limit_hit so users know whether the preview is complete."
+        ),
+    )
+    @action(detail=False, methods=["get"], url_path="regex-preview")
+    def regex_preview(self, request, *args, **kwargs):
+        # `regex` (third-party) supports a per-call timeout that bounds
+        # catastrophic backtracking; paired with PATTERN_MAX_LEN to keep
+        # the endpoint safe under adversarial input.
+        import regex as re
+
+        SCAN_CAP = 5000
+        PATTERN_MAX_LEN = 512
+        REGEX_TIMEOUT = 0.1
+
+        group_name = request.query_params.get("channel_group")
+        if not group_name:
+            return Response(
+                {"detail": "channel_group is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Group names are not unique across M3U accounts (two providers
+        # can both publish a "Sports" group). Scope to the calling
+        # account so the sample reflects only the user's edits.
+        m3u_account_id = request.query_params.get("m3u_account_id")
+        if m3u_account_id is not None:
+            try:
+                m3u_account_id = int(m3u_account_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "m3u_account_id must be an integer"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        find_pat = request.query_params.get("find") or None
+        replace_pat = request.query_params.get("replace") or ""
+        match_pat = request.query_params.get("match") or None
+        exclude_pat = request.query_params.get("exclude") or None
+        for label, value in (
+            ("find", find_pat),
+            ("replace", replace_pat),
+            ("match", match_pat),
+            ("exclude", exclude_pat),
+        ):
+            if value is not None and len(value) > PATTERN_MAX_LEN:
+                return Response(
+                    {"detail": f"{label} exceeds {PATTERN_MAX_LEN} characters"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        try:
+            limit = int(request.query_params.get("limit", 10))
+        except (TypeError, ValueError):
+            limit = 10
+        limit = max(1, min(limit, 50))
+
+        find_re = None
+        match_re = None
+        exclude_re = None
+        find_error = None
+        match_error = None
+        exclude_error = None
+        if find_pat:
+            try:
+                find_re = re.compile(find_pat)
+            except re.error as e:
+                find_error = str(e)
+        if match_pat:
+            try:
+                match_re = re.compile(match_pat)
+            except re.error as e:
+                match_error = str(e)
+        if exclude_pat:
+            try:
+                exclude_re = re.compile(exclude_pat)
+            except re.error as e:
+                exclude_error = str(e)
+
+        # Capped at SCAN_CAP to bound memory on huge groups; the
+        # separate COUNT lets the client surface scan_limit_hit when
+        # the preview covers only a sample.
+        base_qs = Stream.objects.filter(channel_group__name=group_name)
+        if m3u_account_id is not None:
+            base_qs = base_qs.filter(m3u_account_id=m3u_account_id)
+        names_iter = base_qs.values_list("name", flat=True)[:SCAN_CAP]
+        total_in_group = base_qs.count()
+
+        find_matches = []
+        filter_matches = []
+        exclude_matches = []
+        find_match_count = 0
+        filter_match_count = 0
+        exclude_match_count = 0
+        total_scanned = 0
+        # Abort a pattern on timeout to bound CPU; partial counts and
+        # an `*_error` field still flow back to the client.
+        for name in names_iter:
+            total_scanned += 1
+            if find_re is not None:
+                try:
+                    new_name = find_re.sub(replace_pat, name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    find_error = find_error or f"Pattern timed out: {e}"
+                    find_re = None
+                    continue
+                if new_name != name:
+                    find_match_count += 1
+                    if len(find_matches) < limit:
+                        find_matches.append({"before": name, "after": new_name})
+            if match_re is not None:
+                try:
+                    matched = match_re.search(name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    match_error = match_error or f"Pattern timed out: {e}"
+                    match_re = None
+                    continue
+                if matched:
+                    filter_match_count += 1
+                    if len(filter_matches) < limit:
+                        filter_matches.append({"name": name, "matches": True})
+            if exclude_re is not None:
+                try:
+                    matched = exclude_re.search(name, timeout=REGEX_TIMEOUT)
+                except (TimeoutError, re.error) as e:
+                    exclude_error = exclude_error or f"Pattern timed out: {e}"
+                    exclude_re = None
+                    continue
+                if matched:
+                    exclude_match_count += 1
+                    if len(exclude_matches) < limit:
+                        exclude_matches.append({"name": name, "matches": True})
+
+        response_payload = {
+            "total_in_group": total_in_group,
+            "total_scanned": total_scanned,
+            "scan_limit_hit": total_in_group > SCAN_CAP,
+        }
+        if find_pat:
+            response_payload["find_matches"] = find_matches
+            response_payload["find_match_count"] = find_match_count
+            if find_error:
+                response_payload["find_error"] = find_error
+        if match_pat:
+            response_payload["filter_matches"] = filter_matches
+            response_payload["filter_match_count"] = filter_match_count
+            if match_error:
+                response_payload["match_error"] = match_error
+        if exclude_pat:
+            response_payload["exclude_matches"] = exclude_matches
+            response_payload["exclude_match_count"] = exclude_match_count
+            if exclude_error:
+                response_payload["exclude_error"] = exclude_error
+        return Response(response_payload)
+
     @action(detail=False, methods=["get"], url_path="groups")
     def get_groups(self, request, *args, **kwargs):
         # Get unique ChannelGroup names that are linked to streams
@@ -322,8 +565,56 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        """Return channel groups with prefetched relations for efficient counting"""
-        return ChannelGroup.objects.prefetch_related('channels', 'm3u_accounts').all()
+        # Annotate both counts at the SQL level so the serializer methods
+        # can read them from the object rather than issuing a COUNT per row.
+        # `distinct=True` is required when multiple reverse-FK annotations
+        # share the same queryset to avoid row-multiplication artifacts.
+        # m3u_accounts is still prefetched for the nested serializer data.
+        return (
+            ChannelGroup.objects
+            .annotate(
+                channel_count=Count('channels', distinct=True),
+                m3u_account_count=Count('m3u_accounts', distinct=True),
+            )
+            .prefetch_related('m3u_accounts')
+            .all()
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Evaluate the queryset once so the annotations and prefetch cache are
+        # populated together, then extract IDs from the in-memory objects.
+        # A second .values_list() call would fire a separate SQL query.
+        groups = list(queryset)
+        group_ids = [g.id for g in groups]
+
+        # Pre-aggregate stream counts for all (account, group) pairs in a
+        # single query so the nested ChannelGroupM3UAccountSerializer never
+        # fires a COUNT per row.
+        counts_qs = (
+            Stream.objects.filter(channel_group_id__in=group_ids)
+            .values('m3u_account_id', 'channel_group_id')
+            .annotate(c=Count('id'))
+        )
+        stream_counts = {
+            (row['m3u_account_id'], row['channel_group_id']): row['c']
+            for row in counts_qs
+        }
+
+        page = self.paginate_queryset(groups)
+        if page is not None:
+            serializer = self.get_serializer(
+                page, many=True,
+                context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+            )
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(
+            groups, many=True,
+            context={**self.get_serializer_context(), 'stream_counts': stream_counts},
+        )
+        return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
         """Override update to check M3U associations"""
@@ -563,17 +854,31 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        qs = (
-            super()
-            .get_queryset()
-            .select_related(
+        # get_ids and summary only need the filter conditions, not the full
+        # object graph. Skipping the 5 select_related joins and 2 prefetch
+        # queries for those actions cuts their DB cost significantly.
+        action = getattr(self, "action", None)
+        qs = super().get_queryset()
+
+        if action not in ("get_ids", "summary"):
+            qs = qs.select_related(
                 "channel_group",
                 "logo",
                 "epg_data",
                 "stream_profile",
+                "override",
+                "auto_created_by",
+            ).prefetch_related(
+                "streams",
+                # Default-attr prefetch shares the cache with M2M writes;
+                # a named `to_attr` would isolate it and trigger N+1.
+                Prefetch(
+                    "channelstream_set",
+                    queryset=ChannelStream.objects.select_related(
+                        "stream__m3u_account"
+                    ).order_by("order"),
+                ),
             )
-            .prefetch_related("streams")
-        )
 
         channel_group = self.request.query_params.get("channel_group")
         if channel_group:
@@ -587,6 +892,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
         show_disabled_param = self.request.query_params.get("show_disabled", None)
         only_streamless = self.request.query_params.get("only_streamless", None)
         only_stale = self.request.query_params.get("only_stale", None)
+        only_has_overrides = self.request.query_params.get("only_has_overrides", None)
+        visibility_filter = self.request.query_params.get("visibility_filter", "active")
 
         if channel_profile_id:
             try:
@@ -609,6 +916,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if only_stale:
             # Filter channels that have at least one related stream marked as stale
             q_filters &= Q(streams__is_stale=True)
+        if only_has_overrides:
+            q_filters &= Q(override__isnull=False)
+
+        # Visibility filter applies to list-style reads only; retrieve /
+        # update / delete must still reach a hidden channel by id so the
+        # frontend can unhide. Summary powers the TV Guide and follows
+        # the same hidden semantic as downstream clients.
+        if self.action in ("list", "get_ids", "summary"):
+            if visibility_filter == "hidden":
+                q_filters &= Q(hidden_from_output=True)
+            elif visibility_filter != "all":
+                q_filters &= Q(hidden_from_output=False)
 
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
@@ -630,6 +949,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
             self.request.query_params.get("include_streams", "false") == "true"
         )
         context["include_streams"] = include_streams
+        # source_stream is only needed by the channel edit form. For get_ids
+        # and summary the channelstream_set prefetch is skipped entirely, so
+        # source_stream cannot be computed without hitting the DB per channel.
+        # For list and write/retrieve paths the prefetch is present, so we
+        # can populate it from memory without extra queries.
+        context["include_source_stream"] = action not in (
+            "get_ids", "summary"
+        ) if (action := getattr(self, "action", None)) else False
         return context
 
     @extend_schema(
@@ -756,14 +1083,44 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Capture override intent from the raw payload: presence of the
+        # key distinguishes "no change" from explicit null ("clear"),
+        # which `validated_data` would collapse.
+        override_intents = {}
+        for channel_data in data:
+            if "override" in channel_data:
+                cid = channel_data.get("id")
+                override_intents[cid] = channel_data["override"]
+
+        # Capture hide / unhide transitions before setattr overwrites
+        # the in-memory channels. bulk_update skips post_save, so the
+        # compact-mode assign / release runs explicitly below.
+        unhide_transition_ids = [
+            channel.id
+            for channel, validated_data in validated_updates
+            if validated_data.get("hidden_from_output") is False
+            and channel.hidden_from_output is True
+        ]
+        hide_transition_candidates = [
+            channel
+            for channel, validated_data in validated_updates
+            if validated_data.get("hidden_from_output") is True
+            and channel.hidden_from_output is False
+            and channel.channel_number is not None
+            and channel.auto_created
+            and channel.auto_created_by_id
+        ]
+
         # Apply all updates in a transaction
         with transaction.atomic():
             streams_updates = []
             for channel, validated_data in validated_updates:
-                # Pop streams before setattr loop — M2M fields can't be set via setattr
+                # Streams (M2M) and override (reverse OneToOne) cannot
+                # ride the setattr loop; handle each separately below.
                 streams = validated_data.pop("streams", None)
                 if streams is not None:
                     streams_updates.append((channel, streams))
+                validated_data.pop("override", None)
                 for key, value in validated_data.items():
                     setattr(channel, key, value)
 
@@ -782,6 +1139,179 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         fields=list(all_fields),
                         batch_size=100
                     )
+
+            # On unhide under compact mode, assign a number so the
+            # channel is immediately addressable by clients.
+            if unhide_transition_ids:
+                from .compact_numbering import (
+                    assign_compact_numbers_for_channels,
+                )
+                assign_compact_numbers_for_channels(unhide_transition_ids)
+
+            # On hide under compact mode, release the channel_number
+            # so the slot is reused. The bulk path bypasses the
+            # post_save signal that handles single-row hides.
+            if hide_transition_candidates:
+                from .compact_numbering import (
+                    get_group_relation_for_channel,
+                    is_compact_group,
+                )
+                ids_to_release = []
+                for ch in hide_transition_candidates:
+                    relation = get_group_relation_for_channel(ch)
+                    if relation and is_compact_group(relation):
+                        ids_to_release.append(ch.id)
+                if ids_to_release:
+                    Channel.objects.filter(id__in=ids_to_release).update(
+                        channel_number=None
+                    )
+                    # Refresh in-memory copies so the response shape
+                    # reflects the cleared numbers.
+                    for ch in channels_to_update:
+                        if ch.id in ids_to_release:
+                            ch.channel_number = None
+
+            # Override (reverse OneToOne) needs a separate write path.
+            if override_intents:
+                from apps.channels.models import ChannelOverride
+                from apps.channels.managers import OVERRIDABLE_FIELDS
+                override_fields = OVERRIDABLE_FIELDS
+                # Block override mutations on manual channels. Mixed
+                # selections with override:null are tolerated because
+                # clearing a non-existent row is a no-op.
+                manual_with_override = []
+                for channel, _ in validated_updates:
+                    if channel.id not in override_intents:
+                        continue
+                    intent = override_intents[channel.id]
+                    if (
+                        intent is not None
+                        and intent != {}
+                        and not channel.auto_created
+                    ):
+                        manual_with_override.append(channel.id)
+                if manual_with_override:
+                    return Response(
+                        {
+                            "errors": [
+                                {
+                                    "channel_id": cid,
+                                    "error": (
+                                        "Cannot set override on a manual channel; "
+                                        "overrides only apply to auto-created channels."
+                                    ),
+                                }
+                                for cid in manual_with_override
+                            ]
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                channels_to_clear = []
+                overrides_to_upsert = []
+                for channel, _ in validated_updates:
+                    if channel.id not in override_intents:
+                        continue
+                    intent = override_intents[channel.id]
+                    if intent is None:
+                        channels_to_clear.append(channel.id)
+                    elif intent == {}:
+                        # Empty dict means no override intent; treat as no-op.
+                        continue
+                    else:
+                        defaults = {
+                            f: intent.get(f)
+                            for f in override_fields
+                            if f in intent
+                        }
+                        # Coerce FK aliases (logo, channel_group, ...) to
+                        # the *_id columns ChannelOverride actually stores.
+                        for raw, mapped in (
+                            ("logo", "logo_id"),
+                            ("channel_group", "channel_group_id"),
+                            ("epg_data", "epg_data_id"),
+                            ("stream_profile", "stream_profile_id"),
+                        ):
+                            if raw in intent and mapped not in defaults:
+                                val = intent[raw]
+                                defaults[mapped] = (
+                                    val.id if hasattr(val, "id") else val
+                                )
+                        overrides_to_upsert.append((channel.id, defaults))
+
+                if channels_to_clear:
+                    ChannelOverride.objects.filter(
+                        channel_id__in=channels_to_clear
+                    ).delete()
+
+                # Bulk upsert keeps a 1000-channel batch to two
+                # statements (one INSERT, one UPDATE) instead of the
+                # per-row SELECT + INSERT-or-UPDATE that update_or_create
+                # would generate.
+                if overrides_to_upsert:
+                    existing_overrides = {
+                        o.channel_id: o
+                        for o in ChannelOverride.objects.filter(
+                            channel_id__in=[
+                                cid for cid, _ in overrides_to_upsert
+                            ]
+                        )
+                    }
+                    to_create = []
+                    to_update = []
+                    update_field_set = set()
+                    for channel_id, defaults in overrides_to_upsert:
+                        existing = existing_overrides.get(channel_id)
+                        if existing:
+                            for f, v in defaults.items():
+                                setattr(existing, f, v)
+                                update_field_set.add(f)
+                            to_update.append(existing)
+                        else:
+                            to_create.append(
+                                ChannelOverride(
+                                    channel_id=channel_id, **defaults
+                                )
+                            )
+                    if to_update:
+                        ChannelOverride.objects.bulk_update(
+                            to_update,
+                            fields=list(update_field_set),
+                            batch_size=200,
+                        )
+                    if to_create:
+                        ChannelOverride.objects.bulk_create(
+                            to_create, batch_size=200
+                        )
+
+                    # Drop override rows that ended up all-null; an empty
+                    # override would falsely surface as active in the UI.
+                    touched_ids = [cid for cid, _ in overrides_to_upsert]
+                    empty_overrides = [
+                        o for o in ChannelOverride.objects.filter(
+                            channel_id__in=touched_ids
+                        )
+                        if not o.has_any_override()
+                    ]
+                    if empty_overrides:
+                        ChannelOverride.objects.filter(
+                            id__in=[o.id for o in empty_overrides]
+                        ).delete()
+
+                # Queryset writes leave the reverse-OneToOne cache stale;
+                # clear it so the serializer reads the new override state.
+                touched_channel_ids = {cid for cid, _ in overrides_to_upsert}
+                touched_channel_ids.update(channels_to_clear)
+                if touched_channel_ids:
+                    for channel, _ in validated_updates:
+                        if channel.id not in touched_channel_ids:
+                            continue
+                        try:
+                            channel._state.fields_cache.pop("override", None)
+                        except AttributeError:
+                            pass
+                        if hasattr(channel, "_channel_override_cache"):
+                            delattr(channel, "_channel_override_cache")
 
             # Handle streams M2M updates separately
             for channel, streams in streams_updates:
@@ -1032,20 +1562,157 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request, *args, **kwargs):
-        """Return a lightweight list of channels with only the fields needed by the TV Guide."""
-        queryset = self.filter_queryset(self.get_queryset())
-        data = list(
-            queryset.values(
-                "id",
-                "name",
-                "logo_id",
-                "channel_number",
-                "uuid",
-                "epg_data_id",
-                "channel_group_id",
-            )
+        """Return a lightweight list of channels with only the fields needed by the TV Guide.
+
+        The TV Guide is a downstream output surface like HDHR / M3U / EPG /
+        XC and must reflect the user's overrides. Effective values are
+        coalesced at the SQL layer; the annotated columns are renamed
+        back to the raw field names on the way out so the response
+        shape stays unchanged for the frontend.
+        """
+        from .managers import with_effective_values
+
+        queryset = with_effective_values(
+            self.filter_queryset(self.get_queryset())
         )
+        data = [
+            {
+                "id": row["id"],
+                "uuid": row["uuid"],
+                "name": row["effective_name"],
+                "logo_id": row["effective_logo_id"],
+                "channel_number": row["effective_channel_number"],
+                "epg_data_id": row["effective_epg_data_id"],
+                "channel_group_id": row["effective_channel_group_id"],
+            }
+            for row in queryset.values(
+                "id",
+                "uuid",
+                "effective_name",
+                "effective_logo_id",
+                "effective_channel_number",
+                "effective_epg_data_id",
+                "effective_channel_group_id",
+            )
+        ]
         return Response(data)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.NUMBER,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Inclusive lower bound of the range to scan.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.NUMBER,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description=(
+                    "Inclusive upper bound. If omitted or equal to start, "
+                    "behaves as a single-number lookup."
+                ),
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name="ChannelsInRangeResponse",
+                fields={
+                    "occupants": serializers.ListField(
+                        child=serializers.DictField()
+                    )
+                },
+            )
+        },
+        description=(
+            "Returns the channels (including those whose effective number is "
+            "set via override) currently occupying numbers within the given "
+            "range. Used by the group settings form to surface inline range "
+            "conflict warnings. Capped at 50 entries to bound the response "
+            "payload; the frontend only needs to know whether any conflicts "
+            "exist after filtering, not the entire list."
+        ),
+    )
+    @action(detail=False, methods=["get"], url_path="numbers-in-range")
+    def numbers_in_range(self, request, *args, **kwargs):
+        from .managers import with_effective_values
+
+        raw_start = request.query_params.get("start")
+        raw_end = request.query_params.get("end")
+        if raw_start is None or raw_start == "":
+            return Response({"occupants": []})
+        try:
+            start = float(raw_start)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Invalid start value"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            end = float(raw_end) if raw_end not in (None, "") else start
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Invalid end value"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if end < start:
+            start, end = end, start
+
+        queryset = (
+            with_effective_values(
+                Channel.objects.all(), select_related_fks=True
+            )
+            .filter(
+                effective_channel_number__gte=start,
+                effective_channel_number__lte=end,
+            )
+            .order_by("effective_channel_number")[:50]
+        )
+
+        occupants = []
+        for occupant in queryset:
+            effective_group = getattr(
+                occupant, "effective_channel_group_obj", None
+            )
+            group_name = (
+                getattr(effective_group, "name", None)
+                if effective_group is not None
+                else None
+            )
+            effective_group_id = getattr(
+                occupant, "effective_channel_group_id", None
+            )
+            override = getattr(occupant, "override", None)
+            override_sets_number = bool(
+                override is not None and override.channel_number is not None
+            )
+            occupants.append(
+                {
+                    "id": occupant.id,
+                    "name": getattr(
+                        occupant, "effective_name", occupant.name
+                    ),
+                    "channel_number": getattr(
+                        occupant,
+                        "effective_channel_number",
+                        occupant.channel_number,
+                    ),
+                    "channel_group": group_name,
+                    "channel_group_id": effective_group_id,
+                    "auto_created": bool(occupant.auto_created),
+                    "auto_created_by_account_id": (
+                        occupant.auto_created_by_id
+                        if occupant.auto_created_by_id
+                        else None
+                    ),
+                    "has_channel_number_override": override_sets_number,
+                }
+            )
+
+        return Response({"occupants": occupants})
 
     @extend_schema(
         methods=["POST"],

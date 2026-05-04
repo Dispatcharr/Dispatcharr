@@ -2,6 +2,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, Stream
+from apps.channels.utils import format_channel_number
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -138,7 +139,7 @@ def generate_m3u(request, profile_name=None, user=None):
                 # Hide adult content if user preference is set
                 if (user.custom_properties or {}).get('hide_adult_content', False):
                     filters["is_adult"] = False
-                channels = Channel.objects.filter(**filters).select_related('channel_group', 'logo').order_by("channel_number")
+                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
             else:
                 # User has specific limited profiles assigned
                 filters = {
@@ -149,11 +150,9 @@ def generate_m3u(request, profile_name=None, user=None):
                 # Hide adult content if user preference is set
                 if (user.custom_properties or {}).get('hide_adult_content', False):
                     filters["is_adult"] = False
-                channels = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct().order_by("channel_number")
+                base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
         else:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo').order_by(
-                "channel_number"
-            )
+            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
 
     else:
         if profile_name is not None:
@@ -162,12 +161,22 @@ def generate_m3u(request, profile_name=None, user=None):
             except ChannelProfile.DoesNotExist:
                 logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
                 raise Http404(f"Channel profile '{profile_name}' not found")
-            channels = Channel.objects.filter(
+            base_qs = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
                 channelprofilemembership__enabled=True
-            ).select_related('channel_group', 'logo').order_by('channel_number')
+            ).select_related('channel_group', 'logo')
         else:
-            channels = Channel.objects.select_related('channel_group', 'logo').order_by("channel_number")
+            base_qs = Channel.objects.select_related('channel_group', 'logo')
+
+    # Resolve effective (override | provider) values at SQL level so ordering,
+    # naming, and logo resolution honor user overrides. `exclude(hidden_from_output=True)`
+    # is the consumer-facing hide guarantee.
+    from apps.channels.managers import with_effective_values
+    channels = (
+        with_effective_values(base_qs, select_related_fks=True)
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -212,53 +221,55 @@ def generate_m3u(request, profile_name=None, user=None):
     m3u_content = f'#EXTM3U x-tvg-url="{epg_url}" url-tvg="{epg_url}"\n'
 
     # Start building M3U content
+    channel_count = 0
     for channel in channels:
-        group_title = channel.channel_group.name if channel.channel_group else "Default"
+        channel_count += 1
+        effective_group = channel.effective_channel_group_obj
+        effective_logo = channel.effective_logo_obj
+        effective_name = channel.effective_name
+        effective_tvg_id_val = channel.effective_tvg_id
+        effective_tvc_guide = channel.effective_tvc_guide_stationid
+        effective_number = channel.effective_channel_number
 
-        # Format channel number as integer if it has no decimal component
-        if channel.channel_number is not None:
-            if channel.channel_number == int(channel.channel_number):
-                formatted_channel_number = int(channel.channel_number)
-            else:
-                formatted_channel_number = channel.channel_number
-        else:
-            formatted_channel_number = ""
+        group_title = effective_group.name if effective_group else "Default"
+
+        formatted_channel_number = format_channel_number(effective_number)
 
         # Determine the tvg-id based on the selected source
-        if tvg_id_source == 'tvg_id' and channel.tvg_id:
-            tvg_id = channel.tvg_id
-        elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-            tvg_id = channel.tvc_guide_stationid
+        if tvg_id_source == 'tvg_id' and effective_tvg_id_val:
+            tvg_id = effective_tvg_id_val
+        elif tvg_id_source == 'gracenote' and effective_tvc_guide:
+            tvg_id = effective_tvc_guide
         else:
             # Default to channel number (original behavior)
             tvg_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
-        tvg_name = channel.name
+        tvg_name = effective_name
 
         tvg_logo = ""
-        if channel.logo:
+        if effective_logo:
             if use_cached_logos:
                 # Use cached logo as before
-                tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
             else:
                 # Try to find direct logo URL from channel's streams
-                direct_logo = channel.logo.url if channel.logo.url.startswith(('http://', 'https://')) else None
+                direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                 # If direct logo found, use it; otherwise fall back to cached version
                 if direct_logo:
                     tvg_logo = direct_logo
                 else:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
 
         # create possible gracenote id insertion
         tvc_guide_stationid = ""
-        if channel.tvc_guide_stationid:
+        if effective_tvc_guide:
             tvc_guide_stationid = (
-                f'tvc-guide-stationid="{channel.tvc_guide_stationid}" '
+                f'tvc-guide-stationid="{effective_tvc_guide}" '
             )
 
         extinf_line = (
             f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{channel.name}\n'
+            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
@@ -293,7 +304,7 @@ def generate_m3u(request, profile_name=None, user=None):
             event_type='m3u_download',
             profile=profile_name or 'all',
             user=user.username if user else 'anonymous',
-            channels=channels.count(),
+            channels=channel_count,
             client_ip=client_ip,
             user_agent=user_agent,
         )
@@ -1328,7 +1339,7 @@ def generate_epg(request, profile_name=None, user=None):
                     # Hide adult content if user preference is set
                     if (user.custom_properties or {}).get('hide_adult_content', False):
                         filters["is_adult"] = False
-                    channels = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').order_by("channel_number")
+                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source')
                 else:
                     # User has specific limited profiles assigned
                     filters = {
@@ -1339,11 +1350,9 @@ def generate_epg(request, profile_name=None, user=None):
                     # Hide adult content if user preference is set
                     if (user.custom_properties or {}).get('hide_adult_content', False):
                         filters["is_adult"] = False
-                    channels = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').distinct().order_by("channel_number")
+                    base_qs = Channel.objects.filter(**filters).select_related('logo', 'epg_data__epg_source').distinct()
             else:
-                channels = Channel.objects.filter(user_level__lte=user.user_level).select_related('logo', 'epg_data__epg_source').order_by(
-                    "channel_number"
-                )
+                base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('logo', 'epg_data__epg_source')
         else:
             if profile_name is not None:
                 try:
@@ -1351,12 +1360,21 @@ def generate_epg(request, profile_name=None, user=None):
                 except ChannelProfile.DoesNotExist:
                     logger.warning("Requested channel profile (%s) during epg generation does not exist", profile_name)
                     raise Http404(f"Channel profile '{profile_name}' not found")
-                channels = Channel.objects.filter(
+                base_qs = Channel.objects.filter(
                     channelprofilemembership__channel_profile=channel_profile,
                     channelprofilemembership__enabled=True,
-                ).select_related('logo', 'epg_data__epg_source').order_by("channel_number")
+                ).select_related('logo', 'epg_data__epg_source')
             else:
-                channels = Channel.objects.all().select_related('logo', 'epg_data__epg_source').order_by("channel_number")
+                base_qs = Channel.objects.all().select_related('logo', 'epg_data__epg_source')
+
+        # Resolve effective values at SQL level and exclude hidden channels
+        # so output ordering/display honors user overrides.
+        from apps.channels.managers import with_effective_values
+        channels = (
+            with_effective_values(base_qs, select_related_fks=True)
+            .exclude(hidden_from_output=True)
+            .order_by("effective_channel_number")
+        )
 
 
         # For dummy EPG, use either the specified value or default to 3 days
@@ -1376,15 +1394,17 @@ def generate_epg(request, profile_name=None, user=None):
 
             # First pass: assign integers for channels that already have integer numbers
             for channel in channels:
-                if channel.channel_number == int(channel.channel_number):
-                    num = int(channel.channel_number)
+                effective_num = channel.effective_channel_number
+                if effective_num is not None and effective_num == int(effective_num):
+                    num = int(effective_num)
                     channel_num_map[channel.id] = num
                     used_numbers.add(num)
 
             # Second pass: assign integers for channels with float numbers
             for channel in channels:
-                if channel.channel_number != int(channel.channel_number):
-                    candidate = int(channel.channel_number)
+                effective_num = channel.effective_channel_number
+                if effective_num is not None and effective_num != int(effective_num):
+                    candidate = int(effective_num)
                     while candidate in used_numbers:
                         candidate += 1
                     channel_num_map[channel.id] = candidate
@@ -1392,38 +1412,37 @@ def generate_epg(request, profile_name=None, user=None):
 
         # Process channels for the <channel> section
         for channel in channels:
+            effective_name = channel.effective_name
+            effective_epg_data = channel.effective_epg_data_obj
+            effective_logo = channel.effective_logo_obj
+            effective_number = channel.effective_channel_number
+
             # user is set only for XC clients, which require integer channel numbers
             if user is not None:
                 formatted_channel_number = channel_num_map[channel.id]
             else:
-                if channel.channel_number is not None:
-                    if channel.channel_number == int(channel.channel_number):
-                        formatted_channel_number = int(channel.channel_number)
-                    else:
-                        formatted_channel_number = channel.channel_number
-                else:
-                    formatted_channel_number = ""
+                formatted_channel_number = format_channel_number(effective_number)
 
             # Determine the channel ID based on the selected source
-            if tvg_id_source == 'tvg_id' and channel.tvg_id:
-                channel_id = channel.tvg_id
-            elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-                channel_id = channel.tvc_guide_stationid
+            if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
+                channel_id = channel.effective_tvg_id
+            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
+                channel_id = channel.effective_tvc_guide_stationid
             else:
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
             tvg_logo = ""
 
             # Check if this is a custom dummy EPG with channel logo URL template
-            if channel.epg_data and channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-                epg_source = channel.epg_data.epg_source
+            if effective_epg_data and effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
                     channel_logo_url_template = custom_props.get('channel_logo_url', '')
 
                     if channel_logo_url_template:
                         # Determine which name to use for pattern matching (same logic as program generation)
-                        pattern_match_name = channel.name
+                        pattern_match_name = effective_name
                         name_source = custom_props.get('name_source')
 
                         if name_source == 'stream':
@@ -1465,20 +1484,20 @@ def generate_epg(request, profile_name=None, user=None):
                                     tvg_logo = channel_logo_url_template
                                     logger.debug(f"Built channel logo URL from template: {tvg_logo}")
                             except Exception as e:
-                                logger.warning(f"Failed to build channel logo URL for {channel.name}: {e}")
+                                logger.warning(f"Failed to build channel logo URL for {effective_name}: {e}")
 
             # If no custom dummy logo, use regular logo logic
-            if not tvg_logo and channel.logo:
+            if not tvg_logo and effective_logo:
                 if use_cached_logos:
-                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
+                    tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
                 else:
                     # Use direct URL if available, otherwise fall back to cached version
-                    direct_logo = channel.logo.url if channel.logo.url.startswith(('http://', 'https://')) else None
+                    direct_logo = effective_logo.url if effective_logo.url.startswith(('http://', 'https://')) else None
                     if direct_logo:
                         tvg_logo = direct_logo
                     else:
-                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[channel.logo.id]))
-            display_name = channel.name
+                        tvg_logo = build_absolute_uri_with_port(request, reverse('api:channels:logo-cache', args=[effective_logo.id]))
+            display_name = effective_name
             xml_lines.append(f'  <channel id="{html.escape(channel_id)}">')
             xml_lines.append(f'    <display-name>{html.escape(display_name)}</display-name>')
             xml_lines.append(f'    <icon src="{html.escape(tvg_logo)}" />')
@@ -1495,30 +1514,29 @@ def generate_epg(request, profile_name=None, user=None):
         dummy_epg_checked = {}  # epg_data_id -> bool (has stored programs)
 
         for channel in channels:
+            effective_name = channel.effective_name
+            effective_epg_data = channel.effective_epg_data_obj
+            effective_epg_data_id = channel.effective_epg_data_id
+            effective_number = channel.effective_channel_number
+
             # Determine channel_id (same logic as channel section)
-            if tvg_id_source == 'tvg_id' and channel.tvg_id:
-                channel_id = channel.tvg_id
-            elif tvg_id_source == 'gracenote' and channel.tvc_guide_stationid:
-                channel_id = channel.tvc_guide_stationid
+            if tvg_id_source == 'tvg_id' and channel.effective_tvg_id:
+                channel_id = channel.effective_tvg_id
+            elif tvg_id_source == 'gracenote' and channel.effective_tvc_guide_stationid:
+                channel_id = channel.effective_tvc_guide_stationid
             else:
                 if user is not None:
                     formatted_channel_number = channel_num_map[channel.id]
                 else:
-                    if channel.channel_number is not None:
-                        if channel.channel_number == int(channel.channel_number):
-                            formatted_channel_number = int(channel.channel_number)
-                        else:
-                            formatted_channel_number = channel.channel_number
-                    else:
-                        formatted_channel_number = ""
+                    formatted_channel_number = format_channel_number(effective_number)
                 channel_id = str(formatted_channel_number) if formatted_channel_number != "" else str(channel.id)
 
-            display_name = channel.epg_data.name if channel.epg_data else channel.name
-            pattern_match_name = channel.name
+            display_name = effective_epg_data.name if effective_epg_data else effective_name
+            pattern_match_name = effective_name
 
             # Check if we should use stream name instead of channel name
-            if channel.epg_data and channel.epg_data.epg_source:
-                epg_source = channel.epg_data.epg_source
+            if effective_epg_data and effective_epg_data.epg_source:
+                epg_source = effective_epg_data.epg_source
                 if epg_source.custom_properties:
                     custom_props = epg_source.custom_properties
                     name_source = custom_props.get('name_source')
@@ -1532,22 +1550,21 @@ def generate_epg(request, profile_name=None, user=None):
                             pattern_match_name = stream.name
                             logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
                         else:
-                            logger.warning(f"Stream index {stream_index} not found for channel {channel.name}, falling back to channel name")
+                            logger.warning(f"Stream index {stream_index} not found for channel {effective_name}, falling back to channel name")
 
-            if not channel.epg_data:
+            if not effective_epg_data:
                 dummy_program_list.append((channel_id, pattern_match_name, None))
             else:
-                if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-                    epg_data_id = channel.epg_data_id
-                    if epg_data_id not in dummy_epg_checked:
-                        dummy_epg_checked[epg_data_id] = channel.epg_data.programs.exists()
-                    if dummy_epg_checked[epg_data_id]:
-                        real_epg_map.setdefault(epg_data_id, []).append(channel_id)
+                if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+                    if effective_epg_data_id not in dummy_epg_checked:
+                        dummy_epg_checked[effective_epg_data_id] = effective_epg_data.programs.exists()
+                    if dummy_epg_checked[effective_epg_data_id]:
+                        real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
                     else:
-                        dummy_program_list.append((channel_id, pattern_match_name, channel.epg_data.epg_source))
+                        dummy_program_list.append((channel_id, pattern_match_name, effective_epg_data.epg_source))
                     continue
 
-                real_epg_map.setdefault(channel.epg_data_id, []).append(channel_id)
+                real_epg_map.setdefault(effective_epg_data_id, []).append(channel_id)
 
         # Emit dummy programmes
         for channel_id, pattern_match_name, epg_source in dummy_program_list:
@@ -1880,11 +1897,13 @@ def generate_epg(request, profile_name=None, user=None):
         client_id, client_ip, user_agent = get_client_identifier(request)
         event_cache_key = f"epg_download:{user.username if user else 'anonymous'}:{profile_name or 'all'}:{client_id}"
         if not cache.get(event_cache_key):
+            # `len()` reuses the queryset's iteration cache populated above;
+            # `count()` would issue a separate SELECT COUNT(*).
             log_system_event(
                 event_type='epg_download',
                 profile=profile_name or 'all',
                 user=user.username if user else 'anonymous',
-                channels=channels.count(),
+                channels=len(channels),
                 client_ip=client_ip,
                 user_agent=user_agent,
             )
@@ -2103,7 +2122,17 @@ def xc_xmltv(request):
 
 def xc_get_live_categories(user):
     from django.db.models import Min
+    from django.db.models.functions import Coalesce
+
     response = []
+
+    # Rank categories by the minimum EFFECTIVE channel number across their
+    # visible (not hidden_from_output) channels so overridden numbers drive the
+    # ordering, not the underlying provider values.
+    effective_min = Min(
+        Coalesce("channels__override__channel_number", "channels__channel_number")
+    )
+    hidden_exclusion = {"channels__hidden_from_output": False}
 
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
@@ -2112,20 +2141,25 @@ def xc_get_live_categories(user):
         if user_profile_count == 0:
             # No profile filtering - user sees all channel groups
             channel_groups = ChannelGroup.objects.filter(
-                channels__isnull=False, channels__user_level__lte=user.user_level
-            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+                channels__isnull=False,
+                channels__user_level__lte=user.user_level,
+                **hidden_exclusion,
+            ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
         else:
             # User has specific limited profiles assigned
             filters = {
                 "channels__channelprofilemembership__enabled": True,
                 "channels__user_level": 0,
-                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+                **hidden_exclusion,
             }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
     else:
         channel_groups = ChannelGroup.objects.filter(
-            channels__isnull=False, channels__user_level__lte=user.user_level
-        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+            channels__isnull=False,
+            channels__user_level__lte=user.user_level,
+            **hidden_exclusion,
+        ).distinct().annotate(min_channel_number=effective_min).order_by('min_channel_number')
 
     for group in channel_groups:
         response.append(
@@ -2140,6 +2174,8 @@ def xc_get_live_categories(user):
 
 
 def xc_get_live_streams(request, user, category_id=None):
+    from apps.channels.managers import with_effective_values
+
     streams = []
 
     if user.user_level < 10:
@@ -2154,7 +2190,7 @@ def xc_get_live_streams(request, user, category_id=None):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).select_related('channel_group', 'logo').order_by("channel_number")
+            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo')
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2167,14 +2203,20 @@ def xc_get_live_streams(request, user, category_id=None):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct().order_by("channel_number")
+            base_qs = Channel.objects.filter(**filters).select_related('channel_group', 'logo').distinct()
     else:
         if not category_id:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo').order_by("channel_number")
+            base_qs = Channel.objects.filter(user_level__lte=user.user_level).select_related('channel_group', 'logo')
         else:
-            channels = Channel.objects.filter(
+            base_qs = Channel.objects.filter(
                 channel_group__id=category_id, user_level__lte=user.user_level
-            ).select_related('channel_group', 'logo').order_by("channel_number")
+            ).select_related('channel_group', 'logo')
+
+    channels = (
+        with_effective_values(base_qs, select_related_fks=True)
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
     # Resolve the fallback group ID once to avoid a get_or_create query per null-group channel
     _default_group_id = None
@@ -2190,21 +2232,21 @@ def xc_get_live_streams(request, user, category_id=None):
     channel_num_map = {}  # Maps channel.id -> integer channel number for XC
     used_numbers = set()  # Track all assigned integer channel numbers
 
-    # First pass: assign integers for channels that already have integer numbers
+    # First pass: assign integers for channels that already have integer effective numbers
     for channel in channels:
-        if channel.channel_number == int(channel.channel_number):
-            # Already an integer, use it directly
-            num = int(channel.channel_number)
+        effective_num = channel.effective_channel_number
+        if effective_num is not None and effective_num == int(effective_num):
+            num = int(effective_num)
             channel_num_map[channel.id] = num
             used_numbers.add(num)
 
     # Second pass: assign integers for channels with float numbers
     # Find next available number to avoid collisions
     for channel in channels:
-        if channel.channel_number != int(channel.channel_number):
+        effective_num = channel.effective_channel_number
+        if effective_num is not None and effective_num != int(effective_num):
             # Has decimal component, need to find available integer
-            # Start from truncated value and increment until we find an unused number
-            candidate = int(channel.channel_number)
+            candidate = int(effective_num)
             while candidate in used_numbers:
                 candidate += 1
             channel_num_map[channel.id] = candidate
@@ -2213,26 +2255,28 @@ def xc_get_live_streams(request, user, category_id=None):
     # Build the streams list with the collision-free channel numbers
     for channel in channels:
         channel_num_int = channel_num_map[channel.id]
+        effective_logo = channel.effective_logo_obj
+        effective_group = channel.effective_channel_group_obj
 
         streams.append(
             {
                 "num": channel_num_int,
-                "name": channel.name,
+                "name": channel.effective_name,
                 "stream_type": "live",
                 "stream_id": channel.id,
                 "stream_icon": (
                     None
-                    if not channel.logo
+                    if not effective_logo
                     else build_absolute_uri_with_port(
                         request,
-                        reverse("api:channels:logo-cache", args=[channel.logo.id])
+                        reverse("api:channels:logo-cache", args=[effective_logo.id])
                     )
                 ),
                 "epg_channel_id": str(channel_num_int),
                 "added": str(int(channel.created_at.timestamp())),
                 "is_adult": int(channel.is_adult),
-                "category_id": str(channel.channel_group.id if channel.channel_group else _get_default_group_id()),
-                "category_ids": [channel.channel_group.id if channel.channel_group else _get_default_group_id()],
+                "category_id": str(effective_group.id if effective_group else _get_default_group_id()),
+                "category_ids": [effective_group.id if effective_group else _get_default_group_id()],
                 "custom_sid": None,
                 "tv_archive": 0,
                 "direct_source": "",
@@ -2244,11 +2288,19 @@ def xc_get_live_streams(request, user, category_id=None):
 
 
 def xc_get_epg(request, user, short=False):
+    from apps.channels.managers import with_effective_values
+
     channel_id = request.GET.get('stream_id')
     if not channel_id:
         raise Http404()
 
     channel = None
+    # Apply effective-value annotation + hidden-exclusion at every channel
+    # resolution path so a single channel lookup honors the same visibility
+    # rules as xc_get_live_streams.
+    def _annotate(qs):
+        return with_effective_values(qs, select_related_fks=True).exclude(hidden_from_output=True)
+
     if user.user_level < 10:
         user_profile_count = user.channel_profiles.count()
 
@@ -2262,7 +2314,7 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).select_related('epg_data__epg_source').first()
+            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source')).first()
         else:
             # User has specific limited profiles assigned
             filters = {
@@ -2274,44 +2326,58 @@ def xc_get_epg(request, user, short=False):
             # Hide adult content if user preference is set
             if (user.custom_properties or {}).get('hide_adult_content', False):
                 filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).select_related('epg_data__epg_source').distinct().first()
+            channel = _annotate(Channel.objects.filter(**filters).select_related('epg_data__epg_source').distinct()).first()
 
         if not channel:
             raise Http404()
     else:
-        channel = get_object_or_404(Channel.objects.select_related('epg_data__epg_source'), id=channel_id)
+        channel = _annotate(Channel.objects.filter(id=channel_id).select_related('epg_data__epg_source')).first()
+        if not channel:
+            raise Http404()
 
     if not channel:
         raise Http404()
 
     # Calculate the collision-free integer channel number for this channel
-    # This must match the logic in xc_get_live_streams to ensure consistency
-    # Get all channels in the same category for collision detection
-    category_channels = Channel.objects.filter(
-        channel_group=channel.channel_group
-    ).order_by("channel_number")
+    # This must match the logic in xc_get_live_streams to ensure consistency.
+    # The category channels must be filtered by the channel's EFFECTIVE group
+    # (an override can move a channel into a different group), then annotated
+    # so the comparison runs on effective numbers.
+    effective_group = channel.effective_channel_group_obj
+    category_channels = (
+        with_effective_values(
+            Channel.objects.filter(channel_group=effective_group) if effective_group else Channel.objects.none()
+        )
+        .exclude(hidden_from_output=True)
+        .order_by("effective_channel_number")
+    )
 
     channel_num_map = {}
     used_numbers = set()
 
-    # First pass: assign integers for channels that already have integer numbers
+    # First pass: assign integers for channels that already have integer effective numbers
     for ch in category_channels:
-        if ch.channel_number == int(ch.channel_number):
-            num = int(ch.channel_number)
+        effective_num = ch.effective_channel_number
+        if effective_num is not None and effective_num == int(effective_num):
+            num = int(effective_num)
             channel_num_map[ch.id] = num
             used_numbers.add(num)
 
-    # Second pass: assign integers for channels with float numbers
+    # Second pass: assign integers for channels with float effective numbers
     for ch in category_channels:
-        if ch.channel_number != int(ch.channel_number):
-            candidate = int(ch.channel_number)
+        effective_num = ch.effective_channel_number
+        if effective_num is not None and effective_num != int(effective_num):
+            candidate = int(effective_num)
             while candidate in used_numbers:
                 candidate += 1
             channel_num_map[ch.id] = candidate
             used_numbers.add(candidate)
 
     # Get the mapped integer for this specific channel
-    channel_num_int = channel_num_map.get(channel.id, int(channel.channel_number))
+    channel_num_int = channel_num_map.get(
+        channel.id,
+        int(channel.effective_channel_number) if channel.effective_channel_number is not None else 0,
+    )
 
     limit = int(request.GET.get('limit', 4))
     user_custom = user.custom_properties or {}
@@ -2328,25 +2394,28 @@ def xc_get_epg(request, user, short=False):
     now = django_timezone.now()
     lookback_cutoff = now - timedelta(days=prev_days)
     forward_cutoff = now + timedelta(days=num_days) if num_days > 0 else None
-    if channel.epg_data:
+    effective_epg_data = channel.effective_epg_data_obj
+    effective_name = channel.effective_name
+
+    if effective_epg_data:
         # Check if this is a dummy EPG that generates on-demand
-        if channel.epg_data.epg_source and channel.epg_data.epg_source.source_type == 'dummy':
-            if not channel.epg_data.programs.exists():
+        if effective_epg_data.epg_source and effective_epg_data.epg_source.source_type == 'dummy':
+            if not effective_epg_data.programs.exists():
                 # Generate on-demand using custom patterns
                 programs = generate_dummy_programs(
                     channel_id=channel_id,
-                    channel_name=channel.name,
-                    epg_source=channel.epg_data.epg_source
+                    channel_name=effective_name,
+                    epg_source=effective_epg_data.epg_source
                 )
             else:
                 # Has stored programs, use them
                 if short:
                     # Short EPG: current and upcoming only (never historical), limited count
-                    programs = channel.epg_data.programs.filter(
+                    programs = effective_epg_data.programs.filter(
                         end_time__gt=now
                     ).order_by('start_time')[:limit]
                 else:
-                    qs = channel.epg_data.programs.filter(end_time__gt=lookback_cutoff)
+                    qs = effective_epg_data.programs.filter(end_time__gt=lookback_cutoff)
                     if forward_cutoff:
                         qs = qs.filter(start_time__lt=forward_cutoff)
                     programs = qs.order_by('start_time')
@@ -2354,17 +2423,17 @@ def xc_get_epg(request, user, short=False):
             # Regular EPG with stored programs
             if short:
                 # Short EPG: current and upcoming only (never historical), limited count
-                programs = channel.epg_data.programs.filter(
+                programs = effective_epg_data.programs.filter(
                     end_time__gt=now
                 ).order_by('start_time')[:limit]
             else:
-                qs = channel.epg_data.programs.filter(end_time__gt=lookback_cutoff)
+                qs = effective_epg_data.programs.filter(end_time__gt=lookback_cutoff)
                 if forward_cutoff:
                     qs = qs.filter(start_time__lt=forward_cutoff)
                 programs = qs.order_by('start_time')
     else:
         # No EPG data assigned, generate default dummy
-        programs = generate_dummy_programs(channel_id=channel_id, channel_name=channel.name, epg_source=None)
+        programs = generate_dummy_programs(channel_id=channel_id, channel_name=effective_name, epg_source=None)
 
     output = {"epg_listings": []}
 
@@ -2385,7 +2454,7 @@ def xc_get_epg(request, user, short=False):
 
         # epg_id refers to the EPG source/channel mapping in XC panels
         # Use the actual EPGData ID when available, otherwise fall back to 0
-        epg_id = str(channel.epg_data.id) if channel.epg_data else "0"
+        epg_id = str(effective_epg_data.id) if effective_epg_data else "0"
 
         program_output = {
             "id": program_id,

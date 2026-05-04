@@ -125,30 +125,38 @@ class LineupAPIView(APIView):
         if blocked is not None:
             return blocked
 
+        from apps.channels.managers import with_effective_values
+        from apps.channels.utils import format_channel_number
+
         if profile is not None:
             channel_profile = ChannelProfile.objects.get(name=profile)
-            channels = Channel.objects.filter(
+            base_qs = Channel.objects.filter(
                 channelprofilemembership__channel_profile=channel_profile,
                 channelprofilemembership__enabled=True,
-            ).order_by("channel_number")
+            )
         else:
-            channels = Channel.objects.all().order_by("channel_number")
+            base_qs = Channel.objects.all()
+
+        channels = (
+            with_effective_values(base_qs)
+            .exclude(hidden_from_output=True)
+            .order_by("effective_channel_number")
+        )
 
         lineup = []
         for ch in channels:
-            # Format channel number as integer if it has no decimal component
-            if ch.channel_number is not None:
-                if ch.channel_number == int(ch.channel_number):
-                    formatted_channel_number = str(int(ch.channel_number))
-                else:
-                    formatted_channel_number = str(ch.channel_number)
-            else:
-                formatted_channel_number = ""
+            # HDHR clients reject lineup entries with empty/non-numeric
+            # GuideNumber and may drop the whole lineup. With nullable
+            # channel_number, skip rows that have no usable number.
+            formatted = format_channel_number(ch.effective_channel_number, empty=None)
+            if formatted is None:
+                continue
+            formatted_channel_number = str(formatted)
 
             lineup.append(
                 {
                     "GuideNumber": formatted_channel_number,
-                    "GuideName": ch.name,
+                    "GuideName": ch.effective_name,
                     "URL": request.build_absolute_uri(f"/proxy/ts/stream/{ch.uuid}"),
                     "Guide_ID": formatted_channel_number,
                     "Station": formatted_channel_number,

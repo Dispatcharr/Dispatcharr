@@ -41,6 +41,7 @@ vi.mock('../../../utils/forms/ChannelBatchUtils.js', () => ({
   setChannelNamesFromEpg: vi.fn(),
   setChannelTvgIdsFromEpg: vi.fn(),
   updateChannels: vi.fn(),
+  updateChannelsWithOverrideRouting: vi.fn(),
 }));
 
 // ── Sub-component mocks ────────────────────────────────────────────────────────
@@ -260,6 +261,9 @@ const setupMocks = (overrides = {}) => {
   vi.mocked(useChannelsTableStore).mockImplementation((sel) =>
     sel({ channels: overrides.pageChannels ?? [] })
   );
+  useChannelsTableStore.getState = vi.fn(() => ({
+    channels: overrides.pageChannels ?? [],
+  }));
 
   vi.mocked(useStreamProfilesStore).mockImplementation((sel) =>
     sel({ profiles: overrides.profiles ?? makeProfiles() })
@@ -304,6 +308,9 @@ const setupMocks = (overrides = {}) => {
   });
   vi.mocked(ChannelBatchUtils.buildEpgAssociations).mockResolvedValue(null);
   vi.mocked(ChannelBatchUtils.updateChannels).mockResolvedValue(undefined);
+  vi.mocked(
+    ChannelBatchUtils.updateChannelsWithOverrideRouting
+  ).mockResolvedValue(undefined);
   vi.mocked(ChannelBatchUtils.bulkRegexRenameChannels).mockResolvedValue(
     undefined
   );
@@ -434,6 +441,53 @@ describe('ChannelBatchForm', () => {
         screen.queryByTestId('confirmation-dialog')
       ).not.toBeInTheDocument();
     });
+
+    it('runs clear-overrides BEFORE the routing PATCH so a same-submit clear cannot wipe just-written overrides', async () => {
+      // If clear and routing fired in parallel via Promise.all, the
+      // server could process them in either order. When clear lands
+      // last, the routing PATCH's freshly-written override fields are
+      // wiped silently. Awaiting clear before routing makes the user
+      // intent deterministic.
+      const callOrder = [];
+      const isWarningSuppressed = vi
+        .fn()
+        .mockImplementation((key) => key === 'batch-update-channels');
+      setupMocks({
+        isWarningSuppressed,
+        formValues: { clear_overrides: 'clear' },
+      });
+      vi.mocked(ChannelBatchUtils.buildSubmitValues).mockReturnValue({
+        name: 'Renamed',
+      });
+      // clear PATCH resolves slowly; routing PATCH resolves fast. If
+      // they were fired in parallel, routing would `await` first; the
+      // sequential code awaits clear first regardless of resolution
+      // speed.
+      vi.mocked(ChannelBatchUtils.updateChannels).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => {
+              callOrder.push('clear');
+              resolve(undefined);
+            }, 30);
+          })
+      );
+      vi.mocked(
+        ChannelBatchUtils.updateChannelsWithOverrideRouting
+      ).mockImplementation(async () => {
+        callOrder.push('routing');
+        return undefined;
+      });
+
+      const onClose = vi.fn();
+      renderForm({ onClose });
+      fireEvent.click(screen.getByText('Submit'));
+
+      await waitFor(() => {
+        expect(onClose).toHaveBeenCalled();
+      });
+      expect(callOrder).toEqual(['clear', 'routing']);
+    });
   });
 
   // ── Confirmation dialog ────────────────────────────────────────────────────
@@ -455,7 +509,7 @@ describe('ChannelBatchForm', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('calls updateChannels on confirm', async () => {
+    it('routes confirm through updateChannelsWithOverrideRouting so auto-created channels write to override.X', async () => {
       setupMocks({
         formValues: {
           stream_profile_id: '1', // survives: not '-1' or '0', so kept as-is after parseInt...
@@ -474,10 +528,9 @@ describe('ChannelBatchForm', () => {
       fireEvent.click(screen.getByTestId('dialog-confirm'));
 
       await waitFor(() => {
-        expect(ChannelBatchUtils.updateChannels).toHaveBeenCalledWith(
-          CHANNEL_IDS,
-          { stream_profile_id: '1' }
-        );
+        expect(
+          ChannelBatchUtils.updateChannelsWithOverrideRouting
+        ).toHaveBeenCalledWith(CHANNEL_IDS, { stream_profile_id: '1' }, {});
       });
     });
 
@@ -858,6 +911,64 @@ describe('ChannelBatchForm', () => {
       await expect(
         waitFor(() => fireEvent.click(screen.getByTestId('dialog-confirm')))
       ).resolves.not.toThrow();
+    });
+
+    it('selection summary reflects current channelIds when prop changes', () => {
+      // Reactivity guard: the selection summary at the top of the form
+      // must update when the parent passes a different channelIds prop.
+      // A stale summary misleads the user about how many channels (and
+      // of which kind) are about to be edited.
+      setupMocks({
+        pageChannels: [
+          { id: 1, auto_created: true },
+          { id: 2, auto_created: false },
+          { id: 3, auto_created: true },
+          { id: 4, auto_created: false },
+        ],
+      });
+      const { rerender } = renderForm({ channelIds: [1, 2] });
+      // 1 auto + 1 manual.
+      expect(screen.getByText(/1 auto-synced, 1 manual/)).toBeInTheDocument();
+
+      rerender(
+        <ChannelBatchForm
+          channelIds={[1, 3, 4]}
+          isOpen={true}
+          onClose={vi.fn()}
+        />
+      );
+      // After prop change: 2 auto + 1 manual.
+      expect(screen.getByText(/2 auto-synced, 1 manual/)).toBeInTheDocument();
+    });
+
+    it('keeps the form open and surfaces an error notification when batch submit rejects', async () => {
+      // A bulk PATCH rejection (server validation, network) must not close
+      // the form silently; the user needs the error message to correct the
+      // issue and retry without losing the in-progress selection.
+      setupMocks();
+      vi.mocked(ChannelBatchUtils.getChannelGroupChange).mockReturnValue(
+        '• Channel Group: Sports'
+      );
+      vi.mocked(
+        ChannelBatchUtils.updateChannelsWithOverrideRouting
+      ).mockRejectedValue(new Error('Server error'));
+      const onClose = vi.fn();
+
+      renderForm({ onClose });
+      fireEvent.click(screen.getByText('Submit'));
+      fireEvent.click(screen.getByTestId('dialog-confirm'));
+
+      await waitFor(() => {
+        expect(
+          ChannelBatchUtils.updateChannelsWithOverrideRouting
+        ).toHaveBeenCalled();
+      });
+
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+      expect(showNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ color: 'red' })
+      );
     });
   });
 
