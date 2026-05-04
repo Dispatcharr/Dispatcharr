@@ -564,6 +564,9 @@ def stream_xc(request, username, password, channel_id):
     extension = pathlib.Path(channel_id).suffix
     channel_id = pathlib.Path(channel_id).stem
 
+    if not network_access_allowed(request, 'STREAMS', user):
+        return Response({"error": "Forbidden"}, status=403)
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:

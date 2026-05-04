@@ -4,11 +4,12 @@ import NetworkAccessForm from '../NetworkAccessForm';
 
 // ── Constants mock ─────────────────────────────────────────────────────────────
 vi.mock('../../../../constants.js', () => ({
-  NETWORK_ACCESS_OPTIONS: [
-    { value: 'all', label: 'All' },
-    { value: 'local', label: 'Local Only' },
-    { value: 'custom', label: 'Custom' },
-  ],
+  NETWORK_ACCESS_OPTIONS: {
+    M3U_EPG: { label: 'M3U / EPG Endpoints', description: 'Limit M3U/EPG access' },
+    STREAMS: { label: 'Stream Endpoints', description: 'Limit stream access' },
+    XC_API: { label: 'XC API', description: 'Limit XC API access' },
+    UI: { label: 'UI', description: 'Limit UI access' },
+  },
 }));
 
 // ── Store mock ─────────────────────────────────────────────────────────────────
@@ -82,6 +83,12 @@ vi.mock('@mantine/core', () => ({
       {error && <span data-testid={`${id}-error`}>{error}</span>}
     </div>
   ),
+  TagsInput: ({ label, placeholder, error, ...rest }) => (
+    <div>
+      <input aria-label={label} placeholder={placeholder} data-error={error} readOnly />
+      {error && <span>{error}</span>}
+    </div>
+  ),
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -103,12 +110,10 @@ import {
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 const mockInitialValues = {
-  m3u_access: 'local',
-  epg_access: 'local',
-  recordings_access: 'all',
-  m3u_custom_cidrs: '',
-  epg_custom_cidrs: '',
-  recordings_custom_cidrs: '',
+  M3U_EPG: ['127.0.0.0/8', '192.168.0.0/16'],
+  STREAMS: ['0.0.0.0/0', '::/0'],
+  XC_API: ['0.0.0.0/0', '::/0'],
+  UI: ['0.0.0.0/0', '::/0'],
 };
 
 const makeFormMock = (overrides = {}) => ({
@@ -134,9 +139,10 @@ const makeSettings = (overrides = {}) => ({
   network_access: {
     key: 'network_access',
     value: {
-      m3u_access: 'local',
-      epg_access: 'local',
-      recordings_access: 'all',
+      M3U_EPG: '127.0.0.0/8,192.168.0.0/16',
+      STREAMS: '0.0.0.0/0,::/0',
+      XC_API: '0.0.0.0/0,::/0',
+      UI: '0.0.0.0/0,::/0',
     },
   },
   ...overrides,
