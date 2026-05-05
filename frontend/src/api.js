@@ -3074,10 +3074,12 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId) {
+  static async deleteSeriesRule(tvgId, title) {
     try {
-      const encodedTvgId = encodeURIComponent(tvgId);
-      await request(`${host}/api/channels/series-rules/${encodedTvgId}/`, {
+      const params = new URLSearchParams();
+      if (tvgId) params.set('tvg_id', tvgId);
+      if (title) params.set('title', title);
+      await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
       notifications.show({ title: 'Series rule removed' });
@@ -3113,6 +3115,15 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to evaluate series rules', e);
     }
+  }
+
+  static async previewSeriesRule(values, { signal } = {}) {
+    // Throws on error so callers can ignore aborted requests vs real failures.
+    return request(`${host}/api/channels/series-rules/preview/`, {
+      method: 'POST',
+      body: values,
+      signal,
+    });
   }
 
   static async bulkRemoveSeriesRecordings({

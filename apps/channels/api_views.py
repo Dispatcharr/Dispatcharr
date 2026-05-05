@@ -14,7 +14,6 @@ from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
 from datetime import timedelta
 from django.utils.http import http_date
-from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
@@ -3919,9 +3918,13 @@ class SeriesRulesAPIView(APIView):
         request=inline_serializer(
             name="SeriesRuleRequest",
             fields={
-                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to match across all channels.'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', help_text='all: record all episodes, new: record only new episodes'),
                 'title': serializers.CharField(help_text='Series title', required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False, help_text='How to match the title field'),
+                'description': serializers.CharField(required=False, help_text='Optional description match expression'),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False, help_text='How to match the description field'),
+                'channel_id': serializers.IntegerField(required=False, help_text='Optional channel to pin recordings to (defaults to lowest-numbered channel for the EPG)'),
             },
         ),
     )
@@ -3930,62 +3933,96 @@ class SeriesRulesAPIView(APIView):
         tvg_id = str(data.get("tvg_id") or "").strip()
         mode = (data.get("mode") or "all").lower()
         title = data.get("title") or ""
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = data.get("description") or ""
+        description_mode = (data.get("description_mode") or "contains").lower()
+        channel_id = data.get("channel_id")
         if mode not in ("all", "new"):
             return Response({"error": "mode must be 'all' or 'new'"}, status=status.HTTP_400_BAD_REQUEST)
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if title_mode not in ("exact", "contains", "search", "regex"):
+            return Response({"error": "title_mode must be one of exact, contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
+        if description_mode not in ("contains", "search", "regex"):
+            return Response({"error": "description_mode must be one of contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
+        if not title.strip() and not description.strip():
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Coerce / validate optional pinned channel
+        pinned_channel_id = None
+        if channel_id not in (None, ""):
+            try:
+                pinned_channel_id = int(channel_id)
+            except (TypeError, ValueError):
+                return Response({"error": "channel_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+            from .models import Channel
+            if not Channel.objects.filter(id=pinned_channel_id).exists():
+                return Response({"error": "channel_id does not exist"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rule_record = {
+            "tvg_id": tvg_id,
+            "mode": mode,
+            "title": title,
+            "title_mode": title_mode,
+            "description": description,
+            "description_mode": description_mode,
+        }
+        if pinned_channel_id is not None:
+            rule_record["channel_id"] = pinned_channel_id
+
         rules = CoreSettings.get_dvr_series_rules()
-        # Upsert by tvg_id
-        existing = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
+        # Upsert by tvg_id + title so multiple rules can target the same channel
+        existing = next(
+            (r for r in rules if
+             str(r.get("tvg_id") or "") == tvg_id and
+             str(r.get("title") or "") == title),
+            None
+        )
         if existing:
-            existing.update({"mode": mode, "title": title})
+            existing.clear()
+            existing.update(rule_record)
         else:
-            rules.append({"tvg_id": tvg_id, "mode": mode, "title": title})
+            rules.append(rule_record)
         CoreSettings.set_dvr_series_rules(rules)
         # Note: frontend calls the evaluate endpoint explicitly after creating
         # the rule, so do NOT fire evaluate_series_rules.delay() here to
         # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
 
-
-class DeleteSeriesRuleAPIView(APIView):
-    def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
-
     @extend_schema(
         summary="Delete a series rule",
-        description="Remove a series recording rule by TVG ID and clean up future scheduled recordings.",
+        description="Remove a series recording rule by tvg_id + title and clean up future scheduled recordings.",
         parameters=[
-            OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
+            OpenApiParameter('tvg_id', str, OpenApiParameter.QUERY, required=False, description='Channel TVG ID (may be blank for title-only rules)'),
+            OpenApiParameter('title', str, OpenApiParameter.QUERY, required=False, description='Series title'),
         ],
     )
-    def delete(self, request, tvg_id):
-        tvg_id = unquote(str(tvg_id or ""))
+    def delete(self, request):
+        tvg_id = str(request.query_params.get("tvg_id") or "").strip()
+        title = request.query_params.get("title")
 
-        # Find the rule before removing to retain the title for cleanup
         rules = CoreSettings.get_dvr_series_rules()
-        deleted_rule = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
-        remaining = [r for r in rules if str(r.get("tvg_id")) != tvg_id]
+
+        def _matches(r):
+            tvg_match = str(r.get("tvg_id") or "") == tvg_id
+            title_match = title is None or str(r.get("title") or "") == title
+            return tvg_match and title_match
+
+        deleted_rule = next((r for r in rules if _matches(r)), None)
+        remaining = [r for r in rules if not _matches(r)]
         CoreSettings.set_dvr_series_rules(remaining)
 
-        # Delete only FUTURE recordings — preserve previously recorded episodes
         removed = 0
         if deleted_rule:
             from .models import Recording
-            qs = Recording.objects.filter(
-                start_time__gte=timezone.now(),
-                custom_properties__program__tvg_id=tvg_id,
-            )
-            title = deleted_rule.get("title")
-            if title:
-                qs = qs.filter(custom_properties__program__title=title)
+            qs = Recording.objects.filter(start_time__gte=timezone.now())
+            rule_tvg_id = deleted_rule.get("tvg_id") or ""
+            if rule_tvg_id:
+                qs = qs.filter(custom_properties__program__tvg_id=rule_tvg_id)
+            rule_title = deleted_rule.get("title") or ""
+            if rule_title:
+                qs = qs.filter(custom_properties__program__title=rule_title)
             removed = qs.count()
             qs.delete()
 
-        # Notify frontend to refresh recordings list
         try:
             from core.utils import send_websocket_update
             send_websocket_update('updates', 'update', {
@@ -3995,6 +4032,118 @@ class DeleteSeriesRuleAPIView(APIView):
             pass
 
         return Response({"success": True, "rules": remaining, "removed": removed})
+
+
+class SeriesRulePreviewAPIView(APIView):
+    """Preview which upcoming programs a series rule would match.
+
+    Accepts the same payload as SeriesRulesAPIView.post but does not persist
+    anything. Returns up to `limit` upcoming programs (default 25, max 100)
+    within the standard 7-day evaluation horizon.
+    """
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_method[self.request.method]]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        summary="Preview series rule matches",
+        description="Return upcoming programs that the given rule would match without persisting the rule.",
+        request=inline_serializer(
+            name="SeriesRulePreviewRequest",
+            fields={
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to search across all channels.'),
+                'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', required=False),
+                'title': serializers.CharField(required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
+                'description': serializers.CharField(required=False),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False),
+                'limit': serializers.IntegerField(required=False, help_text='Max programs to return (default 25, max 100)'),
+            },
+        ),
+    )
+    def post(self, request):
+        from apps.epg.models import EPGData, ProgramData
+        from apps.epg.query_utils import parse_text_query
+
+        data = request.data or {}
+        tvg_id = str(data.get("tvg_id") or "").strip()
+        mode = (data.get("mode") or "all").lower()
+        title = (data.get("title") or "").strip()
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = (data.get("description") or "").strip()
+        description_mode = (data.get("description_mode") or "contains").lower()
+        try:
+            limit = int(data.get("limit") or 25)
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 100))
+
+        if not title and not description:
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        horizon = now + timedelta(days=7)
+
+        if tvg_id:
+            epg = EPGData.objects.filter(tvg_id=tvg_id).first()
+            if not epg:
+                return Response({"matches": [], "total": 0, "epg_found": False})
+            qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+        else:
+            qs = ProgramData.objects.filter(end_time__gt=now, start_time__lte=horizon)
+
+        if title:
+            if title_mode == "exact":
+                qs = qs.filter(title__iexact=title)
+            else:
+                qs = qs.filter(parse_text_query(
+                    "title", title,
+                    use_regex=(title_mode == "regex"),
+                    whole_words=(title_mode == "search"),
+                ))
+        if description:
+            qs = qs.filter(parse_text_query(
+                "description", description,
+                use_regex=(description_mode == "regex"),
+                whole_words=(description_mode == "search"),
+            ))
+
+        qs = qs.distinct().order_by("start_time")
+
+        # Apply "new" filter in Python (custom_properties JSON lookup), but only
+        # over the bounded result set we already filtered down to.
+        candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
+        if mode == "new":
+            candidates = [p for p in candidates if (p.custom_properties or {}).get("new")]
+
+        total = len(candidates)
+        candidates = candidates[:limit]
+
+        matches = []
+        for p in candidates:
+            cp = p.custom_properties or {}
+            matches.append({
+                "id": p.id,
+                "tvg_id": p.tvg_id,
+                "title": p.title,
+                "sub_title": p.sub_title,
+                "description": p.description,
+                "start_time": p.start_time.isoformat(),
+                "end_time": p.end_time.isoformat(),
+                "season": cp.get("season"),
+                "episode": cp.get("episode"),
+                "is_new": bool(cp.get("new")),
+            })
+
+        return Response({
+            "matches": matches,
+            "total": total,
+            "limit": limit,
+            "epg_found": True,
+            "warn": total > 50,
+        })
 
 
 class EvaluateSeriesRulesAPIView(APIView):
@@ -4052,13 +4201,12 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
         tvg_id = str(request.data.get("tvg_id") or "").strip()
         title = request.data.get("title")
         scope = (request.data.get("scope") or "title").lower()
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not tvg_id and not title:
+            return Response({"error": "tvg_id or title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = Recording.objects.filter(
-            start_time__gte=timezone.now(),
-            custom_properties__program__tvg_id=tvg_id,
-        )
+        qs = Recording.objects.filter(start_time__gte=timezone.now())
+        if tvg_id:
+            qs = qs.filter(custom_properties__program__tvg_id=tvg_id)
         if scope == "title" and title:
             qs = qs.filter(custom_properties__program__title=title)
 

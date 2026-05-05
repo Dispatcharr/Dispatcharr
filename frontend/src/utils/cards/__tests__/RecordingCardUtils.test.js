@@ -198,16 +198,28 @@ describe('RecordingCardUtils', () => {
         title: 'Test Series',
         scope: 'title',
       });
-      expect(API.deleteSeriesRule).toHaveBeenCalledWith('series-123');
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith(
+        'series-123',
+        'Test Series'
+      );
     });
 
-    it('does nothing when tvg_id is not provided', async () => {
-      const seriesInfo = { title: 'Test Series' };
+    it('works for title-only rules with no tvg_id', async () => {
+      API.bulkRemoveSeriesRecordings.mockResolvedValue();
+      API.deleteSeriesRule.mockResolvedValue();
+      const seriesInfo = { tvg_id: undefined, title: 'Title-Only Show' };
 
       await deleteSeriesAndRule(seriesInfo);
 
-      expect(API.bulkRemoveSeriesRecordings).not.toHaveBeenCalled();
-      expect(API.deleteSeriesRule).not.toHaveBeenCalled();
+      expect(API.bulkRemoveSeriesRecordings).toHaveBeenCalledWith({
+        tvg_id: '',
+        title: 'Title-Only Show',
+        scope: 'title',
+      });
+      expect(API.deleteSeriesRule).toHaveBeenCalledWith(
+        undefined,
+        'Title-Only Show'
+      );
     });
 
     it('handles bulk remove error gracefully', async () => {
