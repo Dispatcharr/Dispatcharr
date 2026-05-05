@@ -39,7 +39,7 @@ export default function ProgramRecordingModal({
   };
 
   const handleRemoveSeriesRule = async () => {
-    await deleteSeriesRuleByTvgId(program.tvg_id);
+    await deleteSeriesRuleByTvgId(program.tvg_id, program.title);
     onExistingRuleModeChange(null);
     onClose();
   };

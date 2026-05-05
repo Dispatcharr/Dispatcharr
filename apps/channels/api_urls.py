@@ -18,7 +18,6 @@ from .api_views import (
     GetChannelStreamStatsAPIView,
     SeriesRulesAPIView,
     SeriesRulePreviewAPIView,
-    DeleteSeriesRuleAPIView,
     EvaluateSeriesRulesAPIView,
     BulkRemoveSeriesRecordingsAPIView,
     BulkDeleteUpcomingRecordingsAPIView,
@@ -51,7 +50,6 @@ urlpatterns = [
     path('series-rules/preview/', SeriesRulePreviewAPIView.as_view(), name='series_rules_preview'),
     path('series-rules/evaluate/', EvaluateSeriesRulesAPIView.as_view(), name='evaluate_series_rules'),
     path('series-rules/bulk-remove/', BulkRemoveSeriesRecordingsAPIView.as_view(), name='bulk_remove_series_recordings'),
-    path('series-rules/<path:tvg_id>/', DeleteSeriesRuleAPIView.as_view(), name='delete_series_rule'),
     path('recordings/bulk-delete-upcoming/', BulkDeleteUpcomingRecordingsAPIView.as_view(), name='bulk_delete_upcoming_recordings'),
     path(
         'recordings/<int:pk>/hls/<path:seg_path>',

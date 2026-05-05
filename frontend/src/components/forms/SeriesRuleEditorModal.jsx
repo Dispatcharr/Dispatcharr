@@ -238,7 +238,7 @@ export default function SeriesRuleEditorModal({
     <Modal
       opened={opened}
       onClose={onClose}
-      title={initialRule?.tvg_id ? 'Edit Series Rule' : 'New Series Rule'}
+      title={initialRule ? 'Edit Series Rule' : 'New Series Rule'}
       centered
       size="lg"
       radius="md"

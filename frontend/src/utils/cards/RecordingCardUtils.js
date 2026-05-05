@@ -84,21 +84,19 @@ export const extendRecordingById = async (recordingId, extraMinutes) => {
 
 export const deleteSeriesAndRule = async (seriesInfo) => {
   const { tvg_id, title } = seriesInfo;
-  if (tvg_id) {
-    try {
-      await API.bulkRemoveSeriesRecordings({
-        tvg_id,
-        title,
-        scope: 'title',
-      });
-    } catch (error) {
-      console.error('Failed to remove series recordings', error);
-    }
-    try {
-      await API.deleteSeriesRule(tvg_id);
-    } catch (error) {
-      console.error('Failed to delete series rule', error);
-    }
+  try {
+    await API.bulkRemoveSeriesRecordings({
+      tvg_id: tvg_id || '',
+      title,
+      scope: 'title',
+    });
+  } catch (error) {
+    console.error('Failed to remove series recordings', error);
+  }
+  try {
+    await API.deleteSeriesRule(tvg_id, title);
+  } catch (error) {
+    console.error('Failed to delete series rule', error);
   }
 };
 

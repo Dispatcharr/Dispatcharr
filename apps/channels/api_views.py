@@ -14,7 +14,6 @@ from django.db.models import Q
 import os, json, requests, logging, mimetypes, threading, time
 from datetime import timedelta
 from django.utils.http import http_date
-from urllib.parse import unquote
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
@@ -3988,6 +3987,52 @@ class SeriesRulesAPIView(APIView):
         # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
 
+    @extend_schema(
+        summary="Delete a series rule",
+        description="Remove a series recording rule by tvg_id + title and clean up future scheduled recordings.",
+        parameters=[
+            OpenApiParameter('tvg_id', str, OpenApiParameter.QUERY, required=False, description='Channel TVG ID (may be blank for title-only rules)'),
+            OpenApiParameter('title', str, OpenApiParameter.QUERY, required=False, description='Series title'),
+        ],
+    )
+    def delete(self, request):
+        tvg_id = str(request.query_params.get("tvg_id") or "").strip()
+        title = request.query_params.get("title")
+
+        rules = CoreSettings.get_dvr_series_rules()
+
+        def _matches(r):
+            tvg_match = str(r.get("tvg_id") or "") == tvg_id
+            title_match = title is None or str(r.get("title") or "") == title
+            return tvg_match and title_match
+
+        deleted_rule = next((r for r in rules if _matches(r)), None)
+        remaining = [r for r in rules if not _matches(r)]
+        CoreSettings.set_dvr_series_rules(remaining)
+
+        removed = 0
+        if deleted_rule:
+            from .models import Recording
+            qs = Recording.objects.filter(start_time__gte=timezone.now())
+            rule_tvg_id = deleted_rule.get("tvg_id") or ""
+            if rule_tvg_id:
+                qs = qs.filter(custom_properties__program__tvg_id=rule_tvg_id)
+            rule_title = deleted_rule.get("title") or ""
+            if rule_title:
+                qs = qs.filter(custom_properties__program__title=rule_title)
+            removed = qs.count()
+            qs.delete()
+
+        try:
+            from core.utils import send_websocket_update
+            send_websocket_update('updates', 'update', {
+                "success": True, "type": "recordings_refreshed", "removed": removed,
+            })
+        except Exception:
+            pass
+
+        return Response({"success": True, "rules": remaining, "removed": removed})
+
 
 class SeriesRulePreviewAPIView(APIView):
     """Preview which upcoming programs a series rule would match.
@@ -4101,55 +4146,6 @@ class SeriesRulePreviewAPIView(APIView):
         })
 
 
-class DeleteSeriesRuleAPIView(APIView):
-    def get_permissions(self):
-        try:
-            return [perm() for perm in permission_classes_by_method[self.request.method]]
-        except KeyError:
-            return [Authenticated()]
-
-    @extend_schema(
-        summary="Delete a series rule",
-        description="Remove a series recording rule by TVG ID and clean up future scheduled recordings.",
-        parameters=[
-            OpenApiParameter('tvg_id', str, OpenApiParameter.PATH, required=True, description='Channel TVG ID'),
-        ],
-    )
-    def delete(self, request, tvg_id):
-        tvg_id = unquote(str(tvg_id or ""))
-
-        # Find the rule before removing to retain the title for cleanup
-        rules = CoreSettings.get_dvr_series_rules()
-        deleted_rule = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
-        remaining = [r for r in rules if str(r.get("tvg_id")) != tvg_id]
-        CoreSettings.set_dvr_series_rules(remaining)
-
-        # Delete only FUTURE recordings — preserve previously recorded episodes
-        removed = 0
-        if deleted_rule:
-            from .models import Recording
-            qs = Recording.objects.filter(
-                start_time__gte=timezone.now(),
-                custom_properties__program__tvg_id=tvg_id,
-            )
-            title = deleted_rule.get("title")
-            if title:
-                qs = qs.filter(custom_properties__program__title=title)
-            removed = qs.count()
-            qs.delete()
-
-        # Notify frontend to refresh recordings list
-        try:
-            from core.utils import send_websocket_update
-            send_websocket_update('updates', 'update', {
-                "success": True, "type": "recordings_refreshed", "removed": removed,
-            })
-        except Exception:
-            pass
-
-        return Response({"success": True, "rules": remaining, "removed": removed})
-
-
 class EvaluateSeriesRulesAPIView(APIView):
     def get_permissions(self):
         try:
@@ -4205,13 +4201,12 @@ class BulkRemoveSeriesRecordingsAPIView(APIView):
         tvg_id = str(request.data.get("tvg_id") or "").strip()
         title = request.data.get("title")
         scope = (request.data.get("scope") or "title").lower()
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not tvg_id and not title:
+            return Response({"error": "tvg_id or title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = Recording.objects.filter(
-            start_time__gte=timezone.now(),
-            custom_properties__program__tvg_id=tvg_id,
-        )
+        qs = Recording.objects.filter(start_time__gte=timezone.now())
+        if tvg_id:
+            qs = qs.filter(custom_properties__program__tvg_id=tvg_id)
         if scope == "title" and title:
             qs = qs.filter(custom_properties__program__title=title)
 
