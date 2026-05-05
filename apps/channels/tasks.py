@@ -1160,7 +1160,13 @@ def _evaluate_series_rules_locked(tvg_id, result):
         rv_tvg = str(rule.get("tvg_id") or "").strip()
         mode = (rule.get("mode") or "all").lower()
         series_title = (rule.get("title") or "").strip()
-        norm_series = normalize_name(series_title) if series_title else None
+        title_mode = (rule.get("title_mode") or "exact").lower()
+        description = (rule.get("description") or "").strip()
+        description_mode = (rule.get("description_mode") or "contains").lower()
+        try:
+            pinned_channel_id = int(rule["channel_id"]) if rule.get("channel_id") not in (None, "") else None
+        except (TypeError, ValueError):
+            pinned_channel_id = None
         if not rv_tvg:
             result["details"].append({"tvg_id": rv_tvg, "status": "invalid_rule"})
             continue
@@ -1175,19 +1181,35 @@ def _evaluate_series_rules_locked(tvg_id, result):
                 end_time__gt=now,
                 start_time__lte=horizon,
             )
-        if series_title:
-            programs_qs = programs_qs.filter(title__iexact=series_title)
-        programs = list(programs_qs.order_by("start_time"))
-        # Fallback: if no direct matches and we have a title, try normalized comparison in Python
-        if series_title and not programs:
-            all_progs = ProgramData.objects.filter(
-                epg=epg,
-                end_time__gt=now,
-                start_time__lte=horizon,
-            ).only("id", "title", "start_time", "end_time", "custom_properties", "tvg_id")
-            programs = [p for p in all_progs if normalize_name(p.title) == norm_series]
 
-        channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
+        from apps.epg.query_utils import parse_text_query
+
+        if series_title:
+            if title_mode == "exact":
+                programs_qs = programs_qs.filter(title__iexact=series_title)
+            else:
+                use_regex = title_mode == "regex"
+                whole_words = title_mode == "search"
+                programs_qs = programs_qs.filter(
+                    parse_text_query("title", series_title, use_regex=use_regex, whole_words=whole_words)
+                )
+
+        if description:
+            use_regex = description_mode == "regex"
+            whole_words = description_mode == "search"
+            programs_qs = programs_qs.filter(
+                parse_text_query("description", description, use_regex=use_regex, whole_words=whole_words)
+            )
+
+        programs = list(programs_qs.distinct().order_by("start_time"))
+
+        if pinned_channel_id is not None:
+            channel = Channel.objects.filter(id=pinned_channel_id).first()
+            if channel is None:
+                result["details"].append({"tvg_id": rv_tvg, "status": "pinned_channel_missing", "channel_id": pinned_channel_id})
+                continue
+        else:
+            channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
         if not channel:
             result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
             continue

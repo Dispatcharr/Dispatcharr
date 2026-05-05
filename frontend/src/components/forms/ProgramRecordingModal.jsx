@@ -1,8 +1,9 @@
-import React from 'react';
-import { Modal, Flex, Button } from '@mantine/core';
+import React, { useState } from 'react';
+import { Modal, Flex, Button, Anchor } from '@mantine/core';
 import { deleteRecordingById } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesAndRule } from '../../utils/cards/RecordingCardUtils.js';
 import { deleteSeriesRuleByTvgId } from '../../utils/guideUtils.js';
+import SeriesRuleEditorModal from './SeriesRuleEditorModal.jsx';
 
 export default function ProgramRecordingModal({
   opened,
@@ -10,11 +11,14 @@ export default function ProgramRecordingModal({
   program,
   recording,
   existingRuleMode,
+  existingRule,
   onRecordOne,
   onRecordSeriesAll,
   onRecordSeriesNew,
   onExistingRuleModeChange,
 }) {
+  const [editorOpen, setEditorOpen] = useState(false);
+
   const handleRemoveRecording = async () => {
     try {
       await deleteRecordingById(recording.id);
@@ -85,6 +89,16 @@ export default function ProgramRecordingModal({
           New episodes only
         </Button>
 
+        <Anchor
+          component="button"
+          type="button"
+          size="xs"
+          ta="center"
+          onClick={() => setEditorOpen(true)}
+        >
+          Customize rule...
+        </Anchor>
+
         {recording && (
           <>
             <Button
@@ -106,6 +120,25 @@ export default function ProgramRecordingModal({
           </Button>
         )}
       </Flex>
+
+      <SeriesRuleEditorModal
+        opened={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        initialRule={
+          existingRule ||
+          (program
+            ? {
+                tvg_id: program.tvg_id,
+                title: program.title,
+                title_mode: 'exact',
+                mode: 'all',
+              }
+            : null)
+        }
+        onSaved={() => {
+          onClose();
+        }}
+      />
     </Modal>
   );
 }

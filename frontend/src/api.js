@@ -3115,6 +3115,15 @@ export default class API {
     }
   }
 
+  static async previewSeriesRule(values, { signal } = {}) {
+    // Throws on error so callers can ignore aborted requests vs real failures.
+    return request(`${host}/api/channels/series-rules/preview/`, {
+      method: 'POST',
+      body: values,
+      signal,
+    });
+  }
+
   static async bulkRemoveSeriesRecordings({
     tvg_id,
     title = null,

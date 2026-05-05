@@ -3922,6 +3922,10 @@ class SeriesRulesAPIView(APIView):
                 'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', help_text='all: record all episodes, new: record only new episodes'),
                 'title': serializers.CharField(help_text='Series title', required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False, help_text='How to match the title field'),
+                'description': serializers.CharField(required=False, help_text='Optional description match expression'),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False, help_text='How to match the description field'),
+                'channel_id': serializers.IntegerField(required=False, help_text='Optional channel to pin recordings to (defaults to lowest-numbered channel for the EPG)'),
             },
         ),
     )
@@ -3930,22 +3934,161 @@ class SeriesRulesAPIView(APIView):
         tvg_id = str(data.get("tvg_id") or "").strip()
         mode = (data.get("mode") or "all").lower()
         title = data.get("title") or ""
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = data.get("description") or ""
+        description_mode = (data.get("description_mode") or "contains").lower()
+        channel_id = data.get("channel_id")
         if mode not in ("all", "new"):
             return Response({"error": "mode must be 'all' or 'new'"}, status=status.HTTP_400_BAD_REQUEST)
+        if title_mode not in ("exact", "contains", "search", "regex"):
+            return Response({"error": "title_mode must be one of exact, contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
+        if description_mode not in ("contains", "search", "regex"):
+            return Response({"error": "description_mode must be one of contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
         if not tvg_id:
             return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Coerce / validate optional pinned channel
+        pinned_channel_id = None
+        if channel_id not in (None, ""):
+            try:
+                pinned_channel_id = int(channel_id)
+            except (TypeError, ValueError):
+                return Response({"error": "channel_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+            from .models import Channel
+            if not Channel.objects.filter(id=pinned_channel_id).exists():
+                return Response({"error": "channel_id does not exist"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rule_record = {
+            "tvg_id": tvg_id,
+            "mode": mode,
+            "title": title,
+            "title_mode": title_mode,
+            "description": description,
+            "description_mode": description_mode,
+        }
+        if pinned_channel_id is not None:
+            rule_record["channel_id"] = pinned_channel_id
+
         rules = CoreSettings.get_dvr_series_rules()
         # Upsert by tvg_id
         existing = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
         if existing:
-            existing.update({"mode": mode, "title": title})
+            existing.clear()
+            existing.update(rule_record)
         else:
-            rules.append({"tvg_id": tvg_id, "mode": mode, "title": title})
+            rules.append(rule_record)
         CoreSettings.set_dvr_series_rules(rules)
         # Note: frontend calls the evaluate endpoint explicitly after creating
         # the rule, so do NOT fire evaluate_series_rules.delay() here to
         # avoid a race that creates duplicate recordings.
         return Response({"success": True, "rules": rules})
+
+
+class SeriesRulePreviewAPIView(APIView):
+    """Preview which upcoming programs a series rule would match.
+
+    Accepts the same payload as SeriesRulesAPIView.post but does not persist
+    anything. Returns up to `limit` upcoming programs (default 25, max 100)
+    within the standard 7-day evaluation horizon.
+    """
+    def get_permissions(self):
+        try:
+            return [perm() for perm in permission_classes_by_method[self.request.method]]
+        except KeyError:
+            return [Authenticated()]
+
+    @extend_schema(
+        summary="Preview series rule matches",
+        description="Return upcoming programs that the given rule would match without persisting the rule.",
+        request=inline_serializer(
+            name="SeriesRulePreviewRequest",
+            fields={
+                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', required=False),
+                'title': serializers.CharField(required=False),
+                'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
+                'description': serializers.CharField(required=False),
+                'description_mode': serializers.ChoiceField(choices=['contains', 'search', 'regex'], default='contains', required=False),
+                'limit': serializers.IntegerField(required=False, help_text='Max programs to return (default 25, max 100)'),
+            },
+        ),
+    )
+    def post(self, request):
+        from apps.epg.models import EPGData, ProgramData
+        from apps.epg.query_utils import parse_text_query
+
+        data = request.data or {}
+        tvg_id = str(data.get("tvg_id") or "").strip()
+        if not tvg_id:
+            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        mode = (data.get("mode") or "all").lower()
+        title = (data.get("title") or "").strip()
+        title_mode = (data.get("title_mode") or "exact").lower()
+        description = (data.get("description") or "").strip()
+        description_mode = (data.get("description_mode") or "contains").lower()
+        try:
+            limit = int(data.get("limit") or 25)
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 100))
+
+        epg = EPGData.objects.filter(tvg_id=tvg_id).first()
+        if not epg:
+            return Response({"matches": [], "total": 0, "epg_found": False})
+
+        now = timezone.now()
+        horizon = now + timedelta(days=7)
+        qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+
+        if title:
+            if title_mode == "exact":
+                qs = qs.filter(title__iexact=title)
+            else:
+                qs = qs.filter(parse_text_query(
+                    "title", title,
+                    use_regex=(title_mode == "regex"),
+                    whole_words=(title_mode == "search"),
+                ))
+        if description:
+            qs = qs.filter(parse_text_query(
+                "description", description,
+                use_regex=(description_mode == "regex"),
+                whole_words=(description_mode == "search"),
+            ))
+
+        qs = qs.distinct().order_by("start_time")
+
+        # Apply "new" filter in Python (custom_properties JSON lookup), but only
+        # over the bounded result set we already filtered down to.
+        candidates = list(qs[:limit * 4])  # small overshoot to allow new-only filtering
+        if mode == "new":
+            candidates = [p for p in candidates if (p.custom_properties or {}).get("new")]
+
+        total = len(candidates)
+        candidates = candidates[:limit]
+
+        matches = []
+        for p in candidates:
+            cp = p.custom_properties or {}
+            matches.append({
+                "id": p.id,
+                "tvg_id": p.tvg_id,
+                "title": p.title,
+                "sub_title": p.sub_title,
+                "description": p.description,
+                "start_time": p.start_time.isoformat(),
+                "end_time": p.end_time.isoformat(),
+                "season": cp.get("season"),
+                "episode": cp.get("episode"),
+                "is_new": bool(cp.get("new")),
+            })
+
+        return Response({
+            "matches": matches,
+            "total": total,
+            "limit": limit,
+            "epg_found": True,
+        })
 
 
 class DeleteSeriesRuleAPIView(APIView):
