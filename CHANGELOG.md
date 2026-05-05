@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **EPG Program Search API** (`GET /api/epg/programs/search/`): a new endpoint for querying EPG program data with rich filtering and query support. - Thanks [@northernpowerhouse](https://github.com/northernpowerhouse)
+  - **Text search** on title and description with AND/OR boolean operators (case-insensitive), quoted phrase matching (`"Law and Order"` treats _and_ as literal text), parenthetical grouping (`(Newcastle OR NEW) AND (Villa OR AST)`), whole-word mode (`title_whole_words=true`), and regex mode (`title_regex=true`).
+  - **Time filters**: `airing_at` (programs live at a specific instant), `start_after`, `start_before`, `end_after`, `end_before`.
+  - **Relational filters**: `channel`, `channel_id`, `stream`, `group`, `epg_source`.
+  - **Field selection**: `fields=title,start_time,channels` returns only the requested keys; channel and stream data is skipped server-side (no wasted serialization) when not requested.
+  - **Pagination**: default 50 results per page, configurable up to 500 via `page_size`.
+  - **Access control**: results are scoped to channels the requesting user can access. `user_level` and the per-user adult-content filter are both enforced, matching the access model used by the M3U playlist, XC API, and stream proxy. Admin users receive unfiltered results.
+  - Full OpenAPI/Swagger documentation available.
+  - Requires `IsStandardUser` permission (user level ≥ 1).
 - **Per-user IP/CIDR network allowlists**. Admins can now assign IP address and CIDR range restrictions to individual user accounts via the API & XC tab on the user edit form. When a user has one or more allowed ranges configured, requests from IPs outside that list are rejected with `403 Forbidden` regardless of the global network access policy; if no ranges are configured, the user inherits global settings unchanged. The existing `network_access_allowed()` utility is extended with an optional `user` argument so the per-user check is enforced at all access-controlled entry points (M3U/EPG, Streams, XC API, UI) without duplicating IP-matching logic. Per-user restrictions are stored in `custom_properties['allowed_networks']`; no model changes or migrations are required. — Thanks [@sethwv](https://github.com/sethwv)
 - **`reset_user_network` management command**: `manage.py reset_user_network <username>` clears the per-user `allowed_networks` restriction for the specified account, restoring it to global-policy inheritance. Useful for recovering a user locked out by a misconfigured allowlist. — Thanks [@sethwv](https://github.com/sethwv)
 - **Auto-sync overhaul**: comprehensive rebuild of the M3U auto-channel-sync flow. Introduces a per-field override system, hide-from-output flag, range-bounded auto-numbering with a re-pack helper, multi-stream channel safety, multi-provider shared-range merging, and an across-the-board move from per-row writes to bulk operations. (Closes #1196) — Thanks [@CodeBormen](https://github.com/CodeBormen)
