@@ -1136,6 +1136,15 @@ def _evaluate_series_rules_locked(tvg_id, result):
     now = timezone.now()
     horizon = now + timedelta(days=7)
 
+    try:
+        pre_min = int(CoreSettings.get_dvr_pre_offset_minutes())
+    except Exception:
+        pre_min = 0
+    try:
+        post_min = int(CoreSettings.get_dvr_post_offset_minutes())
+    except Exception:
+        post_min = 0
+
     # Preload existing recordings keyed by stable program attributes that
     # survive EPG refreshes (tvg_id + original start/end times stored in
     # custom_properties).  ProgramData.id changes on every EPG refresh so
@@ -1308,16 +1317,6 @@ def _evaluate_series_rules_locked(tvg_id, result):
                         continue
                 except Exception:
                     continue  # already scheduled/recorded
-
-                # Apply global DVR pre/post offsets (in minutes)
-                try:
-                    pre_min = int(CoreSettings.get_dvr_pre_offset_minutes())
-                except Exception:
-                    pre_min = 0
-                try:
-                    post_min = int(CoreSettings.get_dvr_post_offset_minutes())
-                except Exception:
-                    post_min = 0
 
                 adj_start = prog.start_time
                 adj_end = prog.end_time
