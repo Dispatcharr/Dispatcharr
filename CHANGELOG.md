@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bulk channel edit silently failed on API rejection.** The bulk-edit submit handler in `ChannelBatch.jsx` only wrote `console.error` when the PATCH was rejected; the user saw the spinner stop but received no notification, leading them to assume the save succeeded. The catch block now surfaces a red toast with the server-provided detail (or a generic fallback), and the form stays open with the in-progress selection intact so the user can correct and retry. — Thanks [@CodeBormen](https://github.com/CodeBormen)
 - **Recurring rule edit modal showed a blank Channel field.** The `RecurringRuleModal` read channel data from a Zustand store slice (`channels`) that nothing populates - the channels page and all other consumers switched to on-demand summary fetches in a prior release. Opening the edit modal from the DVR page always produced an empty Channel select. The modal now fetches channels via `API.getChannelsSummary()` when it opens, matching the lightweight approach used by the one-time recording form and other modals.
+- **DVR section count badges appeared at the far right of the screen.** The "Currently Recording", "Upcoming Recordings", and "Previously Recorded" section headers wrapped the title and badge in a `Group justify="space-between"`, which pushed the badge to the opposite edge of the full-width container. Changed to `Group gap="xs" align="center"` so each badge sits inline with its heading.
 
 ### Performance
 
