@@ -3919,7 +3919,7 @@ class SeriesRulesAPIView(APIView):
         request=inline_serializer(
             name="SeriesRuleRequest",
             fields={
-                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to match across all channels.'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', help_text='all: record all episodes, new: record only new episodes'),
                 'title': serializers.CharField(help_text='Series title', required=False),
                 'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False, help_text='How to match the title field'),
@@ -3944,8 +3944,8 @@ class SeriesRulesAPIView(APIView):
             return Response({"error": "title_mode must be one of exact, contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
         if description_mode not in ("contains", "search", "regex"):
             return Response({"error": "description_mode must be one of contains, search, regex"}, status=status.HTTP_400_BAD_REQUEST)
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not title.strip() and not description.strip():
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Coerce / validate optional pinned channel
         pinned_channel_id = None
@@ -3970,8 +3970,13 @@ class SeriesRulesAPIView(APIView):
             rule_record["channel_id"] = pinned_channel_id
 
         rules = CoreSettings.get_dvr_series_rules()
-        # Upsert by tvg_id
-        existing = next((r for r in rules if str(r.get("tvg_id")) == tvg_id), None)
+        # Upsert by tvg_id + title so multiple rules can target the same channel
+        existing = next(
+            (r for r in rules if
+             str(r.get("tvg_id") or "") == tvg_id and
+             str(r.get("title") or "") == title),
+            None
+        )
         if existing:
             existing.clear()
             existing.update(rule_record)
@@ -4003,7 +4008,7 @@ class SeriesRulePreviewAPIView(APIView):
         request=inline_serializer(
             name="SeriesRulePreviewRequest",
             fields={
-                'tvg_id': serializers.CharField(help_text='Channel TVG ID'),
+                'tvg_id': serializers.CharField(required=False, allow_blank=True, help_text='Optional channel TVG ID. Omit to search across all channels.'),
                 'mode': serializers.ChoiceField(choices=['all', 'new'], default='all', required=False),
                 'title': serializers.CharField(required=False),
                 'title_mode': serializers.ChoiceField(choices=['exact', 'contains', 'search', 'regex'], default='exact', required=False),
@@ -4019,8 +4024,6 @@ class SeriesRulePreviewAPIView(APIView):
 
         data = request.data or {}
         tvg_id = str(data.get("tvg_id") or "").strip()
-        if not tvg_id:
-            return Response({"error": "tvg_id is required"}, status=status.HTTP_400_BAD_REQUEST)
         mode = (data.get("mode") or "all").lower()
         title = (data.get("title") or "").strip()
         title_mode = (data.get("title_mode") or "exact").lower()
@@ -4032,13 +4035,19 @@ class SeriesRulePreviewAPIView(APIView):
             limit = 25
         limit = max(1, min(limit, 100))
 
-        epg = EPGData.objects.filter(tvg_id=tvg_id).first()
-        if not epg:
-            return Response({"matches": [], "total": 0, "epg_found": False})
+        if not title and not description:
+            return Response({"error": "A title or description is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
         horizon = now + timedelta(days=7)
-        qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+
+        if tvg_id:
+            epg = EPGData.objects.filter(tvg_id=tvg_id).first()
+            if not epg:
+                return Response({"matches": [], "total": 0, "epg_found": False})
+            qs = ProgramData.objects.filter(epg=epg, end_time__gt=now, start_time__lte=horizon)
+        else:
+            qs = ProgramData.objects.filter(end_time__gt=now, start_time__lte=horizon)
 
         if title:
             if title_mode == "exact":
@@ -4088,6 +4097,7 @@ class SeriesRulePreviewAPIView(APIView):
             "total": total,
             "limit": limit,
             "epg_found": True,
+            "warn": total > 50,
         })
 
 

@@ -137,8 +137,12 @@ export default function SeriesRuleEditorModal({
 
   useEffect(() => {
     if (!opened) return;
-    if (!debouncedPreviewKey.tvg_id) {
-      setPreview({ matches: [], total: 0, epg_found: false });
+    if (
+      !debouncedPreviewKey.tvg_id &&
+      !debouncedPreviewKey.title &&
+      !debouncedPreviewKey.description
+    ) {
+      setPreview({ matches: [], total: 0, epg_found: true });
       return;
     }
     // Abort any in-flight request
@@ -209,7 +213,7 @@ export default function SeriesRuleEditorModal({
     return [...matching, ...others];
   }, [allChannels, tvgsById, tvgId]);
 
-  const canSave = !!payload.tvg_id;
+  const canSave = !!(payload.title || payload.description);
 
   const handleSave = async () => {
     setSaving(true);
@@ -248,8 +252,8 @@ export default function SeriesRuleEditorModal({
     >
       <Stack gap="sm">
         <Select
-          label="EPG channel"
-          description="Programs are matched within this EPG channel's listings."
+          label="EPG channel (optional)"
+          description="Limit matching to a specific EPG channel. Leave blank to search all channels."
           placeholder="Search by name or tvg_id..."
           searchable
           clearable
@@ -267,12 +271,12 @@ export default function SeriesRuleEditorModal({
                 value.toLowerCase().includes(q)
             );
           }}
-          required
         />
 
         <Stack gap={4}>
           <TextInput
-            label="Title"
+            label="Title (optional)"
+            description="At least a title or description is required."
             placeholder='e.g. The Daily Show, or "Law and Order" AND crime'
             value={title}
             onChange={(e) => setTitle(e.currentTarget.value)}
@@ -359,13 +363,27 @@ export default function SeriesRuleEditorModal({
           </Alert>
         )}
 
+        {preview.warn && !previewLoading && (
+          <Alert color="orange" variant="light">
+            This rule matches many programs. Consider selecting a specific EPG
+            channel or adding more search criteria.
+          </Alert>
+        )}
+
         <ScrollArea.Autosize mah={240}>
           <Stack gap={4}>
             {(preview.matches || []).map((p) => (
               <Group key={p.id} gap="xs" wrap="nowrap" align="flex-start">
-                <Text size="xs" c="dimmed" style={{ minWidth: 160 }}>
-                  {formatRange(p.start_time, p.end_time)}
-                </Text>
+                <Stack gap={0} style={{ minWidth: 160 }}>
+                  <Text size="xs" c="dimmed">
+                    {formatRange(p.start_time, p.end_time)}
+                  </Text>
+                  {p.tvg_id && !tvgId && (
+                    <Text size="xs" c="dimmed" fs="italic">
+                      {p.tvg_id}
+                    </Text>
+                  )}
+                </Stack>
                 <Stack gap={0} style={{ flex: 1 }}>
                   <Text size="sm" lineClamp={1}>
                     {p.title}
@@ -382,8 +400,8 @@ export default function SeriesRuleEditorModal({
             ))}
             {!previewLoading &&
               (preview.matches?.length || 0) === 0 &&
-              tvgId &&
-              preview.epg_found && (
+              (tvgId || title || description) &&
+              preview.epg_found !== false && (
                 <Text size="xs" c="dimmed">
                   No matching upcoming programs in the next 7 days.
                 </Text>

@@ -1167,17 +1167,23 @@ def _evaluate_series_rules_locked(tvg_id, result):
             pinned_channel_id = int(rule["channel_id"]) if rule.get("channel_id") not in (None, "") else None
         except (TypeError, ValueError):
             pinned_channel_id = None
-        if not rv_tvg:
+        if not series_title and not description:
             result["details"].append({"tvg_id": rv_tvg, "status": "invalid_rule"})
             continue
 
-        epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
-        if not epg:
-            result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
-            continue
-
-        programs_qs = ProgramData.objects.filter(
+        if rv_tvg:
+            epg = EPGData.objects.filter(tvg_id=rv_tvg).first()
+            if not epg:
+                result["details"].append({"tvg_id": rv_tvg, "status": "no_epg_match"})
+                continue
+            programs_qs = ProgramData.objects.filter(
                 epg=epg,
+                end_time__gt=now,
+                start_time__lte=horizon,
+            )
+        else:
+            epg = None
+            programs_qs = ProgramData.objects.select_related("epg").filter(
                 end_time__gt=now,
                 start_time__lte=horizon,
             )
@@ -1204,15 +1210,24 @@ def _evaluate_series_rules_locked(tvg_id, result):
         programs = list(programs_qs.distinct().order_by("start_time"))
 
         if pinned_channel_id is not None:
-            channel = Channel.objects.filter(id=pinned_channel_id).first()
-            if channel is None:
+            pinned_channel = Channel.objects.filter(id=pinned_channel_id).first()
+            if pinned_channel is None:
                 result["details"].append({"tvg_id": rv_tvg, "status": "pinned_channel_missing", "channel_id": pinned_channel_id})
                 continue
+            channels_by_epg_id = None
+        elif rv_tvg:
+            pinned_channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
+            if not pinned_channel:
+                result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
+                continue
+            channels_by_epg_id = None
         else:
-            channel = Channel.objects.filter(epg_data=epg).order_by("channel_number").first()
-        if not channel:
-            result["details"].append({"tvg_id": rv_tvg, "status": "no_channel_for_epg"})
-            continue
+            pinned_channel = None
+            epg_ids = {p.epg_id for p in programs}
+            channels_by_epg_id = {}
+            for ch in Channel.objects.filter(epg_data_id__in=epg_ids).order_by("channel_number"):
+                if ch.epg_data_id not in channels_by_epg_id:
+                    channels_by_epg_id[ch.epg_data_id] = ch
 
         #
         # Many providers list multiple future airings of the same episode
@@ -1269,6 +1284,12 @@ def _evaluate_series_rules_locked(tvg_id, result):
         created_here = 0
         for prog in unique_programs:
             try:
+                if pinned_channel is not None:
+                    rec_channel = pinned_channel
+                else:
+                    rec_channel = channels_by_epg_id.get(prog.epg_id)
+                    if rec_channel is None:
+                        continue
                 # Skip if a recording already exists for this exact airing
                 # (keyed by tvg_id + original program times, which are stable
                 # across EPG refreshes unlike ProgramData.id).
@@ -1312,7 +1333,7 @@ def _evaluate_series_rules_locked(tvg_id, result):
                     pass
 
                 rec = Recording.objects.create(
-                    channel=channel,
+                    channel=rec_channel,
                     start_time=adj_start,
                     end_time=adj_end,
                     custom_properties={
